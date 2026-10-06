@@ -1,61 +1,61 @@
 # 04 — BUILDER (agent 4)
 
-**Tu possèdes** : `apps/builder`.
-**Tu lis** : `PLANEXECUTE.md`, `docs/ARCHITECTURE.md`, `docs/INTERFACES.md` (§4, §5, §7, §8), `docs/SECURITY.md` (sections 1 à 4), `docs/OPERATIONS.md`.
+**You own**: `apps/builder`.
+**You read**: `PLANEXECUTE.md`, `docs/ARCHITECTURE.md`, `docs/INTERFACES.md` (§4, §5, §7, §8), `docs/SECURITY.md` (sections 1 to 4), `docs/OPERATIONS.md`.
 
-Tu construis le worker qui tourne sur le VPS 1 : il prend les jobs, fait travailler l'agent IA dans une sandbox, scanne, pousse sur le repo du client, déploie sur Vercel et demande au signer de brancher Meteora. C'est la brique la plus complexe : avance par petites étapes testables.
+You build the worker that runs on VPS 1: it picks up jobs, has the AI agent work in a sandbox, scans, pushes to the client's repo, deploys to Vercel and asks the signer to wire up Meteora. It is the most complex component: move forward in small, testable steps.
 
-## Composants
+## Components
 
 ```
 apps/builder/src/
-├── worker.ts          # boucle : prend un job (requête "for update skip locked"), le traite, met à jour le statut
+├── worker.ts          # loop: picks up a job ("for update skip locked" query), processes it, updates the status
 ├── pipeline/
-│   ├── create.ts      # create_launchpad : repo + agent + scan + aperçu, puis (après approved) signer + prod
-│   └── modify.ts      # modify_launchpad : agent + scan + aperçu, puis prod
-├── github.ts          # GitHub App : repo depuis le template, jeton limité au repo, branches, push
+│   ├── create.ts      # create_launchpad: repo + agent + scan + preview, then (after approved) signer + prod
+│   └── modify.ts      # modify_launchpad: agent + scan + preview, then prod
+├── github.ts          # GitHub App: repo from the template, repo-scoped token, branches, push
 ├── sandbox/
-│   ├── run.ts         # lance un conteneur Docker par job, monte uniquement le dossier du job
-│   ├── Dockerfile     # Node 20 + Claude Code, utilisateur non root
-│   └── network.ts     # réseau Docker avec liste blanche de sortie
-├── gateway/           # passerelle IA (proxy compatible API Anthropic) sur l'hôte
-│   └── server.ts      # vraie clé ici ; jetons temporaires par job ; budget OPS.agentBudgetUsdPerJob ; journal des coûts
+│   ├── run.ts         # starts one Docker container per job, mounts only the job's folder
+│   ├── Dockerfile     # Node 20 + Claude Code, non-root user
+│   └── network.ts     # Docker network with an egress allowlist
+├── gateway/           # AI gateway (Anthropic API-compatible proxy) on the host
+│   └── server.ts      # real key here; temporary tokens per job; OPS.agentBudgetUsdPerJob budget; cost log
 ├── prompts/
-│   └── builder.md     # prompt système de l'agent (règles : ne toucher que src/theme, src/content, pages ; jamais src/forge)
+│   └── builder.md     # the agent's system prompt (rules: only touch src/theme, src/content, pages; never src/forge)
 ├── scan/
-│   └── scan.ts        # règles de SECURITY.md §1, sortie : ok | liste des violations
-├── vercel.ts          # projet par client, variables d'env, déploiement d'aperçu, promotion en prod, sous-domaine
-├── signer-client.ts   # appels HMAC vers apps/signer (/v1/configs, /v1/launch-coin/prepare)
-├── sleep.ts           # mise en veille des launchpads inactifs (30 jours)
+│   └── scan.ts        # rules from SECURITY.md §1, output: ok | list of violations
+├── vercel.ts          # one project per client, env variables, preview deployment, promotion to prod, subdomain
+├── signer-client.ts   # HMAC calls to apps/signer (/v1/configs, /v1/launch-coin/prepare)
+├── sleep.ts           # sleep mode for inactive launchpads (30 days)
 └── alerts.ts          # Telegram
 ```
 
-## À faire
+## To do
 
-- [ ] Worker et transitions de statut exactement comme `INTERFACES.md` §4, avec `job_events` lisibles par le client ("Je crée ton repo", "Je code le design", "Aperçu prêt").
-- [ ] GitHub : créer le repo client depuis `launchpad-template`, écrire `forge.config.json` (sans `onchain` au départ), branche `forge/<jobId>`.
-- [ ] Sandbox : conteneur par job, Claude Code en mode headless (`claude -p`, sortie JSON, outils limités à lecture/écriture de fichiers et commandes npm de build), `ANTHROPIC_BASE_URL` = passerelle, `ANTHROPIC_AUTH_TOKEN` = jeton du job. Timeout `OPS.agentTimeoutMinutes`. Le prompt contient la `LaunchpadSpec` (theme, designNotes) ou la demande de modif.
-- [ ] Passerelle IA : proxy vers l'API Anthropic, refuse les jetons expirés ou au-delà du budget, enregistre le coût par job dans `jobs.api_cost_usd`.
-- [ ] Scan bloquant avant tout push (SECURITY.md §1). En cas de violation : pas de push, job `failed` (`failed_stage = 'build'`) avec la liste des violations, alerte Telegram.
-- [ ] Build local du site dans la sandbox avant push (évite les déploiements cassés).
-- [ ] Vercel : projet par client, variables d'env (adresses FORGE, clé Jupiter, R2, URL du relais RPC), déploiement d'aperçu sur la branche → `preview_ready` avec l'URL.
-- [ ] Prise des jobs avec les deux requêtes de `INTERFACES.md` §5 (construction / après validation). Verrou remis à `null` dès que le job quitte un statut actif.
-- [ ] Après `approved` (création) → `onchain_setup` : appel signer `/v1/configs` → écrire les adresses dans `forge.config.json#onchain` (commit par le builder, pas par l'agent) → appel `/v1/launch-coin/prepare` → `jobs.owner_tx` → `awaiting_owner_signature`.
-- [ ] Job en `owner_signed` (le web l'y met quand la transaction du client est confirmée), ou modif en `approved` → `deploying` : merge de la branche sur `main`, promotion en production, sous-domaine `<slug>.<domaine-clients>` → `live`.
-- [ ] Échec : `failed` avec `failed_stage` (`build`, `onchain`, `deploy`). Relance automatique uniquement si `failed_stage = 'build'` et `attempts < 2`. Échec `onchain` ou `deploy` : alerte Telegram, pas de relance automatique.
-- [ ] Jobs plantés : un job actif dont le verrou dépasse `OPS.jobLockStaleMinutes` passe en `failed` (étape selon son statut), avec alerte.
-- [ ] Flag `deploys_paused` respecté ; mise en veille quotidienne (`sleep.ts`).
+- [ ] Worker and status transitions exactly as in `INTERFACES.md` §4, with `job_events` readable by the client ("Creating your repo", "Coding the design", "Preview ready").
+- [ ] GitHub: create the client repo from `launchpad-template`, write `forge.config.json` (without `onchain` at first), branch `forge/<jobId>`.
+- [ ] Sandbox: one container per job, Claude Code in headless mode (`claude -p`, JSON output, tools limited to file read/write and npm build commands), `ANTHROPIC_BASE_URL` = gateway, `ANTHROPIC_AUTH_TOKEN` = the job's token. Timeout `OPS.agentTimeoutMinutes`. The prompt contains the `LaunchpadSpec` (theme, designNotes) or the modification request.
+- [ ] AI gateway: proxy to the Anthropic API, rejects expired tokens or tokens over budget, records the cost per job in `jobs.api_cost_usd`.
+- [ ] Blocking scan before any push (SECURITY.md §1). On violation: no push, job `failed` (`failed_stage = 'build'`) with the list of violations, Telegram alert.
+- [ ] Local site build in the sandbox before the push (avoids broken deployments).
+- [ ] Vercel: one project per client, env variables (FORGE addresses, Jupiter key, R2, RPC relay URL), preview deployment on the branch → `preview_ready` with the URL.
+- [ ] Picking up jobs with the two queries of `INTERFACES.md` §5 (build / after approval). Lock reset to `null` as soon as the job leaves an active status.
+- [ ] After `approved` (creation) → `onchain_setup`: signer call `/v1/configs` → write the addresses into `forge.config.json#onchain` (committed by the builder, not by the agent) → call `/v1/launch-coin/prepare` → `jobs.owner_tx` → `awaiting_owner_signature`.
+- [ ] Job in `owner_signed` (the web sets it when the client's transaction is confirmed), or modification in `approved` → `deploying`: merge the branch into `main`, promotion to production, subdomain `<slug>.<clients-domain>` → `live`.
+- [ ] Failure: `failed` with `failed_stage` (`build`, `onchain`, `deploy`). Automatic retry only if `failed_stage = 'build'` and `attempts < 2`. `onchain` or `deploy` failure: Telegram alert, no automatic retry.
+- [ ] Crashed jobs: an active job whose lock exceeds `OPS.jobLockStaleMinutes` moves to `failed` (stage depending on its status), with an alert.
+- [ ] `deploys_paused` flag respected; daily sleep mode (`sleep.ts`).
 
 ## Tests
 
-- [ ] Tests unitaires du scan avec des diffs piégés (adresse ajoutée, script externe, modification de `src/forge`, changement de version de `@forge/core`) : tous doivent être bloqués.
-- [ ] Test de la passerelle : jeton expiré refusé, budget dépassé refusé.
-- [ ] Test de bout en bout sur un repo de test et un projet Vercel de test, avec un signer mocké.
+- [ ] Unit tests of the scan with booby-trapped diffs (added address, external script, modification of `src/forge`, change of `@forge/core` version): all must be blocked.
+- [ ] Gateway test: expired token rejected, exceeded budget rejected.
+- [ ] End-to-end test on a test repo and a test Vercel project, with a mocked signer.
 
-## Dépendances
+## Dependencies
 
-Template publié (agent 2), signer (agent 5) : utiliser des mocks qui respectent `INTERFACES.md` §7 tant qu'ils ne sont pas prêts.
+Published template (agent 2), signer (agent 5): use mocks that respect `INTERFACES.md` §7 until they are ready.
 
-## Rapport
+## Report
 
-_À remplir en fin de tâche._
+_To be filled in at the end of the task._

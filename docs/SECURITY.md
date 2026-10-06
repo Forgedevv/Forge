@@ -1,68 +1,68 @@
-# SECURITY — menaces et protections
+# SECURITY — threats and protections
 
-Chaque protection ci-dessous est **obligatoire** dans le MVP. Les agents qui touchent à une de ces zones doivent l'implémenter et la tester.
+Every protection below is **mandatory** in the MVP. Agents that touch one of these areas must implement and test it.
 
-## 1. Site client piégé par l'agent
+## 1. Client site booby-trapped by the agent
 
-**Menace** : un client demande à l'agent d'ajouter une demande d'approbation de tokens, de remplacer nos adresses de frais, ou d'injecter un script externe. Le site devient un site de phishing hébergé par nous.
+**Threat**: a client asks the agent to add a token approval request, replace our fee addresses, or inject an external script. The site becomes a phishing site hosted by us.
 
-**Protections** (agent 4, avec agent 2 pour la structure du template) :
-- `@forge/core` installé depuis le registre privé à version épinglée. Le scan refuse tout changement de `package.json` sur cette dépendance, tout `patch-package`, tout fichier dans `node_modules`.
-- Le template sépare clairement `src/forge/` (intouchable, branché sur `@forge/core`) du reste (design, pages, contenus).
-- **Scan bloquant avant chaque push** :
-  - aucune modification sous `src/forge/`, `forge.config.json#onchain`, `next.config.*` (headers de sécurité), `package.json#dependencies['@forge/core']` ;
-  - aucune chaîne base58 de 32 à 44 caractères ajoutée (adresse Solana) ;
-  - aucun `<script src=` externe, aucun `fetch`/`import` vers un domaine hors liste blanche ;
-  - aucun usage de `approve`, `setAuthority`, `createApproveInstruction`, `signAllTransactions` hors `src/forge/` ;
-  - aucun `eval`, `new Function`, `dangerouslySetInnerHTML` avec contenu dynamique.
-- Content-Security-Policy stricte dans le template (domaines Jupiter, Helius via relais, R2, Vercel).
-- Aperçu validé par le client avant toute mise en production.
+**Protections** (agent 4, with agent 2 for the template structure):
+- `@forge/core` installed from the private registry at a pinned version. The scan rejects any change to `package.json` on this dependency, any `patch-package`, any file in `node_modules`.
+- The template clearly separates `src/forge/` (untouchable, wired to `@forge/core`) from the rest (design, pages, content).
+- **Blocking scan before every push**:
+  - no modification under `src/forge/`, `forge.config.json#onchain`, `next.config.*` (security headers), `package.json#dependencies['@forge/core']`;
+  - no added base58 string of 32 to 44 characters (Solana address);
+  - no external `<script src=`, no `fetch`/`import` to a domain outside the allowlist;
+  - no use of `approve`, `setAuthority`, `createApproveInstruction`, `signAllTransactions` outside `src/forge/`;
+  - no `eval`, `new Function`, `dangerouslySetInnerHTML` with dynamic content.
+- Strict Content-Security-Policy in the template (Jupiter domains, Helius via relay, R2, Vercel).
+- Preview approved by the client before any production release.
 
-## 2. Clé API Anthropic exposée
+## 2. Anthropic API key exposed
 
-**Protections** (agent 4) : la vraie clé reste sur la machine hôte, dans la passerelle. Le conteneur reçoit `ANTHROPIC_BASE_URL` (passerelle) + `ANTHROPIC_AUTH_TOKEN` (jeton temporaire, budget `OPS.agentBudgetUsdPerJob`, expire à la fin du job). Limite de dépense mensuelle aussi fixée dans la console Anthropic.
+**Protections** (agent 4): the real key stays on the host machine, in the gateway. The container receives `ANTHROPIC_BASE_URL` (gateway) + `ANTHROPIC_AUTH_TOKEN` (temporary token, budget `OPS.agentBudgetUsdPerJob`, expires at the end of the job). Monthly spending limit also set in the Anthropic console.
 
-## 3. Accès GitHub de l'agent
+## 3. Agent's GitHub access
 
-**Protections** (agent 4) : GitHub App de l'organisation ; jeton d'installation temporaire, limité au seul repo du client, permissions `contents:write` uniquement. Aucun accès au monorepo FORGE.
+**Protections** (agent 4): organization GitHub App; temporary installation token, limited to the client's repo only, `contents:write` permission only. No access to the FORGE monorepo.
 
-## 4. Sortie réseau de la sandbox
+## 4. Sandbox network egress
 
-**Protections** (agent 4) : réseau Docker avec liste blanche de sortie : passerelle IA, `github.com`, `registry.npmjs.org`, `npm.pkg.github.com`. Tout le reste est refusé. Pas de montage de dossier de l'hôte hors du dossier de travail du job.
+**Protections** (agent 4): Docker network with an egress allowlist: AI gateway, `github.com`, `registry.npmjs.org`, `npm.pkg.github.com`. Everything else is denied. No host folder mounted outside the job's working folder.
 
-## 5. Vol d'une clé de wallet créateur
+## 5. Theft of a creator wallet key
 
-**Menace** : le rôle créateur d'un pool est **transférable** (`transferPoolCreator`). Une clé volée = toute la part créateur détournée pour toujours.
+**Threat**: a pool's creator role is **transferable** (`transferPoolCreator`). A stolen key = the whole creator share diverted forever.
 
-**Protections** (agent 5) :
-- Un wallet créateur par launchpad, clés chiffrées au repos (`SIGNER_KEYSTORE_PASSPHRASE`), uniquement sur le VPS 2.
-- Le signer ne fait jamais `transferPoolCreator`. Une surveillance on-chain alerte immédiatement (Telegram) si un transfert de créateur apparaît sur un de nos pools.
-- Les wallets créateurs ne gardent que de quoi payer les frais de transaction ; tout ce qui est réclamé part direct au multisig.
+**Protections** (agent 5):
+- One creator wallet per launchpad, keys encrypted at rest (`SIGNER_KEYSTORE_PASSPHRASE`), only on VPS 2.
+- The signer never calls `transferPoolCreator`. On-chain monitoring alerts immediately (Telegram) if a creator transfer appears on one of our pools.
+- Creator wallets keep only enough to pay transaction fees; everything claimed goes straight to the multisig.
 
-## 6. Signer appelé par n'importe qui
+## 6. Signer called by anyone
 
-**Protections** (agent 5) : API accessible uniquement depuis l'IP du VPS 1 (pare-feu), requêtes signées HMAC avec horodatage, et le signer **relit tout dans Supabase** (job, spec, paiement confirmé) au lieu de faire confiance au corps de la requête.
+**Protections** (agent 5): API reachable only from VPS 1's IP (firewall), HMAC-signed requests with a timestamp, and the signer **rereads everything in Supabase** (job, spec, confirmed payment) instead of trusting the request body.
 
-## 7. Trésorerie vidée
+## 7. Treasury drained
 
-**Protections** : multisig Squads, au moins 2 signatures sur 3 (à confirmer avec l'équipe). Le bot de buyback n'a qu'une limite de dépense quotidienne vers son propre wallet.
+**Protections**: Squads multisig, at least 2 signatures out of 3 (to be confirmed with the team). The buyback bot only has a daily spending limit to its own wallet.
 
-## 8. Buyback devancé par les bots (MEV)
+## 8. Buyback front-run by bots (MEV)
 
-**Protections** (agent 5) : petits montants, moments aléatoires, slippage plafonné (1 %), jamais de montant prévisible.
+**Protections** (agent 5): small amounts, random times, capped slippage (1%), never a predictable amount.
 
-## 9. Abus de l'agent et des coûts
+## 9. Abuse of the agent and of costs
 
-**Protections** : quota de modifs, paiement avant chaque job, budget et timeout par job (`OPS`), limite de débit sur le chat de conception.
+**Protections**: modification quota, payment before each job, budget and timeout per job (`OPS`), rate limit on the design chat.
 
-## 10. Paiement truqué
+## 10. Forged payment
 
-**Protections** (agent 3) : `POST /api/payments/confirm` vérifie on-chain la transaction : signataire = wallet de la session = propriétaire du launchpad (`spec.ownerWallet`), destinataire = caisse, montant ≥ devis, devis non expiré, signature jamais utilisée.
+**Protections** (agent 3): `POST /api/payments/confirm` verifies the transaction on-chain: signer = session wallet = launchpad owner (`spec.ownerWallet`), recipient = cashbox, amount ≥ quote, quote not expired, signature never used before.
 
-## 11. Relais RPC abusé
+## 11. RPC relay abused
 
-**Protections** (agent 3) : liste blanche de méthodes JSON-RPC, limite de débit par IP, taille de requête bornée.
+**Protections** (agent 3): JSON-RPC method allowlist, per-IP rate limit, bounded request size.
 
-## 12. Launchpads d'arnaque
+## 12. Scam launchpads
 
-**Protections** : conditions d'utilisation ; drapeau `disabled` par launchpad qui coupe le site (on l'héberge) ; le coin reste on-chain mais le site disparaît.
+**Protections**: terms of use; per-launchpad `disabled` flag that cuts the site (we host it); the coin stays on-chain but the site disappears.

@@ -1,53 +1,53 @@
 # 01 — ON-CHAIN (agent 1)
 
-**Tu possèdes** : `packages/core`, `scripts/devnet-tests`.
-**Tu lis** : `PLANEXECUTE.md`, `docs/METEORA.md`, `docs/DEVNET_TESTS.md`, `docs/INTERFACES.md`, `docs/SECURITY.md` (sections 1, 5).
+**You own**: `packages/core`, `scripts/devnet-tests`.
+**You read**: `PLANEXECUTE.md`, `docs/METEORA.md`, `docs/DEVNET_TESTS.md`, `docs/INTERFACES.md`, `docs/SECURITY.md` (sections 1, 5).
 
-Tu écris le **noyau de transactions** utilisé par tous les autres : le template (swaps, claims), le web (paiements), le signer (configs, pools, claims, buyback). C'est le code le plus sensible du projet. Il doit être simple, testé et sans dépendance inutile.
+You write the **transaction core** used by all the others: the template (swaps, claims), the web (payments), the signer (configs, pools, claims, buyback). It is the most sensitive code in the project. It must be simple, tested and free of unnecessary dependencies.
 
-## Étape A — Tests devnet (en premier, bloquant)
+## Step A — Devnet tests (first, blocking)
 
-- [ ] `scripts/devnet-tests/` : les 4 tests de `docs/DEVNET_TESTS.md`, avec reprise, refus hors devnet, rapports.
-- [ ] Créer aussi un **faux $FORGE** (mint SPL sur devnet) et l'enregistrer dans `.state/`, pour les tests de token-gating des autres agents.
-- [ ] `reports/SUMMARY.md` avec les 4 résultats et le plan B proposé si besoin.
+- [ ] `scripts/devnet-tests/`: the 4 tests from `docs/DEVNET_TESTS.md`, with resume, refusal outside devnet, reports.
+- [ ] Also create a **fake $FORGE** (SPL mint on devnet) and record it in `.state/`, for the other agents' token-gating tests.
+- [ ] `reports/SUMMARY.md` with the 4 results and the proposed plan B if needed.
 
-Tant que les tests 1 à 3 ne sont pas passés (ou leur plan B choisi), n'écris pas les fonctions correspondantes de l'étape B.
+Until tests 1 to 3 have passed (or their plan B has been chosen), do not write the corresponding step B functions.
 
-## Étape B — `@forge/core`
+## Step B — `@forge/core`
 
-Structure :
+Structure:
 
 ```
 packages/core/src/
-├── addresses.ts      # adresses FORGE lues depuis l'env, exigées via requireAddresses()
-├── constants.ts      # réexporte packages/shared + bornes du SDK
-├── validate.ts       # validation des paramètres on-chain (bornes METEORA.md + INTERFACES.md)
-├── config.ts         # construction des 2 configs à partir d'une LaunchpadSpec
-├── pool.ts           # création de pool + premier achat (transaction partiellement signable)
-├── swap.ts           # swap avec référence + frais plateforme (achat et vente)
-├── claims.ts         # réclamation créateur (vers receiver) et partenaire
-├── reads.ts          # pools d'une config, progression de la courbe, métriques de frais
-├── payments.ts       # transaction de paiement SOL vers la caisse, vérification d'un paiement
-├── gating.ts         # solde $FORGE d'un wallet
+├── addresses.ts      # FORGE addresses read from env, required via requireAddresses()
+├── constants.ts      # re-exports packages/shared + SDK bounds
+├── validate.ts       # on-chain parameter validation (METEORA.md + INTERFACES.md bounds)
+├── config.ts         # building the 2 configs from a LaunchpadSpec
+├── pool.ts           # pool creation + first buy (partially signable transaction)
+├── swap.ts           # swap with referral + platform fee (buy and sell)
+├── claims.ts         # creator claim (to receiver) and partner claim
+├── reads.ts          # pools of a config, curve progress, fee metrics
+├── payments.ts       # SOL payment transaction to the cashbox, payment verification
+├── gating.ts         # a wallet's $FORGE balance
 └── index.ts
 ```
 
-- [ ] `addresses.ts` : `FORGE_MULTISIG_VAULT`, `FORGE_METEORA_REFERRAL_ACCOUNT`, `FORGE_PLATFORM_FEE_WALLET`, `FORGE_JUPITER_REFERRAL_ACCOUNT`, `FORGE_CASHBOX_WALLET`, `FORGE_MINT` lus depuis l'env. Pas d'exigence globale au chargement : `requireAddresses([...])`, appelée au démarrage de chaque app avec ses adresses (`INTERFACES.md` §8), plante si l'une manque ou est invalide. `FORGE_MINT` est optionnelle (absente avant le lancement de $FORGE).
-- [ ] `validate.ts` : une fonction par config ; refuse tout ce qui sort des bornes ; tests unitaires pour chaque borne.
-- [ ] `config.ts` : `buildLaunchpadConfig(spec)` et `buildLaunchpadCoinConfig(spec)` → `ConfigParameters` + `feeClaimer` + `leftoverReceiver`, selon `docs/METEORA.md` (section "Réglages des deux configs"). Utiliser les helpers `buildCurve*` du SDK.
-- [ ] `pool.ts` : `buildLaunchCoinTx({ config, creator, owner, mintKeypair, metadataUri, firstBuyLamports })` → transaction avec `createPoolWithFirstBuy`, prête à être signée par le créateur et le mint (côté signer) puis par le client. Paramètre optionnel `durableNonce` (compte de nonce + autorité) : une transaction classique expire en ~1 minute, trop court pour que le client signe ; avec un nonce durable elle reste valide jusqu'à utilisation.
-- [ ] `swap.ts` : `buildBuyTx` et `buildSellTx` avec `referralTokenAccount` = référence FORGE et le transfert de 30 bps ; refuse de construire un swap sur un pool gradué (le template utilise Jupiter dans ce cas). Respecter la taille de transaction (lookup table si besoin).
-- [ ] `claims.ts` : `buildCreatorClaimTx(pool, creator, receiver)`, `buildPartnerClaimTx(pool, feeClaimer)`.
-- [ ] `reads.ts` : `listCoinsOfConfig`, `isGraduated`, `curveProgress`, `feeMetrics`.
-- [ ] `payments.ts` : `buildPaymentTx(payer, lamports)` vers la caisse avec un mémo `jobId` ; `verifyPayment(signature, { payer, lamports, jobId })`.
-- [ ] `gating.ts` : `getForgeBalance(wallet)`.
-- [ ] Tests unitaires (vitest) sans réseau pour validate et la construction des transactions ; tests d'intégration devnet pour pool, swap, claims, payments.
-- [ ] Publication : script `pnpm --filter @forge/core publish` vers GitHub Packages, version sémantique. **La version utilisée par le template est épinglée exactement** (pas de `^`).
+- [ ] `addresses.ts`: `FORGE_MULTISIG_VAULT`, `FORGE_METEORA_REFERRAL_ACCOUNT`, `FORGE_PLATFORM_FEE_WALLET`, `FORGE_JUPITER_REFERRAL_ACCOUNT`, `FORGE_CASHBOX_WALLET`, `FORGE_MINT` read from env. No global requirement at load time: `requireAddresses([...])`, called at each app's startup with its own addresses (`INTERFACES.md` §8), crashes if one is missing or invalid. `FORGE_MINT` is optional (absent before the $FORGE launch).
+- [ ] `validate.ts`: one function per config; rejects anything outside the bounds; unit tests for each bound.
+- [ ] `config.ts`: `buildLaunchpadConfig(spec)` and `buildLaunchpadCoinConfig(spec)` → `ConfigParameters` + `feeClaimer` + `leftoverReceiver`, per `docs/METEORA.md` (section "Settings for the two configs"). Use the SDK's `buildCurve*` helpers.
+- [ ] `pool.ts`: `buildLaunchCoinTx({ config, creator, owner, mintKeypair, metadataUri, firstBuyLamports })` → transaction with `createPoolWithFirstBuy`, ready to be signed by the creator and the mint (signer side) and then by the client. Optional `durableNonce` parameter (nonce account + authority): a regular transaction expires in ~1 minute, too short for the client to sign; with a durable nonce it stays valid until used.
+- [ ] `swap.ts`: `buildBuyTx` and `buildSellTx` with `referralTokenAccount` = FORGE referral and the 30 bps transfer; refuses to build a swap on a graduated pool (the template uses Jupiter in that case). Respect the transaction size limit (lookup table if needed).
+- [ ] `claims.ts`: `buildCreatorClaimTx(pool, creator, receiver)`, `buildPartnerClaimTx(pool, feeClaimer)`.
+- [ ] `reads.ts`: `listCoinsOfConfig`, `isGraduated`, `curveProgress`, `feeMetrics`.
+- [ ] `payments.ts`: `buildPaymentTx(payer, lamports)` to the cashbox with a `jobId` memo; `verifyPayment(signature, { payer, lamports, jobId })`.
+- [ ] `gating.ts`: `getForgeBalance(wallet)`.
+- [ ] Unit tests (vitest) without network for validate and transaction building; devnet integration tests for pool, swap, claims, payments.
+- [ ] Publishing: `pnpm --filter @forge/core publish` script to GitHub Packages, semantic versioning. **The version used by the template is pinned exactly** (no `^`).
 
-## Interfaces dont tu dépends
+## Interfaces you depend on
 
-`packages/shared` (écrit par la session lead). Si un type manque, mock local + `docs/CHANGE_REQUESTS.md`.
+`packages/shared` (written by the lead session). If a type is missing, local mock + `docs/CHANGE_REQUESTS.md`.
 
-## Rapport
+## Report
 
-_À remplir en fin de tâche : fait / pas fait / incertain / dépendances ajoutées / résultats des tests devnet._
+_To be filled in at the end of the task: done / not done / uncertain / dependencies added / devnet test results._

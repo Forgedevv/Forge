@@ -1,8 +1,8 @@
-# INTERFACES — contrats entre agents
+# INTERFACES — contracts between agents
 
-Ce fichier définit tout ce que les agents partagent. La session lead le traduit en code dans `packages/shared` **avant** de lancer les autres agents. Personne d'autre ne modifie ces contrats : un changement passe par `docs/CHANGE_REQUESTS.md`.
+This file defines everything the agents share. The lead session turns it into code in `packages/shared` **before** launching the other agents. Nobody else modifies these contracts: a change goes through `docs/CHANGE_REQUESTS.md`.
 
-## 1. Constantes métier (`packages/shared/src/constants.ts`)
+## 1. Business constants (`packages/shared/src/constants.ts`)
 
 ```ts
 export const PRICING = {
@@ -14,19 +14,19 @@ export const PRICING = {
 } as const;
 
 export const FEES = {
-  platformFeeBps: 30,          // notre frais sur notre bouton d'achat
-  jupiterIntegratorFeeBps: 30, // après graduation, Jupiter en garde 20 %
-  forgeCreatorSharePct: 25,    // part créateur FORGE sur le coin de chaque launchpad
+  platformFeeBps: 30,          // our platform fee on our buy button
+  jupiterIntegratorFeeBps: 30, // after graduation, Jupiter keeps 20%
+  forgeCreatorSharePct: 25,    // FORGE creator share on each launchpad's coin
 } as const;
 
 export const CLIENT_BOUNDS = {
-  tradingFeeBps: { min: 50, max: 200 },          // ce qu'on propose aux clients
+  tradingFeeBps: { min: 50, max: 200 },          // what we offer to clients
   coinCreatorSharePct: { min: 0, max: 50, default: 25 },
-  // frais de création d'un coin, fixé par le client : 0 (pas de frais) ou entre 0,001 et 1 SOL
-  // (0,001 SOL = MIN_POOL_CREATION_FEE du SDK). Que le SDK accepte 0 est à confirmer au test 1 ;
-  // sinon le minimum devient 0,001.
+  // coin creation fee, set by the client: 0 (no fee) or between 0.001 and 1 SOL
+  // (0.001 SOL = MIN_POOL_CREATION_FEE in the SDK). Whether the SDK accepts 0 is to be confirmed in test 1;
+  // otherwise the minimum becomes 0.001.
   poolCreationFeeSol: { min: 0.001, max: 1, allowZero: true },
-  migrationThresholdSol: 10,                      // imposé (robots Meteora)
+  migrationThresholdSol: 10,                      // imposed (Meteora bots)
 } as const;
 
 export const OPS = {
@@ -34,11 +34,11 @@ export const OPS = {
   claimIntervalHours: 24,
   agentBudgetUsdPerJob: 15,
   agentTimeoutMinutes: 30,
-  jobLockStaleMinutes: 45,     // au-delà, un job actif sans nouvelles est considéré planté
+  jobLockStaleMinutes: 45,     // beyond this, an active job with no news is considered crashed
 } as const;
 ```
 
-## 2. `LaunchpadSpec` — produite par le chat, consommée par le builder et le signer
+## 2. `LaunchpadSpec` — produced by the chat, consumed by the builder and the signer
 
 ```ts
 import { z } from 'zod';
@@ -47,14 +47,14 @@ const SolanaAddress = z.string().regex(/^[1-9A-HJ-NP-Za-km-z]{32,44}$/);
 
 export const LaunchpadSpec = z.object({
   version: z.literal(1),
-  ownerWallet: SolanaAddress,                  // wallet du client = wallet de la session = payeur = feeClaimer des deux configs
+  ownerWallet: SolanaAddress,                  // client wallet = session wallet = payer = feeClaimer of both configs
   name: z.string().min(2).max(32),             // "MoonPad"
-  slug: z.string().regex(/^[a-z0-9-]{3,32}$/), // "moonpad" -> moonpad.<domaine-clients>
+  slug: z.string().regex(/^[a-z0-9-]{3,32}$/), // "moonpad" -> moonpad.<clients-domain>
   quote: z.literal('SOL'),
   tradingFeeBps: z.number().int().min(50).max(200),
   coinCreatorSharePct: z.number().int().min(0).max(50).default(25),
   poolCreationFeeSol: z.number().refine(v => v === 0 || (v >= 0.001 && v <= 1), {
-    message: 'poolCreationFeeSol doit valoir 0 ou être entre 0,001 et 1 SOL',
+    message: 'poolCreationFeeSol must be 0 or between 0.001 and 1 SOL',
   }),
   antiSniper: z.boolean().default(true),
   theme: z.object({
@@ -63,22 +63,22 @@ export const LaunchpadSpec = z.object({
     darkMode: z.boolean(),
     tagline: z.string().max(120),
     logoUrl: z.string().url().optional(),
-    designNotes: z.string().max(2000),         // instructions libres pour l'agent builder
+    designNotes: z.string().max(2000),         // free-form instructions for the builder agent
   }),
   launchpadCoin: z.object({
     name: z.string().min(1).max(32),
     symbol: z.string().regex(/^[A-Z0-9]{2,10}$/),
     description: z.string().max(500),
     imageUrl: z.string().url(),
-    firstBuySol: z.number().min(0).max(100),   // payé par le client
+    firstBuySol: z.number().min(0).max(100),   // paid by the client
   }),
 });
 export type LaunchpadSpec = z.infer<typeof LaunchpadSpec>;
 ```
 
-## 3. `forge.config.json` — lu par chaque site client
+## 3. `forge.config.json` — read by each client site
 
-Généré par le builder dans le repo du client. L'agent peut modifier `theme` et `content`, **jamais** `onchain` ni `mode`. `mode` : `live` | `sleeping` (mise en veille) | `disabled` (coupé par FORGE), écrit uniquement par le builder.
+Generated by the builder in the client's repo. The agent may modify `theme` and `content`, **never** `onchain` or `mode`. `mode`: `live` | `sleeping` (sleep mode) | `disabled` (cut off by FORGE), written only by the builder.
 
 ```json
 {
@@ -88,64 +88,64 @@ Généré par le builder dans le repo du client. L'agent peut modifier `theme` e
   "mode": "live",
   "onchain": {
     "cluster": "mainnet-beta",
-    "launchpadConfig": "<adresse config du launchpad>",
-    "launchpadCoinConfig": "<adresse config du coin du launchpad>",
-    "launchpadCoinMint": "<mint de $MOON>",
-    "ownerWallet": "<wallet d'Hugo>"
+    "launchpadConfig": "<launchpad config address>",
+    "launchpadCoinConfig": "<launchpad coin config address>",
+    "launchpadCoinMint": "<$MOON mint>",
+    "ownerWallet": "<Hugo's wallet>"
   },
   "theme": { "primaryColor": "#7C3AED", "accentColor": "#F59E0B", "darkMode": true },
   "content": { "tagline": "...", "about": "..." }
 }
 ```
 
-Les adresses FORGE (multisig, référence Meteora, référence Jupiter, wallet des frais plateforme) ne sont **pas** dans ce fichier : elles sont dans `@forge/core`, lues depuis l'environnement de build.
+FORGE's addresses (multisig, Meteora referral, Jupiter referral, platform fee wallet) are **not** in this file: they are in `@forge/core`, read from the build environment.
 
-## 4. Statuts de job
+## 4. Job statuses
 
 ```ts
 export const JobStatus = z.enum([
-  'spec_ready',    // créé par apps/web : spec confirmée (création) ou demande de modif enregistrée
-  'paid',          // paiement confirmé on-chain
-  'building',      // builder : conteneur en cours
-  'preview_ready', // URL d'aperçu disponible
-  'approved',      // le client a validé l'aperçu
-  'onchain_setup', // builder + signer : création des configs et préparation de la transaction de lancement
-  'awaiting_owner_signature', // transaction prête dans jobs.owner_tx, le client doit signer le premier achat
-  'owner_signed',  // apps/web : transaction du client confirmée on-chain
-  'deploying',     // builder : merge sur main, mise en production Vercel
+  'spec_ready',    // created by apps/web: spec confirmed (creation) or modification request recorded
+  'paid',          // payment confirmed on-chain
+  'building',      // builder: container running
+  'preview_ready', // preview URL available
+  'approved',      // the client approved the preview
+  'onchain_setup', // builder + signer: creating the configs and preparing the launch transaction
+  'awaiting_owner_signature', // transaction ready in jobs.owner_tx, the client must sign the first buy
+  'owner_signed',  // apps/web: client's transaction confirmed on-chain
+  'deploying',     // builder: merge to main, Vercel production deploy
   'live',
-  'failed',        // étape échouée (voir failed_stage et attempts)
+  'failed',        // failed stage (see failed_stage and attempts)
   'refunded',
 ]);
 export const JobType = z.enum(['create_launchpad', 'modify_launchpad']);
 export const FailedStage = z.enum(['build', 'onchain', 'deploy']);
 ```
 
-Chemins :
+Paths:
 
 ```
-création : spec_ready → paid → building → preview_ready → approved → onchain_setup
+creation : spec_ready → paid → building → preview_ready → approved → onchain_setup
            → awaiting_owner_signature → owner_signed → deploying → live
-modif    : spec_ready → paid → building → preview_ready → approved → deploying → live
+modification : spec_ready → paid → building → preview_ready → approved → deploying → live
 ```
 
-Qui fait quoi :
+Who does what:
 
-| Transition | Fait par |
+| Transition | Done by |
 |---|---|
 | → `spec_ready`, → `paid`, → `approved`, → `owner_signed` | `apps/web` |
 | → `building`, → `preview_ready`, → `onchain_setup`, → `awaiting_owner_signature`, → `deploying`, → `live`, → `failed` | `apps/builder` |
 | → `refunded` | `apps/signer` |
 
-Règles d'échec :
-- Le builder note l'étape qui a échoué dans `failed_stage`.
-- **`failed_stage = 'build'`** (avant toute action on-chain) :
-  - `attempts < 2` : le builder relance automatiquement (`building`) ;
-  - `attempts = 2` : le signer rembourse le paiement depuis la caisse → `refunded`.
-- **`failed_stage = 'onchain'` ou `'deploy'`** (après validation, des configs ont pu être créées et du SOL dépensé) : **pas de relance ni de remboursement automatiques**. Alerte Telegram, traitement manuel par l'équipe. Pour relancer, l'équipe remet le job en `approved` (les routes du signer sont idempotentes, rien n'est créé en double).
-- `attempts` ne compte que les tentatives de construction (`building`).
+Failure rules:
+- The builder records the stage that failed in `failed_stage`.
+- **`failed_stage = 'build'`** (before any on-chain action):
+  - `attempts < 2`: the builder automatically retries (`building`);
+  - `attempts = 2`: the signer refunds the payment from the cashbox → `refunded`.
+- **`failed_stage = 'onchain'` or `'deploy'`** (after approval, configs may have been created and SOL spent): **no automatic retry or refund**. Telegram alert, manual handling by the team. To retry, the team puts the job back to `approved` (the signer routes are idempotent, nothing is created twice).
+- `attempts` only counts build attempts (`building`).
 
-## 5. Base de données (Supabase)
+## 5. Database (Supabase)
 
 ```sql
 create table users (
@@ -160,10 +160,10 @@ create table launchpads (
   spec jsonb not null,                      -- LaunchpadSpec
   github_repo text,
   vercel_project_id text,
-  launchpad_config text,                    -- adresse Meteora
+  launchpad_config text,                    -- Meteora address
   launchpad_coin_config text,
   launchpad_coin_mint text,
-  creator_wallet_ref text,                  -- identifiant du wallet créateur dans le signer (jamais la clé)
+  creator_wallet_ref text,                  -- creator wallet identifier in the signer (never the key)
   included_modifications_left int default 2,
   status text not null default 'draft',     -- draft | live | sleeping | disabled
   last_trade_at timestamptz,
@@ -175,14 +175,14 @@ create table jobs (
   launchpad_id uuid not null references launchpads(id),
   type text not null,                       -- JobType
   status text not null,                     -- JobStatus
-  attempts int not null default 0,          -- tentatives de construction uniquement
-  failed_stage text,                        -- FailedStage, renseigné quand status = 'failed'
-  request text,                             -- demande du client (modifs)
+  attempts int not null default 0,          -- build attempts only
+  failed_stage text,                        -- FailedStage, set when status = 'failed'
+  request text,                             -- client request (modifications)
   preview_url text,
-  owner_tx text,                            -- transaction de lancement partiellement signée (base64), avec nonce durable
+  owner_tx text,                            -- partially signed launch transaction (base64), with durable nonce
   error text,
   api_cost_usd numeric default 0,
-  locked_by text,                           -- id du worker qui a pris le job
+  locked_by text,                           -- id of the worker that took the job
   locked_at timestamptz,
   created_at timestamptz default now(),
   updated_at timestamptz default now()
@@ -202,11 +202,11 @@ create table payments (
   created_at timestamptz default now()
 );
 
--- Le chat commence avant que le launchpad existe : les messages sont rattachés à une conversation.
+-- The chat starts before the launchpad exists: messages are attached to a conversation.
 create table conversations (
   id uuid primary key default gen_random_uuid(),
   owner_wallet text not null references users(wallet),
-  launchpad_id uuid references launchpads(id), -- null pendant la conception, renseigné à la confirmation de la spec
+  launchpad_id uuid references launchpads(id), -- null during design, set when the spec is confirmed
   created_at timestamptz default now()
 );
 
@@ -221,24 +221,24 @@ create table chat_messages (
 create table job_events (
   id bigserial primary key,
   job_id uuid references jobs(id),
-  message text not null,                    -- affiché dans le chat en temps réel
+  message text not null,                    -- shown in the chat in real time
   created_at timestamptz default now()
 );
 
-create table flags (                        -- coupe-circuits
+create table flags (                        -- kill switches
   key text primary key,                     -- deploys_paused | buyback_paused | signups_paused
   value boolean not null default false
 );
 ```
 
-Row Level Security : un client ne lit que ses lignes (`owner_wallet` = wallet authentifié ; pour `jobs`, `payments`, `job_events` et `chat_messages`, via la jointure vers `launchpads` ou `conversations`). Le builder et le signer utilisent la clé de service, uniquement sur leurs VPS.
+Row Level Security: a client only reads their own rows (`owner_wallet` = authenticated wallet; for `jobs`, `payments`, `job_events` and `chat_messages`, via the join to `launchpads` or `conversations`). The builder and the signer use the service key, only on their VPSs.
 
-Verrous : le builder pose `locked_by` / `locked_at` quand il prend un job, et les **remet à `null`** dès que le job quitte un statut actif (`building`, `onchain_setup`, `deploying`), y compris vers `failed`.
+Locks: the builder sets `locked_by` / `locked_at` when it takes a job, and **resets them to `null`** as soon as the job leaves an active status (`building`, `onchain_setup`, `deploying`), including when moving to `failed`.
 
-Prise d'un job par le builder (sans doublon) — deux requêtes :
+Builder taking a job (no duplicates) — two queries:
 
 ```sql
--- 1. Construction (création et modif) : nouveau job payé, ou relance après échec de construction
+-- 1. Build (creation and modification): newly paid job, or retry after a build failure
 update jobs set status = 'building', locked_by = $1, locked_at = now(),
   attempts = attempts + 1, failed_stage = null, error = null
 where id = (
@@ -248,7 +248,7 @@ where id = (
   order by created_at limit 1 for update skip locked
 ) returning *;
 
--- 2. Après validation : approved (création → onchain_setup, modif → deploying) ou owner_signed (→ deploying)
+-- 2. After approval: approved (creation → onchain_setup, modification → deploying) or owner_signed (→ deploying)
 update jobs set
   status = case
     when status = 'approved' and type = 'create_launchpad' then 'onchain_setup'
@@ -262,69 +262,69 @@ where id = (
 ) returning *;
 ```
 
-Job planté : un job resté dans un statut actif avec `locked_at` plus vieux que `OPS.jobLockStaleMinutes` est passé en `failed` par le builder, avec `failed_stage` selon le statut (`building` → `build`, `onchain_setup` → `onchain`, `deploying` → `deploy`), verrou remis à `null`, alerte Telegram.
+Crashed job: a job left in an active status with `locked_at` older than `OPS.jobLockStaleMinutes` is moved to `failed` by the builder, with `failed_stage` depending on the status (`building` → `build`, `onchain_setup` → `onchain`, `deploying` → `deploy`), lock reset to `null`, Telegram alert.
 
-## 6. API de `apps/web`
+## 6. `apps/web` API
 
-| Route | Entrée | Sortie | Notes |
+| Route | Input | Output | Notes |
 |---|---|---|---|
 | `POST /api/auth/nonce` | `{ wallet }` | `{ nonce }` | |
-| `POST /api/auth/verify` | `{ wallet, signature }` | session | signature du message contenant le nonce |
-| `GET /api/gating` | session | `{ ok, required, balance }` | quantité `FORGE_GATING_AMOUNT` du mint `FORGE_MINT` ; si `FORGE_MINT` est absent (avant le lancement de $FORGE), le gating est désactivé et renvoie `ok: true` |
-| `POST /api/chat` | `{ conversationId?, launchpadId?, message }` | `{ conversationId }` + flux de texte | phase de conception, produit une `LaunchpadSpec`. Sans `conversationId`, crée une conversation (rattachée à `launchpadId` s'il s'agit d'une modif) |
-| `POST /api/spec/confirm` | `{ conversationId, spec }` | `{ launchpadId, jobId }` | validation zod + bornes ; refuse si `spec.ownerWallet` ≠ wallet de la session ; crée le launchpad (`draft`), le rattache à la conversation, crée le job `create_launchpad` en `spec_ready` |
-| `POST /api/launchpads/:id/modifications` | `{ conversationId, request }` | `{ jobId }` | session = propriétaire ; crée le job `modify_launchpad` en `spec_ready` |
-| `POST /api/payments/quote` | `{ jobId, kind }` | `{ paymentId, lamports, expiresAt, transaction }` | transaction de paiement non signée, prix en dollars converti au cours du moment. `lamports = 0` si une modif incluse reste (le job passe directement en `paid`) |
-| `POST /api/payments/confirm` | `{ paymentId, signature }` | `{ status }` | vérifie on-chain : montant ≥ devis, destinataire = caisse, signataire = wallet de la session **= `launchpads.owner_wallet`**, devis non expiré, signature jamais utilisée. Passe le job en `paid` |
-| `POST /api/jobs/:id/approve` | session | `{ status }` | le client valide l'aperçu → `approved` |
-| `GET /api/jobs/:id/owner-transaction` | session | `{ transaction }` | transaction de lancement partiellement signée par FORGE, à signer par le client |
-| `POST /api/jobs/:id/owner-transaction` | `{ signedTransaction }` | `{ signature }` | envoi on-chain, puis `owner_signed` une fois la transaction confirmée |
-| `GET /api/launchpads/:id/claim-transaction` | session | `{ transaction }` | réclamation des frais partenaire du client |
-| `POST /api/rpc` | requête JSON-RPC | réponse | relais Helius, liste blanche de méthodes, limite de débit par IP |
+| `POST /api/auth/verify` | `{ wallet, signature }` | session | signature of the message containing the nonce |
+| `GET /api/gating` | session | `{ ok, required, balance }` | amount `FORGE_GATING_AMOUNT` of the `FORGE_MINT` mint; if `FORGE_MINT` is absent (before the $FORGE launch), token-gating is disabled and returns `ok: true` |
+| `POST /api/chat` | `{ conversationId?, launchpadId?, message }` | `{ conversationId }` + text stream | design phase, produces a `LaunchpadSpec`. Without `conversationId`, creates a conversation (attached to `launchpadId` if it is a modification) |
+| `POST /api/spec/confirm` | `{ conversationId, spec }` | `{ launchpadId, jobId }` | zod validation + bounds; rejects if `spec.ownerWallet` ≠ session wallet; creates the launchpad (`draft`), attaches it to the conversation, creates the `create_launchpad` job in `spec_ready` |
+| `POST /api/launchpads/:id/modifications` | `{ conversationId, request }` | `{ jobId }` | session = owner; creates the `modify_launchpad` job in `spec_ready` |
+| `POST /api/payments/quote` | `{ jobId, kind }` | `{ paymentId, lamports, expiresAt, transaction }` | unsigned payment transaction, dollar price converted at the current rate. `lamports = 0` if an included modification remains (the job goes straight to `paid`) |
+| `POST /api/payments/confirm` | `{ paymentId, signature }` | `{ status }` | verifies on-chain: amount ≥ quote, recipient = cashbox, signer = session wallet **= `launchpads.owner_wallet`**, quote not expired, signature never used. Moves the job to `paid` |
+| `POST /api/jobs/:id/approve` | session | `{ status }` | the client approves the preview → `approved` |
+| `GET /api/jobs/:id/owner-transaction` | session | `{ transaction }` | launch transaction partially signed by FORGE, to be signed by the client |
+| `POST /api/jobs/:id/owner-transaction` | `{ signedTransaction }` | `{ signature }` | sent on-chain, then `owner_signed` once the transaction is confirmed |
+| `GET /api/launchpads/:id/claim-transaction` | session | `{ transaction }` | claim of the client's partner fees |
+| `POST /api/rpc` | JSON-RPC request | response | Helius relay, method allowlist, per-IP rate limit |
 
-### Client navigateur de `apps/web`
+### `apps/web` browser client
 
-Les écrans (agent 6) n'appellent pas ces routes directement : ils passent par `apps/web/src/client/` (agent 3), dont les types et signatures sont définis dans `docs/frontend/CONTRACT.md`. La session lead les traduit dans `packages/shared/src/web-client.ts` en phase 0.
+The screens (agent 6) do not call these routes directly: they go through `apps/web/src/client/` (agent 3), whose types and signatures are defined in `docs/frontend/CONTRACT.md`. The lead session translates them into `packages/shared/src/web-client.ts` in phase 0.
 
-## 7. API interne builder → signer
+## 7. Internal builder → signer API
 
-HTTP sur le réseau privé ; chaque requête porte un en-tête `X-Forge-Signature` = HMAC-SHA256 du corps avec `SIGNER_HMAC_SECRET`, plus un horodatage (rejet au-delà de 60 s).
+HTTP on the private network; each request carries an `X-Forge-Signature` header = HMAC-SHA256 of the body with `SIGNER_HMAC_SECRET`, plus a timestamp (rejected beyond 60 s).
 
-| Route | Entrée | Sortie | Contrôles du signer |
+| Route | Input | Output | Signer checks |
 |---|---|---|---|
-| `POST /v1/configs` | `{ jobId }` | `{ launchpadConfig, launchpadCoinConfig }` | relit le job et la spec dans Supabase, job en `onchain_setup`, paiement `confirmed`, validation des bornes |
-| `POST /v1/launch-coin/prepare` | `{ jobId }` | `{ partiallySignedTx, mint }` | crée un wallet créateur dédié, signe en tant que créateur, le client signera en tant qu'acheteur. Transaction construite avec un **nonce durable** pour ne pas expirer pendant que le client signe. Le builder l'écrit dans `jobs.owner_tx` |
+| `POST /v1/configs` | `{ jobId }` | `{ launchpadConfig, launchpadCoinConfig }` | re-reads the job and the spec from Supabase, job in `onchain_setup`, payment `confirmed`, bounds validation |
+| `POST /v1/launch-coin/prepare` | `{ jobId }` | `{ partiallySignedTx, mint }` | creates a dedicated creator wallet, signs as creator, the client will sign as buyer. Transaction built with a **durable nonce** so it does not expire while the client signs. The builder writes it to `jobs.owner_tx` |
 | `GET /v1/health` | — | `{ ok }` | |
 
-Le signer ne prend jamais d'adresse ou de montant venant de la requête : il relit tout dans Supabase. Les deux routes sont idempotentes.
+The signer never takes an address or an amount from the request: it re-reads everything from Supabase. Both routes are idempotent.
 
-## 8. Variables d'environnement
+## 8. Environment variables
 
-`packages/core/src/addresses.ts` n'exige pas toutes les adresses au chargement : chaque app appelle au démarrage `requireAddresses([...])` avec la liste de celles qu'elle utilise (colonnes ci-dessous) et plante si l'une manque ou est invalide. `FORGE_MINT` est la seule adresse optionnelle (absente avant le lancement de $FORGE : gating désactivé, buyback en simulation) ; si elle est présente, `FORGE_GATING_AMOUNT` est obligatoire côté web.
+`packages/core/src/addresses.ts` does not require all addresses at load time: each app calls `requireAddresses([...])` at startup with the list of those it uses (columns below) and crashes if one is missing or invalid. `FORGE_MINT` is the only optional address (absent before the $FORGE launch: token-gating disabled, buyback in simulation); if it is present, `FORGE_GATING_AMOUNT` is required on the web side.
 
 | Variable | web | template | builder | signer |
 |---|---|---|---|---|
 | `SOLANA_CLUSTER` | ✓ | ✓ | ✓ | ✓ |
-| `RPC_URL` (Helius) | ✓ (serveur) | ✓ (serveur) | | ✓ |
+| `RPC_URL` (Helius) | ✓ (server) | ✓ (server) | | ✓ |
 | `SUPABASE_URL` | ✓ | | ✓ | ✓ |
 | `SUPABASE_ANON_KEY` | ✓ | | | |
-| `SUPABASE_SERVICE_ROLE_KEY` | ✓ (serveur) | | ✓ | ✓ |
-| `ANTHROPIC_API_KEY` | ✓ (chat de conception) | | ✓ (passerelle seulement) | |
-| `FORGE_MINT` (optionnel) | ✓ | | | ✓ (buyback) |
+| `SUPABASE_SERVICE_ROLE_KEY` | ✓ (server) | | ✓ | ✓ |
+| `ANTHROPIC_API_KEY` | ✓ (design chat) | | ✓ (AI gateway only) | |
+| `FORGE_MINT` (optional) | ✓ | | | ✓ (buyback) |
 | `FORGE_GATING_AMOUNT` | ✓ | | | |
-| `FORGE_CASHBOX_WALLET` (caisse) | ✓ | | | ✓ |
-| `FORGE_MULTISIG_VAULT` | | ✓ (via core) | ✓ (injecté dans Vercel) | ✓ |
-| `FORGE_METEORA_REFERRAL_ACCOUNT` | | ✓ (via core) | ✓ (injecté dans Vercel) | |
-| `FORGE_PLATFORM_FEE_WALLET` | | ✓ (via core) | ✓ (injecté dans Vercel) | |
-| `FORGE_JUPITER_REFERRAL_ACCOUNT` | | ✓ (via core) | ✓ (injecté dans Vercel) | ✓ (conversion des frais) |
-| `JUPITER_API_KEY` | ✓ | ✓ | ✓ (injecté dans Vercel) | ✓ |
-| `R2_*` | ✓ | ✓ | ✓ (injecté dans Vercel) | |
+| `FORGE_CASHBOX_WALLET` (cashbox) | ✓ | | | ✓ |
+| `FORGE_MULTISIG_VAULT` | | ✓ (via core) | ✓ (injected into Vercel) | ✓ |
+| `FORGE_METEORA_REFERRAL_ACCOUNT` | | ✓ (via core) | ✓ (injected into Vercel) | |
+| `FORGE_PLATFORM_FEE_WALLET` | | ✓ (via core) | ✓ (injected into Vercel) | |
+| `FORGE_JUPITER_REFERRAL_ACCOUNT` | | ✓ (via core) | ✓ (injected into Vercel) | ✓ (fee conversion) |
+| `JUPITER_API_KEY` | ✓ | ✓ | ✓ (injected into Vercel) | ✓ |
+| `R2_*` | ✓ | ✓ | ✓ (injected into Vercel) | |
 | `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_ORG` | | | ✓ | |
 | `VERCEL_TOKEN`, `VERCEL_TEAM_ID` | | | ✓ | |
 | `SIGNER_URL`, `SIGNER_HMAC_SECRET` | | | ✓ | ✓ |
 | `SIGNER_KEYSTORE_PASSPHRASE` | | | | ✓ |
 | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | | | ✓ | ✓ |
 
-« Injecté dans Vercel » : le builder ne s'en sert pas lui-même, il copie la valeur dans les variables d'env du projet Vercel de chaque client.
+"Injected into Vercel": the builder does not use it itself, it copies the value into the env variables of each client's Vercel project.
 
-**Caisse** : `FORGE_CASHBOX_WALLET` est un wallet détenu par le signer (sa clé est dans le keystore, l'adresse publique dans l'env). Il reçoit les paiements, garde un petit tampon pour les remboursements et les frais de transaction, et le reste est transféré chaque jour vers le multisig. `apps/web` ne détient aucune clé : les remboursements sont faits par le signer, qui surveille les jobs `failed` avec `failed_stage = 'build'` et `attempts = 2`.
+**Cashbox**: `FORGE_CASHBOX_WALLET` is a wallet held by the signer (its key is in the keystore, the public address in the env). It receives payments, keeps a small buffer for refunds and transaction fees, and the rest is transferred to the multisig every day. `apps/web` holds no key: refunds are made by the signer, which watches `failed` jobs with `failed_stage = 'build'` and `attempts = 2`.

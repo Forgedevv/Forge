@@ -1,16 +1,16 @@
 # CHANGE_REQUESTS
 
-Les agents écrivent ici quand ils ont besoin d'un changement hors de leur dossier (contrat partagé, autre app, doc). La session lead tranche.
+Agents write here when they need a change outside their folder (shared contract, another app, a doc). The lead session decides.
 
-## Modèle
+## Template
 
 ```
-### [ouverte] <titre court>
-- Agent : <numéro et nom>
-- Besoin : <ce qui manque ou bloque>
-- Proposition : <changement précis>
-- Contournement actuel : <mock utilisé en attendant>
-- Décision (lead) : <acceptée / refusée / modifiée + date>
+### [open] <short title>
+- Agent: <number and name>
+- Need: <what is missing or blocking>
+- Proposal: <precise change>
+- Current workaround: <mock used in the meantime>
+- Decision (lead): <accepted / rejected / modified + date>
 ```
 
-## Demandes
+## Requests

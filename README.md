@@ -1,61 +1,61 @@
 # FORGE
 
-Un agent IA qui construit un launchpad Meteora complet à partir d'une conversation.
+An AI agent that builds a complete Meteora launchpad from a conversation.
 
-Le client (exemple : Hugo) décrit son launchpad, paie ~33 $ en SOL, l'agent code son site, FORGE crée sa config Meteora et lance le coin de son launchpad. Ensuite, une part des frais de trading revient à FORGE et sert à racheter $FORGE.
+The client (example: Hugo) describes their launchpad and pays ~$33 in SOL; the agent codes their site, FORGE creates their Meteora config and launches their launchpad's coin. After that, a share of the trading fees goes back to FORGE and is used to buy back $FORGE.
 
-## Par où commencer
+## Where to start
 
-1. **[KICKOFF.md](./KICKOFF.md)** : l'ordre exact pour lancer le dev et les prompts à coller dans chaque agent Claude Code.
-2. **[PLANEXECUTE.md](./PLANEXECUTE.md)** : les règles que tous les agents doivent suivre. À lire en premier par chaque agent.
-3. **[tasks/00-SETUP.md](./tasks/00-SETUP.md)** : ce qu'Ali fait à la main avant de lancer les agents (comptes, clés, wallets).
+1. **[KICKOFF.md](./KICKOFF.md)**: the exact order to start development and the prompts to paste into each Claude Code agent.
+2. **[PLANEXECUTE.md](./PLANEXECUTE.md)**: the rules every agent must follow. Each agent reads it first.
+3. **[tasks/00-SETUP.md](./tasks/00-SETUP.md)**: what Ali does by hand before launching the agents (accounts, keys, wallets).
 
 ## Documentation
 
-| Fichier | Contenu |
+| File | Contents |
 |---|---|
-| [docs/PRODUCT.md](./docs/PRODUCT.md) | Le produit, le flow complet (exemple Hugo / MoonPad), les prix, qui touche quoi |
-| [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) | Les composants, l'infra, le flux des données |
-| [docs/INTERFACES.md](./docs/INTERFACES.md) | Les contrats partagés entre agents : schémas, API, base de données, jobs, variables d'env |
-| [docs/METEORA.md](./docs/METEORA.md) | Tout ce qui est vérifié sur le SDK Meteora et sur Jupiter, avec les limites |
-| [docs/SECURITY.md](./docs/SECURITY.md) | Les failles connues et leurs protections |
-| [docs/DEVNET_TESTS.md](./docs/DEVNET_TESTS.md) | Les 4 tests on-chain à faire en premier, avec plan B |
-| [docs/OPERATIONS.md](./docs/OPERATIONS.md) | Alertes, coupe-circuits, mise en veille, support |
-| [docs/DECISIONS.md](./docs/DECISIONS.md) | Toutes les décisions prises et les questions encore ouvertes |
+| [docs/PRODUCT.md](./docs/PRODUCT.md) | The product, the full flow (Hugo / MoonPad example), prices, who receives what |
+| [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) | Components, infrastructure, data flow |
+| [docs/INTERFACES.md](./docs/INTERFACES.md) | The contracts shared between agents: schemas, API, database, jobs, env variables |
+| [docs/METEORA.md](./docs/METEORA.md) | Everything verified about the Meteora SDK and Jupiter, with the limits |
+| [docs/SECURITY.md](./docs/SECURITY.md) | Known vulnerabilities and their protections |
+| [docs/DEVNET_TESTS.md](./docs/DEVNET_TESTS.md) | The 4 on-chain tests to run first, with plan B |
+| [docs/OPERATIONS.md](./docs/OPERATIONS.md) | Alerts, kill switches, sleep mode, support |
+| [docs/DECISIONS.md](./docs/DECISIONS.md) | All decisions made and the questions still open |
 
-## Tâches par agent
+## Tasks by agent
 
-| Fichier | Agent | Dossier possédé |
+| File | Agent | Owned folder |
 |---|---|---|
-| [tasks/00-SETUP.md](./tasks/00-SETUP.md) | Ali (manuel) | — |
+| [tasks/00-SETUP.md](./tasks/00-SETUP.md) | Ali (manual) | — |
 | [tasks/01-ONCHAIN.md](./tasks/01-ONCHAIN.md) | Agent 1 | `packages/core`, `scripts/devnet-tests` |
 | [tasks/02-TEMPLATE.md](./tasks/02-TEMPLATE.md) | Agent 2 | `apps/launchpad-template` |
 | [tasks/03-WEB.md](./tasks/03-WEB.md) | Agent 3 | `apps/web`, `supabase` |
 | [tasks/04-BUILDER.md](./tasks/04-BUILDER.md) | Agent 4 | `apps/builder` |
 | [tasks/05-SIGNER.md](./tasks/05-SIGNER.md) | Agent 5 | `apps/signer` |
-| [tasks/08-FRONTEND.md](./tasks/08-FRONTEND.md) | Agent 6 (frontend) | zone visuelle de `apps/web` et du template — dossier complet : [docs/frontend/](./docs/frontend/README.md) |
-| [tasks/06-INTEGRATION.md](./tasks/06-INTEGRATION.md) | Session lead | tout, en lecture ; corrections ciblées |
-| [tasks/07-MAINNET.md](./tasks/07-MAINNET.md) | Ali + session lead | — |
+| [tasks/08-FRONTEND.md](./tasks/08-FRONTEND.md) | Agent 6 (frontend) | visual zone of `apps/web` and of the template — full folder: [docs/frontend/](./docs/frontend/README.md) |
+| [tasks/06-INTEGRATION.md](./tasks/06-INTEGRATION.md) | Lead session | everything, read-only; targeted fixes |
+| [tasks/07-MAINNET.md](./tasks/07-MAINNET.md) | Ali + lead session | — |
 
-## Structure du repo
+## Repo structure
 
 ```
 forge/
 ├── PLANEXECUTE.md  KICKOFF.md  README.md
-├── docs/                      # spécifications (lecture seule pour les agents)
-├── tasks/                     # une fiche par agent
+├── docs/                      # specifications (read-only for agents)
+├── tasks/                     # one task sheet per agent
 ├── packages/
-│   ├── shared/                # @forge/shared : types et schémas partagés (session lead)
-│   └── core/                  # @forge/core : noyau de transactions VERROUILLÉ (agent 1)
+│   ├── shared/                # @forge/shared: shared types and schemas (lead session)
+│   └── core/                  # @forge/core: LOCKED transaction core (agent 1)
 ├── apps/
-│   ├── web/                   # site FORGE : chat, dashboard, API (agent 3)
-│   ├── launchpad-template/    # template des sites clients, fork de fun-launch (agent 2)
-│   ├── builder/               # worker VPS : agent IA, sandbox, GitHub, Vercel, scan (agent 4)
-│   └── signer/                # VPS séparé : signer, claims, buyback, alertes (agent 5)
-├── scripts/devnet-tests/      # tests on-chain du jour 1 (agent 1)
-└── supabase/migrations/       # schéma de la base (agent 3)
+│   ├── web/                   # FORGE site: chat, dashboard, API (agent 3)
+│   ├── launchpad-template/    # client site template, fork of fun-launch (agent 2)
+│   ├── builder/               # VPS worker: AI agent, sandbox, GitHub, Vercel, scan (agent 4)
+│   └── signer/                # separate VPS: signer, claims, buyback, alerts (agent 5)
+├── scripts/devnet-tests/      # day-1 on-chain tests (agent 1)
+└── supabase/migrations/       # database schema (agent 3)
 ```
 
 ## Stack
 
-TypeScript partout, monorepo pnpm + Turborepo, Node 20+. Solana + Meteora Dynamic Bonding Curve (`@meteora-ag/dynamic-bonding-curve-sdk`). Next.js sur Vercel. Supabase (Postgres + Realtime). 2 VPS Hetzner. Helius (RPC). Squads (multisig). Claude API pour l'agent.
+TypeScript everywhere, pnpm + Turborepo monorepo, Node 20+. Solana + Meteora Dynamic Bonding Curve (`@meteora-ag/dynamic-bonding-curve-sdk`). Next.js on Vercel. Supabase (Postgres + Realtime). 2 Hetzner VPS. Helius (RPC). Squads (multisig). Claude API for the agent.

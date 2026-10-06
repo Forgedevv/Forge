@@ -1,102 +1,102 @@
-# PRODUCT — ce que fait FORGE
+# PRODUCT — what FORGE does
 
-## En une phrase
+## In one sentence
 
-Un client décrit son launchpad à un agent IA ; l'agent code son site, FORGE le branche sur Meteora et lance le coin du launchpad ; une part des frais de trading revient à FORGE et sert à racheter $FORGE.
+A client describes their launchpad to an AI agent; the agent codes their site, FORGE connects it to Meteora and launches the launchpad coin; a share of the trading fees goes to FORGE and is used to buy back $FORGE.
 
-## Les acteurs
+## The actors
 
-| Acteur | Rôle | Paie | Touche |
+| Actor | Role | Pays | Receives |
 |---|---|---|---|
-| Client (ex. Hugo) | Fait construire son launchpad | ~33 $ en SOL à la création, détient des $FORGE | Part partenaire de tous les coins de son launchpad ; ses tokens du premier achat |
-| Créateur de coin (ex. Lisa) | Lance un coin sur le launchpad du client | Frais de création fixés par le client | Part créateur de son coin |
-| Trader | Achète et vend | Frais Meteora (~1 %) + frais plateforme FORGE (0,3 %) | — |
-| FORGE | Construit, héberge, lance le coin du launchpad | IA, serveurs, RPC | Prix de création, part créateur du coin du launchpad, référence, frais plateforme |
-| Meteora | Contrats on-chain | — | 20 % des frais de trading (moins la référence) |
-| Jupiter | Trading des coins gradués | — | 20 % de nos frais intégrateur |
+| Client (e.g. Hugo) | Has a launchpad built | ~$33 in SOL at creation, holds $FORGE | Partner share of all coins on their launchpad; their first-buy tokens |
+| Coin creator (e.g. Lisa) | Launches a coin on the client's launchpad | Creation fee set by the client | Creator share of their coin |
+| Trader | Buys and sells | Meteora fee (~1%) + FORGE platform fee (0.3%) | — |
+| FORGE | Builds, hosts, launches the launchpad coin | AI, servers, RPC | Creation price, creator share of the launchpad coin, referral, platform fee |
+| Meteora | On-chain contracts | — | 20% of trading fees (minus the referral) |
+| Jupiter | Trading of graduated coins | — | 20% of our integrator fee |
 
-## Flow 1 : création (exemple Hugo / MoonPad)
+## Flow 1: creation (example Hugo / MoonPad)
 
-1. **Hugo parle à l'agent** sur le site FORGE : nom (MoonPad), frais de trading (1 %), monnaie (SOL), style. L'agent pose ses questions et produit une spécification (`LaunchpadSpec`, voir `INTERFACES.md`).
-2. **Vérification du token** : Hugo doit détenir une quantité fixe de $FORGE (`FORGE_GATING_AMOUNT`, ~100 $, revue chaque semaine). Rien n'est dépensé. Revérifié à chaque utilisation de l'agent.
-3. **Paiement** : prix fixé à **33 $**, converti en SOL au moment du devis (~0,3 SOL). Devis valable 120 secondes. Hugo signe le paiement depuis le wallet qui recevra ses frais.
-4. **L'agent code le site** : repo GitHub créé depuis le template, l'agent modifie le design, les pages et les textes. Le noyau de transactions (`@forge/core`) est verrouillé.
-5. **Scan + aperçu** : scan de sécurité sur notre VPS, puis déploiement d'aperçu Vercel. Hugo valide.
-6. **Configs Meteora** : le signer FORGE crée deux configs :
-   - **config du launchpad** : `feeClaimer` = wallet d'Hugo, pour tous les coins lancés sur MoonPad ;
-   - **config du coin du launchpad** : `feeClaimer` = wallet d'Hugo, `creatorTradingFeePercentage` = 25 (FORGE est créateur).
-7. **Lancement de $MOON** : un wallet créateur dédié à MoonPad crée le pool. Hugo paie et signe son premier achat dans la même transaction et reçoit ses $MOON.
-8. **Mise en ligne** : le site passe en production sur Vercel, sous-domaine du domaine des sites clients.
+1. **Hugo talks to the agent** on the FORGE site: name (MoonPad), trading fee (1%), currency (SOL), style. The agent asks its questions and produces a specification (`LaunchpadSpec`, see `INTERFACES.md`).
+2. **Token check**: Hugo must hold a fixed amount of $FORGE (`FORGE_GATING_AMOUNT`, ~$100, reviewed weekly). Nothing is spent. Rechecked each time the agent is used.
+3. **Payment**: price fixed at **$33**, converted to SOL at quote time (~0.3 SOL). Quote valid for 120 seconds. Hugo signs the payment from the wallet that will receive his fees.
+4. **The agent codes the site**: GitHub repo created from the template, the agent edits the design, pages and texts. The transaction core (`@forge/core`) is locked.
+5. **Scan + preview**: security scan on our VPS, then Vercel preview deployment. Hugo approves.
+6. **Meteora configs**: the FORGE signer creates two configs:
+   - **launchpad config**: `feeClaimer` = Hugo's wallet, for all coins launched on MoonPad;
+   - **launchpad coin config**: `feeClaimer` = Hugo's wallet, `creatorTradingFeePercentage` = 25 (FORGE is the creator).
+7. **Launch of $MOON**: a creator wallet dedicated to MoonPad creates the pool. Hugo pays and signs his first buy in the same transaction and receives his $MOON.
+8. **Go live**: the site goes to production on Vercel, on a subdomain of the client sites domain.
 
-**Échec** : 2 essais inclus. Si l'agent échoue deux fois, remboursement automatique du paiement.
+**Failure**: 2 attempts included. If the agent fails twice, the payment is refunded automatically.
 
-## Flow 2 : modifications
+## Flow 2: modifications
 
-- Hugo redemande l'agent depuis son tableau de bord.
-- Revérification des $FORGE.
-- **2 modifs incluses** dans la création, puis **5,50 $ par modif** (converti en SOL, ~0,05 SOL).
-- Budget API plafonné par demande, même scan, même aperçu, même validation.
-- Historique des versions, retour arrière possible.
-- Les paramètres on-chain (frais, courbe, destinataire) ne changent pas : une config Meteora est figée.
+- Hugo calls the agent again from his dashboard.
+- $FORGE is rechecked.
+- **2 modifications included** with the creation, then **$5.50 per modification** (converted to SOL, ~0.05 SOL).
+- API budget capped per request, same scan, same preview, same approval.
+- Version history, rollback possible.
+- On-chain parameters (fees, curve, recipient) do not change: a Meteora config is frozen.
 
-## Flow 3 : revenus
+## Flow 3: revenue
 
-### Coin encore sur la courbe (avant graduation)
+### Coin still on the curve (before graduation)
 
-Le trade passe par **notre bouton d'achat**, qui appelle Meteora directement. Exemple : achat de 1 000 $, frais Meteora 1 % = 10 $, frais plateforme 0,3 % = 3 $.
+The trade goes through **our buy button**, which calls Meteora directly. Example: a $1,000 buy, Meteora fee 1% = $10, platform fee 0.3% = $3.
 
-| | $MOON (coin du launchpad) | $CAT (coin de Lisa) |
+| | $MOON (launchpad coin) | $CAT (Lisa's coin) |
 |---|---|---|
-| Meteora | 1,60 $ | 1,60 $ |
-| Référence → FORGE | 0,40 $ | 0,40 $ |
-| Créateur | 2 $ → FORGE (25 % des 8 $) | 2 $ → Lisa (25 % des 8 $) |
-| Partenaire (Hugo) | 6 $ | 6 $ |
-| Frais plateforme → FORGE | 3 $ | 3 $ |
-| **Total FORGE** | **5,40 $** | **3,40 $** |
+| Meteora | $1.60 | $1.60 |
+| Referral → FORGE | $0.40 | $0.40 |
+| Creator | $2 → FORGE (25% of the $8) | $2 → Lisa (25% of the $8) |
+| Partner (Hugo) | $6 | $6 |
+| Platform fee → FORGE | $3 | $3 |
+| **FORGE total** | **$5.40** | **$3.40** |
 
-Si le trade passe par un bot ou un terminal (pas notre bouton) : FORGE ne touche que la part créateur sur $MOON, rien sur $CAT.
+If the trade goes through a bot or a terminal (not our button): FORGE only receives the creator share on $MOON, nothing on $CAT.
 
-### Coin gradué (après la migration)
+### Graduated coin (after migration)
 
-Le trade passe par le plugin Jupiter avec notre frais intégrateur de 30 bps ; Jupiter en garde 20 %. Plus de référence Meteora pour nous.
+The trade goes through the Jupiter plugin with our integrator fee of 30 bps; Jupiter keeps 20%. No more Meteora referral for us.
 
 | | $MOON | $CAT |
 |---|---|---|
-| Frais intégrateur (0,3 % − 20 %) | 2,40 $ | 2,40 $ |
-| Part créateur (via la liquidité du pool, hypothèse) | ~2 $ | 0 $ |
-| **Total FORGE** | **~4,40 $** | **2,40 $** |
+| Integrator fee (0.3% − 20%) | $2.40 | $2.40 |
+| Creator share (via pool liquidity, assumption) | ~$2 | $0 |
+| **FORGE total** | **~$4.40** | **$2.40** |
 
-### Où va l'argent
+### Where the money goes
 
-- **Prix de création et modifs** → caisse d'exploitation (paie l'IA et les serveurs).
-- **Tous les revenus de trading** → multisig, puis **buyback de $FORGE**. Pas de burn : les tokens rachetés restent dans la trésorerie.
-- **Règle de secours** : si les créations ne couvrent plus les coûts fixes, 10 à 20 % des revenus de trading vont à la caisse (décision manuelle de l'équipe).
+- **Creation price and modifications** → operating cashbox (pays for AI and servers).
+- **All trading revenue** → multisig, then **$FORGE buyback**. No burn: bought-back tokens stay in the treasury.
+- **Fallback rule**: if creations no longer cover fixed costs, 10 to 20% of trading revenue goes to the cashbox (manual team decision).
 
-## Chiffres clés
+## Key figures
 
-| Élément | Valeur |
+| Item | Value |
 |---|---|
-| Prix de création | 33 $ en SOL (~0,3 SOL) |
-| Modifs incluses | 2, puis 5,50 $ chacune |
-| Essais avant remboursement | 2 |
-| Seuil de token-gating | quantité fixe de $FORGE (~100 $), revue chaque semaine |
-| Part créateur FORGE sur le coin du launchpad | 25 % |
-| Frais plateforme | 30 bps (notre bouton) ; 30 bps intégrateur Jupiter après graduation |
-| Frais de trading proposés aux clients | entre 50 et 200 bps |
-| Seuil de migration | 10 SOL |
-| Mise en veille | 30 jours sans trade |
-| Marge par création | ~15 $ |
-| Coûts fixes | ~110 $/mois après le lancement public |
+| Creation price | $33 in SOL (~0.3 SOL) |
+| Included modifications | 2, then $5.50 each |
+| Attempts before refund | 2 |
+| Token-gating threshold | fixed amount of $FORGE (~$100), reviewed weekly |
+| FORGE creator share on the launchpad coin | 25% |
+| Platform fee | 30 bps (our button); 30 bps Jupiter integrator fee after graduation |
+| Trading fees offered to clients | between 50 and 200 bps |
+| Migration threshold | 10 SOL |
+| Sleep mode | 30 days without a trade |
+| Margin per creation | ~$15 |
+| Fixed costs | ~$110/month after public launch |
 
 ## $FORGE
 
-- Lancé sur **le launchpad FORGE, construit par notre propre agent**, une fois le MVP validé sur mainnet.
-- FORGE est créateur de $FORGE : la part créateur de ses trades alimente aussi le buyback.
-- Part équipe : premier achat de 3 à 5 % de la supply, annoncé publiquement, bloqué un temps.
-- Avant son lancement, le token-gating utilise un faux $FORGE sur devnet.
+- Launched on **the FORGE launchpad, built by our own agent**, once the MVP is validated on mainnet.
+- FORGE is the creator of $FORGE: the creator share of its trades also feeds the buyback.
+- Team share: first buy of 3 to 5% of the supply, publicly announced, locked for a period.
+- Before its launch, token-gating uses a fake $FORGE on devnet.
 
-## Hors périmètre du MVP
+## Out of scope for the MVP
 
-- Compte X de l'agent (après le lancement).
-- Monnaie de cotation autre que SOL.
-- Domaines personnalisés des clients (sous-domaines uniquement au départ).
+- The agent's X account (after launch).
+- Quote currency other than SOL.
+- Custom client domains (subdomains only at first).

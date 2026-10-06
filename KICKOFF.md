@@ -1,22 +1,22 @@
-# KICKOFF — lancer le dev
+# KICKOFF — starting development
 
-## Étape 1 — Setup manuel (Ali)
+## Step 1 — Manual setup (Ali)
 
-Suis `tasks/00-SETUP.md`. Au minimum pour démarrer : organisation GitHub + monorepo, Supabase, Helius (devnet), multisig Squads devnet, 2 VPS (le builder et le signer peuvent démarrer en local et être déployés plus tard).
+Follow `tasks/00-SETUP.md`. At a minimum to get started: GitHub organization + monorepo, Supabase, Helius (devnet), Squads devnet multisig, 2 VPS (the builder and the signer can start locally and be deployed later).
 
-## Étape 2 — Session lead (environ 1 h)
+## Step 2 — Lead session (about 1 h)
 
-Ouvre Claude Code à la racine du repo et colle :
+Open Claude Code at the repo root and paste:
 
 ```
-Tu es la session lead de FORGE. Lis PLANEXECUTE.md, README.md, docs/INTERFACES.md et tasks/06-INTEGRATION.md.
-Fais uniquement la "Phase 0" de tasks/06-INTEGRATION.md : squelette du monorepo et packages/shared traduit depuis docs/INTERFACES.md, avec tests.
-Quand c'est fini et que pnpm typecheck et pnpm test passent, fais un commit sur main et arrête-toi.
+You are the FORGE lead session. Read PLANEXECUTE.md, README.md, docs/INTERFACES.md and tasks/06-INTEGRATION.md.
+Do only "Phase 0" of tasks/06-INTEGRATION.md: the monorepo skeleton and packages/shared translated from docs/INTERFACES.md, with tests.
+When it is done and pnpm typecheck and pnpm test pass, make a commit on main and stop.
 ```
 
-## Étape 3 — Worktrees
+## Step 3 — Worktrees
 
-Un dossier par agent, chacun sur sa branche, pour qu'ils ne se marchent pas dessus :
+One folder per agent, each on its own branch, so they don't step on each other:
 
 ```bash
 git worktree add ../forge-onchain  -b agent/onchain
@@ -26,72 +26,72 @@ git worktree add ../forge-builder  -b agent/builder
 git worktree add ../forge-signer   -b agent/signer
 ```
 
-## Étape 4 — Lancer les agents
+## Step 4 — Launch the agents
 
-Ouvre un terminal par worktree, lance `claude`, colle le prompt correspondant.
+Open one terminal per worktree, run `claude`, and paste the matching prompt.
 
-**Avec un abonnement, 5 agents en parallèle peuvent toucher les limites d'usage.** Dans ce cas, lance par vagues :
-- **Vague 1** : agent 1 (on-chain), agent 4 (builder), agent 3 (web).
-- **Vague 2** : agent 2 (template), agent 5 (signer).
+**With a subscription, 5 agents in parallel may hit usage limits.** In that case, launch in waves:
+- **Wave 1**: agent 1 (on-chain), agent 4 (builder), agent 3 (web).
+- **Wave 2**: agent 2 (template), agent 5 (signer).
 
-L'agent 1 commence par les tests devnet : ils conditionnent une partie du code des autres. Les autres avancent avec des mocks en attendant.
+Agent 1 starts with the devnet tests: they determine part of the other agents' code. The others move forward with mocks in the meantime.
 
 ### Agent 1 — On-chain
 
 ```
-Tu es l'agent 1 (on-chain) de FORGE. Lis PLANEXECUTE.md, puis tasks/01-ONCHAIN.md, puis les docs qu'elle cite.
-Commence par l'étape A (tests devnet). Quand un script a besoin de SOL devnet, affiche l'adresse à alimenter et attends que je te dise que c'est fait.
-Ne modifie que packages/core et scripts/devnet-tests. Remplis la section Rapport de ta fiche à la fin.
+You are FORGE agent 1 (on-chain). Read PLANEXECUTE.md, then tasks/01-ONCHAIN.md, then the docs it cites.
+Start with step A (devnet tests). When a script needs devnet SOL, print the address to fund and wait until I tell you it is done.
+Only modify packages/core and scripts/devnet-tests. Fill in the Report section of your task sheet at the end.
 ```
 
 ### Agent 2 — Template
 
 ```
-Tu es l'agent 2 (template) de FORGE. Lis PLANEXECUTE.md, puis tasks/02-TEMPLATE.md, puis les docs qu'elle cite.
-Ne modifie que apps/launchpad-template. Utilise @forge/core via le workspace et des mocks pour ce qui n'existe pas encore.
-Remplis la section Rapport de ta fiche à la fin.
+You are FORGE agent 2 (template). Read PLANEXECUTE.md, then tasks/02-TEMPLATE.md, then the docs it cites.
+Only modify apps/launchpad-template. Use @forge/core through the workspace and mocks for whatever doesn't exist yet.
+Fill in the Report section of your task sheet at the end.
 ```
 
 ### Agent 3 — Web
 
 ```
-Tu es l'agent 3 (web) de FORGE. Lis PLANEXECUTE.md, puis tasks/03-WEB.md, puis les docs qu'elle cite.
-Ne modifie que apps/web et supabase. Mocke le builder et le signer : tu communiques avec eux uniquement via Supabase.
-Remplis la section Rapport de ta fiche à la fin.
+You are FORGE agent 3 (web). Read PLANEXECUTE.md, then tasks/03-WEB.md, then the docs it cites.
+Only modify apps/web and supabase. Mock the builder and the signer: you communicate with them only through Supabase.
+Fill in the Report section of your task sheet at the end.
 ```
 
 ### Agent 4 — Builder
 
 ```
-Tu es l'agent 4 (builder) de FORGE. Lis PLANEXECUTE.md, puis tasks/04-BUILDER.md, puis les docs qu'elle cite.
-Ne modifie que apps/builder. Commence par le scan et la passerelle IA avec leurs tests, puis le worker, puis GitHub et Vercel. Mocke le signer.
-Remplis la section Rapport de ta fiche à la fin.
+You are FORGE agent 4 (builder). Read PLANEXECUTE.md, then tasks/04-BUILDER.md, then the docs it cites.
+Only modify apps/builder. Start with the scan and the AI gateway with their tests, then the worker, then GitHub and Vercel. Mock the signer.
+Fill in the Report section of your task sheet at the end.
 ```
 
 ### Agent 5 — Signer
 
 ```
-Tu es l'agent 5 (signer) de FORGE. Lis PLANEXECUTE.md, puis tasks/05-SIGNER.md, puis les docs qu'elle cite.
-Ne modifie que apps/signer. Commence par le keystore et l'API HMAC avec leurs tests. Tout se teste sur devnet.
-Remplis la section Rapport de ta fiche à la fin.
+You are FORGE agent 5 (signer). Read PLANEXECUTE.md, then tasks/05-SIGNER.md, then the docs it cites.
+Only modify apps/signer. Start with the keystore and the HMAC API with their tests. Everything is tested on devnet.
+Fill in the Report section of your task sheet at the end.
 ```
 
-## Étape 5 — Pendant le build
+## Step 5 — During the build
 
-- Relance la session lead deux fois par jour avec : `Lis docs/CHANGE_REQUESTS.md et les rapports dans tasks/, tranche les demandes, mets à jour packages/shared et docs, puis fusionne dans main les branches dont les tests passent.`
-- Après une fusion, dans chaque worktree : `git merge main`.
+- Re-run the lead session twice a day with: `Read docs/CHANGE_REQUESTS.md and the reports in tasks/, rule on the requests, update packages/shared and docs, then merge into main the branches whose tests pass.`
+- After a merge, in each worktree: `git merge main`.
 
-## Étape 6 — Intégration puis mainnet
+## Step 6 — Integration, then mainnet
 
-- Session lead : phase d'intégration de `tasks/06-INTEGRATION.md`.
-- Puis `tasks/07-MAINNET.md`.
+- Lead session: integration phase of `tasks/06-INTEGRATION.md`.
+- Then `tasks/07-MAINNET.md`.
 
-## Calendrier réaliste
+## Realistic schedule
 
-| Étape | Durée |
+| Step | Duration |
 |---|---|
-| Setup + phase 0 | une demi-journée |
-| Tests devnet + build en parallèle | 1,5 à 2 jours |
-| Intégration devnet | 0,5 à 1 jour |
-| Tests mainnet | 2 à 4 jours (beaucoup d'attente) |
-| Lancement de $FORGE | une demi-journée |
+| Setup + phase 0 | half a day |
+| Devnet tests + parallel build | 1.5 to 2 days |
+| Devnet integration | 0.5 to 1 day |
+| Mainnet tests | 2 to 4 days (lots of waiting) |
+| $FORGE launch | half a day |

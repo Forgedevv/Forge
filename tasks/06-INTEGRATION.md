@@ -1,42 +1,42 @@
-# 06 — LEAD : squelette, contrats, intégration
+# 06 — LEAD: skeleton, contracts, integration
 
-**Tu possèdes** : fichiers racine, `packages/shared`, `docs/`.
-**Tu lis** : tout.
+**You own**: root files, `packages/shared`, `docs/`.
+**You read**: everything.
 
-Tu es la session qui démarre avant les autres et qui assemble à la fin.
+You are the session that starts before the others and assembles at the end.
 
-## Phase 0 — avant de lancer les agents (environ 1 h)
+## Phase 0 — before launching the agents (about 1 h)
 
-- [ ] Monorepo : pnpm workspaces, Turborepo, TypeScript strict partagé (`tsconfig.base.json`), ESLint + Prettier, vitest, `.gitignore` (`.env*`, `.state/`, `node_modules`).
-- [ ] Dossiers vides avec `package.json` minimal : `packages/shared`, `packages/core`, `apps/web`, `apps/launchpad-template`, `apps/builder`, `apps/signer`, `scripts/devnet-tests`, `supabase`.
-- [ ] `packages/shared` : traduire `docs/INTERFACES.md` en code (constantes §1, `LaunchpadSpec` §2, `forge.config.json` §3, statuts §4, types des routes §6 et §7, types du client navigateur de `docs/frontend/CONTRACT.md` dans `web-client.ts`). Tests de validation zod.
-- [ ] Scripts racine : `pnpm typecheck`, `pnpm test`, `pnpm build` (Turborepo).
-- [ ] `docs/CHANGE_REQUESTS.md` vide avec un modèle d'entrée.
-- [ ] Commit sur `main`, puis création des worktrees (voir `KICKOFF.md`).
+- [ ] Monorepo: pnpm workspaces, Turborepo, shared strict TypeScript (`tsconfig.base.json`), ESLint + Prettier, vitest, `.gitignore` (`.env*`, `.state/`, `node_modules`).
+- [ ] Empty folders with a minimal `package.json`: `packages/shared`, `packages/core`, `apps/web`, `apps/launchpad-template`, `apps/builder`, `apps/signer`, `scripts/devnet-tests`, `supabase`.
+- [ ] `packages/shared`: translate `docs/INTERFACES.md` into code (constants §1, `LaunchpadSpec` §2, `forge.config.json` §3, statuses §4, route types §6 and §7, browser client types from `docs/frontend/CONTRACT.md` in `web-client.ts`). zod validation tests.
+- [ ] Root scripts: `pnpm typecheck`, `pnpm test`, `pnpm build` (Turborepo).
+- [ ] Empty `docs/CHANGE_REQUESTS.md` with an entry template.
+- [ ] Commit on `main`, then create the worktrees (see `KICKOFF.md`).
 
-## Pendant le build
+## During the build
 
-- [ ] Au moins deux fois par jour : lire `docs/CHANGE_REQUESTS.md`, trancher, mettre à jour `packages/shared` et `docs/`, prévenir les agents concernés.
-- [ ] Fusionner les branches des agents dans `main` quand leurs tests passent ; résoudre les conflits.
-- [ ] Reporter les résultats des tests devnet dans `docs/DECISIONS.md`.
+- [ ] At least twice a day: read `docs/CHANGE_REQUESTS.md`, rule on the requests, update `packages/shared` and `docs/`, notify the agents concerned.
+- [ ] Merge the agents' branches into `main` when their tests pass; resolve conflicts.
+- [ ] Record the devnet test results in `docs/DECISIONS.md`.
 
-## Phase d'intégration (devnet)
+## Integration phase (devnet)
 
-- [ ] Brancher les vraies briques à la place des mocks : web ↔ Supabase ↔ builder ↔ signer ↔ core.
-- [ ] Parcours complet sur devnet, avec le faux $FORGE :
-  1. un wallet "Hugo" détient le faux $FORGE, se connecte, discute, confirme la spec ;
-  2. paie (devis en SOL devnet) ;
-  3. le builder crée le repo, l'agent code, le scan passe, l'aperçu s'affiche ;
-  4. Hugo valide, le signer crée les configs, prépare le lancement ;
-  5. Hugo signe, $MOON est créé, Hugo reçoit ses tokens ;
-  6. des trades via `@forge/core` (scripts, car l'interface Jupiter n'existe pas sur devnet) ;
-  7. la référence et le frais plateforme arrivent sur les comptes de test ; le signer réclame la part créateur vers le vault de test ;
-  8. Hugo réclame ses frais partenaire depuis le tableau de bord ;
-  9. un job forcé en échec deux fois est remboursé.
-- [ ] Tester les coupe-circuits (`deploys_paused`, `buyback_paused`, `signups_paused`, `disabled`).
-- [ ] Tester le scan avec une demande de modif malveillante dans le chat.
-- [ ] Rédiger `docs/INTEGRATION_REPORT.md` : ce qui marche, ce qui casse, ce qu'il faut corriger avant le mainnet.
+- [ ] Wire the real components in place of the mocks: web ↔ Supabase ↔ builder ↔ signer ↔ core.
+- [ ] Full flow on devnet, with the fake $FORGE:
+  1. a "Hugo" wallet holds the fake $FORGE, logs in, chats, confirms the spec;
+  2. pays (quote in devnet SOL);
+  3. the builder creates the repo, the agent codes, the scan passes, the preview is displayed;
+  4. Hugo approves, the signer creates the configs, prepares the launch;
+  5. Hugo signs, $MOON is created, Hugo receives his tokens;
+  6. trades via `@forge/core` (scripts, since the Jupiter interface doesn't exist on devnet);
+  7. the referral and the platform fee arrive in the test accounts; the signer claims the creator share to the test vault;
+  8. Hugo claims his partner fees from the dashboard;
+  9. a job forced to fail twice is refunded.
+- [ ] Test the kill switches (`deploys_paused`, `buyback_paused`, `signups_paused`, `disabled`).
+- [ ] Test the scan with a malicious modification request in the chat.
+- [ ] Write `docs/INTEGRATION_REPORT.md`: what works, what breaks, what must be fixed before mainnet.
 
-## Rapport
+## Report
 
-_À remplir en fin de phase._
+_To be filled in at the end of the phase._

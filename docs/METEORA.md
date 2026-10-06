@@ -1,93 +1,93 @@
-# METEORA — ce qui est vérifié
+# METEORA — what is verified
 
-Tout ce qui suit a été vérifié en lisant le code du SDK `@meteora-ag/dynamic-bonding-curve-sdk` **1.5.13**, le scaffold fun-launch de [Meteora Invent](https://github.com/MeteoraAg/meteora-invent), et les docs officielles. **Épingle la version 1.5.13** ; toute montée de version passe par les tests de `DEVNET_TESTS.md`.
+Everything below was verified by reading the code of the `@meteora-ag/dynamic-bonding-curve-sdk` SDK **1.5.13**, the fun-launch scaffold from [Meteora Invent](https://github.com/MeteoraAg/meteora-invent), and the official docs. **Pin version 1.5.13**; any version bump goes through the tests in `DEVNET_TESTS.md`.
 
-## Fonctions du SDK à utiliser
+## SDK functions to use
 
-| Besoin | Fonction | Notes |
+| Need | Function | Notes |
 |---|---|---|
-| Créer une config | `createConfig(params)` | `feeClaimer` n'a **pas** besoin de signer ; seuls `config` (nouveau keypair) et `payer` signent |
-| Construire la courbe | `buildCurveWithMarketCap`, `buildCurve`, `buildCurveWithTwoSegments`… | retournent un `ConfigParameters` complet |
-| Créer un pool + premier achat | `createPoolWithFirstBuy({ createPoolParam, firstBuyParam })` | `createPoolParam.poolCreator` = wallet créateur FORGE ; `firstBuyParam.buyer` et `receiver` = wallet du client |
-| Swap | `swap(params)` / `swap2(params)` | `referralTokenAccount` = notre compte de référence |
-| Réclamer la part créateur | `claimCreatorTradingFeeToReceiver` / `claimCreatorTradingFee2` | `receiver` = multisig |
-| Réclamer la part partenaire | `claimPartnerTradingFeeToReceiver` / `claimPartnerTradingFee2` | signée par le client |
-| Lister les coins d'une config | `getPoolsByConfig(config)` | plan B si les données Jupiter tombent |
-| Métriques de frais | `getPoolFeeMetrics`, `getPoolFeeBreakdown`, `getPoolsFeesByConfig` | pour le tableau de bord |
-| Avancement de la courbe | `getPoolQuoteTokenCurveProgress` | pour savoir si un coin est gradué |
-| Transférer le rôle créateur | `transferPoolCreator` | **danger** : voir SECURITY.md, alerte obligatoire |
+| Create a config | `createConfig(params)` | `feeClaimer` does **not** need to sign; only `config` (new keypair) and `payer` sign |
+| Build the curve | `buildCurveWithMarketCap`, `buildCurve`, `buildCurveWithTwoSegments`… | return a complete `ConfigParameters` |
+| Create a pool + first buy | `createPoolWithFirstBuy({ createPoolParam, firstBuyParam })` | `createPoolParam.poolCreator` = FORGE creator wallet; `firstBuyParam.buyer` and `receiver` = client wallet |
+| Swap | `swap(params)` / `swap2(params)` | `referralTokenAccount` = our referral account |
+| Claim the creator share | `claimCreatorTradingFeeToReceiver` / `claimCreatorTradingFee2` | `receiver` = multisig |
+| Claim the partner share | `claimPartnerTradingFeeToReceiver` / `claimPartnerTradingFee2` | signed by the client |
+| List a config's coins | `getPoolsByConfig(config)` | plan B if the Jupiter data goes down |
+| Fee metrics | `getPoolFeeMetrics`, `getPoolFeeBreakdown`, `getPoolsFeesByConfig` | for the dashboard |
+| Curve progress | `getPoolQuoteTokenCurveProgress` | to know whether a coin has graduated |
+| Transfer the creator role | `transferPoolCreator` | **danger**: see SECURITY.md, mandatory alert |
 
-Il n'existe **aucune instruction pour modifier une config** : une config est définitive.
+There is **no instruction to modify a config**: a config is final.
 
-## Champs de `ConfigParameters`
+## `ConfigParameters` fields
 
 `poolFees`, `collectFeeMode`, `migrationOption`, `activationType`, `tokenType`, `tokenDecimal`, `partnerLiquidityPercentage`, `partnerPermanentLockedLiquidityPercentage`, `creatorLiquidityPercentage`, `creatorPermanentLockedLiquidityPercentage`, `migrationQuoteThreshold`, `sqrtStartPrice`, `lockedVesting`, `migrationFeeOption`, `tokenSupply`, `creatorTradingFeePercentage`, `tokenUpdateAuthority`, `migrationFee`, `migratedPoolFee`, `poolCreationFee`, `partnerLiquidityVestingInfo`, `creatorLiquidityVestingInfo`, `migratedPoolBaseFeeMode`, `migratedPoolMarketCapFeeSchedulerParams`, `enableFirstSwapWithMinFee`, `compoundingFeeBps`, `curve`.
 
-## Bornes (constantes du SDK)
+## Bounds (SDK constants)
 
-| Constante | Valeur | Sens |
+| Constant | Value | Meaning |
 |---|---|---|
-| `MIN_FEE_BPS` / `MAX_FEE_BPS` | 25 / 9900 | frais de trading entre 0,25 % et 99 % (le haut sert à l'anti-sniper) |
-| `MIN_MIGRATED_POOL_FEE_BPS` / `MAX_…` | 10 / 1000 | frais du pool après graduation entre 0,1 % et 10 % |
-| `MIN_LOCKED_LIQUIDITY_BPS` | 1000 | au moins 10 % de liquidité bloquée après migration |
-| `MIN_POOL_CREATION_FEE` / `MAX_…` | 1 000 000 / 100 000 000 000 lamports | frais de création d'un coin entre 0,001 et 100 SOL |
-| `PROTOCOL_FEE_PERCENT` | 20 | part de Meteora |
-| `HOST_FEE_PERCENT` | 20 | part de la référence, prise sur la part de Meteora |
+| `MIN_FEE_BPS` / `MAX_FEE_BPS` | 25 / 9900 | trading fee between 0.25% and 99% (the high end is used for the anti-sniper) |
+| `MIN_MIGRATED_POOL_FEE_BPS` / `MAX_…` | 10 / 1000 | post-graduation pool fee between 0.1% and 10% |
+| `MIN_LOCKED_LIQUIDITY_BPS` | 1000 | at least 10% of liquidity locked after migration |
+| `MIN_POOL_CREATION_FEE` / `MAX_…` | 1,000,000 / 100,000,000,000 lamports | coin creation fee between 0.001 and 100 SOL |
+| `PROTOCOL_FEE_PERCENT` | 20 | Meteora's share |
+| `HOST_FEE_PERCENT` | 20 | referral's share, taken from Meteora's share |
 | `MAX_PRICE_CHANGE_BPS_DEFAULT` | 1500 | |
 
-Nos bornes à nous (plus strictes) sont dans `INTERFACES.md`, section 1.
+Our own (stricter) bounds are in `INTERFACES.md`, section 1.
 
-## Réglages des deux configs
+## Settings for the two configs
 
-### Config du launchpad (tous les coins du client)
-- `feeClaimer` = wallet du client ; `leftoverReceiver` = wallet du client.
+### Launchpad config (all of the client's coins)
+- `feeClaimer` = client wallet; `leftoverReceiver` = client wallet.
 - `creatorTradingFeePercentage` = `spec.coinCreatorSharePct`.
-- Frais de trading = `spec.tradingFeeBps`, avec anti-sniper (frais dégressifs au lancement) si `spec.antiSniper`.
-- `poolCreationFee` = `spec.poolCreationFeeSol` (versé au client).
+- Trading fee = `spec.tradingFeeBps`, with anti-sniper (decreasing fees at launch) if `spec.antiSniper`.
+- `poolCreationFee` = `spec.poolCreationFeeSol` (paid to the client).
 - `migrationQuoteThreshold` = 10 SOL.
-- `enableFirstSwapWithMinFee` = `true`, pour que le premier achat du créateur d'un coin ne paie pas le frais anti-sniper.
-- `tokenUpdateAuthority` : métadonnées non modifiables (vérifier la valeur exacte de l'enum dans le SDK).
+- `enableFirstSwapWithMinFee` = `true`, so that a coin creator's first buy does not pay the anti-sniper fee.
+- `tokenUpdateAuthority`: non-modifiable metadata (check the exact enum value in the SDK).
 
-### Config du coin du launchpad (ex. $MOON)
-- Mêmes réglages, sauf :
-- `creatorTradingFeePercentage` = 25 (FORGE est créateur).
-- `creatorLiquidityPercentage` / `creatorPermanentLockedLiquidityPercentage` : une part de la liquidité après graduation attribuée au créateur, **bloquée de façon permanente**, pour que FORGE continue de toucher des frais après graduation. Le partage exact est à valider au test 2.
-- `enableFirstSwapWithMinFee` = `true` (premier achat d'Hugo).
+### Launchpad coin config (e.g. $MOON)
+- Same settings, except:
+- `creatorTradingFeePercentage` = 25 (FORGE is the creator).
+- `creatorLiquidityPercentage` / `creatorPermanentLockedLiquidityPercentage`: a share of the post-graduation liquidity is assigned to the creator, **permanently locked**, so that FORGE keeps earning fees after graduation. The exact split is to be validated in test 2.
+- `enableFirstSwapWithMinFee` = `true` (Hugo's first buy).
 
-## La référence Meteora
+## The Meteora referral
 
-- Le swap accepte un `referralTokenAccount`. Le frais de référence = 20 % de la part du protocole, soustrait de la part de Meteora. La part partenaire et la part créateur ne bougent pas.
-- Le compte de référence est un compte token de la monnaie de cotation (WSOL pour un pool en SOL), détenu par le multisig.
-- **Uniquement quand le swap passe par notre propre code** (`@forge/core`). Quand le trade passe par Jupiter, c'est Jupiter qui touche la référence.
+- The swap accepts a `referralTokenAccount`. The referral fee = 20% of the protocol share, deducted from Meteora's share. The partner share and the creator share do not change.
+- The referral account is a token account of the quote currency (WSOL for a SOL pool), held by the multisig.
+- **Only when the swap goes through our own code** (`@forge/core`). When the trade goes through Jupiter, Jupiter collects the referral.
 
-## Le frais plateforme (0,3 %)
+## The platform fee (0.3%)
 
-- **Avant graduation** : instruction de transfert SOL de 0,3 % du montant ajoutée dans la transaction de swap construite par `@forge/core`, vers `FORGE_PLATFORM_FEE_WALLET`. À l'achat : 0,3 % du SOL dépensé. À la vente : 0,3 % du SOL attendu (calculé depuis le devis, avec la même tolérance que le slippage).
-- **Après graduation** : impossible de modifier une transaction Jupiter. On utilise le **frais intégrateur Jupiter** (`referralAccount` + `referralFee` = 30 bps). Jupiter garde 20 % de ce frais. Il faut créer un compte de référence Jupiter et les comptes token pour chaque monnaie dans laquelle Jupiter peut prélever (au minimum SOL et USDC).
+- **Before graduation**: a SOL transfer instruction of 0.3% of the amount is added to the swap transaction built by `@forge/core`, to `FORGE_PLATFORM_FEE_WALLET`. On a buy: 0.3% of the SOL spent. On a sell: 0.3% of the expected SOL (computed from the quote, with the same tolerance as the slippage).
+- **After graduation**: a Jupiter transaction cannot be modified. We use the **Jupiter integrator fee** (`referralAccount` + `referralFee` = 30 bps). Jupiter keeps 20% of this fee. A Jupiter referral account must be created, along with token accounts for each currency Jupiter may collect in (at minimum SOL and USDC).
 
 ## Migration (graduation)
 
-- Les robots de migration de Meteora sur mainnet n'acceptent que certains seuils : 10 SOL, 750 USDC, 1 500 JUP, ou au moins 750 $ de monnaie de cotation. On impose **10 SOL**.
-- **Pas de robot sur devnet** : utiliser l'outil de migration manuelle de Meteora (Meteora Invent / Studio) pour tester la graduation.
+- Meteora's migration bots on mainnet only accept certain thresholds: 10 SOL, 750 USDC, 1,500 JUP, or at least $750 of quote currency. We impose **10 SOL**.
+- **No bot on devnet**: use Meteora's manual migration tool (Meteora Invent / Studio) to test graduation.
 
-## Le template fun-launch (constaté dans le code)
+## The fun-launch template (as found in the code)
 
-- Trading : **plugin Jupiter** (`plugin.jup.ag`), avec `referralAccount` / `referralFee` disponibles dans ses types.
-- Données (liste des coins, prix, transactions, holders) : `https://datapi.jup.ag` et le flux `wss://trench-stream.jup.ag/ws`, filtrés par `NEXT_PUBLIC_POOL_CONFIG_KEY`. **API non documentée publiquement** : prévoir un plan B on-chain avec `getPoolsByConfig`.
-- Création de coin : routes serveur `/api/upload` (image + métadonnées sur Cloudflare R2) et `/api/send-transaction`. La clé RPC reste côté serveur.
-- Variables : `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_ACCOUNT_ID`, `R2_BUCKET`, `RPC_URL`, `POOL_CONFIG_KEY`.
-- **Jupiter n'indexe pas devnet** : l'interface ne se teste que sur mainnet.
+- Trading: **Jupiter plugin** (`plugin.jup.ag`), with `referralAccount` / `referralFee` available in its types.
+- Data (coin list, price, transactions, holders): `https://datapi.jup.ag` and the `wss://trench-stream.jup.ag/ws` stream, filtered by `NEXT_PUBLIC_POOL_CONFIG_KEY`. **API not publicly documented**: plan an on-chain plan B with `getPoolsByConfig`.
+- Coin creation: server routes `/api/upload` (image + metadata on Cloudflare R2) and `/api/send-transaction`. The RPC key stays server-side.
+- Variables: `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_ACCOUNT_ID`, `R2_BUCKET`, `RPC_URL`, `POOL_CONFIG_KEY`.
+- **Jupiter does not index devnet**: the interface can only be tested on mainnet.
 
 ## Jupiter
 
-- Clé API obligatoire (portail développeur Jupiter). Offre gratuite limitée à 1 requête par seconde.
-- L'API Ultra est remplacée par Swap V2 : utiliser la version actuelle.
-- Les transactions Jupiter ne peuvent pas être modifiées.
-- Frais intégrateur : Jupiter en garde 20 %, et choisit la monnaie dans laquelle il prélève.
+- API key required (Jupiter developer portal). Free tier limited to 1 request per second.
+- The Ultra API is replaced by Swap V2: use the current version.
+- Jupiter transactions cannot be modified.
+- Integrator fee: Jupiter keeps 20%, and chooses the currency it collects in.
 
 ## Sources
 
-- SDK : `npm pack @meteora-ag/dynamic-bonding-curve-sdk@1.5.13`, fichier `dist/index.d.ts`
+- SDK: `npm pack @meteora-ag/dynamic-bonding-curve-sdk@1.5.13`, file `dist/index.d.ts`
 - https://docs.meteora.ag/overview/products/dbc/what-is-dbc.md
 - https://github.com/MeteoraAg/meteora-invent (scaffolds/fun-launch)
 - https://developers.jup.ag/docs/ultra/add-fees-to-ultra

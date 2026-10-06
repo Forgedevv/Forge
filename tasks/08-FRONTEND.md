@@ -1,23 +1,23 @@
 # 08 — FRONTEND (agent 6)
 
-**Tu possèdes** : dans `apps/web` : `app/**` hors `app/api/**`, `src/ui/**`, `public/**`, styles globaux et config Tailwind. Dans `apps/launchpad-template` : `src/theme/**`, `src/content/**`, `src/components/**`, mise en page de `src/pages/**`.
-**Tu lis** : tout le dossier `docs/frontend/` (il se suffit à lui-même), puis `PLANEXECUTE.md`.
+**You own**: in `apps/web`: `app/**` except `app/api/**`, `src/ui/**`, `public/**`, global styles and Tailwind config. In `apps/launchpad-template`: `src/theme/**`, `src/content/**`, `src/components/**`, layout of `src/pages/**`.
+**You read**: the whole `docs/frontend/` folder (it is self-sufficient), then `PLANEXECUTE.md`.
 
-Tu fais toute l'interface du site FORGE et le design de base des sites clients, sans aucune logique d'argent. Le détail (périmètre, écrans, contrat avec le backend, mocks, définition de terminé) est dans `docs/frontend/README.md`.
+You build the entire FORGE site interface and the base design of the client sites, with no money logic whatsoever. The details (scope, screens, contract with the backend, mocks, definition of done) are in `docs/frontend/README.md`.
 
-## Étapes
+## Steps
 
-- [ ] Système de design `apps/web/src/ui/` (tokens en variables CSS, composants de base, mode sombre/clair).
-- [ ] Mocks de `docs/frontend/CONTRACT.md` dans `src/ui/mocks/` + page `/dev/states`.
-- [ ] Écrans A1 à A11 de `docs/frontend/SCREENS.md`, dans tous leurs états.
-- [ ] Design de base du template (B1 à B7), entièrement piloté par les variables du thème ; `src/theme/README.md`.
-- [ ] Bascule des mocks vers le vrai `src/client/` quand l'agent 3 l'a livré (changement d'import uniquement).
-- [ ] Tests de composants listés dans `docs/frontend/README.md`.
+- [ ] Design system `apps/web/src/ui/` (tokens as CSS variables, base components, dark/light mode).
+- [ ] Mocks of `docs/frontend/CONTRACT.md` in `src/ui/mocks/` + `/dev/states` page.
+- [ ] Screens A1 to A11 of `docs/frontend/SCREENS.md`, in all their states.
+- [ ] Base template design (B1 to B7), entirely driven by the theme variables; `src/theme/README.md`.
+- [ ] Switch from the mocks to the real `src/client/` once agent 3 has delivered it (import change only).
+- [ ] Component tests listed in `docs/frontend/README.md`.
 
-## Dépendances
+## Dependencies
 
-Agent 3 (`src/client/`), agent 2 (composants de `src/forge/` et `SiteConfig`). En attendant : mocks aux mêmes signatures.
+Agent 3 (`src/client/`), agent 2 (`src/forge/` components and `SiteConfig`). Meanwhile: mocks with the same signatures.
 
-## Rapport
+## Report
 
-_À remplir en fin de tâche._
+_To be filled in at the end of the task._

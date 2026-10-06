@@ -1,66 +1,66 @@
-# DEVNET_TESTS — à faire avant tout le reste
+# DEVNET_TESTS — to do before anything else
 
-Quatre tests on-chain sur devnet, écrits par l'agent 1 dans `scripts/devnet-tests/`. Ils valident les hypothèses du modèle de revenus. Chaque test a un plan B ; aucun échec ne bloque le projet, mais un échec change le code de `@forge/core`.
+Four on-chain tests on devnet, written by agent 1 in `scripts/devnet-tests/`. They validate the assumptions of the revenue model. Each test has a plan B; no failure blocks the project, but a failure changes the code of `@forge/core`.
 
-Un script existe déjà pour le test 1 (`dbc-referral-test/test.mjs`, écrit lors d'une session précédente) : le reprendre et l'adapter.
+A script already exists for test 1 (`dbc-referral-test/test.mjs`, written in a previous session): pick it up and adapt it.
 
-## Règles
+## Rules
 
-- Le script refuse de tourner si `RPC_URL` ne contient pas `devnet`.
-- Wallets jetables générés et sauvegardés dans `scripts/devnet-tests/.state/` (dans `.gitignore`).
-- Le SOL devnet vient de https://faucet.solana.com (connexion GitHub) : Ali alimente le wallet `funder` affiché par le script, le script répartit ensuite.
-- Chaque test écrit un rapport `scripts/devnet-tests/reports/<test>.md` avec les montants mesurés et les liens Solscan devnet.
-- Reprise : relancer un script ne refait pas les étapes déjà faites.
+- The script refuses to run if `RPC_URL` does not contain `devnet`.
+- Disposable wallets are generated and saved in `scripts/devnet-tests/.state/` (in `.gitignore`).
+- Devnet SOL comes from https://faucet.solana.com (GitHub login): Ali funds the `funder` wallet displayed by the script, then the script distributes it.
+- Each test writes a report `scripts/devnet-tests/reports/<test>.md` with the measured amounts and the Solscan devnet links.
+- Resume: rerunning a script does not redo steps already done.
 
-## Test 1 — Référence Meteora
+## Test 1 — Meteora referral
 
-**Objectif** : confirmer qu'un swap avec `referralTokenAccount` donne 20 % de la part protocole au compte de référence, sans toucher à la part partenaire.
+**Goal**: confirm that a swap with `referralTokenAccount` gives 20% of the protocol share to the referral account, without touching the partner share.
 
-1. Config simple (quote SOL, 1 % de frais, `creatorTradingFeePercentage` = 0).
+1. Simple config (quote SOL, 1% fee, `creatorTradingFeePercentage` = 0).
 2. Pool.
-3. Compte WSOL du wallet `referral`.
-4. Achat de 0,1 SOL avec référence, puis le même sans référence.
-5. Mesurer : solde du compte de référence, variation de `partnerQuoteFee`, `protocolQuoteFee`, `creatorQuoteFee` dans l'état du pool, événement de swap.
+3. WSOL account of the `referral` wallet.
+4. Buy of 0.1 SOL with referral, then the same without referral.
+5. Measure: referral account balance, change in `partnerQuoteFee`, `protocolQuoteFee`, `creatorQuoteFee` in the pool state, swap event.
 
-**Attendu** : frais ≈ 1 000 000 lamports ; avec référence : protocole 160 000, référence 40 000 ; partenaire 800 000 dans les deux cas.
+**Expected**: fee ≈ 1,000,000 lamports; with referral: protocol 160,000, referral 40,000; partner 800,000 in both cases.
 
-**Plan B** : on garde uniquement le frais plateforme de 0,3 %. Perte ≈ 0,04 % du volume passant par notre bouton.
+**Plan B**: keep only the 0.3% platform fee. Loss ≈ 0.04% of the volume going through our button.
 
-## Test 2 — Part créateur sur config dédiée
+## Test 2 — Creator share on a dedicated config
 
-**Objectif** : confirmer que le wallet créateur touche `creatorTradingFeePercentage` et peut le réclamer vers une autre adresse ; mesurer ce qui se passe après migration.
+**Goal**: confirm that the creator wallet earns `creatorTradingFeePercentage` and can claim it to another address; measure what happens after migration.
 
-1. Config avec `creatorTradingFeePercentage` = 25 et une part de liquidité créateur bloquée en permanence.
-2. Pool créé avec `poolCreator` = wallet `forgeCreator`.
-3. Plusieurs achats et ventes depuis `trader`.
-4. `claimCreatorTradingFeeToReceiver` vers le wallet `multisigStandIn`.
-5. Remplir la courbe jusqu'au seuil, migrer avec l'outil manuel, faire des swaps sur le pool migré, réclamer les frais de la liquidité créateur.
+1. Config with `creatorTradingFeePercentage` = 25 and a share of creator liquidity permanently locked.
+2. Pool created with `poolCreator` = `forgeCreator` wallet.
+3. Several buys and sells from `trader`.
+4. `claimCreatorTradingFeeToReceiver` to the `multisigStandIn` wallet.
+5. Fill the curve up to the threshold, migrate with the manual tool, do swaps on the migrated pool, claim the fees from the creator liquidity.
 
-**Attendu** : créateur ≈ 25 % de la part hors protocole avant migration ; frais de liquidité créateur après migration.
+**Expected**: creator ≈ 25% of the non-protocol share before migration; creator liquidity fees after migration.
 
-**Plan B** : inverser les rôles sur la config du coin du launchpad : FORGE `feeClaimer` (partenaire), le client créateur. À valider avec l'équipe si ce cas arrive.
+**Plan B**: swap the roles on the launchpad coin config: FORGE `feeClaimer` (partner), the client as creator. To be validated with the team if this case arises.
 
-## Test 3 — Premier achat payé par le client
+## Test 3 — First buy paid by the client
 
-**Objectif** : confirmer qu'une seule transaction peut créer le pool (signée par `forgeCreator`) et faire le premier achat payé et signé par `client`, tokens reçus par `client`.
+**Goal**: confirm that a single transaction can create the pool (signed by `forgeCreator`) and make the first buy paid and signed by `client`, with tokens received by `client`.
 
-1. Le script construit `createPoolWithFirstBuy` avec `poolCreator` = `forgeCreator`, `buyer` = `receiver` = `client`.
-2. Signature partielle par `forgeCreator` (et le keypair du mint), sérialisation, puis signature par `client`, envoi.
-3. Vérifier : pool créé, créateur = `forgeCreator`, tokens chez `client`, SOL débité chez `client`.
-4. Avec `enableFirstSwapWithMinFee` = true et anti-sniper actif : vérifier que le premier achat paie le frais minimum.
+1. The script builds `createPoolWithFirstBuy` with `poolCreator` = `forgeCreator`, `buyer` = `receiver` = `client`.
+2. Partial signature by `forgeCreator` (and the mint keypair), serialization, then signature by `client`, send.
+3. Verify: pool created, creator = `forgeCreator`, tokens at `client`, SOL debited from `client`.
+4. With `enableFirstSwapWithMinFee` = true and anti-sniper active: verify that the first buy pays the minimum fee.
 
-**Plan B** : FORGE crée le pool, le client achète dans une transaction séparée juste après, avec l'anti-sniper actif.
+**Plan B**: FORGE creates the pool, the client buys in a separate transaction right after, with the anti-sniper active.
 
-## Test 4 — Frais plateforme dans le swap
+## Test 4 — Platform fee in the swap
 
-**Objectif** : confirmer qu'on peut ajouter un transfert de 0,3 % dans la même transaction que le swap, à l'achat et à la vente.
+**Goal**: confirm that a 0.3% transfer can be added in the same transaction as the swap, on both buy and sell.
 
-1. Transaction : transfert SOL de 30 bps vers `platformFee` + swap (avec référence).
-2. Achat puis vente.
-3. Vérifier les soldes et la taille de la transaction (limite de taille Solana).
+1. Transaction: SOL transfer of 30 bps to `platformFee` + swap (with referral).
+2. Buy then sell.
+3. Verify the balances and the transaction size (Solana size limit).
 
-**Plan B** : si la transaction dépasse la taille limite, utiliser une table d'adresses (lookup table) ; si un wallet affiche un avertissement bloquant (testé plus tard sur mainnet), afficher le frais avant signature ou baisser le taux.
+**Plan B**: if the transaction exceeds the size limit, use an address lookup table; if a wallet shows a blocking warning (tested later on mainnet), display the fee before signing or lower the rate.
 
-## Après les tests
+## After the tests
 
-L'agent 1 écrit un résumé des 4 résultats dans `scripts/devnet-tests/reports/SUMMARY.md` (et le plan B proposé si un test échoue). La session lead reporte ces résultats dans `docs/DECISIONS.md` et valide le plan B avec Ali. Le reste de `@forge/core` est écrit en fonction de ces résultats.
+Agent 1 writes a summary of the 4 results in `scripts/devnet-tests/reports/SUMMARY.md` (and the proposed plan B if a test fails). The lead session records these results in `docs/DECISIONS.md` and validates the plan B with Ali. The rest of `@forge/core` is written according to these results.

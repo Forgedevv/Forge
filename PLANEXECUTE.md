@@ -1,74 +1,75 @@
-# PLANEXECUTE.md — règles pour tous les agents
+# PLANEXECUTE.md — rules for all agents
 
-Tu travailles sur **FORGE**, un service où un agent IA construit des launchpads Meteora pour des clients. Plusieurs agents Claude Code travaillent en parallèle sur ce repo, chacun dans son dossier. Lis ce fichier en entier, puis ta fiche dans `tasks/`, puis les docs qu'elle cite.
+You are working on **FORGE**, a service where an AI agent builds Meteora launchpads for clients. Several Claude Code agents work in parallel on this repo, each in its own folder. Read this file in full, then your task sheet in `tasks/`, then the docs it cites.
 
-Si une instruction ici contredit un autre document, ce fichier gagne.
+If an instruction here contradicts another document, this file wins.
 
-## Règles absolues
+## Absolute rules
 
-Ces règles ne se négocient pas. Si une tâche semble exiger d'en violer une, arrête-toi et signale-le.
+These rules are non-negotiable. If a task seems to require breaking one, stop and flag it.
 
-1. **Ne modifie que ton dossier.** Chaque agent possède un dossier (voir le tableau plus bas). Tu peux lire tout le repo, mais tu n'écris que dans le tien. Si tu as besoin d'un changement ailleurs, écris-le dans `docs/CHANGE_REQUESTS.md` avec ton nom d'agent, et continue avec un mock.
-2. **Ne modifie jamais `packages/shared`** sauf si tu es la session lead. C'est le contrat entre tous les agents. Un changement de contrat passe par `docs/CHANGE_REQUESTS.md`.
-3. **Aucune clé privée dans le code, les logs, les tests ou git.** Les secrets viennent uniquement des variables d'environnement. `.env*` est dans `.gitignore`. Ne logue jamais une variable dont le nom contient `KEY`, `SECRET`, `TOKEN` ou `PRIVATE`.
-4. **Devnet par défaut.** Toute config pointe sur devnet sauf si `SOLANA_CLUSTER=mainnet-beta` est défini explicitement. Les scripts de test refusent de tourner si l'URL RPC ne contient pas `devnet`.
-5. **Un seul endroit signe des transactions avec les clés de FORGE : `apps/signer`** (wallets créateurs, claims, buyback). Seule exception : `scripts/devnet-tests`, avec des wallets jetables générés sur devnet. Aucun autre dossier n'importe de `Keypair` venant d'une clé privée. Les autres construisent des transactions que l'utilisateur signe dans son wallet.
-6. **Le noyau de transactions (`packages/core`) est la seule source de vérité** pour construire un swap, une config ou un pool. Personne ne réimplémente ces transactions ailleurs.
-7. **Les adresses de FORGE (multisig, comptes de référence Meteora et Jupiter, wallet des frais plateforme, caisse, mint $FORGE) ne sont jamais écrites en dur hors de `packages/core/src/addresses.ts`**, et ce fichier les lit depuis l'environnement.
-8. **Toute valeur on-chain passe par la validation de `packages/core`** avant d'être envoyée : bornes des frais, seuil de migration, liquidité bloquée (voir `docs/METEORA.md`).
-9. **Tu ne marques jamais une tâche terminée sans test.** Voir "Définition de terminé".
+1. **Only modify your own folder.** Each agent owns a folder (see the table below). You can read the whole repo, but you only write in your own. If you need a change elsewhere, write it in `docs/CHANGE_REQUESTS.md` with your agent name, and continue with a mock.
+2. **Never modify `packages/shared`** unless you are the lead session. It is the contract between all agents. A contract change goes through `docs/CHANGE_REQUESTS.md`.
+3. **No private key in code, logs, tests or git.** Secrets come only from environment variables. `.env*` is in `.gitignore`. Never log a variable whose name contains `KEY`, `SECRET`, `TOKEN` or `PRIVATE`.
+4. **Devnet by default.** Every config points to devnet unless `SOLANA_CLUSTER=mainnet-beta` is explicitly set. Test scripts refuse to run if the RPC URL does not contain `devnet`.
+5. **Only one place signs transactions with FORGE's keys: `apps/signer`** (creator wallets, claims, buyback). The only exception: `scripts/devnet-tests`, with throwaway wallets generated on devnet. No other folder imports a `Keypair` derived from a private key. The others build transactions that the user signs in their wallet.
+6. **The transaction core (`packages/core`) is the single source of truth** for building a swap, a config or a pool. Nobody reimplements these transactions elsewhere.
+7. **FORGE's addresses (multisig, Meteora and Jupiter referral accounts, platform fee wallet, cashbox, $FORGE mint) are never hardcoded outside `packages/core/src/addresses.ts`**, and that file reads them from the environment.
+8. **Every on-chain value goes through `packages/core` validation** before being sent: fee bounds, migration threshold, locked liquidity (see `docs/METEORA.md`).
+9. **Never mark a task done without a test.** See "Definition of done".
 
-## Qui possède quoi
+## Who owns what
 
-| Agent | Dossier possédé | Fiche |
+| Agent | Owned folder | Task sheet |
 |---|---|---|
-| Session lead | `packages/shared`, fichiers racine, `docs/` | `tasks/06-INTEGRATION.md` |
+| Lead session | `packages/shared`, root files, `docs/` | `tasks/06-INTEGRATION.md` |
 | Agent 1 — On-chain | `packages/core`, `scripts/devnet-tests` | `tasks/01-ONCHAIN.md` |
-| Agent 2 — Template | `apps/launchpad-template` **sauf** la zone visuelle de l'agent 6 | `tasks/02-TEMPLATE.md` |
-| Agent 3 — Web | `apps/web` (`app/api`, `src/server`, `src/client`, config) **sauf** la zone visuelle de l'agent 6, `supabase` | `tasks/03-WEB.md` |
+| Agent 2 — Template | `apps/launchpad-template` **except** agent 6's visual zone | `tasks/02-TEMPLATE.md` |
+| Agent 3 — Web | `apps/web` (`app/api`, `src/server`, `src/client`, config) **except** agent 6's visual zone, `supabase` | `tasks/03-WEB.md` |
 | Agent 4 — Builder | `apps/builder` | `tasks/04-BUILDER.md` |
 | Agent 5 — Signer | `apps/signer` | `tasks/05-SIGNER.md` |
-| Agent 6 — Frontend | `apps/web` : `app/**` hors `app/api`, `src/ui`, `public` ; template : `src/theme`, `src/content`, `src/components`, mise en page de `src/pages` | `tasks/08-FRONTEND.md` + `docs/frontend/` |
+| Agent 6 — Frontend | `apps/web`: `app/**` except `app/api`, `src/ui`, `public`; template: `src/theme`, `src/content`, `src/components`, layout of `src/pages` | `tasks/08-FRONTEND.md` + `docs/frontend/` |
 
 ## Stack
 
-- TypeScript strict, ESM, Node 20+.
-- Monorepo pnpm workspaces + Turborepo.
-- Solana : `@solana/web3.js` v1, `@solana/spl-token`, `@meteora-ag/dynamic-bonding-curve-sdk` (version épinglée, voir `docs/METEORA.md`).
-- Validation : `zod`. Logs : `pino`. Tests : `vitest`.
-- Web : Next.js (App Router pour `apps/web` ; le template garde le Pages Router de fun-launch).
-- Base : Supabase (Postgres + Realtime), client `@supabase/supabase-js`.
+- Strict TypeScript, ESM, Node 20+.
+- pnpm workspaces + Turborepo monorepo.
+- Solana: `@solana/web3.js` v1, `@solana/spl-token`, `@meteora-ag/dynamic-bonding-curve-sdk` (pinned version, see `docs/METEORA.md`).
+- Validation: `zod`. Logs: `pino`. Tests: `vitest`.
+- Web: Next.js (App Router for `apps/web`; the template keeps fun-launch's Pages Router).
+- Database: Supabase (Postgres + Realtime), `@supabase/supabase-js` client.
 
-N'ajoute pas de dépendance lourde sans le noter dans ton rapport de fin de tâche.
+Do not add a heavy dependency without noting it in your end-of-task report.
 
 ## Conventions
 
-- Montants on-chain en `bigint` ou `BN` (lamports, unités brutes). Conversion en SOL ou en dollars uniquement à l'affichage.
-- Pourcentages en **basis points** (`bps`) dans le code : 0,3 % = 30 bps.
-- Fonctions pures dès que possible, testables sans réseau.
-- Chaque fonction qui construit une transaction retourne la transaction **non signée** (ou partiellement signée côté signer), jamais envoyée directement, sauf dans `apps/signer`.
-- Erreurs réseau : retry avec backoff, puis erreur claire. Ne jamais avaler une erreur on-chain silencieusement.
-- Idempotence : un job, un paiement ou une signature déjà traités ne sont jamais retraités.
+- Language: everything in the repo is in English — code, comments, docs, commit messages, branch names and UI copy (UI copy is centralized so other languages can be added later).
+- On-chain amounts in `bigint` or `BN` (lamports, raw units). Conversion to SOL or dollars only at display time.
+- Percentages in **basis points** (`bps`) in code: 0.3% = 30 bps.
+- Pure functions whenever possible, testable without network.
+- Every function that builds a transaction returns the **unsigned** transaction (or partially signed on the signer side), never sent directly, except in `apps/signer`.
+- Network errors: retry with backoff, then a clear error. Never silently swallow an on-chain error.
+- Idempotency: a job, payment or signature that has already been processed is never processed again.
 
-## Environnements
+## Environments
 
-| Variable | Valeurs |
+| Variable | Values |
 |---|---|
-| `SOLANA_CLUSTER` | `devnet` (défaut) ou `mainnet-beta` |
-| `RPC_URL` | Helius, devnet ou mainnet selon le cluster |
+| `SOLANA_CLUSTER` | `devnet` (default) or `mainnet-beta` |
+| `RPC_URL` | Helius, devnet or mainnet depending on the cluster |
 
-Le trading et les listes de coins du template passent par Jupiter, qui **n'indexe pas devnet**. L'interface du template se teste donc sur mainnet avec de très petits montants ; la logique on-chain se teste sur devnet par scripts. Voir `docs/METEORA.md`.
+The template's trading and coin lists go through Jupiter, which **does not index devnet**. The template's interface is therefore tested on mainnet with very small amounts; the on-chain logic is tested on devnet through scripts. See `docs/METEORA.md`.
 
-## Définition de terminé
+## Definition of done
 
-Une tâche est terminée quand :
-- `pnpm typecheck` et `pnpm test` passent pour ton dossier ;
-- la logique on-chain est testée sur devnet (script ou test d'intégration) quand c'est applicable ;
-- aucune règle absolue n'est enfreinte ;
-- tu as écrit un court rapport en bas de ta fiche `tasks/0X-*.md`, section "Rapport" : ce qui est fait, ce qui ne l'est pas, ce qui reste incertain, les dépendances ajoutées.
+A task is done when:
+- `pnpm typecheck` and `pnpm test` pass for your folder;
+- the on-chain logic is tested on devnet (script or integration test) where applicable;
+- no absolute rule is broken;
+- you have written a short report at the bottom of your `tasks/0X-*.md` sheet, "Report" section: what is done, what is not, what remains uncertain, the dependencies added.
 
-## Quand tu bloques
+## When you are blocked
 
-- Une info manque dans les docs : fais l'hypothèse la plus prudente, note-la dans ton rapport, continue.
-- Tu as besoin d'une brique d'un autre agent qui n'existe pas encore : utilise un mock qui respecte `packages/shared`, note-le.
-- Un test devnet échoue de façon inexpliquée : note la signature de transaction et l'erreur exacte dans ton rapport, ne contourne pas en changeant les règles de sécurité.
+- Information is missing from the docs: make the most cautious assumption, note it in your report, continue.
+- You need a component from another agent that doesn't exist yet: use a mock that respects `packages/shared`, note it.
+- A devnet test fails for an unexplained reason: note the transaction signature and the exact error in your report, and do not work around it by changing the security rules.

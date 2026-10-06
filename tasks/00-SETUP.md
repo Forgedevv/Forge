@@ -1,46 +1,46 @@
-# 00 — SETUP (Ali, à la main)
+# 00 — SETUP (Ali, by hand)
 
-Ce que les agents ne peuvent pas faire. Compte 2 à 4 heures. Les étapes marquées **[devnet suffit]** peuvent attendre pour la partie mainnet.
+What the agents cannot do. Allow 2 to 4 hours. Steps marked **[devnet is enough]** can wait for the mainnet part.
 
-Garde toutes les clés dans un gestionnaire de mots de passe. Ne les colle jamais dans une conversation avec un agent : mets-les dans les fichiers `.env` toi-même.
+Keep all keys in a password manager. Never paste them into a conversation with an agent: put them in the `.env` files yourself.
 
 ## 1. Code
 
-- [ ] Créer une organisation GitHub (ex. `forge-launchpads`).
-- [ ] Créer le monorepo privé `forge` et y déposer tous les fichiers `.md` de ce pack.
-- [ ] Créer un repo template vide `launchpad-template` (sera rempli depuis `apps/launchpad-template`), cocher "Template repository".
-- [ ] Créer une **GitHub App** dans l'organisation : permission `Contents: read & write`, installée sur l'organisation. Noter l'App ID et générer une clé privée (pour le builder).
-- [ ] Créer un jeton pour publier `@forge/core` sur GitHub Packages (registre privé).
+- [ ] Create a GitHub organization (e.g. `forge-launchpads`).
+- [ ] Create the private `forge` monorepo and put all the `.md` files from this pack in it.
+- [ ] Create an empty `launchpad-template` template repo (it will be filled from `apps/launchpad-template`), check "Template repository".
+- [ ] Create a **GitHub App** in the organization: `Contents: read & write` permission, installed on the organization. Note the App ID and generate a private key (for the builder).
+- [ ] Create a token to publish `@forge/core` on GitHub Packages (private registry).
 
-## 2. Hébergement
+## 2. Hosting
 
-- [ ] Vercel : créer une équipe, offre Pro (1 membre). Créer un jeton API (pour le builder). Noter l'ID d'équipe.
-- [ ] Domaines : acheter le domaine FORGE et un **domaine séparé** pour les sites clients (ex. `forgepads.xyz`). Brancher le domaine clients sur Vercel avec un wildcard `*.forgepads.xyz`.
-- [ ] Hetzner : 2 VPS Ubuntu.
-  - VPS 1 (builder) : 4 vCPU, 8 Go RAM, Docker installé.
-  - VPS 2 (signer) : petit modèle. Pare-feu : SSH depuis ton IP uniquement, API du signer accessible uniquement depuis l'IP du VPS 1.
-- [ ] Supabase : créer un projet (offre gratuite pour le dev).
-- [ ] Cloudflare : créer un bucket R2 et ses clés d'accès (images des coins).
+- [ ] Vercel: create a team, Pro plan (1 member). Create an API token (for the builder). Note the team ID.
+- [ ] Domains: buy the FORGE domain and a **separate domain** for client sites (e.g. `forgepads.xyz`). Connect the clients domain to Vercel with a wildcard `*.forgepads.xyz`.
+- [ ] Hetzner: 2 Ubuntu VPS.
+  - VPS 1 (builder): 4 vCPU, 8 GB RAM, Docker installed.
+  - VPS 2 (signer): small model. Firewall: SSH from your IP only, signer API reachable only from VPS 1's IP.
+- [ ] Supabase: create a project (free plan for dev).
+- [ ] Cloudflare: create an R2 bucket and its access keys (coin images).
 
 ## 3. Blockchain
 
-- [ ] Helius : compte, clé API, URL RPC devnet et mainnet.
-- [ ] Jupiter : clé API sur le portail développeur. **[devnet suffit : à faire avant les tests mainnet]**
-- [ ] Wallets de l'équipe (Phantom ou Ledger), un par membre du multisig.
-- [ ] Multisig Squads : créer le multisig avec les membres et le seuil décidés (Q1 dans DECISIONS.md). Noter l'adresse du **vault**. Créer d'abord une version **devnet** pour les tests.
-- [ ] Faux $FORGE sur devnet : l'agent 1 le crée dans ses scripts ; tu n'as rien à faire ici.
-- [ ] SOL devnet : https://faucet.solana.com (connexion GitHub) quand les scripts affichent l'adresse à alimenter.
-- [ ] SOL mainnet pour les tests : 0,5 à 1 SOL sur un wallet de test. **[plus tard]**
+- [ ] Helius: account, API key, devnet and mainnet RPC URLs.
+- [ ] Jupiter: API key on the developer portal. **[devnet is enough: do before the mainnet tests]**
+- [ ] Team wallets (Phantom or Ledger), one per multisig member.
+- [ ] Squads multisig: create the multisig with the members and the threshold decided (Q1 in DECISIONS.md). Note the **vault** address. Create a **devnet** version first for the tests.
+- [ ] Fake $FORGE on devnet: agent 1 creates it in its scripts; you have nothing to do here.
+- [ ] Devnet SOL: https://faucet.solana.com (GitHub login) when the scripts print the address to fund.
+- [ ] Mainnet SOL for tests: 0.5 to 1 SOL on a test wallet. **[later]**
 
-## 4. IA
+## 4. AI
 
-- [ ] Console Anthropic : clé API dédiée au produit (pas ton abonnement), **limite de dépense mensuelle** fixée.
-- [ ] Ton abonnement Claude sert uniquement à faire tourner les agents de dev.
+- [ ] Anthropic Console: API key dedicated to the product (not your subscription), **monthly spending limit** set.
+- [ ] Your Claude subscription is used only to run the dev agents.
 
-## 5. Alertes
+## 5. Alerts
 
-- [ ] Créer un bot Telegram (BotFather), l'ajouter au groupe de l'équipe, noter le token et l'ID du groupe.
+- [ ] Create a Telegram bot (BotFather), add it to the team group, note the token and the group ID.
 
-## 6. Fichiers `.env`
+## 6. `.env` files
 
-Remplis un `.env` par app à partir des `.env.example` que les agents vont créer (liste complète dans `docs/INTERFACES.md`, section 8). Sur les VPS, mets les `.env` directement sur la machine, jamais dans git.
+Fill in one `.env` per app from the `.env.example` files the agents will create (full list in `docs/INTERFACES.md`, section 8). On the VPS, put the `.env` files directly on the machine, never in git.

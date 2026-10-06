@@ -1,52 +1,52 @@
-# OPERATIONS — faire tourner FORGE au quotidien
+# OPERATIONS — running FORGE day to day
 
-## Alertes (Telegram, groupe de l'équipe)
+## Alerts (Telegram, team group)
 
-Envoyées par `apps/signer` et `apps/builder` via `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID`.
+Sent by `apps/signer` and `apps/builder` via `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID`.
 
-| Alerte | Source | Urgence |
+| Alert | Source | Urgency |
 |---|---|---|
-| Transfert du rôle créateur sur un de nos pools | signer (surveillance on-chain) | immédiate |
-| Sortie inattendue du multisig ou de la caisse | signer | immédiate |
-| Solde du wallet payeur ou de la caisse trop bas | signer | haute |
-| Job en échec deux fois, remboursement déclenché | signer | normale |
-| Déploiement bloqué par le scan | builder | normale (peut être une tentative d'abus) |
-| Budget API journalier dépassé à 80 % | builder (passerelle) | haute |
-| Frais créateur non réclamés depuis plus de 48 h | signer | normale |
-| Erreurs RPC répétées | signer, builder | haute |
+| Creator role transfer on one of our pools | signer (on-chain monitoring) | immediate |
+| Unexpected outflow from the multisig or the cashbox | signer | immediate |
+| Payer wallet or cashbox balance too low | signer | high |
+| Job failed twice, refund triggered | signer | normal |
+| Deployment blocked by the scan | builder | normal (may be an abuse attempt) |
+| Daily API budget exceeded at 80% | builder (gateway) | high |
+| Creator fees unclaimed for more than 48 h | signer | normal |
+| Repeated RPC errors | signer, builder | high |
 
-## Coupe-circuits (table `flags` dans Supabase)
+## Kill switches (`flags` table in Supabase)
 
-| Flag | Effet |
+| Flag | Effect |
 |---|---|
-| `signups_paused` | `apps/web` refuse les nouvelles créations (les clients existants continuent) |
-| `deploys_paused` | le builder ne prend plus de job |
-| `buyback_paused` | le bot de buyback s'arrête |
-| `launchpads.status = 'disabled'` | le site du launchpad affiche une page de maintenance |
+| `signups_paused` | `apps/web` refuses new creations (existing clients continue) |
+| `deploys_paused` | the builder stops picking up jobs |
+| `buyback_paused` | the buyback bot stops |
+| `launchpads.status = 'disabled'` | the launchpad site shows a maintenance page |
 
-Chaque service relit les flags au moins toutes les minutes.
+Each service rereads the flags at least every minute.
 
-## Tâches automatiques
+## Automatic tasks
 
-| Tâche | Fréquence | Service |
+| Task | Frequency | Service |
 |---|---|---|
-| Réclamer la part créateur de chaque pool vers le multisig | toutes les 24 h | signer |
-| Transférer l'excédent de la caisse vers le multisig | toutes les 24 h | signer |
-| Buyback de $FORGE | plusieurs petits achats par jour, moments aléatoires | signer |
-| Convertir en SOL les frais Jupiter reçus dans d'autres monnaies | toutes les 24 h | signer |
-| Mettre en veille les launchpads sans trade depuis 30 jours | toutes les 24 h | builder |
-| Rejouer les tests devnet (référence, part créateur) | chaque semaine | CI ou VPS 1 |
+| Claim the creator share of each pool to the multisig | every 24 h | signer |
+| Transfer the cashbox surplus to the multisig | every 24 h | signer |
+| $FORGE buyback | several small buys per day, random times | signer |
+| Convert to SOL the Jupiter fees received in other currencies | every 24 h | signer |
+| Put launchpads with no trade for 30 days into sleep mode | every 24 h | builder |
+| Replay the devnet tests (referral, creator share) | weekly | CI or VPS 1 |
 
-## Mise en veille
+## Sleep mode
 
-Un launchpad sans trade depuis 30 jours passe en `sleeping` : le builder remplace le déploiement par une page statique légère (pas de RPC, pas de données Jupiter). Le coin reste tradable sur Meteora et Jupiter. Le client peut le réactiver depuis son tableau de bord.
+A launchpad with no trade for 30 days goes to `sleeping`: the builder replaces the deployment with a lightweight static page (no RPC, no Jupiter data). The coin stays tradable on Meteora and Jupiter. The client can reactivate it from their dashboard.
 
 ## Support
 
-- Conditions d'utilisation : FORGE fournit l'outil, le client opère son launchpad. FORGE peut désactiver un site signalé.
-- Un seul canal pour les incidents (à définir par l'équipe).
-- FAQ : comment réclamer ses frais, pourquoi le coin n'apparaît pas encore, que faire si la création échoue.
+- Terms of use: FORGE provides the tool, the client operates their launchpad. FORGE may disable a reported site.
+- A single channel for incidents (to be defined by the team).
+- FAQ: how to claim your fees, why the coin does not appear yet, what to do if creation fails.
 
-## Coûts à surveiller chaque semaine
+## Costs to watch every week
 
-API Anthropic (console), Helius (crédits), Vercel (minutes de build, bande passante), Supabase (taille de base), Jupiter (limites de requêtes).
+Anthropic API (console), Helius (credits), Vercel (build minutes, bandwidth), Supabase (database size), Jupiter (request limits).

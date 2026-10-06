@@ -1,67 +1,67 @@
-# FRONTEND — dossier de l'agent frontend (agent 6)
+# FRONTEND — frontend agent brief (agent 6)
 
-Tu es l'agent frontend de FORGE. Tu fais **toute l'interface** : le site FORGE (`apps/web`) et le design de base des sites clients (`apps/launchpad-template`). Tu ne touches ni à l'argent, ni aux API, ni à la base. Ce dossier contient tout ce qu'il te faut ; tu n'as pas besoin de lire le reste des docs pour commencer.
+You are the FORGE frontend agent. You build **the entire interface**: the FORGE site (`apps/web`) and the base design of client sites (`apps/launchpad-template`). You do not touch money, APIs, or the database. This folder contains everything you need; you do not have to read the rest of the docs to get started.
 
-## Ordre de lecture
+## Reading order
 
-1. Ce fichier (périmètre, règles, livrables).
-2. [`PROJECT.md`](./PROJECT.md) : le projet expliqué côté interface, les parcours, les chiffres à afficher.
-3. [`SCREENS.md`](./SCREENS.md) : chaque écran, ses états, ses données, ses actions.
-4. [`CONTRACT.md`](./CONTRACT.md) : les types et les fonctions que le backend te fournit, et comment les mocker.
-5. `PLANEXECUTE.md` à la racine : les règles communes à tous les agents (s'applique aussi à toi).
+1. This file (scope, rules, deliverables).
+2. [`PROJECT.md`](./PROJECT.md): the project explained from the interface side, the user journeys, the numbers to display.
+3. [`SCREENS.md`](./SCREENS.md): every screen, its states, its data, its actions.
+4. [`CONTRACT.md`](./CONTRACT.md): the types and functions the backend provides to you, and how to mock them.
+5. `PLANEXECUTE.md` at the root: the rules shared by all agents (they apply to you too).
 
-## Ce que tu possèdes
+## What you own
 
-| Où | Tu possèdes | Tu ne touches pas (autre agent) |
+| Where | You own | You do not touch (other agent) |
 |---|---|---|
-| `apps/web` | `app/**` **sauf** `app/api/**` ; `src/ui/**` (composants, styles, mocks) ; `public/**` ; config Tailwind et styles globaux | `app/api/**`, `src/server/**`, `src/client/**`, `middleware.ts`, `next.config.*`, `package.json` (agent 3) |
-| `apps/launchpad-template` | `src/theme/**`, `src/content/**`, `src/components/**` (visuel), la mise en page de `src/pages/**` | `src/forge/**` (zone verrouillée, argent), `src/pages/api/**`, `next.config.*`, `forge.config.json`, `package.json` (agent 2) |
+| `apps/web` | `app/**` **except** `app/api/**`; `src/ui/**` (components, styles, mocks); `public/**`; Tailwind config and global styles | `app/api/**`, `src/server/**`, `src/client/**`, `middleware.ts`, `next.config.*`, `package.json` (agent 3) |
+| `apps/launchpad-template` | `src/theme/**`, `src/content/**`, `src/components/**` (visual), the layout of `src/pages/**` | `src/forge/**` (locked zone, money), `src/pages/api/**`, `next.config.*`, `forge.config.json`, `package.json` (agent 2) |
 
-Besoin d'une nouvelle dépendance (`package.json`), d'une nouvelle donnée ou d'une nouvelle fonction backend : écris-le dans `docs/CHANGE_REQUESTS.md` (« Agent 6 — Frontend ») et continue avec un mock.
+If you need a new dependency (`package.json`), a new piece of data, or a new backend function: write it in `docs/CHANGE_REQUESTS.md` ("Agent 6 — Frontend") and keep going with a mock.
 
-## Règles qui te concernent directement
+## Rules that apply to you directly
 
-1. **Aucune logique d'argent dans ton code.** Tu ne construis, ne signes et n'envoies aucune transaction toi-même : tu appelles les fonctions de `src/client/` (web) ou tu places les composants de `src/forge/` (template). Pas d'import de `@solana/web3.js` pour construire une transaction, pas de `Keypair`.
-2. **Aucune adresse Solana écrite en dur**, aucun script externe (`<script src=…>`), aucun `fetch` vers un domaine non prévu, aucun `eval` / `dangerouslySetInnerHTML` avec du contenu dynamique. Le site client est scanné avant chaque déploiement : ces motifs bloquent le déploiement.
-3. **Tout montant vient du backend.** Tu affiches, tu ne calcules pas (sauf la mise en forme : SOL ↔ lamports, arrondis, dollars).
-4. **Template : le look passe par les variables CSS du thème.** L'agent builder modifiera ensuite le design pour chaque client en ne touchant que `src/theme`, `src/content` et les pages. Ton design de base doit donc être entièrement piloté par `forge.config.json#theme` (couleurs, mode sombre) et par des variables CSS, sans valeur codée en dur dans les composants.
-5. Devnet par défaut, aucun secret dans le code, rien dans les logs.
+1. **No money logic in your code.** You never build, sign, or send a transaction yourself: you call the functions in `src/client/` (web) or place the components from `src/forge/` (template). No `@solana/web3.js` import to build a transaction, no `Keypair`.
+2. **No hardcoded Solana address**, no external script (`<script src=…>`), no `fetch` to an unexpected domain, no `eval` / `dangerouslySetInnerHTML` with dynamic content. The client site is scanned before every deployment: these patterns block the deployment.
+3. **Every amount comes from the backend.** You display, you do not compute (except formatting: SOL ↔ lamports, rounding, dollars).
+4. **Template: the look goes through the theme's CSS variables.** The builder agent will then change the design for each client by touching only `src/theme`, `src/content` and the pages. Your base design must therefore be fully driven by `forge.config.json#theme` (colors, dark mode) and by CSS variables, with no hardcoded value in the components.
+5. Devnet by default, no secrets in the code, nothing in the logs.
 
 ## Stack
 
-- `apps/web` : Next.js **App Router**, TypeScript strict, Tailwind CSS. Composants : shadcn/ui (Radix) recommandé ; toute autre librairie lourde est à demander.
-- `apps/launchpad-template` : Next.js **Pages Router** (fork du scaffold fun-launch de Meteora), garder sa stack de style existante, la piloter par variables CSS.
-- Connexion wallet : adaptateur Solana (`@solana/wallet-adapter-react`), fourni et configuré par l'agent 3 ; toi, tu fais le bouton et la modale.
-- Temps réel : Supabase Realtime, encapsulé par l'agent 3 dans des hooks (`CONTRACT.md`).
+- `apps/web`: Next.js **App Router**, strict TypeScript, Tailwind CSS. Components: shadcn/ui (Radix) recommended; any other heavy library must be requested.
+- `apps/launchpad-template`: Next.js **Pages Router** (fork of the Meteora fun-launch scaffold), keep its existing styling stack and drive it with CSS variables.
+- Wallet connection: Solana adapter (`@solana/wallet-adapter-react`), provided and configured by agent 3; you build the button and the modal.
+- Realtime: Supabase Realtime, wrapped by agent 3 in hooks (`CONTRACT.md`).
 
-## Comment travailler
+## How to work
 
-- Branche : `agent/frontend`. Tu commites sur ta branche ; la session lead fusionne dans `main`.
-- Tant que les hooks de l'agent 3 n'existent pas : implémente-les en mock dans `apps/web/src/ui/mocks/` **avec exactement les signatures de `CONTRACT.md`**, derrière une variable `NEXT_PUBLIC_USE_MOCKS=1`. Le jour où le vrai client existe, on change l'import, pas les écrans.
-- Les mocks doivent permettre de parcourir **tous** les états de chaque écran (job qui avance tout seul, paiement expiré, échec, remboursement, solde $FORGE insuffisant…). Prévois une page `/dev/states` (uniquement hors production) qui liste les écrans dans chaque état.
-- Mobile d'abord : tout doit marcher à 375 px de large.
-- Accessibilité : contrastes AA, focus visibles, navigation clavier, `aria-live` sur le fil d'avancement du job.
+- Branch: `agent/frontend`. You commit on your branch; the lead session merges into `main`.
+- Until agent 3's hooks exist: implement them as mocks in `apps/web/src/ui/mocks/` **with exactly the signatures from `CONTRACT.md`**, behind a `NEXT_PUBLIC_USE_MOCKS=1` variable. The day the real client exists, we change the import, not the screens.
+- The mocks must let you go through **all** states of each screen (a job that advances on its own, expired payment, failure, refund, insufficient $FORGE balance…). Provide a `/dev/states` page (non-production only) that lists the screens in each state.
+- Mobile first: everything must work at 375 px wide.
+- Accessibility: AA contrast, visible focus, keyboard navigation, `aria-live` on the job progress feed.
 
-## Livrables
+## Deliverables
 
 **`apps/web`**
-- Toutes les pages et états de `SCREENS.md`, partie A.
-- Bibliothèque de composants dans `src/ui/` (boutons, cartes, badges de statut, compte à rebours, fil d'étapes, montant SOL/USD, adresse raccourcie avec copie, toasts, états vides, erreurs, chargement).
-- Mode sombre par défaut, mode clair disponible.
+- All the pages and states of `SCREENS.md`, part A.
+- Component library in `src/ui/` (buttons, cards, status badges, countdown, step tracker, SOL/USD amount, shortened address with copy, toasts, empty states, errors, loading).
+- Dark mode by default, light mode available.
 
 **`apps/launchpad-template`**
-- Design de base de toutes les pages de `SCREENS.md`, partie B, piloté par le thème.
-- Le jeu de variables CSS documenté dans `src/theme/README.md` (liste des variables, ce qu'elles changent) : c'est ce que lira l'agent builder.
+- Base design of all the pages of `SCREENS.md`, part B, driven by the theme.
+- The set of CSS variables documented in `src/theme/README.md` (list of variables, what they change): this is what the builder agent will read.
 
-## Définition de terminé
+## Definition of done
 
-- `pnpm typecheck`, `pnpm lint` et `pnpm build` passent pour `apps/web` et `apps/launchpad-template`.
-- Chaque écran de `SCREENS.md` existe dans tous ses états, visibles sur `/dev/states` avec les mocks.
-- Tests de composants (vitest + Testing Library) pour : fil d'étapes du job, compte à rebours du devis, carte récapitulative de la spec, bouton de réclamation des frais.
-- Aucun motif interdit (règle 2) : lance `grep` sur ton diff avant de commiter.
-- Un court rapport à la fin de `tasks/08-FRONTEND.md` : fait / pas fait / incertain / dépendances demandées.
+- `pnpm typecheck`, `pnpm lint` and `pnpm build` pass for `apps/web` and `apps/launchpad-template`.
+- Every screen of `SCREENS.md` exists in all its states, visible on `/dev/states` with the mocks.
+- Component tests (vitest + Testing Library) for: the job step tracker, the quote countdown, the spec summary card, the fee claim button.
+- No forbidden pattern (rule 2): run `grep` on your diff before committing.
+- A short report at the end of `tasks/08-FRONTEND.md`: done / not done / uncertain / dependencies requested.
 
-## Questions encore ouvertes (n'attends pas, fais une hypothèse prudente)
+## Open questions (do not wait, make a cautious assumption)
 
-- Nom et identité visuelle définitifs de FORGE (DECISIONS Q3) : utilise « FORGE », un logo texte et une palette provisoire facile à changer (variables).
-- Domaine des sites clients : utilise `<slug>.forgepads.xyz` comme exemple.
+- Final name and visual identity of FORGE (DECISIONS Q3): use "FORGE", a text logo and a provisional palette that is easy to change (variables).
+- Client site domain: use `<slug>.forgepads.xyz` as an example.

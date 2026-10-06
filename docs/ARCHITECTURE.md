@@ -1,122 +1,122 @@
 # ARCHITECTURE
 
-## Principe
+## Principle
 
-Tout ce qui touche à l'argent est soit **figé** (`@forge/core`, à version épinglée), soit **isolé** (`apps/signer` sur sa propre machine, le multisig Squads). L'agent IA ne peut modifier que le visuel des sites clients.
+Everything that touches money is either **frozen** (`@forge/core`, pinned version) or **isolated** (`apps/signer` on its own machine, the Squads multisig). The AI agent can only modify the visuals of client sites.
 
-## Vue d'ensemble
+## Overview
 
 ```
                    ┌──────────────┐          ┌──────────────────────┐
   Client (Hugo) ──►│  apps/web    │◄────────►│  Supabase            │
-  navigateur       │  Vercel      │  DB +    │  Postgres + Realtime │
-                   │  chat, API,  │  realtime│  jobs, paiements...  │
+  browser          │  Vercel      │  DB +    │  Postgres + Realtime │
+                   │  chat, API,  │  realtime│  jobs, payments...   │
                    │  dashboard   │          └──────────┬───────────┘
                    └──────┬───────┘                     │ jobs
-                          │ /api/rpc (relais)           ▼
+                          │ /api/rpc (relay)            ▼
                           │                  ┌──────────────────────┐
                           │                  │  apps/builder        │  VPS 1 (Hetzner)
                           │                  │  worker + Docker     │
-                          │                  │  passerelle IA       │──► API Anthropic
-                          │                  │  scan                │──► GitHub (repo client)
-                          │                  └──────────┬───────────┘──► Vercel (déploiement)
-                          │                             │ HTTP privé signé (HMAC)
+                          │                  │  AI gateway          │──► Anthropic API
+                          │                  │  scan                │──► GitHub (client repo)
+                          │                  └──────────┬───────────┘──► Vercel (deployment)
+                          │                             │ private signed HTTP (HMAC)
                           ▼                             ▼
                    ┌──────────────┐          ┌──────────────────────┐
                    │ Helius RPC   │◄─────────│  apps/signer         │  VPS 2 (Hetzner)
-                   └──────┬───────┘          │  wallets créateurs   │
-                          │                  │  claims, buyback     │──► Telegram (alertes)
+                   └──────┬───────┘          │  creator wallets     │
+                          │                  │  claims, buyback     │──► Telegram (alerts)
                           ▼                  └──────────┬───────────┘
                    ┌──────────────┐                     │
                    │ Meteora DBC  │                     ▼
                    │ (on-chain)   │          ┌──────────────────────┐
-                   └──────────────┘          │  Multisig Squads     │
-                                             │  revenus, $FORGE     │
+                   └──────────────┘          │  Squads multisig     │
+                                             │  revenue, $FORGE     │
                                              └──────────────────────┘
 
-  Traders ──► site client (Vercel) ──► avant graduation : bouton FORGE → Meteora (via @forge/core)
-                                   └─► après graduation : plugin Jupiter (frais intégrateur)
+  Traders ──► client site (Vercel) ──► before graduation: FORGE button → Meteora (via @forge/core)
+                                   └─► after graduation: Jupiter plugin (integrator fee)
 ```
 
-## Composants
+## Components
 
-### `packages/shared` — contrats
-Types et schémas zod partagés : `LaunchpadSpec`, statuts de job, payloads d'API, constantes métier. Écrit par la session lead au démarrage. Voir `INTERFACES.md`.
+### `packages/shared` — contracts
+Shared types and zod schemas: `LaunchpadSpec`, job statuses, API payloads, business constants. Written by the lead session at startup. See `INTERFACES.md`.
 
-### `packages/core` — noyau de transactions (verrouillé)
-- Wrappers du SDK Meteora : création de config, création de pool avec premier achat, swap avec référence et frais plateforme, claims, lecture des pools d'une config.
-- Validation des paramètres on-chain (bornes dans `METEORA.md`).
-- Adresses FORGE lues depuis l'environnement (`addresses.ts`).
-- Publié sur GitHub Packages (registre privé) à version épinglée. Les sites clients l'installent depuis ce registre ; l'agent builder ne peut ni le modifier ni changer sa version.
+### `packages/core` — transaction core (locked)
+- Meteora SDK wrappers: config creation, pool creation with first buy, swap with referral and platform fee, claims, reading the pools of a config.
+- Validation of on-chain parameters (bounds in `METEORA.md`).
+- FORGE addresses read from the environment (`addresses.ts`).
+- Published on GitHub Packages (private registry) at a pinned version. Client sites install it from this registry; the builder agent can neither modify it nor change its version.
 
-### `apps/web` — site FORGE (Vercel)
-- Connexion par signature de wallet.
-- Chat avec l'agent (phase de conception : Claude API, produit la `LaunchpadSpec`).
-- Devis et vérification des paiements, token-gating, quotas, remboursements.
-- Tableau de bord client : ses launchpads, versions, aperçus, bouton de réclamation de ses frais partenaire.
-- File de jobs dans Supabase ; avancement en temps réel via Supabase Realtime.
-- `/api/rpc` : relais vers Helius avec limite de débit (la clé Helius ne quitte jamais le serveur).
+### `apps/web` — FORGE site (Vercel)
+- Login by wallet signature.
+- Chat with the agent (design phase: Claude API, produces the `LaunchpadSpec`).
+- Quotes and payment verification, token-gating, quotas, refunds.
+- Client dashboard: their launchpads, versions, previews, button to claim their partner fees.
+- Job queue in Supabase; real-time progress via Supabase Realtime.
+- `/api/rpc`: relay to Helius with rate limiting (the Helius key never leaves the server).
 
-### `apps/launchpad-template` — template des sites clients
-- Fork du scaffold fun-launch de Meteora Invent.
-- Avant graduation : **notre bouton d'achat** (swap via `@forge/core`, avec référence + 0,3 %).
-- Après graduation : plugin Jupiter avec notre compte de référence Jupiter et 30 bps.
-- Page de réclamation des frais créateur pour les créateurs de coins.
-- Lit sa configuration depuis un fichier `forge.config.json` (généré par l'agent) + variables d'env.
-- Publié comme **repo template GitHub** ; chaque client a un repo créé depuis ce template.
+### `apps/launchpad-template` — client site template
+- Fork of the Meteora Invent fun-launch scaffold.
+- Before graduation: **our buy button** (swap via `@forge/core`, with referral + 0.3%).
+- After graduation: Jupiter plugin with our Jupiter referral account and 30 bps.
+- Creator fee claim page for coin creators.
+- Reads its configuration from a `forge.config.json` file (generated by the agent) + env variables.
+- Published as a **GitHub template repo**; each client has a repo created from this template.
 
-### `apps/builder` — worker de l'agent (VPS 1)
-- Récupère les jobs `create_launchpad` et `modify_launchpad` dans Supabase.
-- Pour chaque job : conteneur Docker isolé, Claude Code en mode headless, jeton GitHub limité au repo du client, réseau limité.
-- **Passerelle IA** sur la machine hôte : détient la vraie clé Anthropic, donne au conteneur un jeton temporaire à budget plafonné (`ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN`).
-- **Scan** avant chaque push : bloque toute modification du noyau, toute nouvelle adresse Solana, tout script externe, toute demande d'approbation de tokens.
-- Crée les projets Vercel et récupère les URL d'aperçu.
-- Demande au signer de créer les configs et de préparer la transaction de lancement du coin.
+### `apps/builder` — agent worker (VPS 1)
+- Picks up `create_launchpad` and `modify_launchpad` jobs from Supabase.
+- For each job: isolated Docker container, Claude Code in headless mode, GitHub token limited to the client's repo, restricted network.
+- **AI gateway** on the host machine: holds the real Anthropic key, gives the container a temporary token with a capped budget (`ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN`).
+- **Scan** before each push: blocks any modification of the core, any new Solana address, any external script, any token approval request.
+- Creates Vercel projects and retrieves preview URLs.
+- Asks the signer to create the configs and prepare the coin launch transaction.
 
-### `apps/signer` — signer et trésorerie (VPS 2, séparé)
-- Seul composant qui détient des clés de FORGE : un wallet créateur par launchpad (clés chiffrées), un wallet "payeur" pour les frais de transaction, le wallet du bot de buyback.
-- Crée les configs Meteora, prépare les transactions de création de pool (signature partielle), réclame les frais créateur vers le multisig, exécute le buyback.
-- N'accepte que des requêtes signées (HMAC) venant du builder, et revérifie dans Supabase que le paiement du job est confirmé.
-- Aucun port public entrant hormis l'API privée, accessible uniquement depuis l'IP du VPS 1.
-- Alertes Telegram.
+### `apps/signer` — signer and treasury (VPS 2, separate)
+- The only component that holds FORGE keys: one creator wallet per launchpad (encrypted keys), a "payer" wallet for transaction fees, the buyback bot's wallet.
+- Creates the Meteora configs, prepares pool creation transactions (partial signature), claims creator fees to the multisig, runs the buyback.
+- Only accepts signed requests (HMAC) from the builder, and rechecks in Supabase that the job's payment is confirmed.
+- No public inbound port except the private API, reachable only from VPS 1's IP.
+- Telegram alerts.
 
-### Multisig Squads
-- Reçoit : frais plateforme, référence (compte de référence détenu par le multisig), frais créateur réclamés, frais intégrateur Jupiter.
-- Limite de dépense quotidienne vers le wallet du bot de buyback.
-- Les $FORGE rachetés y reviennent.
+### Squads multisig
+- Receives: platform fees, referral (referral account held by the multisig), claimed creator fees, Jupiter integrator fees.
+- Daily spending limit to the buyback bot's wallet.
+- Bought-back $FORGE returns there.
 
 ## Infra
 
-| Service | Rôle | Coût |
+| Service | Role | Cost |
 |---|---|---|
-| Vercel Pro (1 membre) | `apps/web` + sites clients + aperçus | 20 $/mois |
-| Hetzner VPS 1 | builder, Docker, passerelle IA, scan | ~10 $/mois |
-| Hetzner VPS 2 | signer, buyback, alertes | ~5 $/mois |
-| Supabase | base + realtime | 0 $ en dev, 25 $/mois au lancement public |
-| Helius | RPC devnet + mainnet | 0 $ en dev, 49 $/mois au lancement public |
-| Cloudflare R2 | images et métadonnées des coins | offre gratuite |
-| GitHub (organisation) | monorepo, repo template, repos clients, registre privé | gratuit |
-| Jupiter | plugin, API de données, programme de référence | clé gratuite au départ |
-| Domaines | FORGE + domaine séparé des sites clients | ~30 $/an |
+| Vercel Pro (1 member) | `apps/web` + client sites + previews | $20/month |
+| Hetzner VPS 1 | builder, Docker, AI gateway, scan | ~$10/month |
+| Hetzner VPS 2 | signer, buyback, alerts | ~$5/month |
+| Supabase | database + realtime | $0 in dev, $25/month at public launch |
+| Helius | devnet + mainnet RPC | $0 in dev, $49/month at public launch |
+| Cloudflare R2 | coin images and metadata | free tier |
+| GitHub (organization) | monorepo, template repo, client repos, private registry | free |
+| Jupiter | plugin, data API, referral program | free key at first |
+| Domains | FORGE + a domain separate from client sites | ~$30/year |
 
-## Flux des jobs
+## Job flow
 
 ```
 spec_ready → paid → building → preview_ready → approved → onchain_setup → awaiting_owner_signature → owner_signed → deploying → live
                        │                                        │                                                       │
-                       └─► failed (build) ─► relance si attempts < 2,            failed (onchain / deploy) : alerte + traitement manuel,
-                                             remboursement si attempts = 2        pas de remboursement automatique
+                       └─► failed (build) ─► retry if attempts < 2,            failed (onchain / deploy): alert + manual handling,
+                                             refund if attempts = 2            no automatic refund
 ```
 
-Une modification saute `onchain_setup`, `awaiting_owner_signature` et `owner_signed` : `approved → deploying → live`.
+A modification skips `onchain_setup`, `awaiting_owner_signature` and `owner_signed`: `approved → deploying → live`.
 
-Détail des statuts et des transitions : `INTERFACES.md`.
+Details of statuses and transitions: `INTERFACES.md`.
 
-## Environnements
+## Environments
 
 | | devnet | mainnet |
 |---|---|---|
-| Logique on-chain (core, signer) | tests par scripts | petits montants avant ouverture |
-| Interface du template | non testable (Jupiter n'indexe pas devnet) | petits montants |
-| Migration | outil de migration manuelle Meteora | robots Meteora |
-| $FORGE | faux token créé sur devnet | vrai token, lancé après validation |
+| On-chain logic (core, signer) | script tests | small amounts before opening |
+| Template interface | not testable (Jupiter does not index devnet) | small amounts |
+| Migration | Meteora manual migration tool | Meteora bots |
+| $FORGE | fake token created on devnet | real token, launched after validation |

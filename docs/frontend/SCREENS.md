@@ -1,118 +1,118 @@
-# SCREENS — tous les écrans et leurs états
+# SCREENS — all screens and their states
 
-Pour chaque écran : route, données (voir `CONTRACT.md`), actions, états. « Global » s'applique partout.
+For each screen: route, data (see `CONTRACT.md`), actions, states. "Global" applies everywhere.
 
-## Global (les deux sites)
+## Global (both sites)
 
-- **Chargement** : squelettes, jamais d'écran blanc.
-- **Erreur réseau** : message clair + bouton « Réessayer ».
-- **Wallet non connecté** sur une page qui en a besoin : invitation à connecter.
-- **Transaction en cours** : 3 phases visibles — « Signe dans ton wallet » → « Envoi… » → « Confirmé » (avec lien vers l'explorateur) ; refus de signature par l'utilisateur = message neutre, pas une erreur.
-- **Toasts** pour les confirmations courtes.
-- Adresse raccourcie (`7xKX…9fQa`) avec bouton copier.
-- Montants : SOL avec 2 à 4 décimales selon la taille, équivalent en dollars en gris quand il est fourni.
-
----
-
-## A. Site FORGE (`apps/web`)
-
-### A1. Accueil — `/`
-- Contenu : promesse, « comment ça marche » en 4 étapes, prix (33 $, 2 modifs incluses), exemple de launchpad, FAQ courte, pied de page (CGU, FAQ).
-- Actions : « Connecter mon wallet » ; si connecté : « Créer mon launchpad » et « Mon tableau de bord ».
-- États : normal ; **inscriptions en pause** (`flags.signupsPaused`) → bandeau « Les créations sont en pause, réessaie plus tard », bouton de création désactivé.
-
-### A2. Connexion — modale globale
-- Choix du wallet → signature du message de connexion.
-- États : choix ; attente de signature ; signature refusée ; erreur ; connecté (avatar/adresse dans l'en-tête, menu : tableau de bord, déconnexion).
-
-### A3. Vérification $FORGE — `/new` (avant le chat) et avant chaque modif
-- Données : `gating` (`ok`, `required`, `balance`).
-- États : vérification en cours ; **ok** → on continue ; **insuffisant** → écran bloquant : requis vs solde, explication (« rien n'est dépensé »), lien pour obtenir des $FORGE, bouton « Revérifier ».
-
-### A4. Chat de conception — `/new` et `/launchpads/[id]/modify`
-- Mise en page : fil de discussion + panneau latéral (ou tiroir sur mobile) **« Récapitulatif »** qui se remplit au fil de la conversation.
-- Messages de l'assistant en flux (mot à mot), indicateur « l'agent écrit… ».
-- Carte récapitulative (création) : nom, adresse du site (`slug`), frais de trading (%), part des créateurs de coins (%), frais de création d'un coin (SOL), anti-sniper oui/non, couleurs (pastilles), mode sombre, slogan, coin du launchpad (nom, symbole, image, description, premier achat en SOL), wallet qui recevra les frais. Chaque champ invalide est signalé.
-- Actions : envoyer un message ; « Confirmer et passer au paiement » (actif seulement si la spec est complète et valide).
-- Modif : la carte montre la demande résumée et « modifs incluses restantes : N ».
-- États : vide (message d'accueil de l'agent) ; conversation ; spec incomplète ; spec prête ; envoi de la confirmation ; erreur ; **limite de messages atteinte** (« attends un peu »).
-
-### A5. Paiement — `/jobs/[id]/pay`
-- Données : `quote` (`lamports`, `usdAmount`, `expiresAt`), `kind` (création / modif).
-- Affichage : montant en SOL (gros), équivalent dollars, ce que ça inclut, **compte à rebours** jusqu'à `expiresAt`.
-- Actions : « Payer » (signe et envoie via le client) ; « Nouveau devis ».
-- États : devis en cours ; **devis prêt** ; signature ; confirmation on-chain ; **payé** → redirection suivi ; **devis expiré** ; paiement refusé par la vérification (message + support) ; **modif incluse** (montant 0 : pas de paiement, bouton « Continuer »).
-
-### A6. Suivi du job — `/jobs/[id]`
-- Données : `job` (statut, `previewUrl`, `error`, `failedStage`, `attempts`), `jobEvents` en temps réel.
-- **Fil d'étapes** (création) : Payé → Construction → Aperçu prêt → Validé → Branchement Meteora → Signature du lancement → Mise en ligne → En ligne. Modif : Payé → Construction → Aperçu prêt → Validé → Mise en ligne → En ligne.
-- Sous le fil : journal des messages (`jobEvents`), le plus récent en bas, `aria-live`.
-- États par statut (libellés dans `CONTRACT.md`) :
-  - `spec_ready` → bouton vers le paiement ;
-  - `paid`, `building` → « Construction en cours », tentative N/2 si `attempts = 2` ;
-  - `preview_ready` → bloc **Aperçu** (lien + cadre intégré si possible) + bouton « Valider l'aperçu » + « Demander un changement » (retour au chat, compte comme une modif) ;
-  - `approved`, `onchain_setup` → « Branchement sur Meteora » ;
-  - `awaiting_owner_signature` → renvoi vers A7 ;
-  - `owner_signed`, `deploying` → « Mise en ligne » ;
-  - `live` → **réussite** : lien du site, bouton tableau de bord, partage ;
-  - `failed` + `failedStage = build` + `attempts < 2` → « On réessaie automatiquement » ;
-  - `failed` + `failedStage` `onchain` ou `deploy` → « Un problème est survenu, notre équipe est prévenue et s'en occupe » ;
-  - `refunded` → « Remboursé » + montant + lien de la transaction de remboursement.
-
-### A7. Lancement du coin — `/jobs/[id]/launch`
-- Données : `ownerTransactionSummary` (nom/symbole du coin, premier achat en SOL, frais réseau estimés).
-- Explication : « Cette transaction crée $MOON et achète X SOL de $MOON pour toi. Tu reçois les tokens dans ce wallet. »
-- Actions : « Signer et lancer ».
-- États : préparation ; prêt ; signature ; envoi ; **confirmé** → retour au suivi ; échec d'envoi (« Réessayer », la transaction reste valable) ; **mauvais wallet connecté** (doit être le wallet propriétaire : afficher lequel).
-
-### A8. Tableau de bord — `/dashboard`
-- Données : `launchpads[]`.
-- Carte par launchpad : nom, lien du site, badge de statut (`draft` brouillon, `live` en ligne, `sleeping` en veille, `disabled` désactivé), coin du launchpad, nombre de coins, **frais partenaire à réclamer** (SOL), modifs restantes, job en cours éventuel (lien vers son suivi).
-- Actions : « Réclamer mes frais » (transaction à signer) ; « Demander une modif » ; « Voir » (A9) ; « Réactiver » si en veille.
-- États : aucun launchpad (état vide avec bouton « Créer mon launchpad ») ; liste ; réclamation en cours / réussie ; rien à réclamer (bouton désactivé).
-
-### A9. Détail d'un launchpad — `/launchpads/[id]`
-- Réglages on-chain en lecture seule (frais, parts, adresses des configs et du coin), historique des versions (date, demande, lien d'aperçu), historique des jobs, frais réclamés.
-- Mention : « Les réglages on-chain sont définitifs. »
-
-### A10. FAQ — `/faq` et CGU — `/terms`
-- FAQ : comment réclamer ses frais, pourquoi mon coin n'apparaît pas encore, que faire si la création échoue, ce qu'il se passe en veille. CGU : texte provisoire.
-
-### A11. Hors production — `/dev/states`
-- Galerie de tous les écrans dans tous leurs états avec les mocks. Inaccessible en production.
+- **Loading**: skeletons, never a blank screen.
+- **Network error**: clear message + "Retry" button.
+- **Wallet not connected** on a page that needs one: prompt to connect.
+- **Transaction in progress**: 3 visible phases — "Sign in your wallet" → "Sending…" → "Confirmed" (with a link to the explorer); the user rejecting the signature = neutral message, not an error.
+- **Toasts** for short confirmations.
+- Shortened address (`7xKX…9fQa`) with a copy button.
+- Amounts: SOL with 2 to 4 decimals depending on size, dollar equivalent in gray when provided.
 
 ---
 
-## B. Site client (`apps/launchpad-template`) — design de base
+## A. FORGE site (`apps/web`)
 
-Tout est piloté par le thème (`forge.config.json#theme` → variables CSS). Les composants de `src/forge/` (panneau d'achat, création de coin, réclamation) sont **placés** par toi mais **pas modifiés** : tu ne fais que leur donner de la place et les habiller via les variables CSS qu'ils exposent.
+### A1. Home — `/`
+- Content: promise, "how it works" in 4 steps, price ($33, 2 changes included), example launchpad, short FAQ, footer (Terms, FAQ).
+- Actions: "Connect my wallet"; if connected: "Create my launchpad" and "My dashboard".
+- States: normal; **signups paused** (`flags.signupsPaused`) → banner "Creation is paused, try again later", creation button disabled.
 
-### B1. Accueil — `/`
-- En-tête : logo/nom du launchpad, slogan (`content.tagline`), connexion wallet, « Créer un coin ».
-- Mise en avant du coin du launchpad (`$MOON`).
-- Listes : nouveaux, bientôt gradués (barre de progression vers 10 SOL), gradués ; recherche.
-- États : chargement ; liste vide (« Sois le premier à lancer un coin ») ; **données indisponibles** (le site bascule sur une lecture on-chain plus lente : afficher un bandeau discret).
+### A2. Login — global modal
+- Wallet choice → signing the login message.
+- States: choice; waiting for signature; signature rejected; error; connected (avatar/address in the header, menu: dashboard, disconnect).
 
-### B2. Page d'un coin — `/coin/[mint]`
-- Image, nom, symbole, créateur, description, graphique, progression de la courbe, holders, transactions.
-- Emplacement du **panneau d'achat/vente** (`TradePanel` de `src/forge`) : il affiche lui-même le frais de 0,3 % et le total ; prévoir sa place en colonne droite (bureau) ou en bas fixe (mobile).
-- États : sur la courbe ; **gradué** (badge, le panneau devient le module Jupiter) ; coin introuvable.
+### A3. $FORGE check — `/new` (before the chat) and before each change
+- Data: `gating` (`ok`, `required`, `balance`).
+- States: check in progress; **ok** → continue; **insufficient** → blocking screen: required vs balance, explanation ("nothing is spent"), link to get $FORGE, "Recheck" button.
 
-### B3. Créer un coin — `/create`
-- Emplacement du formulaire `CreateCoin` de `src/forge` ; autour : explications, frais de création du launchpad, aperçu de la carte du coin.
+### A4. Design chat — `/new` and `/launchpads/[id]/modify`
+- Layout: conversation thread + side panel (or drawer on mobile) **"Summary"** that fills in as the conversation goes on.
+- Assistant messages streamed (word by word), "the agent is typing…" indicator.
+- Summary card (creation): name, site address (`slug`), trading fees (%), coin creators' share (%), coin creation fee (SOL), anti-sniper yes/no, colors (swatches), dark mode, tagline, launchpad coin (name, symbol, image, description, first buy in SOL), wallet that will receive the fees. Each invalid field is flagged.
+- Actions: send a message; "Confirm and go to payment" (enabled only if the spec is complete and valid).
+- Change: the card shows the summarized request and "included changes left: N".
+- States: empty (agent's welcome message); conversation; incomplete spec; spec ready; sending the confirmation; error; **message limit reached** ("slow down a bit").
 
-### B4. Mes frais créateur — `/creator`
-- Emplacement de `ClaimCreatorFees` de `src/forge` ; état non connecté ; aucun coin créé.
+### A5. Payment — `/jobs/[id]/pay`
+- Data: `quote` (`lamports`, `usdAmount`, `expiresAt`), `kind` (creation / change).
+- Display: amount in SOL (large), dollar equivalent, what it includes, **countdown** until `expiresAt`.
+- Actions: "Pay" (signs and sends via the client); "New quote".
+- States: quote loading; **quote ready**; signing; on-chain confirmation; **paid** → redirect to tracking; **quote expired**; payment rejected by the check (message + support); **included change** (amount 0: no payment, "Continue" button).
 
-### B5. À propos — `/about`
-- Contenu de `content.about`.
+### A6. Job tracking — `/jobs/[id]`
+- Data: `job` (status, `previewUrl`, `error`, `failedStage`, `attempts`), real-time `jobEvents`.
+- **Step tracker** (creation): Paid → Building → Preview ready → Approved → Connecting to Meteora → Signing the launch → Going live → Live. Change: Paid → Building → Preview ready → Approved → Going live → Live.
+- Below the tracker: message log (`jobEvents`), most recent at the bottom, `aria-live`.
+- States by status (labels in `CONTRACT.md`):
+  - `spec_ready` → button to the payment;
+  - `paid`, `building` → "Building", attempt N/2 if `attempts = 2`;
+  - `preview_ready` → **Preview** block (link + embedded frame if possible) + "Approve the preview" button + "Request a change" (back to the chat, counts as a change);
+  - `approved`, `onchain_setup` → "Connecting to Meteora";
+  - `awaiting_owner_signature` → redirect to A7;
+  - `owner_signed`, `deploying` → "Going live";
+  - `live` → **success**: site link, dashboard button, share;
+  - `failed` + `failedStage = build` + `attempts < 2` → "Retrying automatically";
+  - `failed` + `failedStage` `onchain` or `deploy` → "Something went wrong. Our team has been notified and is on it";
+  - `refunded` → "Refunded" + amount + refund transaction link.
 
-### B6. Veille — affichée quand le launchpad est en veille
-- Page statique légère : nom, slogan, « Ce launchpad est en veille », lien vers le coin sur Jupiter. **Aucune donnée chargée** (pas de RPC).
+### A7. Coin launch — `/jobs/[id]/launch`
+- Data: `ownerTransactionSummary` (coin name/symbol, first buy in SOL, estimated network fee).
+- Explanation: "This transaction creates $MOON and buys X SOL of $MOON for you. You receive the tokens in this wallet."
+- Actions: "Sign and launch".
+- States: preparing; ready; signing; sending; **confirmed** → back to tracking; send failure ("Retry", the transaction remains valid); **wrong wallet connected** (must be the owner wallet: show which one).
 
-### B7. Maintenance — affichée quand le launchpad est désactivé
-- Page statique : « Ce site est indisponible. »
+### A8. Dashboard — `/dashboard`
+- Data: `launchpads[]`.
+- Card per launchpad: name, site link, status badge (`draft`, `live`, `sleeping`, `disabled`), launchpad coin, number of coins, **partner fees to claim** (SOL), remaining changes, current job if any (link to its tracking).
+- Actions: "Claim my fees" (transaction to sign); "Request a change"; "View" (A9); "Reactivate" if sleeping.
+- States: no launchpad (empty state with "Create my launchpad" button); list; claim in progress / successful; nothing to claim (button disabled).
 
-### Variables de thème à exposer (minimum)
+### A9. Launchpad detail — `/launchpads/[id]`
+- Read-only on-chain settings (fees, shares, addresses of the configs and of the coin), version history (date, request, preview link), job history, claimed fees.
+- Note: "On-chain settings are final."
 
-`--color-primary`, `--color-accent`, `--color-bg`, `--color-surface`, `--color-text`, `--color-text-muted`, `--color-border`, `--color-success`, `--color-danger`, `--radius`, `--font-heading`, `--font-body`. Mode sombre/clair dérivé de `theme.darkMode`. Documenter la liste dans `src/theme/README.md`.
+### A10. FAQ — `/faq` and Terms — `/terms`
+- FAQ: how to claim your fees, why my coin does not show up yet, what to do if creation fails, what happens in sleep mode. Terms: provisional text.
+
+### A11. Non-production — `/dev/states`
+- Gallery of all screens in all their states with the mocks. Not accessible in production.
+
+---
+
+## B. Client site (`apps/launchpad-template`) — base design
+
+Everything is driven by the theme (`forge.config.json#theme` → CSS variables). The components in `src/forge/` (buy panel, coin creation, claim) are **placed** by you but **not modified**: you only give them room and style them via the CSS variables they expose.
+
+### B1. Home — `/`
+- Header: launchpad logo/name, tagline (`content.tagline`), wallet connection, "Create a coin".
+- Launchpad coin highlight (`$MOON`).
+- Lists: new, almost graduated (progress bar toward 10 SOL), graduated; search.
+- States: loading; empty list ("Be the first to launch a coin"); **data unavailable** (the site falls back to a slower on-chain read: show a discreet banner).
+
+### B2. Coin page — `/coin/[mint]`
+- Image, name, symbol, creator, description, chart, curve progress, holders, transactions.
+- Slot for the **buy/sell panel** (`TradePanel` from `src/forge`): it shows the 0.3% fee and the total itself; make room for it in the right column (desktop) or as a fixed bottom bar (mobile).
+- States: on the curve; **graduated** (badge, the panel becomes the Jupiter module); coin not found.
+
+### B3. Create a coin — `/create`
+- Slot for the `CreateCoin` form from `src/forge`; around it: explanations, the launchpad's coin creation fee, preview of the coin card.
+
+### B4. My creator fees — `/creator`
+- Slot for `ClaimCreatorFees` from `src/forge`; not-connected state; no coin created.
+
+### B5. About — `/about`
+- Content from `content.about`.
+
+### B6. Sleep — shown when the launchpad is sleeping
+- Lightweight static page: name, tagline, "This launchpad is sleeping", link to the coin on Jupiter. **No data loaded** (no RPC).
+
+### B7. Maintenance — shown when the launchpad is disabled
+- Static page: "This site is unavailable."
+
+### Theme variables to expose (minimum)
+
+`--color-primary`, `--color-accent`, `--color-bg`, `--color-surface`, `--color-text`, `--color-text-muted`, `--color-border`, `--color-success`, `--color-danger`, `--radius`, `--font-heading`, `--font-body`. Dark/light mode derived from `theme.darkMode`. Document the list in `src/theme/README.md`.
