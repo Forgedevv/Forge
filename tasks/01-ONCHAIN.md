@@ -19,7 +19,7 @@ Structure :
 
 ```
 packages/core/src/
-├── addresses.ts      # adresses FORGE lues depuis l'env, validées au chargement
+├── addresses.ts      # adresses FORGE lues depuis l'env, exigées via requireAddresses()
 ├── constants.ts      # réexporte packages/shared + bornes du SDK
 ├── validate.ts       # validation des paramètres on-chain (bornes METEORA.md + INTERFACES.md)
 ├── config.ts         # construction des 2 configs à partir d'une LaunchpadSpec
@@ -32,7 +32,7 @@ packages/core/src/
 └── index.ts
 ```
 
-- [ ] `addresses.ts` : `FORGE_MULTISIG_VAULT`, `FORGE_METEORA_REFERRAL_ACCOUNT`, `FORGE_PLATFORM_FEE_WALLET`, `FORGE_CASHBOX_WALLET`, `FORGE_MINT` lus depuis l'env ; erreur au démarrage si absent ou invalide.
+- [ ] `addresses.ts` : `FORGE_MULTISIG_VAULT`, `FORGE_METEORA_REFERRAL_ACCOUNT`, `FORGE_PLATFORM_FEE_WALLET`, `FORGE_JUPITER_REFERRAL_ACCOUNT`, `FORGE_CASHBOX_WALLET`, `FORGE_MINT` lus depuis l'env. Pas d'exigence globale au chargement : `requireAddresses([...])`, appelée au démarrage de chaque app avec ses adresses (`INTERFACES.md` §8), plante si l'une manque ou est invalide. `FORGE_MINT` est optionnelle (absente avant le lancement de $FORGE).
 - [ ] `validate.ts` : une fonction par config ; refuse tout ce qui sort des bornes ; tests unitaires pour chaque borne.
 - [ ] `config.ts` : `buildLaunchpadConfig(spec)` et `buildLaunchpadCoinConfig(spec)` → `ConfigParameters` + `feeClaimer` + `leftoverReceiver`, selon `docs/METEORA.md` (section "Réglages des deux configs"). Utiliser les helpers `buildCurve*` du SDK.
 - [ ] `pool.ts` : `buildLaunchCoinTx({ config, creator, owner, mintKeypair, metadataUri, firstBuyLamports })` → transaction avec `createPoolWithFirstBuy`, prête à être signée par le créateur et le mint (côté signer) puis par le client. Paramètre optionnel `durableNonce` (compte de nonce + autorité) : une transaction classique expire en ~1 minute, trop court pour que le client signe ; avec un nonce durable elle reste valide jusqu'à utilisation.

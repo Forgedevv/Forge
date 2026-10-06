@@ -14,7 +14,7 @@ Ces règles ne se négocient pas. Si une tâche semble exiger d'en violer une, a
 4. **Devnet par défaut.** Toute config pointe sur devnet sauf si `SOLANA_CLUSTER=mainnet-beta` est défini explicitement. Les scripts de test refusent de tourner si l'URL RPC ne contient pas `devnet`.
 5. **Un seul endroit signe des transactions avec les clés de FORGE : `apps/signer`** (wallets créateurs, claims, buyback). Seule exception : `scripts/devnet-tests`, avec des wallets jetables générés sur devnet. Aucun autre dossier n'importe de `Keypair` venant d'une clé privée. Les autres construisent des transactions que l'utilisateur signe dans son wallet.
 6. **Le noyau de transactions (`packages/core`) est la seule source de vérité** pour construire un swap, une config ou un pool. Personne ne réimplémente ces transactions ailleurs.
-7. **Les adresses de FORGE (multisig, compte de référence, wallet des frais plateforme) ne sont jamais écrites en dur hors de `packages/core/src/addresses.ts`**, et ce fichier les lit depuis l'environnement.
+7. **Les adresses de FORGE (multisig, comptes de référence Meteora et Jupiter, wallet des frais plateforme, caisse, mint $FORGE) ne sont jamais écrites en dur hors de `packages/core/src/addresses.ts`**, et ce fichier les lit depuis l'environnement.
 8. **Toute valeur on-chain passe par la validation de `packages/core`** avant d'être envoyée : bornes des frais, seuil de migration, liquidité bloquée (voir `docs/METEORA.md`).
 9. **Tu ne marques jamais une tâche terminée sans test.** Voir "Définition de terminé".
 

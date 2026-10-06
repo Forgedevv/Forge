@@ -57,7 +57,7 @@ Chaque protection ci-dessous est **obligatoire** dans le MVP. Les agents qui tou
 
 ## 10. Paiement truqué
 
-**Protections** (agent 3) : `POST /api/payments/confirm` vérifie on-chain la transaction : signataire = wallet de la session, destinataire = caisse, montant ≥ devis, devis non expiré, signature jamais utilisée.
+**Protections** (agent 3) : `POST /api/payments/confirm` vérifie on-chain la transaction : signataire = wallet de la session = propriétaire du launchpad (`spec.ownerWallet`), destinataire = caisse, montant ≥ devis, devis non expiré, signature jamais utilisée.
 
 ## 11. Relais RPC abusé
 

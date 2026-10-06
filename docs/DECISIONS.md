@@ -23,7 +23,7 @@ Tenu à jour par la session lead. Les agents le lisent, ne le modifient pas.
 | D15 | Monnaie | SOL uniquement dans le MVP |
 | D16 | Seuil de migration | 10 SOL |
 | D17 | Reporté | compte X de l'agent, domaines personnalisés, avis juridique, accord d'équipe écrit |
-
+| D18 | Échec après validation | un échec à l'étape on-chain ou déploiement n'est ni relancé ni remboursé automatiquement : alerte + traitement manuel (des configs ont pu être créées) |
 ## Ouvertes (à trancher par l'équipe)
 
 | # | Question | Bloque |

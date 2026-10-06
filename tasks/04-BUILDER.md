@@ -36,12 +36,14 @@ apps/builder/src/
 - [ ] GitHub : créer le repo client depuis `launchpad-template`, écrire `forge.config.json` (sans `onchain` au départ), branche `forge/<jobId>`.
 - [ ] Sandbox : conteneur par job, Claude Code en mode headless (`claude -p`, sortie JSON, outils limités à lecture/écriture de fichiers et commandes npm de build), `ANTHROPIC_BASE_URL` = passerelle, `ANTHROPIC_AUTH_TOKEN` = jeton du job. Timeout `OPS.agentTimeoutMinutes`. Le prompt contient la `LaunchpadSpec` (theme, designNotes) ou la demande de modif.
 - [ ] Passerelle IA : proxy vers l'API Anthropic, refuse les jetons expirés ou au-delà du budget, enregistre le coût par job dans `jobs.api_cost_usd`.
-- [ ] Scan bloquant avant tout push (SECURITY.md §1). En cas de violation : pas de push, job `failed` avec la liste des violations, alerte Telegram.
+- [ ] Scan bloquant avant tout push (SECURITY.md §1). En cas de violation : pas de push, job `failed` (`failed_stage = 'build'`) avec la liste des violations, alerte Telegram.
 - [ ] Build local du site dans la sandbox avant push (évite les déploiements cassés).
 - [ ] Vercel : projet par client, variables d'env (adresses FORGE, clé Jupiter, R2, URL du relais RPC), déploiement d'aperçu sur la branche → `preview_ready` avec l'URL.
-- [ ] Après `approved` : appel signer `/v1/configs` → écrire les adresses dans `forge.config.json#onchain` (commit par le builder, pas par l'agent) → appel `/v1/launch-coin/prepare` → `jobs.owner_tx` → `awaiting_owner_signature`.
-- [ ] Quand la transaction du client est confirmée (le web met à jour), merge de la branche sur `main`, promotion en production, sous-domaine `<slug>.<domaine-clients>` → `live`.
-- [ ] Échec : `failed`, relance automatique si `attempts < 2`.
+- [ ] Prise des jobs avec les deux requêtes de `INTERFACES.md` §5 (construction / après validation). Verrou remis à `null` dès que le job quitte un statut actif.
+- [ ] Après `approved` (création) → `onchain_setup` : appel signer `/v1/configs` → écrire les adresses dans `forge.config.json#onchain` (commit par le builder, pas par l'agent) → appel `/v1/launch-coin/prepare` → `jobs.owner_tx` → `awaiting_owner_signature`.
+- [ ] Job en `owner_signed` (le web l'y met quand la transaction du client est confirmée), ou modif en `approved` → `deploying` : merge de la branche sur `main`, promotion en production, sous-domaine `<slug>.<domaine-clients>` → `live`.
+- [ ] Échec : `failed` avec `failed_stage` (`build`, `onchain`, `deploy`). Relance automatique uniquement si `failed_stage = 'build'` et `attempts < 2`. Échec `onchain` ou `deploy` : alerte Telegram, pas de relance automatique.
+- [ ] Jobs plantés : un job actif dont le verrou dépasse `OPS.jobLockStaleMinutes` passe en `failed` (étape selon son statut), avec alerte.
 - [ ] Flag `deploys_paused` respecté ; mise en veille quotidienne (`sleep.ts`).
 
 ## Tests

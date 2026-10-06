@@ -17,7 +17,7 @@ apps/signer/src/
 ├── jobs/
 │   ├── claims.ts      # toutes les 24 h : part créateur de chaque pool → multisig
 │   ├── cashbox.ts     # toutes les 24 h : excédent de la caisse → multisig ; garde un tampon
-│   ├── refunds.ts     # jobs failed avec attempts = 2 → remboursement → refunded
+│   ├── refunds.ts     # jobs failed, failed_stage = 'build', attempts = 2 → remboursement → refunded
 │   ├── buyback.ts     # petits achats aléatoires de $FORGE, slippage max 1 %, tokens → multisig
 │   ├── convert.ts     # frais Jupiter reçus en autres monnaies → SOL
 │   └── watch.ts       # surveillance : transfert de créateur, sorties inattendues, soldes bas

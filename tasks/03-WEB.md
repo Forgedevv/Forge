@@ -13,12 +13,12 @@ Tu construis le site FORGE : là où le client parle à l'agent, paie, suit la c
 ## Site (Next.js App Router, Vercel)
 
 - [ ] Connexion par wallet (adaptateur Solana) + signature d'un nonce → session (`/api/auth/*`).
-- [ ] **Chat de conception** (`/api/chat`) : Claude API (modèle Sonnet), prompt système qui pose les questions nécessaires et produit une `LaunchpadSpec` valide (zod) ; reste dans les bornes de `CLIENT_BOUNDS` ; affiche un récapitulatif clair avant confirmation. Limite de débit par wallet.
-- [ ] Token-gating (`/api/gating`) avant d'ouvrir le chat et avant chaque modif, via `getForgeBalance` de core.
+- [ ] **Chat de conception** (`/api/chat`) : Claude API (modèle Sonnet), prompt système qui pose les questions nécessaires et produit une `LaunchpadSpec` valide (zod) ; reste dans les bornes de `CLIENT_BOUNDS` ; affiche un récapitulatif clair avant confirmation. Limite de débit par wallet. Messages stockés par conversation (`conversations`, `chat_messages`), le launchpad n'existant qu'à la confirmation (`/api/spec/confirm`, qui refuse si `spec.ownerWallet` ≠ wallet de la session).
+- [ ] Token-gating (`/api/gating`) avant d'ouvrir le chat et avant chaque modif, via `getForgeBalance` de core. Désactivé tant que `FORGE_MINT` n'est pas défini.
 - [ ] Paiement : `/api/payments/quote` (prix en dollars → lamports au cours du moment, via l'API prix de Jupiter, devis 120 s) et `/api/payments/confirm` (vérification on-chain complète, voir SECURITY.md §10). Passe le job en `paid`.
 - [ ] Suivi en temps réel : page du job abonnée à `jobs` et `job_events` (Supabase Realtime), affichage des étapes et de l'URL d'aperçu.
 - [ ] Validation de l'aperçu (`/api/jobs/:id/approve`).
-- [ ] Signature du lancement du coin : récupérer la transaction partiellement signée (`owner-transaction`), la faire signer par le wallet du client, l'envoyer, suivre la confirmation.
+- [ ] Signature du lancement du coin : récupérer la transaction partiellement signée (`owner-transaction`), la faire signer par le wallet du client, l'envoyer, suivre la confirmation, puis passer le job en `owner_signed`.
 - [ ] Tableau de bord client : ses launchpads, statut, versions, modifs restantes, bouton "réclamer mes frais" (`buildPartnerClaimTx` de core), bouton "demander une modif".
 - [ ] Quotas : `included_modifications_left` décrémenté ; au-delà, devis à 5,50 $.
 - [ ] Relais RPC `/api/rpc` : liste blanche de méthodes, limite de débit par IP, taille max.

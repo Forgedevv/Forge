@@ -29,7 +29,7 @@ apps/launchpad-template/
 
 ## À faire
 
-- [ ] Remplacer le plugin Jupiter "toujours affiché" par `TradePanel` : `BuyButton` (`@forge/core`, référence + 30 bps) tant que le coin n'est pas gradué, `JupiterTrade` (plugin avec `referralAccount` = `FORGE_JUPITER_REFERRAL_ACCOUNT`, `referralFee` = 30) après.
+- [ ] Remplacer le plugin Jupiter "toujours affiché" par `TradePanel` : `BuyButton` (`@forge/core`, référence + 30 bps) tant que le coin n'est pas gradué, `JupiterTrade` (plugin avec `referralAccount` = `FORGE_JUPITER_REFERRAL_ACCOUNT` lu via `addresses.ts` de `@forge/core`, `referralFee` = 30) après.
 - [ ] Afficher clairement le frais plateforme (0,3 %) et le total avant signature.
 - [ ] `ClaimCreatorFees` : un créateur de coin connecté voit ses coins et réclame sa part créateur (`buildCreatorClaimTx` de core, receiver = son propre wallet). La réclamation des frais partenaire du client se fait sur le tableau de bord de `apps/web`, pas ici.
 - [ ] `CreateCoin` : formulaire de création de coin sur la config du launchpad ; image et métadonnées via `/api/upload` (R2) existant ; premier achat avec `enableFirstSwapWithMinFee`.

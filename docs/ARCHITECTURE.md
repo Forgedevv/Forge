@@ -102,10 +102,13 @@ Types et schémas zod partagés : `LaunchpadSpec`, statuts de job, payloads d'AP
 ## Flux des jobs
 
 ```
-queued → spec_ready → paid → building → preview_ready → approved → onchain_setup → deploying → live
-                                  │                                      │
-                                  └──────────► failed (tentative 1) ─────┴──► retry (tentative 2) ──► refunded
+spec_ready → paid → building → preview_ready → approved → onchain_setup → awaiting_owner_signature → owner_signed → deploying → live
+                       │                                        │                                                       │
+                       └─► failed (build) ─► relance si attempts < 2,            failed (onchain / deploy) : alerte + traitement manuel,
+                                             remboursement si attempts = 2        pas de remboursement automatique
 ```
+
+Une modification saute `onchain_setup`, `awaiting_owner_signature` et `owner_signed` : `approved → deploying → live`.
 
 Détail des statuts et des transitions : `INTERFACES.md`.
 
