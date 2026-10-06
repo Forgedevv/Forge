@@ -24,10 +24,11 @@ Ces règles ne se négocient pas. Si une tâche semble exiger d'en violer une, a
 |---|---|---|
 | Session lead | `packages/shared`, fichiers racine, `docs/` | `tasks/06-INTEGRATION.md` |
 | Agent 1 — On-chain | `packages/core`, `scripts/devnet-tests` | `tasks/01-ONCHAIN.md` |
-| Agent 2 — Template | `apps/launchpad-template` | `tasks/02-TEMPLATE.md` |
-| Agent 3 — Web | `apps/web`, `supabase` | `tasks/03-WEB.md` |
+| Agent 2 — Template | `apps/launchpad-template` **sauf** la zone visuelle de l'agent 6 | `tasks/02-TEMPLATE.md` |
+| Agent 3 — Web | `apps/web` (`app/api`, `src/server`, `src/client`, config) **sauf** la zone visuelle de l'agent 6, `supabase` | `tasks/03-WEB.md` |
 | Agent 4 — Builder | `apps/builder` | `tasks/04-BUILDER.md` |
 | Agent 5 — Signer | `apps/signer` | `tasks/05-SIGNER.md` |
+| Agent 6 — Frontend | `apps/web` : `app/**` hors `app/api`, `src/ui`, `public` ; template : `src/theme`, `src/content`, `src/components`, mise en page de `src/pages` | `tasks/08-FRONTEND.md` + `docs/frontend/` |
 
 ## Stack
 

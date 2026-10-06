@@ -1,6 +1,8 @@
 # 03 — WEB (agent 3)
 
-**Tu possèdes** : `apps/web`, `supabase`.
+**Tu possèdes** : `apps/web` (`app/api/**`, `src/server/**`, `src/client/**`, `middleware.ts`, `next.config.*`, `package.json`), `supabase`. **L'interface (pages, composants, styles) appartient à l'agent 6** (frontend, voir `docs/frontend/`) : tu ne fais aucun écran.
+
+Ton livrable côté interface est **`src/client/`** : exactement les types, fonctions et hooks de `docs/frontend/CONTRACT.md` (connexion wallet, chat en flux, devis et paiement, suivi temps réel, signature du lancement, tableau de bord, réclamation des frais). Tu configures aussi le fournisseur wallet (`@solana/wallet-adapter-react`) et Supabase côté navigateur. Commence par ce client, avec ses tests : l'agent 6 travaille sur des mocks qui ont les mêmes signatures.
 **Tu lis** : `PLANEXECUTE.md`, `docs/INTERFACES.md` (tout), `docs/PRODUCT.md`, `docs/SECURITY.md` (sections 9, 10, 11), `docs/OPERATIONS.md` (flags).
 
 Tu construis le site FORGE : là où le client parle à l'agent, paie, suit la construction, valide l'aperçu, signe le lancement de son coin et réclame ses frais. Tu ne détiens **aucune clé** de wallet FORGE.
@@ -23,7 +25,7 @@ Tu construis le site FORGE : là où le client parle à l'agent, paie, suit la c
 - [ ] Quotas : `included_modifications_left` décrémenté ; au-delà, devis à 5,50 $.
 - [ ] Relais RPC `/api/rpc` : liste blanche de méthodes, limite de débit par IP, taille max.
 - [ ] Flag `signups_paused` respecté.
-- [ ] Pages : conditions d'utilisation (placeholder), FAQ.
+- [ ] Les pages (accueil, chat, paiement, suivi, tableau de bord, FAQ, CGU) sont faites par l'agent 6 : vérifie seulement que chaque écran de `docs/frontend/SCREENS.md` partie A a ses données dans `src/client/`.
 
 ## Tests
 

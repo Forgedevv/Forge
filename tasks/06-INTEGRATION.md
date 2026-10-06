@@ -9,7 +9,7 @@ Tu es la session qui démarre avant les autres et qui assemble à la fin.
 
 - [ ] Monorepo : pnpm workspaces, Turborepo, TypeScript strict partagé (`tsconfig.base.json`), ESLint + Prettier, vitest, `.gitignore` (`.env*`, `.state/`, `node_modules`).
 - [ ] Dossiers vides avec `package.json` minimal : `packages/shared`, `packages/core`, `apps/web`, `apps/launchpad-template`, `apps/builder`, `apps/signer`, `scripts/devnet-tests`, `supabase`.
-- [ ] `packages/shared` : traduire `docs/INTERFACES.md` en code (constantes §1, `LaunchpadSpec` §2, `forge.config.json` §3, statuts §4, types des routes §6 et §7). Tests de validation zod.
+- [ ] `packages/shared` : traduire `docs/INTERFACES.md` en code (constantes §1, `LaunchpadSpec` §2, `forge.config.json` §3, statuts §4, types des routes §6 et §7, types du client navigateur de `docs/frontend/CONTRACT.md` dans `web-client.ts`). Tests de validation zod.
 - [ ] Scripts racine : `pnpm typecheck`, `pnpm test`, `pnpm build` (Turborepo).
 - [ ] `docs/CHANGE_REQUESTS.md` vide avec un modèle d'entrée.
 - [ ] Commit sur `main`, puis création des worktrees (voir `KICKOFF.md`).

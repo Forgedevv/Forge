@@ -78,13 +78,14 @@ export type LaunchpadSpec = z.infer<typeof LaunchpadSpec>;
 
 ## 3. `forge.config.json` — lu par chaque site client
 
-Généré par le builder dans le repo du client. L'agent peut modifier `theme` et `content`, **jamais** `onchain`.
+Généré par le builder dans le repo du client. L'agent peut modifier `theme` et `content`, **jamais** `onchain` ni `mode`. `mode` : `live` | `sleeping` (mise en veille) | `disabled` (coupé par FORGE), écrit uniquement par le builder.
 
 ```json
 {
   "version": 1,
   "name": "MoonPad",
   "slug": "moonpad",
+  "mode": "live",
   "onchain": {
     "cluster": "mainnet-beta",
     "launchpadConfig": "<adresse config du launchpad>",
@@ -280,6 +281,10 @@ Job planté : un job resté dans un statut actif avec `locked_at` plus vieux que
 | `POST /api/jobs/:id/owner-transaction` | `{ signedTransaction }` | `{ signature }` | envoi on-chain, puis `owner_signed` une fois la transaction confirmée |
 | `GET /api/launchpads/:id/claim-transaction` | session | `{ transaction }` | réclamation des frais partenaire du client |
 | `POST /api/rpc` | requête JSON-RPC | réponse | relais Helius, liste blanche de méthodes, limite de débit par IP |
+
+### Client navigateur de `apps/web`
+
+Les écrans (agent 6) n'appellent pas ces routes directement : ils passent par `apps/web/src/client/` (agent 3), dont les types et signatures sont définis dans `docs/frontend/CONTRACT.md`. La session lead les traduit dans `packages/shared/src/web-client.ts` en phase 0.
 
 ## 7. API interne builder → signer
 

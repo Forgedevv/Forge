@@ -1,6 +1,6 @@
 # 02 — TEMPLATE (agent 2)
 
-**Tu possèdes** : `apps/launchpad-template`.
+**Tu possèdes** : `apps/launchpad-template`, **sauf** la zone visuelle (`src/theme`, `src/content`, `src/components`, mise en page de `src/pages`), qui appartient à l'agent 6 (frontend, voir `docs/frontend/`). Toi : `src/forge/`, `src/pages/api/`, la lecture de `forge.config.json`, `next.config`, `package.json`, les scripts. Tes composants de `src/forge/` exposent leurs styles via les variables CSS du thème (`docs/frontend/SCREENS.md`, partie B) pour que l'agent 6 les habille sans les modifier.
 **Tu lis** : `PLANEXECUTE.md`, `docs/METEORA.md` (sections template, Jupiter, frais plateforme), `docs/INTERFACES.md` (section 3, forge.config.json), `docs/SECURITY.md` (section 1), `docs/PRODUCT.md`.
 
 Tu construis le site que chaque client reçoit. L'agent builder modifiera ensuite le design de chaque copie : ta structure doit rendre **impossible** de toucher à l'argent sans casser le scan.
@@ -36,7 +36,7 @@ apps/launchpad-template/
 - [ ] Données : garder les API Jupiter de fun-launch ; ajouter un plan B qui lit les coins on-chain (`listCoinsOfConfig` de core) si l'API Jupiter échoue.
 - [ ] Thème : tout le visuel passe par `src/theme` (variables CSS depuis `forge.config.json#theme`). L'agent builder doit pouvoir changer le look sans toucher `src/forge`.
 - [ ] `next.config` : headers de sécurité depuis `src/forge/security-headers.ts` (CSP avec liste blanche : Jupiter, R2, notre relais RPC, Vercel).
-- [ ] Mode veille : si `forge.config.json` contient `"sleeping": true`, afficher une page statique légère.
+- [ ] Modes : exposer `SiteConfig` (`docs/frontend/CONTRACT.md`) depuis `forge.config.json` ; si `mode` vaut `sleeping` ou `disabled`, servir les pages statiques B6 / B7 dessinées par l'agent 6, sans aucun appel RPC ni Jupiter.
 - [ ] `@forge/core` en dépendance **épinglée exactement**, installé depuis le registre privé.
 - [ ] `.env.example` complet.
 - [ ] Script `pnpm template:publish` qui pousse le contenu vers le repo GitHub template `launchpad-template`.

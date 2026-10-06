@@ -33,6 +33,7 @@ Le client (exemple : Hugo) décrit son launchpad, paie ~33 $ en SOL, l'agent cod
 | [tasks/03-WEB.md](./tasks/03-WEB.md) | Agent 3 | `apps/web`, `supabase` |
 | [tasks/04-BUILDER.md](./tasks/04-BUILDER.md) | Agent 4 | `apps/builder` |
 | [tasks/05-SIGNER.md](./tasks/05-SIGNER.md) | Agent 5 | `apps/signer` |
+| [tasks/08-FRONTEND.md](./tasks/08-FRONTEND.md) | Agent 6 (frontend) | zone visuelle de `apps/web` et du template — dossier complet : [docs/frontend/](./docs/frontend/README.md) |
 | [tasks/06-INTEGRATION.md](./tasks/06-INTEGRATION.md) | Session lead | tout, en lecture ; corrections ciblées |
 | [tasks/07-MAINNET.md](./tasks/07-MAINNET.md) | Ali + session lead | — |
 
