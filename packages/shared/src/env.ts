@@ -3,7 +3,12 @@
  * `R2_*` is expanded to the variables of the fun-launch scaffold (docs/METEORA.md).
  */
 
-export const R2_ENV = ['R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY', 'R2_ACCOUNT_ID', 'R2_BUCKET'] as const;
+export const R2_ENV = [
+  'R2_ACCESS_KEY_ID',
+  'R2_SECRET_ACCESS_KEY',
+  'R2_ACCOUNT_ID',
+  'R2_BUCKET',
+] as const;
 
 /** Variables that may be absent. FORGE_MINT is absent before the $FORGE launch. */
 export const OPTIONAL_ENV = ['FORGE_MINT'] as const;

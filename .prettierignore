@@ -6,3 +6,4 @@ coverage
 .state
 pnpm-lock.yaml
 *.md
+next-env.d.ts

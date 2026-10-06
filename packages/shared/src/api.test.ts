@@ -5,7 +5,8 @@ import { WEB_ENV, BUILDER_ENV, SIGNER_ENV, TEMPLATE_ENV } from './env.js';
 import { ClientError, isClientError } from './web-client.js';
 
 const WALLET = '9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin';
-const SIG = '5VERv8NMvzbJMEkV8xnrLkEaWRtSz9CosKDYjCJjBRnbJLgp8uirBgmQpjKhoR4tjF3ZpRzrFmBV6UjKdiSZkQUW';
+const SIG =
+  '5VERv8NMvzbJMEkV8xnrLkEaWRtSz9CosKDYjCJjBRnbJLgp8uirBgmQpjKhoR4tjF3ZpRzrFmBV6UjKdiSZkQUW';
 const UUID = '7d444840-9dc0-41a7-9a4e-4d0f2b8f6a3c';
 const UUID2 = '1b9d6bcd-bbfd-4b2d-9b5d-ab8dfbbd4bed';
 const TX = 'AQIDBAU=';
@@ -41,11 +42,19 @@ const samples: [string, z.ZodType, unknown][] = [
   ['AuthVerifyResponse', api.AuthVerifyResponse, { wallet: WALLET }],
   ['GatingResponse', api.GatingResponse, { ok: true, required: '0', balance: '0', enabled: false }],
   ['ChatRequest', api.ChatRequest, { message: 'I want a launchpad' }],
-  ['ChatRequest (modification)', api.ChatRequest, { conversationId: UUID, launchpadId: UUID2, message: 'Darker' }],
+  [
+    'ChatRequest (modification)',
+    api.ChatRequest,
+    { conversationId: UUID, launchpadId: UUID2, message: 'Darker' },
+  ],
   ['ChatResponse', api.ChatResponse, { conversationId: UUID }],
   ['SpecConfirmRequest', api.SpecConfirmRequest, { conversationId: UUID, spec }],
   ['SpecConfirmResponse', api.SpecConfirmResponse, { launchpadId: UUID, jobId: UUID2 }],
-  ['LaunchpadModificationRequest', api.LaunchpadModificationRequest, { conversationId: UUID, request: 'New logo' }],
+  [
+    'LaunchpadModificationRequest',
+    api.LaunchpadModificationRequest,
+    { conversationId: UUID, request: 'New logo' },
+  ],
   ['LaunchpadModificationResponse', api.LaunchpadModificationResponse, { jobId: UUID }],
   ['PaymentsQuoteRequest', api.PaymentsQuoteRequest, { jobId: UUID, kind: 'creation' }],
   [
@@ -75,7 +84,21 @@ const samples: [string, z.ZodType, unknown][] = [
   ['PaymentsConfirmRequest', api.PaymentsConfirmRequest, { paymentId: UUID, signature: SIG }],
   ['PaymentsConfirmResponse', api.PaymentsConfirmResponse, { status: 'confirmed' }],
   ['JobApproveResponse', api.JobApproveResponse, { status: 'approved' }],
-  ['OwnerTransactionGetResponse', api.OwnerTransactionGetResponse, { transaction: TX }],
+  [
+    'OwnerTransactionGetResponse',
+    api.OwnerTransactionGetResponse,
+    {
+      transaction: TX,
+      summary: {
+        coinName: 'Moon',
+        coinSymbol: 'MOON',
+        firstBuyLamports: '500000000',
+        estimatedNetworkFeeLamports: '5000',
+        ownerWallet: WALLET,
+      },
+    },
+  ],
+  ['FlagsResponse', api.FlagsResponse, { signupsPaused: false }],
   ['OwnerTransactionSubmitRequest', api.OwnerTransactionSubmitRequest, { signedTransaction: TX }],
   ['OwnerTransactionSubmitResponse', api.OwnerTransactionSubmitResponse, { signature: SIG }],
   ['ClaimTransactionResponse', api.ClaimTransactionResponse, { transaction: TX }],
@@ -83,9 +106,17 @@ const samples: [string, z.ZodType, unknown][] = [
   ['RpcResponse', api.RpcResponse, { jsonrpc: '2.0', id: 1, result: { value: 0 } }],
   ['RouteIdParams', api.RouteIdParams, { id: UUID }],
   ['SignerConfigsRequest', api.SignerConfigsRequest, { jobId: UUID }],
-  ['SignerConfigsResponse', api.SignerConfigsResponse, { launchpadConfig: WALLET, launchpadCoinConfig: WALLET }],
+  [
+    'SignerConfigsResponse',
+    api.SignerConfigsResponse,
+    { launchpadConfig: WALLET, launchpadCoinConfig: WALLET },
+  ],
   ['SignerLaunchPrepareRequest', api.SignerLaunchPrepareRequest, { jobId: UUID }],
-  ['SignerLaunchPrepareResponse', api.SignerLaunchPrepareResponse, { partiallySignedTx: TX, mint: WALLET }],
+  [
+    'SignerLaunchPrepareResponse',
+    api.SignerLaunchPrepareResponse,
+    { partiallySignedTx: TX, mint: WALLET },
+  ],
   ['SignerHealthResponse', api.SignerHealthResponse, { ok: true }],
 ];
 
@@ -101,12 +132,18 @@ describe('API schemas', () => {
   });
 
   it('signer requests reject extra keys (no address or amount from the caller)', () => {
-    expect(api.SignerConfigsRequest.safeParse({ jobId: UUID, ownerWallet: WALLET }).success).toBe(false);
-    expect(api.SignerLaunchPrepareRequest.safeParse({ jobId: UUID, lamports: '1' }).success).toBe(false);
+    expect(api.SignerConfigsRequest.safeParse({ jobId: UUID, ownerWallet: WALLET }).success).toBe(
+      false,
+    );
+    expect(api.SignerLaunchPrepareRequest.safeParse({ jobId: UUID, lamports: '1' }).success).toBe(
+      false,
+    );
   });
 
   it('rejects malformed values', () => {
-    expect(api.PaymentsQuoteRequest.safeParse({ jobId: 'not-a-uuid', kind: 'creation' }).success).toBe(false);
+    expect(
+      api.PaymentsQuoteRequest.safeParse({ jobId: 'not-a-uuid', kind: 'creation' }).success,
+    ).toBe(false);
     expect(api.PaymentsQuoteRequest.safeParse({ jobId: UUID, kind: 'gift' }).success).toBe(false);
     expect(api.Lamports.safeParse('1.5').success).toBe(false);
     expect(api.Lamports.safeParse('-1').success).toBe(false);
@@ -141,7 +178,11 @@ describe('env names', () => {
 
   it('keeps signer secrets out of the web and template apps', () => {
     const exposed: readonly string[] = [...WEB_ENV, ...TEMPLATE_ENV];
-    for (const name of ['SIGNER_HMAC_SECRET', 'SIGNER_KEYSTORE_PASSPHRASE', 'GITHUB_APP_PRIVATE_KEY']) {
+    for (const name of [
+      'SIGNER_HMAC_SECRET',
+      'SIGNER_KEYSTORE_PASSPHRASE',
+      'GITHUB_APP_PRIVATE_KEY',
+    ]) {
       expect(exposed).not.toContain(name);
     }
   });

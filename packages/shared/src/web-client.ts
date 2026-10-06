@@ -4,9 +4,9 @@
  * Framework-free: hooks are typed as plain functions returning the documented shapes.
  */
 import type { GatingResponse, Lamports, OwnerTransactionSummary, Quote, Session } from './api.js';
-import type { LaunchpadStatus } from './db.js';
+import type { LaunchpadStatus, PaymentKind } from './db.js';
 import type { FailedStage, JobStatus, JobType } from './jobs.js';
-import type { LaunchpadSpecDraft, SpecValidation } from './spec.js';
+import type { LaunchpadSpec, LaunchpadSpecDraft, SpecValidation } from './spec.js';
 
 // Lamports, Session, Quote, OwnerTransactionSummary (api.ts), LaunchpadStatus (db.ts),
 // JobStatus / JobType / FailedStage (jobs.ts), LaunchpadSpecDraft / SpecValidation (spec.ts)
@@ -61,11 +61,17 @@ export interface LaunchpadDetail extends LaunchpadSummary {
     launchpadCoinConfig: string | null;
     launchpadCoinMint: string | null;
   };
-  versions: { jobId: string; createdAt: string; request: string | null; previewUrl: string | null }[];
+  versions: {
+    jobId: string;
+    createdAt: string;
+    request: string | null;
+    previewUrl: string | null;
+  }[];
   jobs: Job[];
 }
 
-export type TxPhase = 'idle' | 'awaiting_signature' | 'sending' | 'confirmed' | 'rejected' | 'error';
+export type TxPhase =
+  'idle' | 'awaiting_signature' | 'sending' | 'confirmed' | 'rejected' | 'error';
 
 export interface TxResult {
   phase: TxPhase;
@@ -163,15 +169,30 @@ export interface FormatSolOptions {
 
 export type OnTxPhase = (phase: TxPhase) => void;
 
+/** One `data:` line of the `POST /api/chat` event stream (INTERFACES §6). */
+export type ChatStreamEvent =
+  | { type: 'conversation'; conversationId: string }
+  | { type: 'text'; delta: string }
+  | { type: 'spec'; spec: LaunchpadSpecDraft; validation: SpecValidation }
+  | { type: 'error'; code: ClientErrorCode; message: string }
+  | { type: 'done' };
+
 /** Every function and hook exported by `apps/web/src/client/` (and by its mocks). */
 export interface WebClient {
   useSession(): UseSessionResult;
   useFlags(): Flags;
   useGating(): UseGatingResult;
   useChat(opts: UseChatOptions): UseChatResult;
-  confirmSpec(conversationId: string): Promise<{ launchpadId: string; jobId: string }>;
-  requestModification(launchpadId: string, conversationId: string): Promise<{ jobId: string }>;
-  getQuote(jobId: string): Promise<Quote>;
+  confirmSpec(
+    conversationId: string,
+    spec: LaunchpadSpec,
+  ): Promise<{ launchpadId: string; jobId: string }>;
+  requestModification(
+    launchpadId: string,
+    conversationId: string,
+    request: string,
+  ): Promise<{ jobId: string }>;
+  getQuote(jobId: string, kind: PaymentKind): Promise<Quote>;
   payQuote(quote: Quote, onPhase: OnTxPhase): Promise<TxResult>;
   useJob(jobId: string): UseJobResult;
   approvePreview(jobId: string): Promise<void>;

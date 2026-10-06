@@ -11,6 +11,7 @@
     "lint": "eslint ."
   },
   "dependencies": {
+    "@forge/shared": "workspace:*",
     "pino": "10.4.0",
     "zod": "4.6.5"
   },

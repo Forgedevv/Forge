@@ -34,7 +34,11 @@ export const FailedStage = z.enum(['build', 'onchain', 'deploy']);
 export type FailedStage = z.infer<typeof FailedStage>;
 
 /** Statuses during which the builder holds the job lock (locked_by / locked_at). */
-export const ACTIVE_JOB_STATUSES = ['building', 'onchain_setup', 'deploying'] as const satisfies readonly JobStatus[];
+export const ACTIVE_JOB_STATUSES = [
+  'building',
+  'onchain_setup',
+  'deploying',
+] as const satisfies readonly JobStatus[];
 export type ActiveJobStatus = (typeof ACTIVE_JOB_STATUSES)[number];
 
 /** Happy path of a `create_launchpad` job, in order. */

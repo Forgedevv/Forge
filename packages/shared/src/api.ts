@@ -14,7 +14,9 @@ import { LaunchpadSpec, SolanaAddress } from './spec.js';
 // ---------------------------------------------------------------------------
 
 /** Lamports serialized as a decimal string (bigint). 1 SOL = 1_000_000_000 lamports. */
-export const Lamports = z.string().regex(/^\d+$/, { error: 'Lamports must be a decimal integer string' });
+export const Lamports = z
+  .string()
+  .regex(/^\d+$/, { error: 'Lamports must be a decimal integer string' });
 export type Lamports = z.infer<typeof Lamports>;
 
 /** Raw token amount (smallest units) serialized as a decimal string. */
@@ -45,6 +47,7 @@ export const WEB_API_ROUTES = {
   authNonce: { method: 'POST', path: '/api/auth/nonce' },
   authVerify: { method: 'POST', path: '/api/auth/verify' },
   gating: { method: 'GET', path: '/api/gating' },
+  flags: { method: 'GET', path: '/api/flags' },
   chat: { method: 'POST', path: '/api/chat' },
   specConfirm: { method: 'POST', path: '/api/spec/confirm' },
   launchpadModifications: { method: 'POST', path: '/api/launchpads/:id/modifications' },
@@ -64,7 +67,10 @@ export const AuthNonceResponse = z.object({ nonce: z.string().min(1) });
 export type AuthNonceResponse = z.infer<typeof AuthNonceResponse>;
 
 // POST /api/auth/verify — signature of the message containing the nonce
-export const AuthVerifyRequest = z.strictObject({ wallet: SolanaAddress, signature: Base58Signature });
+export const AuthVerifyRequest = z.strictObject({
+  wallet: SolanaAddress,
+  signature: Base58Signature,
+});
 export type AuthVerifyRequest = z.infer<typeof AuthVerifyRequest>;
 /** The session. */
 export const AuthVerifyResponse = z.object({ wallet: SolanaAddress });
@@ -84,7 +90,12 @@ export const GatingResponse = z.object({
 });
 export type GatingResponse = z.infer<typeof GatingResponse>;
 
-// POST /api/chat — returns { conversationId } and a text stream
+// GET /api/flags — public kill-switch state needed by the UI
+export const FlagsResponse = z.object({ signupsPaused: z.boolean() });
+export type FlagsResponse = z.infer<typeof FlagsResponse>;
+
+// POST /api/chat — text/event-stream of ChatStreamEvent (web-client.ts); always starts with
+// { type: 'conversation', conversationId } and ends with { type: 'done' }.
 export const ChatRequest = z.strictObject({
   conversationId: Uuid.optional(),
   /** Set for a modification of an existing launchpad. */
@@ -92,6 +103,7 @@ export const ChatRequest = z.strictObject({
   message: z.string().min(1),
 });
 export type ChatRequest = z.infer<typeof ChatRequest>;
+/** Payload of the first stream event. */
 export const ChatResponse = z.object({ conversationId: Uuid });
 export type ChatResponse = z.infer<typeof ChatResponse>;
 
@@ -130,7 +142,10 @@ export const PaymentsQuoteResponse = Quote.extend({ transaction: Base64Transacti
 export type PaymentsQuoteResponse = z.infer<typeof PaymentsQuoteResponse>;
 
 // POST /api/payments/confirm
-export const PaymentsConfirmRequest = z.strictObject({ paymentId: Uuid, signature: Base58Signature });
+export const PaymentsConfirmRequest = z.strictObject({
+  paymentId: Uuid,
+  signature: Base58Signature,
+});
 export type PaymentsConfirmRequest = z.infer<typeof PaymentsConfirmRequest>;
 export const PaymentsConfirmResponse = z.object({ status: PaymentStatus });
 export type PaymentsConfirmResponse = z.infer<typeof PaymentsConfirmResponse>;
@@ -152,13 +167,15 @@ export type OwnerTransactionSummary = z.infer<typeof OwnerTransactionSummary>;
 // GET /api/jobs/:id/owner-transaction — launch transaction partially signed by FORGE
 export const OwnerTransactionGetResponse = z.object({
   transaction: Base64Transaction,
-  /** Optional: the route table only lists `transaction`; the UI needs a summary (see CONTRACT.md). */
-  summary: OwnerTransactionSummary.optional(),
+  /** Shown to the client before signing (INTERFACES §6). */
+  summary: OwnerTransactionSummary,
 });
 export type OwnerTransactionGetResponse = z.infer<typeof OwnerTransactionGetResponse>;
 
 // POST /api/jobs/:id/owner-transaction
-export const OwnerTransactionSubmitRequest = z.strictObject({ signedTransaction: Base64Transaction });
+export const OwnerTransactionSubmitRequest = z.strictObject({
+  signedTransaction: Base64Transaction,
+});
 export type OwnerTransactionSubmitRequest = z.infer<typeof OwnerTransactionSubmitRequest>;
 export const OwnerTransactionSubmitResponse = z.object({ signature: Base58Signature });
 export type OwnerTransactionSubmitResponse = z.infer<typeof OwnerTransactionSubmitResponse>;

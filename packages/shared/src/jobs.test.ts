@@ -27,7 +27,15 @@ describe('job flows', () => {
   });
 
   it('modify flow skips the on-chain steps', () => {
-    expect(MODIFY_FLOW).toEqual(['spec_ready', 'paid', 'building', 'preview_ready', 'approved', 'deploying', 'live']);
+    expect(MODIFY_FLOW).toEqual([
+      'spec_ready',
+      'paid',
+      'building',
+      'preview_ready',
+      'approved',
+      'deploying',
+      'live',
+    ]);
     expect(flowForJobType('modify_launchpad')).toBe(MODIFY_FLOW);
     expect(flowForJobType('create_launchpad')).toBe(CREATE_FLOW);
   });
@@ -53,7 +61,11 @@ describe('failedStageForStatus', () => {
   });
 
   it('isActiveJobStatus matches ACTIVE_JOB_STATUSES', () => {
-    expect(JobStatus.options.filter(isActiveJobStatus)).toEqual(['building', 'onchain_setup', 'deploying']);
+    expect(JobStatus.options.filter(isActiveJobStatus)).toEqual([
+      'building',
+      'onchain_setup',
+      'deploying',
+    ]);
   });
 });
 

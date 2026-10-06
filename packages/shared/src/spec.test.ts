@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { CLIENT_BOUNDS } from './constants.js';
-import { LaunchpadSpec, SolanaAddress, validateSpecDraft, type LaunchpadSpecDraft, type LaunchpadSpecInput } from './spec.js';
+import {
+  LaunchpadSpec,
+  SolanaAddress,
+  validateSpecDraft,
+  type LaunchpadSpecDraft,
+  type LaunchpadSpecInput,
+} from './spec.js';
 
 const OWNER = '9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin';
 
