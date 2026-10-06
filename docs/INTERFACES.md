@@ -150,7 +150,7 @@ Failure rules:
 ```sql
 create table users (
   wallet text primary key,
-  created_at timestamptz default now()
+  created_at timestamptz not null default now()
 );
 
 create table launchpads (
@@ -164,10 +164,10 @@ create table launchpads (
   launchpad_coin_config text,
   launchpad_coin_mint text,
   creator_wallet_ref text,                  -- creator wallet identifier in the signer (never the key)
-  included_modifications_left int default 2,
+  included_modifications_left int not null default 2,
   status text not null default 'draft',     -- draft | live | sleeping | disabled
   last_trade_at timestamptz,
-  created_at timestamptz default now()
+  created_at timestamptz not null default now()
 );
 
 create table jobs (
@@ -181,16 +181,16 @@ create table jobs (
   preview_url text,
   owner_tx text,                            -- partially signed launch transaction (base64), with durable nonce
   error text,
-  api_cost_usd numeric default 0,
+  api_cost_usd numeric not null default 0,
   locked_by text,                           -- id of the worker that took the job
   locked_at timestamptz,
-  created_at timestamptz default now(),
-  updated_at timestamptz default now()
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
 );
 
 create table payments (
   id uuid primary key default gen_random_uuid(),
-  job_id uuid references jobs(id),
+  job_id uuid not null references jobs(id),
   payer_wallet text not null,               -- = launchpads.owner_wallet
   kind text not null,                       -- creation | modification
   usd_amount numeric not null,
@@ -199,7 +199,7 @@ create table payments (
   tx_signature text unique,
   status text not null default 'quoted',    -- quoted | confirmed | expired | refunded
   refund_signature text,
-  created_at timestamptz default now()
+  created_at timestamptz not null default now()
 );
 
 -- The chat starts before the launchpad exists: messages are attached to a conversation.
@@ -207,7 +207,7 @@ create table conversations (
   id uuid primary key default gen_random_uuid(),
   owner_wallet text not null references users(wallet),
   launchpad_id uuid references launchpads(id), -- null during design, set when the spec is confirmed
-  created_at timestamptz default now()
+  created_at timestamptz not null default now()
 );
 
 create table chat_messages (
@@ -215,14 +215,14 @@ create table chat_messages (
   conversation_id uuid not null references conversations(id),
   role text not null,                       -- user | assistant | system
   content text not null,
-  created_at timestamptz default now()
+  created_at timestamptz not null default now()
 );
 
 create table job_events (
   id bigserial primary key,
-  job_id uuid references jobs(id),
+  job_id uuid not null references jobs(id),
   message text not null,                    -- shown in the chat in real time
-  created_at timestamptz default now()
+  created_at timestamptz not null default now()
 );
 
 create table flags (                        -- kill switches
@@ -270,17 +270,27 @@ Crashed job: a job left in an active status with `locked_at` older than `OPS.job
 |---|---|---|---|
 | `POST /api/auth/nonce` | `{ wallet }` | `{ nonce }` | |
 | `POST /api/auth/verify` | `{ wallet, signature }` | session | signature of the message containing the nonce |
-| `GET /api/gating` | session | `{ ok, required, balance }` | amount `FORGE_GATING_AMOUNT` of the `FORGE_MINT` mint; if `FORGE_MINT` is absent (before the $FORGE launch), token-gating is disabled and returns `ok: true` |
-| `POST /api/chat` | `{ conversationId?, launchpadId?, message }` | `{ conversationId }` + text stream | design phase, produces a `LaunchpadSpec`. Without `conversationId`, creates a conversation (attached to `launchpadId` if it is a modification) |
+| `GET /api/gating` | session | `{ ok, enabled, required, balance }` | amount `FORGE_GATING_AMOUNT` of the `FORGE_MINT` mint (`required` / `balance` as raw-unit decimal strings); if `FORGE_MINT` is absent (before the $FORGE launch), token-gating is disabled: `enabled: false`, `ok: true` |
+| `GET /api/flags` | — | `{ signupsPaused }` | public kill-switch state needed by the UI |
+| `POST /api/chat` | `{ conversationId?, launchpadId?, message }` | event stream (see below) | design phase, produces a `LaunchpadSpec`. Without `conversationId`, creates a conversation (attached to `launchpadId` if it is a modification) |
 | `POST /api/spec/confirm` | `{ conversationId, spec }` | `{ launchpadId, jobId }` | zod validation + bounds; rejects if `spec.ownerWallet` ≠ session wallet; creates the launchpad (`draft`), attaches it to the conversation, creates the `create_launchpad` job in `spec_ready` |
 | `POST /api/launchpads/:id/modifications` | `{ conversationId, request }` | `{ jobId }` | session = owner; creates the `modify_launchpad` job in `spec_ready` |
-| `POST /api/payments/quote` | `{ jobId, kind }` | `{ paymentId, lamports, expiresAt, transaction }` | unsigned payment transaction, dollar price converted at the current rate. `lamports = 0` if an included modification remains (the job goes straight to `paid`) |
-| `POST /api/payments/confirm` | `{ paymentId, signature }` | `{ status }` | verifies on-chain: amount ≥ quote, recipient = cashbox, signer = session wallet **= `launchpads.owner_wallet`**, quote not expired, signature never used. Moves the job to `paid` |
+| `POST /api/payments/quote` | `{ jobId, kind }` | `{ paymentId, kind, lamports, usdAmount, expiresAt, transaction }` | unsigned payment transaction, dollar price converted at the current rate. `lamports = "0"` and `transaction = null` if an included modification remains (the job goes straight to `paid`) |
+| `POST /api/payments/confirm` | `{ paymentId, signature }` | `{ status }` | `status` = the **payment** status. Verifies on-chain: amount ≥ quote, recipient = cashbox, signer = session wallet **= `launchpads.owner_wallet`**, quote not expired, signature never used. Moves the job to `paid` |
 | `POST /api/jobs/:id/approve` | session | `{ status }` | the client approves the preview → `approved` |
-| `GET /api/jobs/:id/owner-transaction` | session | `{ transaction }` | launch transaction partially signed by FORGE, to be signed by the client |
+| `GET /api/jobs/:id/owner-transaction` | session | `{ transaction, summary }` | launch transaction partially signed by FORGE, to be signed by the client; `summary` = `OwnerTransactionSummary` (coin, first buy, estimated network fee, expected owner wallet) shown before signing |
 | `POST /api/jobs/:id/owner-transaction` | `{ signedTransaction }` | `{ signature }` | sent on-chain, then `owner_signed` once the transaction is confirmed |
 | `GET /api/launchpads/:id/claim-transaction` | session | `{ transaction }` | claim of the client's partner fees |
 | `POST /api/rpc` | JSON-RPC request | response | Helius relay, method allowlist, per-IP rate limit |
+
+Encodings: transactions in base64; signatures in base58; IDs are UUIDs; lamports and raw token amounts as decimal strings in JSON. Request bodies are strict (unknown keys rejected).
+
+**`/api/chat` stream**: `text/event-stream`, one JSON object per `data:` line:
+- `{ "type": "conversation", "conversationId": "<uuid>" }` — always first;
+- `{ "type": "text", "delta": "<text>" }` — assistant text, in order;
+- `{ "type": "spec", "spec": LaunchpadSpecDraft, "validation": SpecValidation }` — whenever the draft changes;
+- `{ "type": "error", "code": ClientErrorCode, "message": "<text>" }`;
+- `{ "type": "done" }` — always last.
 
 ### `apps/web` browser client
 
@@ -288,7 +298,9 @@ The screens (agent 6) do not call these routes directly: they go through `apps/w
 
 ## 7. Internal builder → signer API
 
-HTTP on the private network; each request carries an `X-Forge-Signature` header = HMAC-SHA256 of the body with `SIGNER_HMAC_SECRET`, plus a timestamp (rejected beyond 60 s).
+HTTP on the private network. Each request carries:
+- `X-Forge-Timestamp`: unix time in seconds; rejected if it differs from the signer's clock by more than 60 s;
+- `X-Forge-Signature`: hex HMAC-SHA256 with `SIGNER_HMAC_SECRET` over `"<timestamp>.<raw body>"` (the timestamp is signed too, so it cannot be swapped on a replayed request). The signer also rejects a signature it has already seen within the 60 s window.
 
 | Route | Input | Output | Signer checks |
 |---|---|---|---|

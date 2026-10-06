@@ -73,12 +73,12 @@ interface TxResult { phase: TxPhase; signature?: string; error?: string }
 | Function | Role | Screen |
 |---|---|---|
 | `useSession(): { session: Session \| null; connect(): Promise<void>; disconnect(): Promise<void>; status: 'idle' \| 'signing' \| 'error' }` | wallet connection + message signing | A2 |
-| `useFlags(): Flags` | kill switches | A1 |
+| `useFlags(): Flags` | kill switches (`GET /api/flags`) | A1 |
 | `useGating(): { gating: Gating \| null; loading: boolean; recheck(): Promise<void> }` | $FORGE check | A3 |
 | `useChat(opts: { conversationId?: string; launchpadId?: string }): { messages: { role: 'user' \| 'assistant'; content: string }[]; send(text: string): void; streaming: boolean; spec: LaunchpadSpecDraft; validation: SpecValidation; rateLimited: boolean; conversationId: string \| null }` | streamed chat + spec that fills in | A4 |
-| `confirmSpec(conversationId: string): Promise<{ launchpadId: string; jobId: string }>` | confirm the creation | A4 |
-| `requestModification(launchpadId: string, conversationId: string): Promise<{ jobId: string }>` | confirm a change | A4 |
-| `getQuote(jobId: string): Promise<Quote>` | new quote | A5 |
+| `confirmSpec(conversationId: string, spec: LaunchpadSpec): Promise<{ launchpadId: string; jobId: string }>` | confirm the creation | A4 |
+| `requestModification(launchpadId: string, conversationId: string, request: string): Promise<{ jobId: string }>` | confirm a change | A4 |
+| `getQuote(jobId: string, kind: 'creation' \| 'modification'): Promise<Quote>` | new quote | A5 |
 | `payQuote(quote: Quote, onPhase: (p: TxPhase) => void): Promise<TxResult>` | signs, sends, confirms the payment | A5 |
 | `useJob(jobId: string): { job: Job \| null; events: JobEvent[]; loading: boolean }` | real time | A6 |
 | `approvePreview(jobId: string): Promise<void>` | approve the preview | A6 |
