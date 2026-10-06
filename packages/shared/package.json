@@ -1,0 +1,28 @@
+{
+  "name": "@forge/shared",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Shared contracts (constants, zod schemas, types) between all FORGE apps.",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "lint": "eslint ."
+  },
+  "dependencies": {
+    "zod": "4.6.5"
+  }
+}
