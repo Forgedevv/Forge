@@ -158,12 +158,9 @@ export async function claimPartnerFees(launchpadId: string, onPhase: OnTxPhase):
   });
 }
 
-/**
- * Wakes a sleeping launchpad. The route is not part of INTERFACES.md §6 yet: implemented
- * against `POST /api/launchpads/:id/reactivate`.
- */
-export const REACTIVATE_PATH = '/api/launchpads/:id/reactivate';
-
+/** Wakes a sleeping launchpad (`POST /api/launchpads/:id/reactivate`). */
 export async function reactivateLaunchpad(launchpadId: string): Promise<void> {
-  await request(route(REACTIVATE_PATH, { id: launchpadId }), z.unknown(), { method: 'POST' });
+  await request(route(WEB_API_ROUTES.launchpadReactivate.path, { id: launchpadId }), z.unknown(), {
+    method: 'POST',
+  });
 }
