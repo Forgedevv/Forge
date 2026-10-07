@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "name": "Example Pad",
+  "slug": "example-pad",
+  "mode": "live",
+  "theme": {
+    "primaryColor": "#7C3AED",
+    "accentColor": "#F59E0B",
+    "darkMode": true
+  },
+  "content": {
+    "tagline": "Launch your coin on the example launchpad.",
+    "about": "This is a sample launchpad generated from the FORGE template. Replace this text with your own."
+  }
+}

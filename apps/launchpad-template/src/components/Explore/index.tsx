@@ -1,0 +1,27 @@
+import ExploreGrid from './ExploreGrid';
+import { DataStreamProvider } from '@/forge/data/DataStreamProvider';
+import { ExploreMsgHandler } from './ExploreMsgHandler';
+import { ExploreProvider } from '@/contexts/ExploreProvider';
+import { PropsWithChildren } from 'react';
+
+const Explore = () => {
+  return (
+    <ExploreContext>
+      <ExploreGrid className="flex-1" />
+    </ExploreContext>
+  );
+};
+
+const ExploreContext = ({ children }: PropsWithChildren) => {
+  return (
+    <div className="flex flex-1 flex-col">
+      <ExploreMsgHandler />
+
+      <ExploreProvider>
+        <DataStreamProvider>{children}</DataStreamProvider>
+      </ExploreProvider>
+    </div>
+  );
+};
+
+export default Explore;
