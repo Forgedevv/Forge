@@ -80,6 +80,33 @@ export function isCamelWords(value: string): boolean {
   return CAMEL_WORDS_RE.test(value);
 }
 
+const BASE58_ONLY_RE = new RegExp(`^[${B58}]+$`);
+const FRAGMENT_RE = new RegExp(`(?<![A-Za-z0-9])[${B58}]{16,31}(?![A-Za-z0-9])`, 'g');
+
+/** True if the whole string is made of base58 characters. */
+export function isBase58Only(value: string): boolean {
+  return BASE58_ONLY_RE.test(value);
+}
+
+/**
+ * A run of base58 characters that looks random rather than like words:
+ * not camelCase words, and mixing at least two of digits, upper and lower case.
+ */
+export function looksRandomBase58(value: string): boolean {
+  if (!isBase58Only(value) || CAMEL_WORDS_RE.test(value)) return false;
+  const classes = Number(/[0-9]/.test(value)) + Number(/[A-Z]/.test(value)) + Number(/[a-z]/.test(value));
+  return classes >= 2;
+}
+
+/** Base58 runs of 16 to 31 characters that look random (a piece of a split address). */
+export function findBase58Fragments(text: string): Base58Hit[] {
+  const hits: Base58Hit[] = [];
+  for (const m of text.matchAll(FRAGMENT_RE)) {
+    if (looksRandomBase58(m[0])) hits.push({ value: m[0], index: m.index ?? 0 });
+  }
+  return hits;
+}
+
 function decodeBase64(token: string): Uint8Array | null {
   const std = token.replace(/-/g, '+').replace(/_/g, '/').replace(/=+$/, '');
   if (std.length % 4 === 1) return null;

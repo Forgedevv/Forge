@@ -214,6 +214,21 @@ export class Folder {
     return this.bindings.has(name);
   }
 
+  /**
+   * True if `name` is declared once, as a `const` never reassigned, initialized
+   * with a plain object or array literal (no spread, no `__proto__` key).
+   */
+  isLiteralConst(name: string): boolean {
+    const b = this.binding(name);
+    if (!b || b.kind !== 'const' || !b.init) return false;
+    const init = unwrap(b.init);
+    if (ts.isArrayLiteralExpression(init)) return init.elements.every((e) => !ts.isSpreadElement(e));
+    if (ts.isObjectLiteralExpression(init)) {
+      return init.properties.every((p) => !ts.isSpreadAssignment(p) && (p.name === undefined || staticPropertyName(p.name, this) !== '__proto__'));
+    }
+    return false;
+  }
+
   private binding(name: string): Binding | undefined {
     const b = this.bindings.get(name);
     if (!b || b.declarations !== 1 || b.reassigned || b.appends.length > 0) return undefined;
