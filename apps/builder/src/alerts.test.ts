@@ -137,4 +137,14 @@ describe('sanitizeDetails', () => {
   it('truncates long values', () => {
     expect(sanitizeDetails({ a: 'x'.repeat(1000) }).a?.length).toBeLessThan(400);
   });
+
+  it('strips sensitive keys nested beyond the depth limit', () => {
+    const out = sanitizeDetails({
+      ctx: { a: { b: { c: { d: { privateKey: 'pk-deep-value' } } } } },
+      list: [[[[{ secret: 'arr-deep-value' }]]]],
+    });
+    const joined = JSON.stringify(out);
+    expect(joined).not.toContain('pk-deep-value');
+    expect(joined).not.toContain('arr-deep-value');
+  });
 });

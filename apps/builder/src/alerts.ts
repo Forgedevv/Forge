@@ -29,7 +29,7 @@ export interface Alerter {
   ): Promise<void>;
 }
 
-const SENSITIVE_KEY = /key|secret|token|private|passphrase/i;
+const SENSITIVE_KEY = /key|secret|token|private|passphrase|password|mnemonic|seed|credential|auth/i;
 const MAX_DETAIL_LENGTH = 300;
 const MAX_MESSAGE_LENGTH = 3000;
 const PREFIX: Record<AlertLevel, string> = {
@@ -39,7 +39,9 @@ const PREFIX: Record<AlertLevel, string> = {
 };
 
 function sanitizeNested(v: unknown, depth = 0): unknown {
-  if (depth > 3 || v === null || typeof v !== 'object') return v;
+  if (v === null || typeof v !== 'object') return v;
+  // Past the depth limit, keys are no longer checked: drop the value instead of leaking it.
+  if (depth > 3) return '[truncated]';
   if (Array.isArray(v)) return v.map((x) => sanitizeNested(x, depth + 1));
   const o: Record<string, unknown> = {};
   for (const [k, x] of Object.entries(v)) {
