@@ -46,6 +46,9 @@ export type RouteIdParams = z.infer<typeof RouteIdParams>;
 export const WEB_API_ROUTES = {
   authNonce: { method: 'POST', path: '/api/auth/nonce' },
   authVerify: { method: 'POST', path: '/api/auth/verify' },
+  authSession: { method: 'GET', path: '/api/auth/session' },
+  authLogout: { method: 'POST', path: '/api/auth/logout' },
+  authSupabaseToken: { method: 'GET', path: '/api/auth/supabase-token' },
   gating: { method: 'GET', path: '/api/gating' },
   flags: { method: 'GET', path: '/api/flags' },
   chat: { method: 'POST', path: '/api/chat' },
@@ -57,24 +60,46 @@ export const WEB_API_ROUTES = {
   ownerTransactionGet: { method: 'GET', path: '/api/jobs/:id/owner-transaction' },
   ownerTransactionSubmit: { method: 'POST', path: '/api/jobs/:id/owner-transaction' },
   claimTransaction: { method: 'GET', path: '/api/launchpads/:id/claim-transaction' },
+  launchpadReactivate: { method: 'POST', path: '/api/launchpads/:id/reactivate' },
   rpc: { method: 'POST', path: '/api/rpc' },
 } as const;
 
 // POST /api/auth/nonce
 export const AuthNonceRequest = z.strictObject({ wallet: SolanaAddress });
 export type AuthNonceRequest = z.infer<typeof AuthNonceRequest>;
-export const AuthNonceResponse = z.object({ nonce: z.string().min(1) });
+/**
+ * `nonce` is an opaque server-signed token (stateless). `message` is the exact text the wallet
+ * must sign; the client never builds it. The token is also set as an HttpOnly cookie.
+ */
+export const AuthNonceResponse = z.object({
+  nonce: z.string().min(1),
+  message: z.string().min(1),
+  expiresAt: z.string().min(1),
+});
 export type AuthNonceResponse = z.infer<typeof AuthNonceResponse>;
 
 // POST /api/auth/verify — signature of the message containing the nonce
 export const AuthVerifyRequest = z.strictObject({
   wallet: SolanaAddress,
   signature: Base58Signature,
+  /** The token returned by /api/auth/nonce; optional because it is also sent as a cookie. */
+  nonce: z.string().min(1).optional(),
 });
 export type AuthVerifyRequest = z.infer<typeof AuthVerifyRequest>;
 /** The session. */
 export const AuthVerifyResponse = z.object({ wallet: SolanaAddress });
 export type AuthVerifyResponse = z.infer<typeof AuthVerifyResponse>;
+// POST /api/auth/logout
+export const AuthLogoutResponse = z.object({ ok: z.literal(true) });
+export type AuthLogoutResponse = z.infer<typeof AuthLogoutResponse>;
+
+// GET /api/auth/supabase-token — short-lived JWT for Supabase RLS / Realtime (claim `wallet`)
+export const SupabaseTokenResponse = z.object({
+  accessToken: z.string().min(1),
+  expiresAt: z.string().min(1),
+});
+export type SupabaseTokenResponse = z.infer<typeof SupabaseTokenResponse>;
+
 export const Session = AuthVerifyResponse;
 export type Session = AuthVerifyResponse;
 

@@ -37,7 +37,17 @@ const spec = {
 
 const samples: [string, z.ZodType, unknown][] = [
   ['AuthNonceRequest', api.AuthNonceRequest, { wallet: WALLET }],
-  ['AuthNonceResponse', api.AuthNonceResponse, { nonce: 'abc123' }],
+  [
+    'AuthNonceResponse',
+    api.AuthNonceResponse,
+    { nonce: 'abc123', message: 'Sign in', expiresAt: '2026-10-07T12:00:00Z' },
+  ],
+  [
+    'SupabaseTokenResponse',
+    api.SupabaseTokenResponse,
+    { accessToken: 'jwt', expiresAt: '2026-10-07T13:00:00Z' },
+  ],
+  ['AuthLogoutResponse', api.AuthLogoutResponse, { ok: true }],
   ['AuthVerifyRequest', api.AuthVerifyRequest, { wallet: WALLET, signature: SIG }],
   ['AuthVerifyResponse', api.AuthVerifyResponse, { wallet: WALLET }],
   ['GatingResponse', api.GatingResponse, { ok: true, required: '0', balance: '0', enabled: false }],

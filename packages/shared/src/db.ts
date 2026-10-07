@@ -82,7 +82,7 @@ export interface JobRow {
 
 export interface PaymentRow {
   id: string;
-  job_id: string | null;
+  job_id: string;
   /** = launchpads.owner_wallet */
   payer_wallet: string;
   kind: PaymentKind;
@@ -113,7 +113,7 @@ export interface ChatMessageRow {
 
 export interface JobEventRow {
   id: number;
-  job_id: string | null;
+  job_id: string;
   /** Shown in the chat in real time. */
   message: string;
   created_at: Timestamptz | null;
