@@ -9,12 +9,12 @@
  * TEST2_THRESHOLD_SOL (the program only requires a threshold > 0). The mechanism is identical.
  */
 import { PublicKey } from '@solana/web3.js';
-import { NATIVE_MINT } from '@solana/spl-token';
+import { ACCOUNT_SIZE, NATIVE_MINT } from '@solana/spl-token';
 import { MigrationFeeOption } from '@meteora-ag/dynamic-bonding-curve-sdk';
 import { BUDGETS, ensureFunded, runMain } from './lib/funding.js';
 import { State, type Json } from './lib/state.js';
 import { loadOrCreateKeypair, loadWallets } from './lib/wallets.js';
-import { ata, getBalance, getTokenAccountBalance, getTxFee } from './lib/solana.js';
+import { ata, getBalance, getConnection, getTokenAccountBalance, getTxFee } from './lib/solana.js';
 import {
   buildTestCurve,
   buyPartialFillOnChain,
@@ -25,6 +25,7 @@ import {
   pickSwapEvent,
   snapshotPool,
   swapOnChain,
+  withSwapEvent,
   type PoolSnapshot,
 } from './lib/dbc.js';
 import {
@@ -45,8 +46,6 @@ export const TEST2_CREATOR_PCT = 25;
 export const TEST2_THRESHOLD_SOL = 1;
 export const TEST2_CREATOR_LOCKED_PCT = 50;
 export const TEST2_PARTNER_LOCKED_PCT = 50;
-/** Rent of a WSOL token account, returned to the receiver when the temporary account is closed. */
-const WSOL_ACCOUNT_RENT = 2_039_280n;
 
 type ConfigStep = { config: string; signature: string };
 type PoolStep = { pool: string; mint: string; signature: string };
@@ -140,7 +139,7 @@ export async function runTest2(): Promise<boolean> {
   for (let i = 0; i < TRADES.length; i++) {
     const plan = TRADES[i]!;
     trades.push(
-      await state.step<TradeStep>(`test2.trade.${i + 1}`, async () => {
+      await withSwapEvent(state, `test2.trade.${i + 1}`, await state.step<TradeStep>(`test2.trade.${i + 1}`, async () => {
         const before = await snapshotPool(pool);
         let amountIn: bigint;
         if (plan.kind === 'buy') {
@@ -165,7 +164,7 @@ export async function runTest2(): Promise<boolean> {
           after,
           event: pickSwapEvent(await decodeEvents(outcome.signature)),
         };
-      }),
+      })),
     );
   }
 
@@ -254,7 +253,10 @@ export async function runTest2(): Promise<boolean> {
       })
     : null;
 
-  // Measurements.
+  // Measurements. The claim closes a temporary WSOL token account owned by the creator: its rent goes
+  // to the receiver along with the fees. The rent-exempt amount is read from the cluster (devnet and
+  // mainnet differ: 1,488,440 vs 2,039,280 lamports for a 165-byte token account at the time of writing).
+  const WSOL_ACCOUNT_RENT = BigInt(await getConnection().getMinimumBalanceForRentExemption(ACCOUNT_SIZE));
   const lastTrade = trades[trades.length - 1]!;
   const creatorAccrued = BigInt(lastTrade.after.creatorQuoteFee) - BigInt(trades[0]!.before.creatorQuoteFee);
   const partnerAccrued = BigInt(lastTrade.after.partnerQuoteFee) - BigInt(trades[0]!.before.partnerQuoteFee);

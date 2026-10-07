@@ -6,14 +6,16 @@
  *      (partner and creator) in one transaction.
  * Then swaps and position-fee claims on the DAMM v2 pool through @meteora-ag/cp-amm-sdk.
  */
-import { Keypair, PublicKey } from '@solana/web3.js';
+import { Keypair, PublicKey, SystemProgram } from '@solana/web3.js';
 import { NATIVE_MINT, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from '@solana/spl-token';
 import BN from 'bn.js';
 import {
   DAMM_V2_MIGRATION_FEE_ADDRESS,
+  DYNAMIC_BONDING_CURVE_PROGRAM_ID,
   MigrationFeeOption,
   deriveDammV2MigrationMetadataAddress,
   deriveDammV2PoolAddress,
+  deriveDbcEventAuthority,
 } from '@meteora-ag/dynamic-bonding-curve-sdk';
 import { CpAmm, getUnClaimLpFee, type PoolState, type PositionState } from '@meteora-ag/cp-amm-sdk';
 import { getConnection, sendAndConfirm } from './solana.js';
@@ -39,13 +41,17 @@ export async function ensureDammV2MigrationMetadata(pool: PublicKey, payer: Keyp
   if (existing) return null;
   const { virtualPool } = await getPoolState(pool);
   const program = getDbc().migration.getProgram();
+  // The IDL carries no address for these accounts, so anchor cannot resolve them: pass all of them.
   const tx = await program.methods
     .migrationDammV2CreateMetadata()
-    .accountsPartial({
+    .accountsStrict({
       virtualPool: pool,
       config: virtualPool.poolState.config,
       migrationMetadata: metadata,
       payer: payer.publicKey,
+      systemProgram: SystemProgram.programId,
+      eventAuthority: deriveDbcEventAuthority(),
+      program: DYNAMIC_BONDING_CURVE_PROGRAM_ID,
     })
     .transaction();
   return sendAndConfirm(tx, payer, { label: 'migrationDammV2CreateMetadata' });
@@ -207,6 +213,9 @@ export async function claimPositionFee(a: ClaimPositionArgs): Promise<string> {
     tokenBProgram: tokenProgramOf(poolState.tokenBFlag),
     receiver: a.receiver,
     feePayer: a.owner.publicKey,
+    // Required by cp-amm when a receiver is set and one side is SOL: the fees land on the owner's
+    // WSOL token account, which is then closed to the receiver (same pattern as the DBC claim).
+    tempWSolAccount: a.owner.publicKey,
   });
   return sendAndConfirm(tx, a.owner, { label: 'claimPositionFee' });
 }

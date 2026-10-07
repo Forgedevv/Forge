@@ -24,6 +24,7 @@ import {
   quoteConfigFromPoolConfig,
   snapshotPool,
   swapOnChain,
+  withSwapEvent,
   type PoolSnapshot,
 } from './lib/dbc.js';
 import { approxEqual, expectedFeeSplit, solToLamports } from './lib/math.js';
@@ -90,7 +91,19 @@ export async function runTest3(): Promise<boolean> {
   const launch = await state.step<LaunchStep>('test3.launch', async () => {
     const dbc = getDbc();
     const conn = getConnection();
-    const mint = loadOrCreateKeypair('test3-mint');
+    // A previous attempt may have landed on-chain without the script recording it (confirmation
+    // failure): use a fresh mint in that case and keep the earlier pool's signatures in the state.
+    let mint = loadOrCreateKeypair('test3-mint');
+    const previousAttempts: Array<{ pool: string; signatures: string[] }> = [];
+    for (const suffix of ['', '-b', '-c', '-d']) {
+      mint = loadOrCreateKeypair(`test3-mint${suffix}`);
+      const existing = poolAddress(config, mint.publicKey);
+      if (!(await conn.getAccountInfo(existing))) break;
+      const sigs = await conn.getSignaturesForAddress(existing, { limit: 5 }, 'confirmed');
+      previousAttempts.push({ pool: existing.toBase58(), signatures: sigs.map((s) => s.signature) });
+      console.log(`  pool ${existing.toBase58()} already exists (earlier attempt), using another mint`);
+    }
+    if (previousAttempts.length) state.set('test3.previousAttempts', previousAttempts);
     const poolConfig = await dbc.state.getPoolConfig(config);
     if (!poolConfig) throw new Error('config not found');
     const currentPoint = await getCurrentPoint(conn, poolConfig.activationType);
@@ -163,22 +176,32 @@ export async function runTest3(): Promise<boolean> {
     };
   });
   const pool = new PublicKey(launch.pool);
+  const launchWithEvent = await withSwapEvent(state, 'test3.launch', launch);
 
   // 4b. A second buy right after launch must pay the anti-sniper fee.
-  const second = await state.step<SecondBuyStep>('test3.secondBuy', async () => {
-    const outcome = await swapOnChain({
-      pool,
-      owner: wallets.trader,
-      amountIn: TEST3_SECOND_BUY,
-      swapBaseForQuote: false,
-      referralTokenAccount: null,
-      slippageBps: 500,
-    });
-    return { signature: outcome.signature, event: pickSwapEvent(await decodeEvents(outcome.signature)), txBytes: outcome.txBytes };
-  });
+  const second = await withSwapEvent(
+    state,
+    'test3.secondBuy',
+    await state.step<SecondBuyStep>('test3.secondBuy', async () => {
+      const outcome = await swapOnChain({
+        pool,
+        owner: wallets.trader,
+        amountIn: TEST3_SECOND_BUY,
+        swapBaseForQuote: false,
+        referralTokenAccount: null,
+        slippageBps: 500,
+      });
+      return { signature: outcome.signature, event: pickSwapEvent(await decodeEvents(outcome.signature)), txBytes: outcome.txBytes };
+    }),
+  );
+  launch.event = launchWithEvent.event;
 
-  const firstFee = launch.event ? BigInt(String(launch.event.tradingFee)) : -1n;
-  const secondFee = second.event ? BigInt(String(second.event.tradingFee)) : -1n;
+  // In the swap event, `tradingFee` is the partner + creator share and `protocolFee` (+ `referralFee`)
+  // the rest: the total fee charged on the input is their sum.
+  const totalFeeOf = (ev: Record<string, Json> | null): bigint =>
+    ev ? BigInt(String(ev.tradingFee)) + BigInt(String(ev.protocolFee)) + BigInt(String(ev.referralFee)) : -1n;
+  const firstFee = totalFeeOf(launch.event);
+  const secondFee = totalFeeOf(second.event);
   const minFee = expectedFeeSplit(TEST3_FIRST_BUY, TEST3_FEE_BPS, 25, false).totalFee;
   const clientDebit = BigInt(launch.clientSolBefore) - BigInt(launch.clientSolAfter);
   const eventOut = launch.event ? BigInt(String(launch.event.outputAmount)) : -1n;
@@ -202,6 +225,12 @@ export async function runTest3(): Promise<boolean> {
   r.bullet(`Fee scheduler: ${TEST3_ANTI_SNIPER.startingFeeBps} bps → ${TEST3_FEE_BPS} bps over ${TEST3_ANTI_SNIPER.totalDurationSeconds} s (${TEST3_ANTI_SNIPER.numberOfPeriod} periods, linear), enableFirstSwapWithMinFee = true, creator share 25%`);
   r.bullet(`forgeCreator: ${accountLink(wallets.forgeCreator.publicKey)}; client: ${accountLink(wallets.client.publicKey)}; trader: ${accountLink(wallets.trader.publicKey)}`);
   r.h2('Launch transaction');
+  for (const attempt of state.get<Array<{ pool: string; signatures: string[] }>>('test3.previousAttempts') ?? []) {
+    r.bullet(
+      `Earlier attempt: pool ${accountLink(attempt.pool, attempt.pool)} was created on-chain (${attempt.signatures.map((s) => txLink(s)).join(', ')}) ` +
+        'but the script lost the confirmation (RPC websocket rate limit, HTTP 429); the measurements below come from a fresh pool.',
+    );
+  }
   r.bullet(`${txLink(launch.signature)} — ${launch.txBytes} bytes (limit ${MAX_TX_BYTES})`);
   r.bullet(`Pool ${accountLink(launch.pool, launch.pool)}, mint ${accountLink(launch.mint, launch.mint)}, creator in pool state: ${launch.poolAfter.creator}`);
   r.bullet(`Signatures after the signer side: ${launch.signersAfterForge.join(', ')}`);
@@ -211,7 +240,7 @@ export async function runTest3(): Promise<boolean> {
   r.bullet(`Client token balance: ${launch.clientTokens} (event outputAmount ${eventOut}, SDK quote ${launch.quotedOut})`);
   r.h2('Fees');
   r.table(
-    ['Swap', 'Amount in', 'On-chain tradingFee', 'Expected', 'Tx'],
+    ['Swap', 'Amount in', 'On-chain total fee (tradingFee + protocolFee + referralFee)', 'Expected', 'Tx'],
     [
       ['First buy (client, inside creation tx)', TEST3_FIRST_BUY.toString(), firstFee.toString(), `${minFee} (min fee ${TEST3_FEE_BPS} bps)`, txLink(launch.signature)],
       ['Second buy (trader, right after)', TEST3_SECOND_BUY.toString(), secondFee.toString(), `≈ ${TEST3_ANTI_SNIPER.startingFeeBps} bps (anti-sniper)`, txLink(second.signature)],

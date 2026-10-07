@@ -21,6 +21,7 @@ import {
   getPoolState,
   pickSwapEvent,
   swapOnChain,
+  withSwapEvent,
 } from './lib/dbc.js';
 import { platformFeeLamports, solToLamports } from './lib/math.js';
 import { Report, accountLink, txLink } from './lib/report.js';
@@ -141,12 +142,14 @@ export async function runTest4(): Promise<boolean> {
   };
 
   // 1-2. Buy: platform fee = 30 bps of the SOL spent.
-  const buy = await state.step<SwapStep>('test4.buy', async () =>
-    measure('buy', TEST4_BUY, platformFeeLamports(TEST4_BUY, PLATFORM_FEE_BPS), ''),
+  const buy = await withSwapEvent(
+    state,
+    'test4.buy',
+    await state.step<SwapStep>('test4.buy', async () => measure('buy', TEST4_BUY, platformFeeLamports(TEST4_BUY, PLATFORM_FEE_BPS), '')),
   );
 
   // Sell everything bought: platform fee = 30 bps of the expected SOL out (from the quote).
-  const sell = await state.step<SwapStep>('test4.sell', async () => {
+  const sellStep = await state.step<SwapStep>('test4.sell', async () => {
     const held = await getTokenAccountBalance(ata(wallets.trader.publicKey, mint));
     const { virtualPool, config: poolConfig } = await getPoolState(pool);
     const currentPoint = await getCurrentPoint(getConnection(), poolConfig.activationType);
@@ -164,6 +167,7 @@ export async function runTest4(): Promise<boolean> {
     const expectedSolOut = BigInt(quote.outputAmount.toString());
     return measure('sell', held, platformFeeLamports(expectedSolOut, PLATFORM_FEE_BPS), expectedSolOut.toString());
   });
+  const sell = await withSwapEvent(state, 'test4.sell', sellStep);
 
   const platformDelta = (s: SwapStep) => BigInt(s.platformAfter) - BigInt(s.platformBefore);
   const referralDelta = (s: SwapStep) => BigInt(s.referralAfter) - BigInt(s.referralBefore);

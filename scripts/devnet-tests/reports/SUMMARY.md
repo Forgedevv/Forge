@@ -1,6 +1,6 @@
 # Devnet tests — summary
 
-_Generated 2026-10-07T15:28:58.090Z — devnet only._
+_Generated 2026-10-07T17:56:18.679Z — devnet only._
 
 Results of the four on-chain tests of docs/DEVNET_TESTS.md (SDK @meteora-ag/dynamic-bonding-curve-sdk 1.5.13, devnet).
 
@@ -8,28 +8,37 @@ Results of the four on-chain tests of docs/DEVNET_TESTS.md (SDK @meteora-ag/dyna
 
 | Test | Goal | Status | Report | Failed checks |
 | --- | --- | --- | --- | --- |
-| test1 | Meteora referral | NOT RUN | [test1-referral.md](./test1-referral.md) |  |
-| test2 | Creator share on a dedicated config | NOT RUN | [test2-creator-share.md](./test2-creator-share.md) |  |
-| test3 | First buy paid by the client | NOT RUN | [test3-first-buy.md](./test3-first-buy.md) |  |
-| test4 | Platform fee in the swap | NOT RUN | [test4-platform-fee.md](./test4-platform-fee.md) |  |
+| test1 | Meteora referral | PASS | [test1-referral.md](./test1-referral.md) |  |
+| test2 | Creator share on a dedicated config | PASS | [test2-creator-share.md](./test2-creator-share.md) |  |
+| test3 | First buy paid by the client | PASS | [test3-first-buy.md](./test3-first-buy.md) |  |
+| test4 | Platform fee in the swap | PASS | [test4-platform-fee.md](./test4-platform-fee.md) |  |
 
 ## Decisions and plan B
 
-- test1 (Meteora referral): not run yet — plan B if it fails: Keep only the 0.3% platform fee (no Meteora referral). Loss ≈ 0.04% of the volume going through our button.
-- test2 (Creator share on a dedicated config): not run yet — plan B if it fails: Swap the roles on the launchpad coin config: FORGE as feeClaimer (partner), the client as creator. To be validated with the team.
-- test3 (First buy paid by the client): not run yet — plan B if it fails: FORGE creates the pool; the client buys in a separate transaction right after, with the anti-sniper active (enableFirstSwapWithMinFee is then useless for the client).
-- test4 (Platform fee in the swap): not run yet — plan B if it fails: Use an address lookup table if the transaction exceeds the size limit; if a wallet shows a blocking warning (to be tested on mainnet), display the fee before signing or lower the rate.
+- test1 (Meteora referral): PASS — plan A stands, no change to @forge/core.
+- test2 (Creator share on a dedicated config): PASS — plan A stands, no change to @forge/core.
+- test3 (First buy paid by the client): PASS — plan A stands, no change to @forge/core.
+- test4 (Platform fee in the swap): PASS — plan A stands, no change to @forge/core.
 
 ## Notes for @forge/core
 
-- Test 2 ran with a 1 SOL migration threshold (budget); production keeps 10 SOL (Meteora mainnet bots). The program only requires a threshold > 0.
-- Migration on devnet was scripted (migrationDammV2CreateMetadata through the SDK anchor program + SDK migrateToDammV2); on mainnet Meteora bots do it. Post-migration swaps and the creator position fee claim use @meteora-ag/cp-amm-sdk 1.5.1.
-- claimCreatorTradingFeeToReceiver closes a temporary WSOL account owned by the creator: the receiver gets the fees plus that account rent (≈ 0.00204 SOL).
-- createPoolWithFirstBuy: the pool creator and the base mint must sign (initializeVirtualPoolWithSplToken has `creator` as signer); the client is the fee payer and the buyer.
+- poolCreationFee = 0 is accepted by the SDK and the program: CLIENT_BOUNDS.poolCreationFeeSol.allowZero = true holds.
+- Test 1: measured exactly the DEVNET_TESTS.md expectation (fee 1,000,000 lamports on 0.1 SOL; with referral protocol 160,000 / referral 40,000; partner 800,000 in both cases; creator 0).
+- Test 2: creator = 25.00% of the non-protocol share across 3 buys and 1 sell; claim to receiver works; after migration the creator holds a permanently locked DAMM v2 position that accrues SOL fees, claimable to the multisig address.
+- Test 2 ran with a 1 SOL migration threshold (budget); production keeps 10 SOL (Meteora mainnet bots). The program accepted 1 SOL (it only requires a threshold > 0).
+- Migration on devnet was scripted (migrationDammV2CreateMetadata through the SDK anchor program object, with systemProgram/eventAuthority/program passed explicitly, then SDK migrateToDammV2); on mainnet Meteora bots do it. Post-migration swaps and the creator position fee claim use @meteora-ag/cp-amm-sdk 1.5.1 (claimPositionFee needs `tempWSolAccount` when a receiver is set and one side is SOL).
+- claimCreatorTradingFeeToReceiver closes a temporary WSOL account owned by the creator: the receiver gets the fees plus that account rent (1,488,440 lamports on this devnet, 2,039,280 on mainnet).
+- Test 3: createPoolWithFirstBuy in one 1,025-byte transaction; the pool creator and the base mint must sign (initializeVirtualPoolWithSplToken has `creator` as signer); the client is fee payer and buyer. With enableFirstSwapWithMinFee the first buy paid 1% (500,000 on 0.05 SOL) while the next buy paid 99% (49,500,000).
+- Test 4: 30 bps transfer + swap with referral = 754 bytes (buy) / 722 bytes (sell), well under 1,232. First attempt failed because the fee wallet held 0 SOL: a transfer must leave the recipient rent-exempt (about 0.0009 SOL), so FORGE_PLATFORM_FEE_WALLET must hold SOL before the first fee (and @forge/core should assert it).
+- In the swap event, `tradingFee` is the partner + creator share only; the total fee is tradingFee + protocolFee + referralFee. The DBC program emits events through self-CPI (eventAuthority), not `Program data:` logs: decode the inner instructions.
+- RPC: the Helius devnet websocket rate-limited signature subscriptions (HTTP 429), making web3.js report "expired" for a landed transaction. The scripts confirm by polling getSignatureStatuses; @forge/core consumers should do the same or use a dedicated websocket endpoint.
 
 ## Fake $FORGE mint (devnet)
 
-Not created yet (run `pnpm mint:forge`).
+- Mint: [ES4otaE7FckJGJEKwpk3noaCZBt4FQZhuhWqUDdhuBEF](https://solscan.io/account/ES4otaE7FckJGJEKwpk3noaCZBt4FQZhuhWqUDdhuBEF?cluster=devnet) — 6 decimals, supply 1000000000000000 raw units
+- Mint authority / holder of the whole supply: [EARQA94FiunfJeB9ZdQALU2EU4AXLEuwxhMRReZ5Lf2u](https://solscan.io/account/EARQA94FiunfJeB9ZdQALU2EU4AXLEuwxhMRReZ5Lf2u?cluster=devnet) (forgeCreator throwaway wallet)
+- Holder token account: [B4vY74Lc…](https://solscan.io/account/B4vY74Lca8TySGMc7YRH9supk2X3HpF4rfp9fYJWEMdG?cluster=devnet)
+Other agents: set `FORGE_MINT` to this address for devnet token-gating tests. Ask agent 1 to send test tokens from the holder wallet.
 
 ## Throwaway wallets (public keys)
 

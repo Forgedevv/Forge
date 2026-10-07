@@ -69,6 +69,29 @@ export interface SendOptions {
 }
 
 /**
+ * Confirmation by polling `getSignatureStatuses` (no websocket: the RPC rate-limits subscriptions,
+ * which made web3.js report "expired" for transactions that had landed).
+ */
+export async function confirmBySignature(signature: string, lastValidBlockHeight: number): Promise<void> {
+  const conn = getConnection();
+  for (;;) {
+    const status = (await conn.getSignatureStatuses([signature])).value[0];
+    if (status) {
+      if (status.err) throw new Error(`Transaction ${signature} failed: ${JSON.stringify(status.err)}`);
+      if (status.confirmationStatus === 'confirmed' || status.confirmationStatus === 'finalized') return;
+    }
+    const height = await conn.getBlockHeight(COMMITMENT);
+    if (height > lastValidBlockHeight) {
+      // One last look: the transaction may have landed in the final blocks.
+      const last = (await conn.getSignatureStatuses([signature])).value[0];
+      if (last && !last.err && last.confirmationStatus) return;
+      throw new TransactionExpiredBlockheightExceededError(signature);
+    }
+    await sleep(1500);
+  }
+}
+
+/**
  * Signs with `feePayer` (+ signers), sends and confirms. Retries on blockhash expiry or transient
  * network errors; a program error (custom error, simulation failure) is thrown immediately with logs.
  */
@@ -86,10 +109,7 @@ export async function sendAndConfirm(tx: Transaction, feePayer: Keypair, opts: S
       tx.sign(feePayer, ...(opts.signers ?? []));
       const raw = tx.serialize();
       const signature = await conn.sendRawTransaction(raw, { skipPreflight: false, maxRetries: 3 });
-      const result = await conn.confirmTransaction({ signature, blockhash, lastValidBlockHeight }, COMMITMENT);
-      if (result.value.err) {
-        throw new Error(`Transaction ${signature} failed: ${JSON.stringify(result.value.err)}`);
-      }
+      await confirmBySignature(signature, lastValidBlockHeight);
       console.log(`    tx ${opts.label ?? ''} ${signature} (${raw.length} bytes)`);
       return signature;
     } catch (err) {
@@ -115,11 +135,7 @@ export async function sendSigned(tx: Transaction, label?: string): Promise<strin
   const conn = getConnection();
   const raw = tx.serialize();
   const signature = await conn.sendRawTransaction(raw, { skipPreflight: false, maxRetries: 3 });
-  const result = await conn.confirmTransaction(
-    { signature, blockhash: tx.recentBlockhash!, lastValidBlockHeight: tx.lastValidBlockHeight! },
-    COMMITMENT,
-  );
-  if (result.value.err) throw new Error(`Transaction ${signature} failed: ${JSON.stringify(result.value.err)}`);
+  await confirmBySignature(signature, tx.lastValidBlockHeight!);
   console.log(`    tx ${label ?? ''} ${signature} (${raw.length} bytes)`);
   return signature;
 }

@@ -23,12 +23,13 @@ export const BUDGETS: Record<'mint' | 'test1' | 'test2' | 'test3' | 'test4', Bud
   mint: { forgeCreator: 0.02 },
   // config (partner) + pool (forgeCreator) + referral WSOL account + two 0.1 SOL buys
   test1: { partner: 0.06, forgeCreator: 0.06, referral: 0.01, trader: 0.25 },
-  // config + pool + migration rent + buys/sells + filling the curve to the (reduced) threshold
-  test2: { partner: 0.06, forgeCreator: 0.3, trader: 1.3, multisigStandIn: 0 },
+  // config + pool + migration rent + buys/sells + filling the curve to the (reduced) threshold.
+  // Fee receivers hold 0.01 SOL: a system account must stay rent-exempt (~0.00089 SOL) after a transfer.
+  test2: { partner: 0.06, forgeCreator: 0.3, trader: 1.3, multisigStandIn: 0.01 },
   // config (partner) + pool with first buy (forgeCreator rent, client buys) + a follow-up buy
   test3: { partner: 0.06, forgeCreator: 0.06, client: 0.12, trader: 0.08 },
   // config + pool + referral account + buy & sell with platform fee
-  test4: { partner: 0.06, forgeCreator: 0.06, referral: 0.01, trader: 0.2, platformFee: 0 },
+  test4: { partner: 0.06, forgeCreator: 0.06, referral: 0.01, trader: 0.2, platformFee: 0.01 },
 };
 
 export function totalBudgetLamports(budgets: Budget[]): bigint {

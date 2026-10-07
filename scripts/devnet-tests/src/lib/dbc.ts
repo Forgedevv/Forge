@@ -9,6 +9,7 @@ import {
   ActivationType,
   BaseFeeMode,
   CollectFeeMode,
+  DYNAMIC_BONDING_CURVE_PROGRAM_ID,
   DynamicBondingCurveClient,
   MigrationFeeOption,
   MigrationOption,
@@ -25,8 +26,9 @@ import {
   type SwapQuoteConfig,
   type VirtualPool,
 } from '@meteora-ag/dynamic-bonding-curve-sdk';
-import { COMMITMENT, getConnection, getTxLogs, sendAndConfirm } from './solana.js';
-import type { Json } from './state.js';
+import { COMMITMENT, getConnection, sendAndConfirm, sleep } from './solana.js';
+import { base58Decode } from './base58.js';
+import type { Json, State } from './state.js';
 
 let client: DynamicBondingCurveClient | undefined;
 
@@ -361,22 +363,56 @@ export function quoteConfigFromPoolConfig(config: PoolConfig): SwapQuoteConfig {
   };
 }
 
-/** Decodes the DBC program events ("Program data:" logs) of a confirmed transaction. */
+/** Anchor `emit_cpi!` instruction tag (sha256("anchor:event")[..8]). */
+const EVENT_CPI_TAG = Buffer.from('e445a52e51cb9a1d', 'hex');
+
+/**
+ * Decodes the DBC program events of a confirmed transaction. The program emits events through a
+ * self-CPI (`eventAuthority` account), so they live in the inner instructions, not in the logs.
+ */
 export async function decodeEvents(signature: string): Promise<Array<{ name: string; data: Json }>> {
-  const logs = await getTxLogs(signature);
+  const conn = getConnection();
+  let tx = null;
+  for (let attempt = 0; attempt < 5 && !tx; attempt++) {
+    tx = await conn.getTransaction(signature, { commitment: COMMITMENT, maxSupportedTransactionVersion: 0 });
+    if (!tx) await sleep(1500);
+  }
+  if (!tx?.meta) return [];
+  const keys = tx.transaction.message.getAccountKeys({ accountKeysFromLookups: tx.meta.loadedAddresses ?? undefined });
   const coder = getDbc().pool.getProgram().coder;
   const out: Array<{ name: string; data: Json }> = [];
-  for (const line of logs) {
-    const prefix = 'Program data: ';
-    if (!line.startsWith(prefix)) continue;
-    try {
-      const ev = coder.events.decode(line.slice(prefix.length));
-      if (ev) out.push({ name: ev.name, data: jsonify(ev.data) });
-    } catch {
-      // Not a DBC event (another program's log).
+  for (const inner of tx.meta.innerInstructions ?? []) {
+    for (const ix of inner.instructions) {
+      const program = keys.get(ix.programIdIndex);
+      if (!program || !program.equals(DYNAMIC_BONDING_CURVE_PROGRAM_ID)) continue;
+      const data = Buffer.from(base58Decode(ix.data));
+      if (data.length <= 8 || !data.subarray(0, 8).equals(EVENT_CPI_TAG)) continue;
+      try {
+        const ev = coder.events.decode(data.subarray(8).toString('base64'));
+        if (ev) out.push({ name: ev.name, data: jsonify(ev.data) });
+      } catch {
+        // Unknown event layout: ignored.
+      }
     }
   }
   return out;
+}
+
+/**
+ * Fills `step.event` from the chain when a stored step has none (steps saved by an earlier run that
+ * could not decode events), and persists the repaired step.
+ */
+export async function withSwapEvent<T extends { signature: string; event: Record<string, Json> | null }>(
+  state: State,
+  key: string,
+  step: T,
+): Promise<T> {
+  if (step.event) return step;
+  const event = pickSwapEvent(await decodeEvents(step.signature));
+  if (!event) return step;
+  const repaired = { ...step, event };
+  state.set(key, repaired as unknown as Json);
+  return repaired;
 }
 
 /** The swap event of a transaction, flattened to the fields the reports use. */

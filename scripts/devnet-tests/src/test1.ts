@@ -18,6 +18,7 @@ import {
   pickSwapEvent,
   snapshotPool,
   swapOnChain,
+  withSwapEvent,
   type PoolSnapshot,
 } from './lib/dbc.js';
 import { expectedFeeSplit, solToLamports } from './lib/math.js';
@@ -148,8 +149,8 @@ export async function runTest1(): Promise<boolean> {
       event,
     };
   };
-  const withRef = await state.step<BuyStep>('test1.buyWithReferral', () => buy(true));
-  const withoutRef = await state.step<BuyStep>('test1.buyWithoutReferral', () => buy(false));
+  const withRef = await withSwapEvent(state, 'test1.buyWithReferral', await state.step<BuyStep>('test1.buyWithReferral', () => buy(true)));
+  const withoutRef = await withSwapEvent(state, 'test1.buyWithoutReferral', await state.step<BuyStep>('test1.buyWithoutReferral', () => buy(false)));
 
   // 5. Measure.
   const expWith = expectedFeeSplit(TEST1_BUY_LAMPORTS, TEST1_FEE_BPS, 0, true);

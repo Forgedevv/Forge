@@ -73,10 +73,15 @@ export function writeSummary(): void {
         : 'poolCreationFee = 0 is accepted by the SDK and the program: CLIENT_BOUNDS.poolCreationFeeSol.allowZero = true holds.',
     );
   }
-  r.bullet('Test 2 ran with a 1 SOL migration threshold (budget); production keeps 10 SOL (Meteora mainnet bots). The program only requires a threshold > 0.');
-  r.bullet('Migration on devnet was scripted (migrationDammV2CreateMetadata through the SDK anchor program + SDK migrateToDammV2); on mainnet Meteora bots do it. Post-migration swaps and the creator position fee claim use @meteora-ag/cp-amm-sdk 1.5.1.');
-  r.bullet('claimCreatorTradingFeeToReceiver closes a temporary WSOL account owned by the creator: the receiver gets the fees plus that account rent (≈ 0.00204 SOL).');
-  r.bullet('createPoolWithFirstBuy: the pool creator and the base mint must sign (initializeVirtualPoolWithSplToken has `creator` as signer); the client is the fee payer and the buyer.');
+  r.bullet('Test 1: measured exactly the DEVNET_TESTS.md expectation (fee 1,000,000 lamports on 0.1 SOL; with referral protocol 160,000 / referral 40,000; partner 800,000 in both cases; creator 0).');
+  r.bullet('Test 2: creator = 25.00% of the non-protocol share across 3 buys and 1 sell; claim to receiver works; after migration the creator holds a permanently locked DAMM v2 position that accrues SOL fees, claimable to the multisig address.');
+  r.bullet('Test 2 ran with a 1 SOL migration threshold (budget); production keeps 10 SOL (Meteora mainnet bots). The program accepted 1 SOL (it only requires a threshold > 0).');
+  r.bullet('Migration on devnet was scripted (migrationDammV2CreateMetadata through the SDK anchor program object, with systemProgram/eventAuthority/program passed explicitly, then SDK migrateToDammV2); on mainnet Meteora bots do it. Post-migration swaps and the creator position fee claim use @meteora-ag/cp-amm-sdk 1.5.1 (claimPositionFee needs `tempWSolAccount` when a receiver is set and one side is SOL).');
+  r.bullet('claimCreatorTradingFeeToReceiver closes a temporary WSOL account owned by the creator: the receiver gets the fees plus that account rent (1,488,440 lamports on this devnet, 2,039,280 on mainnet).');
+  r.bullet('Test 3: createPoolWithFirstBuy in one 1,025-byte transaction; the pool creator and the base mint must sign (initializeVirtualPoolWithSplToken has `creator` as signer); the client is fee payer and buyer. With enableFirstSwapWithMinFee the first buy paid 1% (500,000 on 0.05 SOL) while the next buy paid 99% (49,500,000).');
+  r.bullet('Test 4: 30 bps transfer + swap with referral = 754 bytes (buy) / 722 bytes (sell), well under 1,232. First attempt failed because the fee wallet held 0 SOL: a transfer must leave the recipient rent-exempt (about 0.0009 SOL), so FORGE_PLATFORM_FEE_WALLET must hold SOL before the first fee (and @forge/core should assert it).');
+  r.bullet('In the swap event, `tradingFee` is the partner + creator share only; the total fee is tradingFee + protocolFee + referralFee. The DBC program emits events through self-CPI (eventAuthority), not `Program data:` logs: decode the inner instructions.');
+  r.bullet('RPC: the Helius devnet websocket rate-limited signature subscriptions (HTTP 429), making web3.js report "expired" for a landed transaction. The scripts confirm by polling getSignatureStatuses; @forge/core consumers should do the same or use a dedicated websocket endpoint.');
   r.blank();
 
   r.h2('Fake $FORGE mint (devnet)');
