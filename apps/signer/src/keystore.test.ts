@@ -10,7 +10,7 @@ import {
   VersionedTransaction,
 } from '@solana/web3.js';
 import pino from 'pino';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   DEFAULT_KEYSTORE_DIR,
   REF_RE,
@@ -140,7 +140,7 @@ describe('createKey', () => {
   it('is idempotent across keystore instances on the same directory', async () => {
     const a = await open();
     const created = await a.createKey('cashbox');
-    a.close();
+    await a.close();
     const b = await open();
     const again = await b.createKey('cashbox');
     expect(again).toEqual({ ref: created.ref, publicKey: created.publicKey, created: false });
@@ -314,7 +314,7 @@ describe('opening an existing directory', () => {
   it('rejects a wrong passphrase before any key is used', async () => {
     const ks = await open();
     await ks.createKey('payer');
-    ks.close();
+    await ks.close();
     await expect(open({ passphrase: OTHER_PASSPHRASE })).rejects.toSatisfy(
       rejectsWith('PASSPHRASE_MISMATCH'),
     );
@@ -325,7 +325,7 @@ describe('opening an existing directory', () => {
     const ks = await open();
     await ks.createKey('payer');
     const envelope = await readEnvelope('payer.json');
-    ks.close();
+    await ks.close();
 
     await fs.writeFile(path.join(dir, 'cashbox.json'), '{ not json');
     await expect(open()).rejects.toSatisfy(rejectsWith('CORRUPT_FILE'));
@@ -350,7 +350,7 @@ describe('opening an existing directory', () => {
     const ks = await open();
     await ks.createKey('payer');
     const envelope = await readEnvelope('payer.json');
-    ks.close();
+    await ks.close();
     await writeEnvelope('cashbox.json', { ...envelope, role: 'cashbox' });
     await expect(open()).rejects.toSatisfy(rejectsWith('CORRUPT_FILE'));
   });
@@ -358,11 +358,58 @@ describe('opening an existing directory', () => {
   it('rejects every call after close()', async () => {
     const ks = await open();
     const { ref } = await ks.createKey('payer');
-    ks.close();
+    await ks.close();
     await expect(ks.createKey('cashbox')).rejects.toSatisfy(rejectsWith('CLOSED'));
     await expect(ks.getPublicKey(ref)).rejects.toSatisfy(rejectsWith('CLOSED'));
     await expect(ks.withSigner(ref, () => undefined)).rejects.toSatisfy(rejectsWith('CLOSED'));
     await expect(ks.listRefs()).rejects.toSatisfy(rejectsWith('CLOSED'));
+  });
+
+  it('does not seal a key under a zeroed passphrase when close() runs mid-createKey', async () => {
+    const ks = await open();
+    const role = creatorRole(LAUNCHPAD_ID);
+    const realReaddir = fs.readdir.bind(fs);
+    let closing: Promise<void> | undefined;
+    // close() lands while createKey is scanning the directory (after its first open check).
+    const spy = vi.spyOn(fs, 'readdir').mockImplementation(((
+      ...args: Parameters<typeof fs.readdir>
+    ) => {
+      closing ??= ks.close();
+      return realReaddir(...args);
+    }) as typeof fs.readdir);
+    try {
+      await expect(ks.createKey(role)).rejects.toSatisfy(rejectsWith('CLOSED'));
+    } finally {
+      spy.mockRestore();
+    }
+    await closing;
+    expect(await keyFiles()).toEqual([]);
+  });
+
+  it('close() waits for calls in flight before zeroing the passphrase', async () => {
+    const first = await open();
+    await first.createKey('buyback');
+    const { ref } = await first.createKey('payer');
+    await first.close();
+
+    const ks = await open(); // verifies buyback.json only: payer is decrypted on demand
+    const realReadFile = fs.readFile.bind(fs);
+    let closing: Promise<void> | undefined;
+    const spy = vi.spyOn(fs, 'readFile').mockImplementation(((
+      ...args: Parameters<typeof fs.readFile>
+    ) => {
+      closing ??= ks.close();
+      return realReadFile(...args);
+    }) as typeof fs.readFile);
+    try {
+      const publicKey = await ks.getPublicKey(ref);
+      expect(publicKey.toBase58()).toBe((await readEnvelope('payer.json')).publicKey);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(closing).toBeDefined();
+    await closing;
+    await expect(ks.getPublicKey(ref)).rejects.toSatisfy(rejectsWith('CLOSED'));
   });
 
   it('creates keys with the default KDF parameters', { timeout: 60_000 }, async () => {
@@ -370,7 +417,7 @@ describe('opening an existing directory', () => {
     const { ref } = await ks.createKey('payer');
     const envelope = await readEnvelope('payer.json');
     expect(envelope.kdf).toMatchObject({ name: 'scrypt', N: 131072, r: 8, p: 1 });
-    ks.close();
+    await ks.close();
     const reopened = await openKeystore({ dir, passphrase: PASSPHRASE });
     expect((await reopened.getPublicKey(ref)).toBase58()).toBe(envelope.publicKey);
   });
