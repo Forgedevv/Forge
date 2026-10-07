@@ -49,3 +49,7 @@ The retained upstream notice is in `THIRD_PARTY_NOTICES.md`. No third-party came
 On 2026-10-07, the homepage baseline was committed locally before A2–A11 work. Subsequent revisions integrate the shared development session, shorten ignition to 0.85 seconds, lock wheel transitions to 1.8 seconds, and update the palette/buttons. The final road is thinner and remains behind the subject, avoiding the near-camera tube seen in the user's screenshot. The renderer now requests PCFShadowMap directly, resolving the deprecation warning forwarded by the preview server. These changes intentionally revise the earlier reference amplitudes and scrolling behavior.
 
 The old palette contrast figures and test counts above describe the earlier committed revision; the final task report records the latest checks. No visual or frame-rate guarantee is made from HTTP or component tests.
+
+## Brightness pass
+
+On 2026-10-08 the pilot and its glow were toned down so the launchpad screens stay readable behind it. All values live in `appearance.ts`: bloom strength 0.3 initial with per-chapter 0.12–0.2 (threshold 1.3, radius 0.42), a greyed-white shell `#d9dde3` with roughness 0.55 and metalness 0.08, key light 1.7 against a 1.05 fill, environment 0.6, exposure 0.82, emissive eyes 0.4, and cables at emissive 0.3 with a 0.75 color tint. The simple view's illustrated pilot uses the same shell color through `--forge-pilot-shell`.

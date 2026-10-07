@@ -1,5 +1,6 @@
 import * as T from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
+import { PILOT_EMISSIVE, PILOT_SHELL } from './appearance';
 import { palette } from './content';
 import { jumpAt } from './motion';
 
@@ -11,11 +12,11 @@ export function createCharacter() {
   root.add(turntable);
   turntable.add(rig);
   const shell = new T.MeshPhysicalMaterial({
-    color: palette.ivory,
-    roughness: 0.4,
-    metalness: 0.16,
-    clearcoat: 0.5,
-    clearcoatRoughness: 0.3,
+    color: PILOT_SHELL.color,
+    roughness: PILOT_SHELL.roughness,
+    metalness: PILOT_SHELL.metalness,
+    clearcoat: PILOT_SHELL.clearcoat,
+    clearcoatRoughness: PILOT_SHELL.clearcoatRoughness,
     thickness: 0.35,
     ior: 1.4,
   });
@@ -33,7 +34,7 @@ export function createCharacter() {
   const eye = new T.MeshStandardMaterial({
     color: palette.acid,
     emissive: palette.acid,
-    emissiveIntensity: 0.55,
+    emissiveIntensity: PILOT_EMISSIVE.intensity,
   });
   const wire = new T.MeshBasicMaterial({
     color: palette.ember,
@@ -128,10 +129,10 @@ export function createCharacter() {
         Math.sin((time * Math.PI * 2) / cycles[lower + 1]! + offset),
         mix,
       );
-    shell.color.copy(color.set(palette.ivory).lerp(darkColor, dark));
+    shell.color.copy(color.set(PILOT_SHELL.color).lerp(darkColor, dark));
     shell.transmission = glass * 0.93;
-    shell.roughness = 0.4 - glass * 0.3;
-    shell.metalness = 0.16 + dark * 0.4 - glass * 0.16;
+    shell.roughness = PILOT_SHELL.roughness - glass * PILOT_SHELL.glassSmoothing;
+    shell.metalness = PILOT_SHELL.metalness * (1 - glass) + dark * 0.4;
     wire.opacity = outline * 0.48;
     outlines.forEach((mesh) => {
       mesh.visible = outline > 0.01;
@@ -159,7 +160,7 @@ export function createCharacter() {
       leg.rotation.x = wave(i * Math.PI) * 0.12 + flight * 0.7 - outline * jump.height;
     });
     hammer.rotation.z = wave(0.2) * 0.2;
-    eye.emissiveIntensity = 0.55 + dark * 0.2;
+    eye.emissiveIntensity = PILOT_EMISSIVE.intensity + dark * PILOT_EMISSIVE.darkBoost;
   }
   return { root, update };
 }

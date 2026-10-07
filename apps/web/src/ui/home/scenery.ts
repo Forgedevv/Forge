@@ -1,6 +1,7 @@
 import * as T from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { Reflector } from 'three/addons/objects/Reflector.js';
+import { CABLE_GLOW } from './appearance';
 import { homeContent as copy, palette } from './content';
 import { jumpAt } from './motion';
 
@@ -54,7 +55,11 @@ function curve(points: T.Vector3[], color: string, radius = 0.01, emissive = fal
   return new T.Mesh(
     geometry,
     emissive
-      ? new T.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.55 })
+      ? new T.MeshStandardMaterial({
+          color,
+          emissive: new T.Color(color).multiplyScalar(CABLE_GLOW.emissiveTint),
+          emissiveIntensity: CABLE_GLOW.emissiveIntensity,
+        })
       : material(color),
   );
 }
