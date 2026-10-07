@@ -1,7 +1,7 @@
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { pino } from 'pino';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createGateway, hashToken, type Gateway, type GatewayAlert } from './server.js';
 import { InMemoryGatewayStore } from './store.js';
 import type { PricingTable } from './pricing.js';
@@ -384,6 +384,97 @@ describe('AI gateway', () => {
     expect(logs).not.toContain(token);
     expect(logs).not.toContain(hashToken(token));
     expect(logs).not.toContain('forge_gw_not-a-real-token');
+  });
+
+  it('charges max_tokens when a stream is cut before message_delta', async () => {
+    responder = (_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      const start = { type: 'message_start', message: { id: 'msg_1', model: MODEL, usage: { input_tokens: 1000, output_tokens: 1 } } };
+      const delta = { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'hello' } };
+      res.write(`event: message_start
+data: ${JSON.stringify(start)}
+
+event: content_block_delta
+data: ${JSON.stringify(delta)}
+
+`);
+      // Never sends message_delta nor message_stop.
+    };
+    const token = await gateway.issueToken('job-1');
+    const client = new AbortController();
+    const res = await fetch(`${gatewayUrl}/v1/messages`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ model: MODEL, max_tokens: 50_000, stream: true, messages: [] }),
+      signal: client.signal,
+    });
+    expect(res.status).toBe(200);
+    const reader = res.body!.getReader();
+    await reader.read();
+    client.abort();
+    // Real input (1000) + max_tokens (50k) at $1/MTok.
+    await vi.waitFor(async () => expect(await store.getJobCost('job-1')).toBeCloseTo(0.051, 10), { timeout: 5000 });
+  });
+
+  it('charges an estimate when a non-streaming request is cut before the response', async () => {
+    responder = () => {
+      /* never answers */
+    };
+    const token = await gateway.issueToken('job-1');
+    const client = new AbortController();
+    const pending = fetch(`${gatewayUrl}/v1/messages`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ model: MODEL, max_tokens: 50_000, messages: [] }),
+      signal: client.signal,
+    }).catch(() => undefined);
+    await vi.waitFor(() => expect(received).toHaveLength(1), { timeout: 5000 });
+    client.abort();
+    await pending;
+    await vi.waitFor(async () => expect(await store.getJobCost('job-1')).toBeGreaterThanOrEqual(0.05), { timeout: 5000 });
+  });
+
+  it('charges an estimate when a non-streaming body read is interrupted', async () => {
+    responder = (_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.write('{"id":"msg_1","type":"message",');
+      // Body never completes.
+    };
+    const token = await gateway.issueToken('job-1');
+    const client = new AbortController();
+    const pending = fetch(`${gatewayUrl}/v1/messages`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ model: MODEL, max_tokens: 50_000, messages: [] }),
+      signal: client.signal,
+    }).catch(() => undefined);
+    await vi.waitFor(() => expect(received).toHaveLength(1), { timeout: 5000 });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    client.abort();
+    await pending;
+    await vi.waitFor(async () => expect(await store.getJobCost('job-1')).toBeGreaterThanOrEqual(0.05), { timeout: 5000 });
+  });
+
+  it('reserves in-flight cost so parallel requests cannot overrun the job budget', async () => {
+    const base = jsonResponder({ input_tokens: 10, output_tokens: 5 });
+    responder = (req, res) => setTimeout(() => base(req, res), 200);
+    // Each request may cost up to 60k output tokens = $0.06, above the $0.05 budget.
+    const token = await gateway.issueToken('job-1', { budgetUsd: 0.05 });
+    const body = { model: MODEL, max_tokens: 60_000, messages: [] };
+    const statuses = (await Promise.all([call(token, body), call(token, body), call(token, body)])).map((r) => r.status);
+    expect(statuses.sort()).toEqual([200, 402, 402]);
+    expect(received).toHaveLength(1);
+    // The reservation is settled to the real cost, so the job is not blocked afterwards.
+    expect(await store.getJobCost('job-1')).toBeCloseTo(15 / 1_000_000, 12);
+    expect((await call(token, body)).status).toBe(200);
+  });
+
+  it('rejects max_tokens above the gateway cap', async () => {
+    const token = await gateway.issueToken('job-1');
+    const res = await call(token, { model: MODEL, max_tokens: 1_000_000, messages: [] });
+    expect(res.status).toBe(400);
+    expect((await call(token, { model: MODEL, max_tokens: -1, messages: [] })).status).toBe(400);
+    expect(received).toHaveLength(0);
   });
 
   it('refuses invalid configuration', () => {

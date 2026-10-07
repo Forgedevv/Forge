@@ -15,6 +15,8 @@ import { GATEWAY_DEFAULTS } from './config.js';
 import {
   assertValidPricing,
   computeCostUsd,
+  EMPTY_USAGE,
+  mergeUsage,
   parseUsage,
   type ModelPrice,
   type PricingTable,
@@ -53,6 +55,8 @@ export interface GatewayOptions {
   allowedToolTypes?: readonly string[];
   maxBodyBytes?: number;
   maxResponseBytes?: number;
+  /** Max `max_tokens` per request (default GATEWAY_DEFAULTS.maxOutputTokens). */
+  maxOutputTokens?: number;
   upstreamTimeoutMs?: number;
   dailyAlertRatio?: number;
   logger?: Logger;
@@ -90,6 +94,19 @@ const FORWARDED_RESPONSE_HEADERS = ['content-type', 'request-id', 'retry-after',
 
 /** Body fields that open side channels (remote MCP servers, server containers). */
 const REJECTED_BODY_FIELDS = ['mcp_servers', 'container'] as const;
+
+/**
+ * Request bytes per input token used to estimate the input of a request whose real
+ * usage is unknown. Text averages about 4 bytes per token; the estimate errs high.
+ */
+const ESTIMATE_BYTES_PER_INPUT_TOKEN = 4;
+
+/** Worst-case cost reserved for one in-flight request. */
+interface Reservation {
+  jobId: string;
+  day: string;
+  usd: number;
+}
 
 export function hashToken(token: string): string {
   return createHash('sha256').update(token, 'utf8').digest('hex');
@@ -192,6 +209,10 @@ export function createGateway(options: GatewayOptions): Gateway {
     options.maxResponseBytes ?? GATEWAY_DEFAULTS.maxResponseBytes,
     'maxResponseBytes',
   );
+  const maxOutputTokens = positive(
+    options.maxOutputTokens ?? GATEWAY_DEFAULTS.maxOutputTokens,
+    'maxOutputTokens',
+  );
   const upstreamTimeoutMs = positive(
     options.upstreamTimeoutMs ?? GATEWAY_DEFAULTS.upstreamTimeoutMs,
     'upstreamTimeoutMs',
@@ -222,6 +243,27 @@ export function createGateway(options: GatewayOptions): Gateway {
     return pricing[requestModel] ?? fallbackPrice;
   }
 
+  /** Cost reserved by in-flight requests, by job and by UTC day (single process). */
+  const reservedByJob = new Map<string, number>();
+  const reservedByDay = new Map<string, number>();
+  let lockTail: Promise<unknown> = Promise.resolve();
+
+  /**
+   * Runs `fn` after every earlier locked section: budget check + reservation and
+   * cost settlement + release never interleave, so no in-flight cost is missed.
+   */
+  function withLock<T>(fn: () => Promise<T>): Promise<T> {
+    const run = lockTail.then(fn, fn);
+    lockTail = run.catch(() => undefined);
+    return run;
+  }
+
+  function addReserved(map: Map<string, number>, key: string, usd: number): void {
+    const total = (map.get(key) ?? 0) + usd;
+    if (total <= 1e-12) map.delete(key);
+    else map.set(key, total);
+  }
+
   function redact(text: string): string {
     return text.split(apiKey).join('[REDACTED]');
   }
@@ -237,7 +279,7 @@ export function createGateway(options: GatewayOptions): Gateway {
   }
 
   async function checkBudgets(record: TokenRecord): Promise<void> {
-    const jobCost = await store.getJobCost(record.jobId);
+    const jobCost = (await store.getJobCost(record.jobId)) + (reservedByJob.get(record.jobId) ?? 0);
     if (jobCost >= record.budgetUsd) {
       throw new HttpError(
         402,
@@ -245,13 +287,33 @@ export function createGateway(options: GatewayOptions): Gateway {
         `Job API budget exhausted (${record.budgetUsd} USD). No further requests are accepted for this job.`,
       );
     }
-    const dailyCost = await store.getDailyCost(utcDay(now()));
+    const day = utcDay(now());
+    const dailyCost = (await store.getDailyCost(day)) + (reservedByDay.get(day) ?? 0);
     if (dailyCost >= dailyBudgetUsd) {
       throw new HttpError(402, 'daily_budget_exceeded_error', 'Daily API budget exhausted.');
     }
   }
 
-  function validateBody(raw: Buffer): { body: Record<string, unknown>; model: string } {
+  /** Checks the budgets, counting in-flight requests, and reserves `usd` for this one. */
+  function reserve(record: TokenRecord, usd: number): Promise<Reservation> {
+    return withLock(async () => {
+      await checkBudgets(record);
+      const reservation = { jobId: record.jobId, day: utcDay(now()), usd };
+      addReserved(reservedByJob, reservation.jobId, usd);
+      addReserved(reservedByDay, reservation.day, usd);
+      return reservation;
+    });
+  }
+
+  function release(reservation: Reservation): void {
+    addReserved(reservedByJob, reservation.jobId, -reservation.usd);
+    addReserved(reservedByDay, reservation.day, -reservation.usd);
+  }
+
+  function validateBody(
+    raw: Buffer,
+    isCountTokens: boolean,
+  ): { body: Record<string, unknown>; model: string; maxTokens: number } {
     let parsed: unknown;
     try {
       parsed = JSON.parse(raw.toString('utf8'));
@@ -286,7 +348,19 @@ export function createGateway(options: GatewayOptions): Gateway {
         }
       }
     }
-    return { body, model };
+    let maxTokens = maxOutputTokens;
+    if (!isCountTokens && body.max_tokens !== undefined) {
+      const value = body.max_tokens;
+      if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > maxOutputTokens) {
+        throw new HttpError(
+          400,
+          'invalid_request_error',
+          `Field "max_tokens" must be an integer between 1 and ${maxOutputTokens}.`,
+        );
+      }
+      maxTokens = value;
+    }
+    return { body, model, maxTokens };
   }
 
   function upstreamHeaders(req: http.IncomingMessage): Record<string, string> {
@@ -312,12 +386,29 @@ export function createGateway(options: GatewayOptions): Gateway {
     return headers;
   }
 
-  async function record(jobId: string, model: string, usage: Usage, responseModel: string | undefined) {
-    const costUsd = computeCostUsd(usage, priceFor(model, responseModel));
-    if (costUsd <= 0) return { costUsd: 0, jobCostUsd: undefined as number | undefined };
+  /** Records the cost of `usage` and releases the reservation of the request. */
+  async function record(
+    reservation: Reservation | undefined,
+    jobId: string,
+    model: string,
+    usage: Usage | undefined,
+    responseModel: string | undefined,
+  ) {
+    const costUsd = usage ? computeCostUsd(usage, priceFor(model, responseModel)) : 0;
     const day = utcDay(now());
-    const jobCostUsd = await store.addJobCost(jobId, costUsd);
-    const dailyTotal = await store.addDailyCost(day, costUsd);
+    let jobCostUsd: number | undefined;
+    let dailyTotal: number | undefined;
+    await withLock(async () => {
+      try {
+        if (costUsd > 0) {
+          jobCostUsd = await store.addJobCost(jobId, costUsd);
+          dailyTotal = await store.addDailyCost(day, costUsd);
+        }
+      } finally {
+        if (reservation) release(reservation);
+      }
+    });
+    if (dailyTotal === undefined) return { costUsd: 0, jobCostUsd: undefined as number | undefined };
     if (dailyTotal >= dailyAlertRatio * dailyBudgetUsd && (await store.markDailyAlert(day))) {
       log.warn({ day, dailyTotalUsd: dailyTotal, dailyBudgetUsd }, 'daily API budget threshold reached');
       try {
@@ -348,8 +439,18 @@ export function createGateway(options: GatewayOptions): Gateway {
     const token = await authenticate(req);
     await checkBudgets(token);
     const raw = await readBody(req, maxBodyBytes);
-    const { body, model } = validateBody(raw);
     const isCountTokens = path === COUNT_TOKENS_PATH;
+    const { body, model, maxTokens } = validateBody(raw, isCountTokens);
+
+    // Worst case of this request, used when its real usage is unknown (cut request).
+    const estimate: Usage = {
+      ...EMPTY_USAGE,
+      inputTokens: Math.ceil(raw.length / ESTIMATE_BYTES_PER_INPUT_TOKEN),
+      outputTokens: maxTokens,
+    };
+    const reservation = isCountTokens
+      ? undefined
+      : await reserve(token, computeCostUsd(estimate, priceFor(model, undefined)));
 
     // Only the `beta` flag (sent by Claude Code as ?beta=true) is forwarded.
     const target = new URL(upstreamBase + path);
@@ -367,6 +468,9 @@ export function createGateway(options: GatewayOptions): Gateway {
     let responseModel: string | undefined;
     let status = 0;
     let streamed = false;
+    /** True once the upstream may bill the request without reporting its usage to us. */
+    let billable = false;
+    let estimated = false;
     try {
       let upstreamRes: Response;
       try {
@@ -379,11 +483,14 @@ export function createGateway(options: GatewayOptions): Gateway {
           redirect: 'error',
         });
       } catch {
+        // Aborted while waiting: the request may already be generating upstream.
+        if (controller.signal.aborted) billable = true;
         throw controller.signal.aborted
           ? new HttpError(504, 'timeout_error', 'Upstream request timed out or was cancelled.')
           : new HttpError(502, 'api_error', 'Upstream request failed.');
       }
       status = upstreamRes.status;
+      if (upstreamRes.ok) billable = true;
       const headers = copyResponseHeaders(upstreamRes);
       const contentType = upstreamRes.headers.get('content-type') ?? '';
 
@@ -413,7 +520,13 @@ export function createGateway(options: GatewayOptions): Gateway {
           reader.end();
           res.destroy();
         } finally {
-          usage = reader.usage;
+          if (reader.complete) {
+            usage = reader.usage;
+          } else {
+            // Cut before message_stop: output usage is unknown, charge max_tokens.
+            usage = mergeUsage(reader.started ? reader.usage : estimate, { ...EMPTY_USAGE, outputTokens: maxTokens });
+            estimated = true;
+          }
           responseModel = reader.model;
         }
       } else {
@@ -451,11 +564,15 @@ export function createGateway(options: GatewayOptions): Gateway {
     } finally {
       clearTimeout(timer);
       res.off('close', onClose);
+      if (!usage && billable && !isCountTokens) {
+        usage = estimate;
+        estimated = true;
+      }
       let costUsd = 0;
       let jobCostUsd: number | undefined;
-      if (usage && !isCountTokens) {
+      if (!isCountTokens) {
         try {
-          ({ costUsd, jobCostUsd } = await record(token.jobId, model, usage, responseModel));
+          ({ costUsd, jobCostUsd } = await record(reservation, token.jobId, model, usage, responseModel));
         } catch (error) {
           log.error(
             { jobId: token.jobId, err: error instanceof Error ? redact(error.message) : 'unknown' },
@@ -472,6 +589,7 @@ export function createGateway(options: GatewayOptions): Gateway {
           stream: streamed,
           inputTokens: usage?.inputTokens,
           outputTokens: usage?.outputTokens,
+          estimated,
           costUsd,
           jobCostUsd,
           durationMs: now() - started,
