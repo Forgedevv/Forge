@@ -107,8 +107,12 @@ export interface Keystore {
   withSigner<T>(ref: string, fn: (signer: KeystoreSigner) => Promise<T> | T): Promise<T>;
   /** Every key on disk (ref and role only). */
   listRefs(): Promise<KeyRef[]>;
-  /** Zeroes the in-memory passphrase; every later call fails with CLOSED. */
-  close(): void;
+  /**
+   * Every later call fails with CLOSED. Calls already in flight finish first (a pending
+   * createKey fails with CLOSED instead of creating a key), then the in-memory passphrase is
+   * zeroed. Do not await it inside a `withSigner` callback: it would wait for itself.
+   */
+  close(): Promise<void>;
 }
 
 /** Reads SIGNER_KEYSTORE_DIR (default ./keystore) and SIGNER_KEYSTORE_PASSPHRASE. */
@@ -255,7 +259,10 @@ class FileKeystore implements Keystore {
   readonly #verified = new Map<string, PublicKey>();
   readonly #verifying = new Map<string, Promise<PublicKey>>();
   #createChain: Promise<unknown> = Promise.resolve();
+  /** Calls in flight; close() waits for them before zeroing the passphrase. */
+  readonly #inFlight = new Set<Promise<unknown>>();
   #closed = false;
+  #closing: Promise<void> | undefined;
 
   constructor(dir: string, passphrase: Buffer, scrypt: ScryptParams, log: KeystoreLogger) {
     this.#dir = dir;
@@ -293,7 +300,7 @@ class FileKeystore implements Keystore {
     const role = parseRole(roleInput);
     const run = this.#createChain.then(() => this.#createKeySerialized(role));
     this.#createChain = run.catch(() => undefined);
-    return run;
+    return this.#track(run);
   }
 
   async getPublicKey(refInput: string): Promise<PublicKey> {
@@ -301,19 +308,16 @@ class FileKeystore implements Keystore {
     const ref = parseRef(refInput);
     const cached = this.#verified.get(ref);
     if (cached) return cached;
-    const entry = await this.#locate(ref);
-    return this.#verify(entry);
+    return this.#track(this.#locate(ref).then((entry) => this.#verify(entry)));
   }
 
   async findRef(roleInput: string): Promise<string | undefined> {
     this.#assertOpen();
     const role = parseRole(roleInput);
-    let entry = this.#byRole.get(role);
-    if (!entry) {
-      await this.#scan();
-      entry = this.#byRole.get(role);
-    }
-    return entry?.ref;
+    const cached = this.#byRole.get(role);
+    if (cached) return cached.ref;
+    await this.#track(this.#scan());
+    return this.#byRole.get(role)?.ref;
   }
 
   async withSigner<T>(
@@ -322,6 +326,13 @@ class FileKeystore implements Keystore {
   ): Promise<T> {
     this.#assertOpen();
     const ref = parseRef(refInput);
+    return this.#track(this.#withSignerOpen(ref, fn));
+  }
+
+  async #withSignerOpen<T>(
+    ref: string,
+    fn: (signer: KeystoreSigner) => Promise<T> | T,
+  ): Promise<T> {
     const entry = await this.#locate(ref);
     const loaded = await this.#load(entry);
     const signer = new ReleasableSigner(
@@ -341,22 +352,48 @@ class FileKeystore implements Keystore {
 
   async listRefs(): Promise<KeyRef[]> {
     this.#assertOpen();
-    await this.#scan();
+    await this.#track(this.#scan());
     return [...this.#byRef.values()]
       .map(({ ref, role }) => ({ ref, role }))
       .sort((a, b) => a.role.localeCompare(b.role));
   }
 
-  close(): void {
+  close(): Promise<void> {
     this.#closed = true;
-    this.#passphrase.fill(0);
-    this.#verified.clear();
+    this.#closing ??= (async () => {
+      while (this.#inFlight.size > 0) await Promise.allSettled([...this.#inFlight]);
+      this.#passphrase.fill(0);
+      this.#verified.clear();
+    })();
+    return this.#closing;
   }
 
   // -- internals ------------------------------------------------------------------------
 
   #assertOpen(): void {
     if (this.#closed) throw new KeystoreError('CLOSED');
+  }
+
+  #track<T>(task: Promise<T>): Promise<T> {
+    this.#inFlight.add(task);
+    const done = () => this.#inFlight.delete(task);
+    task.then(done, done);
+    return task;
+  }
+
+  /**
+   * Private copy of the passphrase for sealing a new key, taken only while the store is open.
+   * The caller must zero it. Refuses an all-zero buffer (a zeroed passphrase would seal the
+   * key under a known value).
+   */
+  #sealingPassphrase(): Buffer {
+    this.#assertOpen();
+    const copy = Buffer.from(this.#passphrase);
+    if (copy.every((byte) => byte === 0)) {
+      copy.fill(0);
+      throw new KeystoreError('PASSPHRASE_INVALID');
+    }
+    return copy;
   }
 
   async #createKeySerialized(role: KeyRole): Promise<CreatedKey> {
@@ -368,18 +405,21 @@ class FileKeystore implements Keystore {
 
     const ref = newRef();
     const fileName = roleFileName(role);
+    // close() may have run during the scan above: check again, with no await before sealing.
+    const passphrase = this.#sealingPassphrase();
     const { secret, publicKey } = generateSecretKey();
     let written: boolean;
     try {
       const envelope = await sealSecret(
         secret,
-        this.#passphrase,
+        passphrase,
         { ref, role, publicKey: publicKey.toBase58() },
         this.#scrypt,
       );
       written = await this.#writeExclusive(fileName, `${JSON.stringify(envelope, null, 2)}\n`);
     } finally {
       secret.fill(0);
+      passphrase.fill(0);
     }
 
     if (!written) {

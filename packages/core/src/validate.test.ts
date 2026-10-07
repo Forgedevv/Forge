@@ -19,6 +19,9 @@ import { describe, expect, it } from 'vitest';
 import type { LaunchpadSpec } from '@forge/shared';
 import {
   FEES,
+  MAX_ANTI_SNIPER_DURATION_SECONDS,
+  MAX_ANTI_SNIPER_DURATION_SLOTS,
+  MAX_ANTI_SNIPER_STARTING_FEE_BPS,
   MAX_FEE_BPS,
   MAX_MIGRATED_POOL_FEE_BPS,
   MAX_POOL_CREATION_FEE,
@@ -349,6 +352,55 @@ describe('validateLaunchpadConfigParams: trading fee', () => {
     expect(codes(validateLaunchpadConfigParams(config, makeSpec({ antiSniper: false })))).toEqual([
       'ANTI_SNIPER_MISMATCH',
     ]);
+  });
+
+  it(`rejects an anti-sniper phase longer than ${MAX_ANTI_SNIPER_DURATION_SECONDS} s (timestamp)`, () => {
+    const config = makeConfig();
+    const base = config.poolFees.baseFee;
+    expect(base.firstFactor * base.secondFactor.toNumber()).toBeLessThanOrEqual(
+      MAX_ANTI_SNIPER_DURATION_SECONDS,
+    );
+    expect(validateLaunchpadConfigParams(config, makeSpec()).ok).toBe(true);
+    // Exactly at the cap: 10 periods of 30 s.
+    base.secondFactor = new BN(MAX_ANTI_SNIPER_DURATION_SECONDS / base.firstFactor);
+    expect(validateLaunchpadConfigParams(config, makeSpec()).violations).toEqual([]);
+    base.secondFactor = new BN(MAX_ANTI_SNIPER_DURATION_SECONDS / base.firstFactor + 1);
+    expect(codes(validateLaunchpadConfigParams(config, makeSpec()))).toEqual([
+      'FEE_SCHEDULER_TOO_LONG',
+    ]);
+    base.secondFactor = new BN('1000000000000');
+    expect(codes(validateLaunchpadConfigParams(config, makeSpec()))).toEqual([
+      'FEE_SCHEDULER_TOO_LONG',
+    ]);
+  });
+
+  it('caps the anti-sniper phase in slots when activationType is Slot', () => {
+    const config = makeConfig();
+    config.activationType = ActivationType.Slot;
+    const base = config.poolFees.baseFee;
+    const maxSlots = MAX_ANTI_SNIPER_DURATION_SLOTS;
+    expect(maxSlots).toBe(750);
+    base.firstFactor = 10;
+    base.secondFactor = new BN(maxSlots / 10);
+    expect(validateLaunchpadConfigParams(config, makeSpec()).violations).toEqual([]);
+    base.secondFactor = new BN(maxSlots / 10 + 1);
+    expect(codes(validateLaunchpadConfigParams(config, makeSpec()))).toEqual([
+      'FEE_SCHEDULER_TOO_LONG',
+    ]);
+  });
+
+  it(`caps the anti-sniper starting fee at ${MAX_ANTI_SNIPER_STARTING_FEE_BPS} bps (FORGE bound)`, () => {
+    const config = makeConfig({ startingFeeBps: MAX_FEE_BPS });
+    config.poolFees.baseFee.cliffFeeNumerator = bpsToFeeNumerator(
+      MAX_ANTI_SNIPER_STARTING_FEE_BPS + 1,
+    );
+    const violations = validateLaunchpadConfigParams(config, makeSpec()).violations;
+    expect(violations).toContainEqual(
+      expect.objectContaining({
+        field: 'poolFees.baseFee.cliffFeeNumerator',
+        code: 'FEE_OUT_OF_CLIENT_BOUNDS',
+      }),
+    );
   });
 
   it('rejects a half-configured fee scheduler', () => {

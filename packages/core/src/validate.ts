@@ -42,6 +42,9 @@ import {
   CLIENT_POOL_CREATION_FEE_LAMPORTS,
   FEE_DENOMINATOR,
   FEES,
+  MAX_ANTI_SNIPER_DURATION_SECONDS,
+  MAX_ANTI_SNIPER_DURATION_SLOTS,
+  MAX_ANTI_SNIPER_STARTING_FEE_BPS,
   MAX_BASIS_POINT,
   MAX_FEE_BPS,
   MAX_FEE_NUMERATOR,
@@ -68,6 +71,7 @@ export type ViolationCode =
   | 'FEE_OUT_OF_CLIENT_BOUNDS'
   | 'FEE_MISMATCH'
   | 'FEE_SCHEDULER_INVALID'
+  | 'FEE_SCHEDULER_TOO_LONG'
   | 'ANTI_SNIPER_MISMATCH'
   | 'DYNAMIC_FEE_NOT_ALLOWED'
   | 'COLLECT_FEE_MODE_NOT_ALLOWED'
@@ -487,6 +491,14 @@ function collectTradingFee(config: ConfigCandidate, spec: LaunchpadSpec, c: Coll
       `starting fee must be between ${MIN_FEE_BPS} and ${MAX_FEE_BPS} bps (SDK)`,
     );
   }
+  // FORGE bound, kept explicit so it does not depend on the SDK's own maximum.
+  if (cliff > bpsToNumerator(MAX_ANTI_SNIPER_STARTING_FEE_BPS)) {
+    c.add(
+      `${field}.cliffFeeNumerator`,
+      'FEE_OUT_OF_CLIENT_BOUNDS',
+      `starting fee must be at most ${MAX_ANTI_SNIPER_STARTING_FEE_BPS} bps`,
+    );
+  }
 
   const schedulerOff = numberOfPeriod === 0 && periodFrequency === 0n && reductionFactor === 0n;
   const schedulerOn = numberOfPeriod > 0 && periodFrequency > 0n && reductionFactor > 0n;
@@ -509,6 +521,25 @@ function collectTradingFee(config: ConfigCandidate, spec: LaunchpadSpec, c: Coll
       ),
     );
     if (reason !== null) c.add(field, 'FEE_SCHEDULER_INVALID', `fee scheduler: ${reason}`);
+  }
+
+  // The SDK does not cap the scheduler's length: a long one would keep the high starting fee
+  // for as long as it runs. Its unit follows activationType (slots or seconds); an unknown
+  // activationType is reported elsewhere and gets the stricter seconds cap.
+  if (schedulerOn) {
+    const slots = config.activationType === ActivationType.Slot;
+    const maxDuration = BigInt(
+      slots ? MAX_ANTI_SNIPER_DURATION_SLOTS : MAX_ANTI_SNIPER_DURATION_SECONDS,
+    );
+    if (BigInt(numberOfPeriod) * periodFrequency > maxDuration) {
+      c.add(
+        field,
+        'FEE_SCHEDULER_TOO_LONG',
+        `anti-sniper phase (numberOfPeriod * periodFrequency) must be at most ${maxDuration} ${
+          slots ? 'slots' : 'seconds'
+        } (${MAX_ANTI_SNIPER_DURATION_SECONDS} s)`,
+      );
+    }
   }
 
   // Ending fee = fee once the scheduler has run all its periods (= cliff when there is none).
