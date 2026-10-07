@@ -6,7 +6,7 @@ Implemented on 2026-10-07 in the `agent/frontend` worktree. This replaces the or
 
 - An original articulated workshop pilot, created from geometry in `character.ts`, with a matching original SVG illustration for the simple view. No downloaded character, scene model, animation track, font, or reference bundle is used.
 - Six scenes: ignition and floating hardware; glass and moving typography; eight launchpad displays with a planar reflection; a drafting grid with 26 instanced makers and jumping type; an orbital manifesto; a luminous flight path with accelerating wind.
-- The inspected camera/target path and character transforms, adapted to the new model, including the third chapter's vertical override. Camera movement and character orientation interpolate continuously across chapters.
+- An original FORGE camera journey in `camera-path.ts`: per-chapter camera position, roll and field of view, look-at target, character transform, and portrait field-of-view offset, all authored for this scene composition. The path starts low in front of the pilot, slides right for the glass chapter, drops to the launchpad wall, rises over it onto the drafting table, climbs into orbit, and banks away behind the pilot for liftoff. Camera movement and character orientation interpolate continuously across chapters.
 - Fixed-duration wheel navigation: one gesture advances one chapter over 1.8 seconds, regardless of wheel magnitude or tail length, following the user's revised direction. Timeline buttons retain their explicit target navigation. Junni's adapted touch spring uses an interpolated 60 Hz simulation; touch capture clears stale momentum.
 - A 0.85-second ignition sequence; a physics-based wall reveal; one-second material transitions; independent particle, FOV, and shake timing for the final boost; the 3.5-second jump cycle and 0.7-second word switch.
 - Newly authored character poses using the inspected loop durations and playback rates. The poses themselves are not the reference's authored skeletal animation.
@@ -31,7 +31,7 @@ The associated A2–A11 interface, contract mocks, gallery, validation and integ
 
 ## Fidelity limits
 
-The user's subsequent comfort feedback takes precedence over the original effect amplitudes. The current palette uses midnight ink, cool stone, and periwinkle, shared with the workshop controls. The latest feedback also shortened the intro, replaced momentum-driven wheel input with complete chapter transitions, and moved a thinner final flight path behind the subject to avoid near-camera clipping. Exposure, emission, bloom, specular highlights, wind streaks, camera shake, boost FOV, and chromatic separation have been reduced. Chapter lighting and postprocessing now blend continuously instead of switching when the selected chapter changes. The six scenes, camera path, and interaction timing remain.
+The user's subsequent comfort feedback takes precedence over the original effect amplitudes. The current palette uses midnight ink, cool stone, and periwinkle, shared with the workshop controls. The latest feedback also shortened the intro, replaced momentum-driven wheel input with complete chapter transitions, and moved a thinner final flight path behind the subject to avoid near-camera clipping. Exposure, emission, bloom, specular highlights, wind streaks, camera shake, boost FOV, and chromatic separation have been reduced. Chapter lighting and postprocessing now blend continuously instead of switching when the selected chapter changes. The six scenes and interaction timing remain; the camera path has since been replaced by the original FORGE path described above.
 
 Character yaw/bank integrate elapsed frame time instead of multiplying chapter weights by total session time. Chapter animation clocks survive overlapping transitions, cloud drift no longer wraps abruptly, and the pointer trail starts at the pointer with time-based smoothing. Scenery keeps a stable transparent shader variant during fades; duplicate size notifications no longer reallocate targets. Transmission renders at 50% viewport resolution on smaller screens and 75% on desktop, using Three's documented `transmissionResolutionScale` option. These changes are code-level improvements, not a measured GPU performance claim.
 
@@ -41,7 +41,7 @@ This is a source-informed reconstruction with a new art direction, not a certifi
 
 The implementation can be reviewed locally now. Pixel accuracy and motion equivalence must remain open until a browser can render both sites for comparison. No push, deployment, Git configuration change, or backend modification was performed.
 
-The retained upstream notice is in `THIRD_PARTY_NOTICES.md`. The source measurements and dependency review are in `../reference/loanmeme/`.
+The retained upstream notice is in `THIRD_PARTY_NOTICES.md`. No third-party camera, scene, or character data is stored in the repository.
 
 
 ## Workshop integration and review refinements

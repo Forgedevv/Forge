@@ -6,7 +6,7 @@ import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
-import measurements from '../reference/loanmeme/motion-measurements.json';
+import { INTRO_WALL_DISTANCE, chapterTransforms } from './camera-path';
 import { createCharacter } from './character';
 import { palette } from './content';
 import {
@@ -127,18 +127,7 @@ function buildExperience(
   background.renderOrder = -100;
   camera.add(background);
 
-  const transforms = measurements.chapters.map((chapter) => ({
-    camera: new T.Vector3().fromArray(chapter.camera.position),
-    target: new T.Vector3().fromArray(chapter.target.position),
-    position: new T.Vector3().fromArray(chapter.character.position),
-    quaternion: new T.Quaternion().fromArray(chapter.character.rotation),
-    scale: chapter.character.scale[0]!,
-    fov: chapter.camera.fovDegrees,
-    portraitFov: chapter.mobileFovOffsetDegrees,
-  }));
-  // The reference overrides this chapter's raw GLB transform after loading.
-  transforms[2]!.position.y = 0.2807 * transforms[2]!.scale - 12;
-  transforms[2]!.quaternion.setFromAxisAngle(new T.Vector3(0, 1, 0), Math.PI);
+  const transforms = chapterTransforms();
   const isPortrait = () => element.clientWidth / Math.max(1, element.clientHeight) < 1;
   const scenery = createScenery(
     transforms.map((t) => t.target),
@@ -196,6 +185,12 @@ function buildExperience(
   const shardGeometry = new T.BoxGeometry(0.42, 0.39, 0.025);
   const shardMaterial = new T.MeshStandardMaterial({ color: palette.ink, roughness: 0.4 });
   const fragments: { mesh: T.Mesh; body: Body }[] = [];
+  // Assemble the wall across the first chapter's view, between the camera and the pilot.
+  const wallCenter = transforms[0]!.target
+    .clone()
+    .sub(transforms[0]!.camera)
+    .setLength(INTRO_WALL_DISTANCE)
+    .add(transforms[0]!.camera);
   for (let i = 0; i < 35; i++) {
     const x = ((i % 7) - 3) * 0.43,
       y = (Math.floor(i / 7) - 2) * 0.4;
@@ -204,7 +199,7 @@ function buildExperience(
     const body = new Body({
       mass: 1,
       shape: new Box(new Vec3(0.21, 0.195, 0.0125)),
-      position: new Vec3(x, y + 1.05, 0.4),
+      position: new Vec3(x + wallCenter.x, y + wallCenter.y, wallCenter.z),
     });
     body.velocity.set(x * 1.8, y * 1.8 + 1.4, 0.8 + Math.abs(x));
     body.angularVelocity.set(x * 3, y * 3, ((i % 3) - 1) * 2);
@@ -327,6 +322,7 @@ function buildExperience(
       T.MathUtils.lerp(from.portraitFov, to.portraitFov, blend) * portrait +
       boostCamera.fov * 0.45 * chapterWeight(5);
     camera.lookAt(lookAt);
+    camera.rotateZ(T.MathUtils.lerp(from.roll, to.roll, blend));
     camera.updateProjectionMatrix();
     camera.updateMatrixWorld();
     character.root.position.lerpVectors(from.position, to.position, blend);
