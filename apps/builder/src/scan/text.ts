@@ -3,7 +3,7 @@
  * Solana addresses, javascript: URLs, hidden Unicode, active HTML content.
  */
 
-import { bytesToAddress, findBase58Runs, findEncodedAddresses } from './base58.js';
+import { bytesToAddress, findBase58Fragments, findBase58Runs, findEncodedAddresses, isBase58Only, isCamelWords, looksRandomBase58 } from './base58.js';
 import { hostMatches, type ResolvedConfig } from './config.js';
 import { checkUrl, truncate } from './url.js';
 import type { Finding, RuleId } from './types.js';
@@ -130,6 +130,59 @@ export class AddressCollector {
       line,
       reason: `byte array of ${values.length} bytes added (raw Solana key: ${address})`,
     });
+  }
+
+  /**
+   * Pieces of an address split to stay under 32 characters: a random-looking
+   * base58 run of 16 to 31 characters standing on its own.
+   */
+  fragments(variant: string, source: string, line?: number): void {
+    for (const hit of findBase58Fragments(source)) {
+      if ([...this.config.addressAllowlist].some((a) => a.includes(hit.value))) continue;
+      this.findings.push({
+        rule: 'solana-address',
+        key: `addr-frag:${variant}:${hit.value}`,
+        line: line ?? lineOfValue(this.text, hit.value),
+        reason: `piece of a possible Solana address added: ${hit.value}`,
+      });
+    }
+  }
+
+  /**
+   * Consecutive values (string literals, JSON strings) glued together: an
+   * address split into short pieces that are joined at runtime.
+   */
+  joined(variant: string, parts: readonly (string | null)[], line?: number): void {
+    let current = '';
+    const flush = (): void => {
+      if (current.length >= 32 && current.length <= 400 && !isCamelWords(current) && /[0-9]/.test(current) && /[A-Z]/.test(current) && /[a-z]/.test(current)) {
+        this.run(variant, current, line);
+      }
+      current = '';
+    };
+    for (const p of parts) {
+      // Values of 32+ characters are checked on their own: they only separate pieces here.
+      if (p !== null && p.length > 0 && p.length < 32 && isBase58Only(p)) current += p;
+      else flush();
+    }
+    flush();
+  }
+
+  /** Markdown and plain text: inline markup removed (emphasis, code, tags, comments), then addresses and pieces. */
+  markup(): void {
+    const t = stripInvisible(decodeEntities(this.text));
+    const stripped = t.replace(/<!--[\s\S]*?-->/g, '').replace(/<[^>]*>/g, '').replace(/[*_`~\\]/g, '');
+    for (const hit of findBase58Runs(stripped)) {
+      if (!isCamelWords(hit.value)) this.run('markup', hit.value);
+    }
+    // Pieces: URLs removed first (random-looking file names are not addresses).
+    this.fragments('markup', stripped.replace(/\]\([^)]*\)/g, '] ').replace(/[a-z][a-z0-9+.-]*:\/\/\S+/gi, ' '));
+  }
+
+  /** JSON: string values glued in document order, and pieces standing alone. */
+  jsonValues(values: readonly string[]): void {
+    this.joined('json', values);
+    for (const v of values) if (looksRandomBase58(v.trim())) this.fragments('json', v.trim());
   }
 
   /** Raw text plus decoded variants (escapes/entities, invisible characters removed). */

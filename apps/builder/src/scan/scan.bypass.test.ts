@@ -78,7 +78,7 @@ const legit: Record<string, string> = {
   'dynamic internal link': `import Link from 'next/link'; export const C = ({ m }: { m: string }) => <Link href={\`/coin/\${m}\`}>Open</Link>;`,
   'dynamic explorer link': `export const C = ({ m }: { m: string }) => <a href={\`https://solscan.io/token/\${m}\`}>Solscan</a>;`,
   'inline style with a local background': `export const C = ({ n }: { n: string }) => <div style={{ backgroundImage: \`url(/bg/\${n}.webp)\` }} />;`,
-  'array index access': `export const pick = (xs: string[], i: number) => xs[i] ?? xs[i + 1];`,
+  'array index access': `export const pick = (xs: string[], i: number) => xs.at(i) ?? xs.at(i + 1) ?? xs[0] ?? xs[xs.length - 1];`,
   'theme lookup by key': `const theme: Record<string, string> = { a: '#fff' }; export const c = (k: string) => theme[k];`,
   'typeof window guard': `export const isBrowser = typeof window !== 'undefined' && 'IntersectionObserver' in window;`,
   'window event listeners': `export const on = (f: () => void) => { window.addEventListener('resize', f); return () => window.removeEventListener('resize', f); };`,

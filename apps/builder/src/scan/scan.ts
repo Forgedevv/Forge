@@ -10,7 +10,7 @@ import { analyzeCode } from './code.js';
 import { resolveConfig, type ResolvedConfig } from './config.js';
 import { checkForgeConfig, checkLockfile, checkPackageJson } from './manifest.js';
 import { classifyPath, extensionOf, kindOf, normalizePath, type FileKind } from './paths.js';
-import { AddressCollector, cssFindings, hiddenUnicodeFindings, jsonFindings, activeHtmlFindings, scriptUrlFindings, svgFindings } from './text.js';
+import { AddressCollector, cssFindings, hiddenUnicodeFindings, jsonFindings, jsonStrings, activeHtmlFindings, scriptUrlFindings, svgFindings } from './text.js';
 import type { ChangedFile, FileContent, Finding, ScanInput, ScanOptions, ScanResult, Violation } from './types.js';
 
 const STATUSES = new Set(['added', 'modified', 'deleted', 'renamed']);
@@ -76,6 +76,14 @@ export function analyzeText(path: string, kind: FileKind, text: string, config: 
   const out: Finding[] = [];
   const addresses = new AddressCollector(text, config);
   addresses.textVariants();
+  if (kind === 'markdown' || kind === 'text') addresses.markup();
+  if (kind === 'json') {
+    try {
+      addresses.jsonValues(jsonStrings(JSON.parse(text)).map((s) => s.value));
+    } catch {
+      // Invalid JSON is reported by jsonFindings.
+    }
+  }
   out.push(...addresses.findings, ...scriptUrlFindings(text), ...hiddenUnicodeFindings(text, false));
   if (kind === 'style') out.push(...cssFindings(text, config));
   if (kind === 'svg') out.push(...svgFindings(text, config));

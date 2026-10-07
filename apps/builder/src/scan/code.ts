@@ -11,9 +11,9 @@ import { builtinModules } from 'node:module';
 
 import ts from 'typescript';
 
-import { isCamelWords } from './base58.js';
+import { isCamelWords, looksRandomBase58 } from './base58.js';
 import type { ResolvedConfig } from './config.js';
-import { Folder, UNKNOWN, memberChain, unwrap, type Value } from './fold.js';
+import { Folder, UNKNOWN, bindingNames, memberChain, staticPropertyName, unwrap, type Value } from './fold.js';
 import { AddressCollector, activeHtmlFindings, cssFindings, decodeEntities, hiddenUnicodeFindings, scriptUrlFindings } from './text.js';
 import type { Finding, RuleId } from './types.js';
 import { checkUrl, isScriptUrl, truncate, type UrlCandidate, type UrlKind } from './url.js';
@@ -95,6 +95,12 @@ const HTML_SINKS = new Set([
   'writeln',
   'setHTMLUnsafe',
   'parseHTMLUnsafe',
+  'DOMParser',
+  'parseFromString',
+  'createHTMLDocument',
+  'XSLTProcessor',
+  'getAttributeNode',
+  'getAttributeNodeNS',
   'dangerouslySetInnerHTML',
 ]);
 
@@ -105,6 +111,25 @@ const DANGEROUS_TAGS = new Set(['script', 'iframe', 'frame', 'frameset', 'embed'
 const GLOBAL_OBJECTS = new Set(['window', 'globalThis', 'self', 'top', 'parent', 'frames', 'document', 'opener']);
 /** Properties that return a window object from any receiver. */
 const WINDOW_PROPERTIES = new Set(['defaultView', 'contentWindow']);
+/** `Object` helpers that read every property of their argument without naming it. */
+const OBJECT_READERS = new Set(['values', 'entries', 'getOwnPropertyDescriptor', 'getOwnPropertyDescriptors']);
+/** `Object` helpers that change properties or the prototype of an object without naming them. */
+const OBJECT_WRITERS = new Set(['setPrototypeOf', 'defineProperty', 'defineProperties', '__defineGetter__', '__defineSetter__']);
+/** Element properties that load a URL when assigned. */
+const URL_PROPS = new Set(['src', 'action', 'formAction', 'poster']);
+/** Element properties and attributes holding a list of URLs. */
+const URL_LIST_PROPS = new Set(['srcset', 'srcSet', 'ping']);
+/** Attributes that load or send to a URL, checked when the element type is unknown. */
+const UNKNOWN_TAG_URL_ATTRS = ['src', 'href', 'action', 'formaction', 'data', 'poster', 'codebase', 'background'];
+/** Marker returned by `jsxIntrinsic` for an element whose type cannot be determined. */
+const UNKNOWN_TAG = '*';
+/** Props commonly used to choose the rendered element of a polymorphic component. */
+const POLYMORPHIC_PROPS = new Set(['as', 'component', 'tag', 'element', 'elementtype']);
+/** Calls whose result is a component (a const initialized with one is a component reference). */
+const COMPONENT_FACTORIES = new Set(['forwardRef', 'memo', 'lazy', 'dynamic', 'createContext']);
+/** Modules whose named exports create elements from a type and props. */
+const REACT_ELEMENT_MODULES = new Set(['react', 'react/jsx-runtime', 'react/jsx-dev-runtime']);
+const ELEMENT_FACTORIES = new Set(['createElement', 'jsx', 'jsxs', 'jsxDEV']);
 /** Elements whose src only loads media: static URLs are fine, dynamic ones must stay on allowed origins (exfiltration). */
 const MEDIA_TAGS = new Set(['img', 'image', 'video', 'audio', 'source', 'track', 'picture']);
 
@@ -301,6 +326,121 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
       (st) => ts.isImportDeclaration(st) && ts.isStringLiteral(st.moduleSpecifier) && st.moduleSpecifier.text === 'next/script' && st.importClause?.name !== undefined && ts.idText(st.importClause.name) === name,
     );
 
+  /** Names whose every declaration is a component (import, function, class, or const holding one). */
+  const componentNames = new Map<string, boolean>();
+  const reactNames = new Set<string>();
+  /** Local name -> imported name, for named imports from React modules. */
+  const reactImports = new Map<string, string>();
+  {
+    const mark = (id: ts.Identifier | string, isComponent: boolean): void => {
+      const name = typeof id === 'string' ? id : ts.idText(id);
+      componentNames.set(name, (componentNames.get(name) ?? true) && isComponent);
+    };
+    const componentInit = (init: ts.Expression | undefined): boolean => {
+      if (!init) return false;
+      const i = unwrap(init);
+      if (ts.isArrowFunction(i) || ts.isFunctionExpression(i) || ts.isClassExpression(i)) return true;
+      // styled.form`...` or memo('form') render an intrinsic element: not treated as a component.
+      if (ts.isCallExpression(i)) {
+        const callee = unwrap(i.expression);
+        const name = ts.isIdentifier(callee) ? ts.idText(callee) : ts.isPropertyAccessExpression(callee) ? ts.idText(callee.name) : '';
+        const first = i.arguments[0] ? unwrap(i.arguments[0]) : undefined;
+        if (!COMPONENT_FACTORIES.has(name) || !first) return false;
+        return ts.isArrowFunction(first) || ts.isFunctionExpression(first) || ts.isClassExpression(first) || ts.isIdentifier(first) || ts.isPropertyAccessExpression(first);
+      }
+      return false;
+    };
+    const walk = (node: ts.Node): void => {
+      if (ts.isImportClause(node) && node.name) mark(node.name, true);
+      else if (ts.isNamespaceImport(node) || ts.isImportSpecifier(node)) mark(node.name, true);
+      else if ((ts.isFunctionDeclaration(node) || ts.isClassDeclaration(node)) && node.name) mark(node.name, true);
+      else if (ts.isVariableDeclaration(node)) {
+        if (ts.isIdentifier(node.name)) mark(node.name, (ts.getCombinedNodeFlags(node) & ts.NodeFlags.Const) !== 0 && componentInit(node.initializer));
+        else for (const n of bindingNames(node.name)) mark(n, false);
+      } else if (ts.isParameter(node) || ts.isBindingElement(node)) {
+        for (const n of bindingNames(node.name)) mark(n, false);
+      }
+      ts.forEachChild(node, walk);
+    };
+    walk(sf);
+    for (const st of sf.statements) {
+      if (!ts.isImportDeclaration(st) || !ts.isStringLiteral(st.moduleSpecifier) || !REACT_ELEMENT_MODULES.has(st.moduleSpecifier.text)) continue;
+      const clause = st.importClause;
+      if (clause?.name) reactNames.add(ts.idText(clause.name));
+      const nb = clause?.namedBindings;
+      if (nb && ts.isNamespaceImport(nb)) reactNames.add(ts.idText(nb.name));
+      if (nb && ts.isNamedImports(nb)) {
+        for (const e of nb.elements) reactImports.set(ts.idText(e.name), e.propertyName ? e.propertyName.getText(sf) : ts.idText(e.name));
+      }
+    }
+  }
+  const isComponentName = (name: string): boolean => componentNames.get(name) === true;
+  const isReactRef = (expr: ts.Expression): boolean => {
+    const n = unwrap(expr);
+    return ts.isIdentifier(n) && reactNames.has(ts.idText(n)) && componentNames.get(ts.idText(n)) === true;
+  };
+  const isObjectCtor = (expr: ts.Expression): boolean => {
+    const n = unwrap(expr);
+    if (ts.isIdentifier(n)) return ts.idText(n) === 'Object' && !isDeclared('Object');
+    if (ts.isPropertyAccessExpression(n)) return ts.idText(n.name) === 'Object' && isGlobalRef(n.expression);
+    return false;
+  };
+  /** A receiver that is a plain data literal of this file: indexing it with any key is harmless. */
+  const isLiteralData = (expr: ts.Expression): boolean => {
+    const n = unwrap(expr);
+    if (ts.isIdentifier(n)) return folder.isLiteralConst(ts.idText(n));
+    if (ts.isArrayLiteralExpression(n)) return n.elements.every((e) => !ts.isSpreadElement(e));
+    if (ts.isObjectLiteralExpression(n)) {
+      return n.properties.every((p) => !ts.isSpreadAssignment(p) && (p.name === undefined || staticPropertyName(p.name, folder) !== '__proto__'));
+    }
+    return false;
+  };
+  /** A key that is always a number or a boolean at runtime, whatever its operands are (no type information needed). */
+  const isNumericKey = (expr: ts.Expression): boolean => {
+    const n = unwrap(expr);
+    if (ts.isNumericLiteral(n) || ts.isBigIntLiteral(n)) return true;
+    if (n.kind === ts.SyntaxKind.TrueKeyword || n.kind === ts.SyntaxKind.FalseKeyword) return true;
+    if (ts.isPrefixUnaryExpression(n) || ts.isPostfixUnaryExpression(n)) return true;
+    if (ts.isConditionalExpression(n)) return isNumericKey(n.whenTrue) && isNumericKey(n.whenFalse);
+    if (ts.isBinaryExpression(n)) {
+      const op = n.operatorToken.kind;
+      if (op === ts.SyntaxKind.PlusToken || op === ts.SyntaxKind.QuestionQuestionToken || op === ts.SyntaxKind.BarBarToken || op === ts.SyntaxKind.AmpersandAmpersandToken) {
+        return isNumericKey(n.left) && isNumericKey(n.right);
+      }
+      if (op === ts.SyntaxKind.CommaToken) return isNumericKey(n.right);
+      return [
+        ts.SyntaxKind.MinusToken,
+        ts.SyntaxKind.AsteriskToken,
+        ts.SyntaxKind.SlashToken,
+        ts.SyntaxKind.PercentToken,
+        ts.SyntaxKind.AsteriskAsteriskToken,
+        ts.SyntaxKind.AmpersandToken,
+        ts.SyntaxKind.BarToken,
+        ts.SyntaxKind.CaretToken,
+        ts.SyntaxKind.LessThanLessThanToken,
+        ts.SyntaxKind.GreaterThanGreaterThanToken,
+        ts.SyntaxKind.GreaterThanGreaterThanGreaterThanToken,
+        ts.SyntaxKind.LessThanToken,
+        ts.SyntaxKind.GreaterThanToken,
+        ts.SyntaxKind.LessThanEqualsToken,
+        ts.SyntaxKind.GreaterThanEqualsToken,
+        ts.SyntaxKind.EqualsEqualsEqualsToken,
+        ts.SyntaxKind.ExclamationEqualsEqualsToken,
+        ts.SyntaxKind.EqualsEqualsToken,
+        ts.SyntaxKind.ExclamationEqualsToken,
+      ].includes(op);
+    }
+    if (ts.isCallExpression(n)) {
+      const chain = memberChain(n.expression);
+      if (chain === null) return false;
+      const root = chain.split('.')[0] ?? '';
+      if (isDeclared(root)) return false;
+      return /^Math\.[a-z0-9]+$/i.test(chain) || ['Number', 'parseInt', 'parseFloat', 'Number.parseInt', 'Number.parseFloat'].includes(chain);
+    }
+    const v = folder.fold(n);
+    return typeof v === 'number' || typeof v === 'boolean';
+  };
+
   const isGlobalRef = (expr: ts.Expression): boolean => {
     const n = unwrap(expr);
     if (ts.isIdentifier(n)) return GLOBAL_OBJECTS.has(ts.idText(n)) && !isDeclared(ts.idText(n));
@@ -340,6 +480,48 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
     }
   };
 
+  /**
+   * URL lists (`srcset`, `ping`): a dynamic part can append any URL, so only a
+   * fully static value is accepted, and each of its URLs is checked unless
+   * `staticAllowed` (media in JSX, where a static URL leaks nothing).
+   */
+  const urlListCheck = (sink: string, node: ts.Node, arg: ts.Expression | undefined, rule: RuleId, staticAllowed = false): void => {
+    if (!arg) return;
+    for (const c of folder.urlCandidates(arg)) {
+      if (!c.complete) {
+        add(rule, node, `${sink}: URL list with a dynamic part`, `${sink}|list|${c.text}|${snippet(arg)}`);
+        continue;
+      }
+      for (const token of decodeEntities(c.text).split(/[\s,]+/)) {
+        if (token === '' || /^\d+(?:\.\d+)?[wxh]$/i.test(token)) continue;
+        const v = checkUrl({ text: token, complete: true }, 'network', config);
+        if (v.ok || (staticAllowed && v.rule !== 'javascript-url')) continue;
+        add(v.rule === 'javascript-url' ? v.rule : rule, node, `${sink}: ${v.reason}`, `${sink}|url:${token}`);
+      }
+    }
+  };
+
+  /** Imported or re-exported names of a declaration, as text (part of the finding key of a blocked package). */
+  const importedNames = (node: ts.Node): string => {
+    const out: string[] = [];
+    if (ts.isImportDeclaration(node)) {
+      const c = node.importClause;
+      if (c?.isTypeOnly) out.push('type');
+      if (c?.name) out.push(`default:${ts.idText(c.name)}`);
+      const nb = c?.namedBindings;
+      if (nb && ts.isNamespaceImport(nb)) out.push(`*:${ts.idText(nb.name)}`);
+      if (nb && ts.isNamedImports(nb)) for (const e of nb.elements) out.push(e.getText(sf).replace(/\s+/g, ' '));
+    } else if (ts.isExportDeclaration(node)) {
+      const ec = node.exportClause;
+      if (!ec) out.push('*');
+      else if (ts.isNamespaceExport(ec)) out.push(`*:${ec.name.getText(sf)}`);
+      else for (const e of ec.elements) out.push(e.getText(sf).replace(/\s+/g, ' '));
+    } else if (ts.isImportEqualsDeclaration(node)) {
+      out.push(`=:${ts.idText(node.name)}`);
+    }
+    return out.sort().join(',');
+  };
+
   const moduleCheck = (node: ts.Node, specifierNode: ts.Expression | undefined): void => {
     if (!specifierNode) {
       add('forbidden-import', node, 'module loaded without a static specifier');
@@ -371,7 +553,8 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
       return;
     }
     if (BLOCKED_PACKAGES.has(pkg) || BLOCKED_SCOPES.some((s) => `${pkg}/`.startsWith(s))) {
-      add('forbidden-import', node, `package "${pkg}" may not be imported outside src/forge/`, `import|${pkg}`);
+      // Full specifier and imported names in the key: any change to an existing import is a new finding.
+      add('forbidden-import', node, `package "${pkg}" may not be imported outside src/forge/`, `import|${spec}|${importedNames(node)}`);
     }
   };
 
@@ -430,20 +613,55 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
     const lower = name.toLowerCase();
     if (lower.startsWith('on') || lower === 'srcdoc') {
       add('dangerous-html', call, `setAttribute("${name}")`);
-    } else if (['src', 'action', 'formaction', 'data'].includes(lower)) {
+    } else if (['src', 'action', 'formaction', 'data', 'poster', 'codebase', 'background'].includes(lower)) {
       urlCheck(`setAttribute("${name}")`, call, valueNode, 'network', 'embed-external');
+    } else if (lower === 'srcset' || lower === 'ping') {
+      urlListCheck(`setAttribute("${name}")`, call, valueNode, 'embed-external');
     } else if (lower === 'href' || lower === 'xlink:href') {
       urlCheck(`setAttribute("${name}")`, call, valueNode, 'navigation', 'navigation-external');
     }
   };
 
-  const createElementCheck = (call: ts.CallExpression | ts.NewExpression): void => {
+  /** Props object of an element whose type is unknown: the URL attributes of every element are checked. */
+  const unknownTagPropsCheck = (call: ts.CallExpression | ts.NewExpression, props: ts.Expression | undefined): void => {
+    if (!props) return;
+    const p = unwrap(props);
+    if (p.kind === ts.SyntaxKind.NullKeyword || (ts.isIdentifier(p) && ts.idText(p) === 'undefined')) return;
+    if (!ts.isObjectLiteralExpression(p)) {
+      add('embed-external', call, 'createElement of a dynamic element type with props that cannot be checked');
+      return;
+    }
+    for (const prop of p.properties) {
+      if (ts.isSpreadAssignment(prop)) {
+        add('embed-external', call, 'createElement of a dynamic element type with spread props');
+        continue;
+      }
+      const key = prop.name ? staticPropertyName(prop.name, folder) : UNKNOWN;
+      if (key === UNKNOWN) {
+        add('embed-external', call, 'createElement of a dynamic element type with a computed prop name');
+        continue;
+      }
+      const lower = key.toLowerCase();
+      const value = ts.isPropertyAssignment(prop) ? prop.initializer : ts.isShorthandPropertyAssignment(prop) ? prop.name : undefined;
+      if (UNKNOWN_TAG_URL_ATTRS.includes(lower)) urlCheck(`createElement prop "${key}"`, call, value, 'network', 'embed-external');
+      else if (lower === 'srcset' || lower === 'ping') urlListCheck(`createElement prop "${key}"`, call, value, 'embed-external');
+    }
+  };
+
+  const createElementCheck = (call: ts.CallExpression | ts.NewExpression, react: boolean): void => {
     const arg = call.arguments?.[0];
     if (!arg) return;
     const tag = folder.foldString(arg);
     if (tag === UNKNOWN) {
       const a = unwrap(arg);
-      if (ts.isIdentifier(a) || ts.isPropertyAccessExpression(a)) return; // component reference
+      if (react && (ts.isIdentifier(a) || ts.isPropertyAccessExpression(a))) {
+        const root = ts.isIdentifier(a) ? a : (memberChain(a)?.split('.')[0] ?? '');
+        const name = typeof root === 'string' ? root : ts.idText(root);
+        if (isComponentName(name)) return; // component reference
+        unknownTagPropsCheck(call, call.arguments?.[1]);
+        return;
+      }
+      // DOM createElement (or a receiver not proven to be React): the tag must be known.
       add('dangerous-html', call, 'createElement with a dynamic element type');
       return;
     }
@@ -465,12 +683,69 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
         op === ts.SyntaxKind.ExclamationEqualsEqualsToken ||
         op === ts.SyntaxKind.EqualsEqualsToken ||
         op === ts.SyntaxKind.ExclamationEqualsToken ||
-        (op === ts.SyntaxKind.InKeyword && parent.right === child)
+        (op === ts.SyntaxKind.InKeyword && parent.right === child) ||
+        (op === ts.SyntaxKind.InstanceOfKeyword && parent.right === child)
       ) {
         return;
       }
     }
     add('global-access', node, `"${label}" used as a value (aliasing a global object)`);
+  };
+
+  /** True for an object literal whose properties are all named statically (no spread, accessor or `__proto__`). */
+  const isPlainLiteral = (expr: ts.Expression): expr is ts.ObjectLiteralExpression => {
+    const n = unwrap(expr);
+    return ts.isObjectLiteralExpression(n) && isLiteralData(n);
+  };
+
+  /** `Object.assign(target, ...sources)`: copies every property of the sources onto the target. */
+  const objectAssignCheck = (call: ts.CallExpression | ts.NewExpression): void => {
+    for (const src of (call.arguments ?? []).slice(1)) {
+      const s = unwrap(src);
+      if (!isPlainLiteral(s)) {
+        add('global-access', call, 'Object.assign with a source that is not an inline object literal');
+        continue;
+      }
+      for (const prop of s.properties) {
+        const key = prop.name ? staticPropertyName(prop.name, folder) : UNKNOWN;
+        if (key === UNKNOWN) {
+          add('global-access', call, 'Object.assign with a computed property name');
+          continue;
+        }
+        const value = ts.isPropertyAssignment(prop) ? prop.initializer : ts.isShorthandPropertyAssignment(prop) ? prop.name : undefined;
+        const lower = key.toLowerCase();
+        const urlProp = URL_PROPS.has(key) || ['src', 'action', 'formaction', 'poster', 'data', 'codebase'].includes(lower);
+        if ((urlProp || URL_LIST_PROPS.has(key) || lower === 'href' || lower.startsWith('on')) && !value) {
+          add('dangerous-html', call, `Object.assign: accessor or method "${key}"`);
+        } else if (lower.startsWith('on')) {
+          add('dangerous-html', call, `Object.assign sets event handler "${key}"`);
+        } else if (urlProp) {
+          urlCheck(`Object.assign ${key}`, call, value, 'network', 'embed-external');
+        } else if (URL_LIST_PROPS.has(key) || lower === 'srcset' || lower === 'ping') {
+          urlListCheck(`Object.assign ${key}`, call, value, 'embed-external');
+        } else if (lower === 'href') {
+          urlCheck('Object.assign href', call, value, 'navigation', 'navigation-external');
+        }
+      }
+    }
+  };
+
+  /** `Object.values(x)`, `Object.setPrototypeOf(...)`...: reflection reaching properties without naming them. */
+  const objectReflectionCheck = (name: string, access: ts.Expression, nameNode: ts.Node): void => {
+    const callee = calleeOf(access);
+    if (!OBJECT_READERS.has(name) && !OBJECT_WRITERS.has(name) && name !== 'assign') return;
+    if (!callee) {
+      add('global-access', nameNode, `Object.${name} used indirectly`);
+      return;
+    }
+    if (OBJECT_WRITERS.has(name)) {
+      add('global-access', callee, `Object.${name} (changes properties or prototype without naming them)`);
+    } else if (name === 'assign') {
+      objectAssignCheck(callee);
+    } else {
+      const target = callee.arguments?.[0];
+      if (!target || !isLiteralData(target)) add('global-access', callee, `Object.${name} on a value that is not a data literal of this file`);
+    }
   };
 
   /** Handles `location` (identifier or global.location member). */
@@ -522,6 +797,15 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
     if (name === 'process' && isGlobalRef(receiver)) add('server-secret', nameNode, 'access to process from client/page code');
     if (name === 'location' && (isGlobalRef(receiver) || isDocumentRef(receiver))) locationCheck(access);
     if (GLOBAL_OBJECTS.has(name) && isGlobalRef(receiver)) globalValueCheck(access, name);
+    // document.defaultView, iframe.contentWindow: a window object, whatever the receiver.
+    if (WINDOW_PROPERTIES.has(name)) globalValueCheck(access, name);
+    if (isObjectCtor(receiver)) objectReflectionCheck(name, access, nameNode);
+    if (['createAttribute', 'createAttributeNS', 'setAttributeNode', 'setAttributeNodeNS'].includes(name)) {
+      add('dangerous-html', nameNode, `"${name}" (attribute set without a checkable name and value)`);
+    }
+    if ((name === 'createElement' || name === 'createElementNS') && !callee && !isReactRef(receiver)) {
+      add('dangerous-html', nameNode, `${name} used indirectly`);
+    }
     if (name === 'open' && isGlobalRef(receiver)) {
       if (callee) navCheck('window.open', callee, callee.arguments?.[0]);
       else add('global-access', nameNode, 'window.open used indirectly');
@@ -538,9 +822,11 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
           const tag = callee.arguments?.[1] ? folder.foldString(callee.arguments[1]) : UNKNOWN;
           if (tag === UNKNOWN || DANGEROUS_TAGS.has(tag.toLowerCase())) add('dangerous-html', callee, 'createElementNS with a dangerous or dynamic tag');
         } else {
-          createElementCheck(callee);
+          createElementCheck(callee, isReactRef(receiver));
         }
       }
+      if (ELEMENT_FACTORIES.has(name) && name !== 'createElement' && isReactRef(receiver)) createElementCheck(callee, true);
+      if (name === 'cloneElement') unknownTagPropsCheck(callee, callee.arguments?.[1]);
       if (name === 'resolve' && memberChain(receiver) === 'require') add('forbidden-import', callee, 'require.resolve');
     }
   };
@@ -550,6 +836,7 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
     if (CODE_NAMES.has(text)) add('dynamic-code', node, `"${text}" used as a string`);
     if (NET_FORBIDDEN.has(text) || NET_SINKS.has(text)) add('network-api-forbidden', node, `network API name "${text}" used as a string`);
     if (HTML_SINKS.has(text)) add('dangerous-html', node, `HTML sink name "${text}" used as a string`);
+    if (text === '__proto__') add('dynamic-code', node, '"__proto__" used as a string');
     if (DANGEROUS_TAG_STRINGS.has(text.toLowerCase())) {
       add(text.toLowerCase() === 'script' ? 'inline-script' : 'embed-external', node, `element name "${text}" used as a string`);
     }
@@ -561,6 +848,7 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
     const line = lineOf(node);
     addresses.run(variant, text, line);
     addresses.encoded(variant, text, line);
+    if (looksRandomBase58(text.trim())) addresses.fragments(variant, text.trim(), line);
     // Stylesheet text in code (<style>, styled-jsx, CSS-in-JS): same URL rules as .css files.
     if (/@import|url\s*\(/i.test(text) && (text.includes('{') || /@import/i.test(text))) {
       for (const f of cssFindings(text, config)) add(f.rule, node, f.reason, `css|${f.key}`);
@@ -585,6 +873,7 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
       return;
     }
     const typePos = isTypePosition(id);
+    if (name === '__proto__') add('dynamic-code', id, '"__proto__" (prototype change)');
     if (WALLET_NAMES.has(name)) add('wallet-api', id, `wallet/signing API "${name}" is not allowed outside src/forge/`);
     if (typePos) return;
     const valueRef = isValueReference(id);
@@ -614,12 +903,19 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
       if (!okEnv && !(a && ts.isTypeOfExpression(a))) add('server-secret', id, 'access to process / server environment variables');
     }
     if (GLOBAL_OBJECTS.has(name) && !isDeclared(name)) globalValueCheck(id, name);
+    if (name === 'Object' && !isDeclared(name)) globalValueCheck(id, name);
     if (name === 'location' && !isDeclared(name)) locationCheck(id);
     if (name === 'open' && !isDeclared(name)) {
       if (callee) navCheck('open', callee, callee.arguments?.[0]);
       else add('global-access', id, 'window.open used indirectly');
     }
     if (name === 'Reflect' && !isDeclared(name)) add('global-access', id, 'Reflect API');
+    const reactName = reactImports.get(name);
+    if (reactName !== undefined && (ELEMENT_FACTORIES.has(reactName) || reactName === 'cloneElement')) {
+      if (!callee) add('dangerous-html', id, `${reactName} used indirectly`);
+      else if (reactName === 'cloneElement') unknownTagPropsCheck(callee, callee.arguments?.[1]);
+      else createElementCheck(callee, true);
+    }
     if ((name === 'redirect' || name === 'permanentRedirect') && callee) navCheck(name, callee, callee.arguments?.[0]);
   };
 
@@ -632,8 +928,17 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
     }
     if (isGlobalRef(ea.expression) || isDocumentRef(ea.expression) || isLocationRef(ea.expression)) {
       add('global-access', ea, 'dynamic property access on a global object');
+    } else if (isNumericKey(ea.argumentExpression)) {
+      // Always a number or a boolean: cannot name an API.
     } else if (ts.isCallExpression(unwrap(ea.argumentExpression))) {
       add('global-access', ea, 'property name built at runtime');
+    } else if (!isLiteralData(ea.expression)) {
+      // Fail closed: the receiver may be a window or document obtained indirectly (event.view, ownerDocument...).
+      add(
+        'global-access',
+        ea,
+        'dynamic property access with a key that cannot be checked (use .at(i) for arrays, Map.get, or a const lookup object of this file)',
+      );
     }
     const recv = unwrap(ea.expression);
     if (ts.isIdentifier(recv) && ['process', 'navigator', 'location'].includes(ts.idText(recv)) && !isDeclared(ts.idText(recv))) {
@@ -641,6 +946,11 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
     }
   };
 
+  /**
+   * Intrinsic element name of a JSX tag, `null` for a component, or
+   * `UNKNOWN_TAG` when the tag is a value that cannot be folded (it may hold
+   * any element name, e.g. a conditional or a prop).
+   */
   const jsxIntrinsic = (tag: ts.JsxTagNameExpression): string | null => {
     if (ts.isIdentifier(tag)) {
       const name = ts.idText(tag);
@@ -649,11 +959,16 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
       if (nextImageNames.has(name)) return 'img';
       if (nextLinkNames.has(name)) return 'a';
       const v = folder.fold(tag);
-      return typeof v === 'string' ? v.toLowerCase() : null;
+      if (typeof v === 'string') return v.toLowerCase();
+      return isComponentName(name) ? null : UNKNOWN_TAG;
     }
     if (ts.isPropertyAccessExpression(tag)) {
       const last = ts.idText(tag.name);
-      return /^[a-z]/.test(last) ? last.toLowerCase() : null; // motion.div, etc.
+      if (/^[a-z]/.test(last)) return last.toLowerCase(); // motion.div, etc.
+      const v = folder.fold(tag);
+      if (typeof v === 'string') return v.toLowerCase();
+      const root = memberChain(tag)?.split('.')[0];
+      return root !== undefined && isComponentName(root) ? null : UNKNOWN_TAG;
     }
     if (ts.isJsxNamespacedName(tag)) return ts.idText(tag.name).toLowerCase();
     return null;
@@ -704,6 +1019,12 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
       urlCheck(`<${tag} ${attr}>`, a, node, kind, rule);
     };
     switch (tag) {
+      case UNKNOWN_TAG:
+        // The element may be a form, link, object, script...: check every URL attribute strictly.
+        if (spread) add('embed-external', el, 'element of a dynamic type with spread attributes');
+        for (const attr of UNKNOWN_TAG_URL_ATTRS) checkAttr(attr, 'network', 'embed-external');
+        for (const attr of ['srcset', 'ping']) urlListCheck(`<${snippet(el.tagName)} ${attr}>`, el, attrs.get(attr) && attrCandidatesNode(attrs.get(attr)!), 'embed-external');
+        break;
       case 'script':
         if (spread) add('external-script', el, '<script> with spread attributes');
         if (attrs.has('src')) checkAttr('src', 'network', 'external-script');
@@ -735,6 +1056,7 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
       case 'a':
       case 'area':
         dynamicOnlyCheck(attrs.get('href'), tag, 'href', 'navigation', 'navigation-external');
+        if (attrs.has('ping')) urlListCheck(`<${tag} ping>`, attrs.get('ping')!, attrCandidatesNode(attrs.get('ping')!), 'embed-external');
         break;
       case 'link':
         if (spread) add('embed-external', el, '<link> with spread attributes');
@@ -754,7 +1076,9 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
       }
       default:
         if (MEDIA_TAGS.has(tag)) {
-          for (const attr of ['src', 'poster', 'srcset']) dynamicOnlyCheck(attrs.get(attr), tag, attr, 'network', 'embed-external');
+          for (const attr of ['src', 'poster']) dynamicOnlyCheck(attrs.get(attr), tag, attr, 'network', 'embed-external');
+          const srcset = attrs.get('srcset');
+          if (srcset) urlListCheck(`<${tag} srcset>`, srcset, attrCandidatesNode(srcset), 'embed-external', true);
         }
         break;
     }
@@ -767,6 +1091,13 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
       htmlCheck(attr, init && ts.isJsxExpression(init) ? init.expression : undefined, 'dangerouslySetInnerHTML');
     } else if (name.toLowerCase() === 'srcdoc') {
       add('dangerous-html', attr, 'srcDoc attribute');
+    } else if (POLYMORPHIC_PROPS.has(name.toLowerCase())) {
+      // <Box as="form" action=...>: the element type is chosen by a prop.
+      const node = attrCandidatesNode(attr);
+      const v = node ? folder.foldString(node) : UNKNOWN;
+      if (v !== UNKNOWN && DANGEROUS_TAGS.has(v.trim().toLowerCase())) {
+        add(v.trim().toLowerCase() === 'script' ? 'inline-script' : 'embed-external', attr, `${name}="${v}" renders a <${v.trim().toLowerCase()}> element`);
+      }
     }
   };
 
@@ -860,9 +1191,21 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
         recv = left.expression;
       }
       if (prop !== undefined && recv && !isLocationRef(recv) && !isLocationRef(left)) {
-        if (['src', 'action', 'formAction'].includes(prop)) urlCheck(`.${prop} assignment`, node, node.right, 'network', 'embed-external');
+        if (URL_PROPS.has(prop)) urlCheck(`.${prop} assignment`, node, node.right, 'network', 'embed-external');
+        if (URL_LIST_PROPS.has(prop)) urlListCheck(`.${prop} assignment`, node, node.right, 'embed-external');
+        if (['value', 'nodeValue', 'textContent'].includes(prop) && /\.attributes\b/.test(recv.getText(sf))) {
+          add('dangerous-html', node, 'attribute node value set through element.attributes');
+        }
         if (prop === 'href') urlCheck('.href assignment', node, node.right, 'navigation', 'navigation-external');
       }
+    }
+
+    if (ts.isComputedPropertyName(node) && folder.foldString(node.expression) === UNKNOWN) {
+      const p = node.parent;
+      const destructuring =
+        ts.isBindingElement(p) ||
+        (ts.isPropertyAssignment(p) && ts.isObjectLiteralExpression(p.parent) && ts.isBinaryExpression(p.parent.parent) && p.parent.parent.left === p.parent);
+      if (destructuring) add('global-access', node, 'destructuring with a computed key that cannot be checked');
     }
 
     if (ts.isPropertyAssignment(node)) {
@@ -876,7 +1219,11 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
     if ((ts.isJsxElement(node) || ts.isJsxFragment(node)) && !ts.isJsxElement(node.parent) && !ts.isJsxFragment(node.parent)) {
       const rendered = renderJsx(node);
       if (rendered.length >= 32) addresses.run('jsx', rendered, lineOf(node));
+      if (rendered.length >= 16) addresses.fragments('jsx', rendered, lineOf(node));
     }
+
+    if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) literals.push(node.text);
+    else if (ts.isTemplateExpression(node)) literals.push(null);
 
     if ((ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) && !consumed.has(node)) {
       const inJsxAttr = ts.isJsxAttribute(node.parent);
@@ -899,11 +1246,16 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
     if (ts.isArrayLiteralExpression(node)) {
       const nums = numericArray(node);
       if (nums) addresses.bytes(nums, lineOf(node));
+      const v = folder.fold(node);
+      if (Array.isArray(v) && v.length > 1 && v.every((x) => typeof x === 'string')) addresses.joined('array', v as string[], lineOf(node));
     }
 
     ts.forEachChild(node, visit);
   };
+  /** String literals in source order (`null` between template parts): pieces of an address joined at runtime. */
+  const literals: (string | null)[] = [];
   visit(sf);
+  addresses.joined('literals', literals);
 
   for (const acc of folder.accumulatedStrings()) addresses.run('acc', acc, 1);
 
