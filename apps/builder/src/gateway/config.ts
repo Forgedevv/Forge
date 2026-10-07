@@ -42,6 +42,11 @@ export const GATEWAY_DEFAULTS = {
   maxResponseBytes: 32 * 1024 * 1024,
   /** Whole upstream request, streaming included. */
   upstreamTimeoutMs: 10 * 60 * 1000,
+  /**
+   * Max `max_tokens` accepted per request. It bounds the worst-case cost of one
+   * request, which is reserved before forwarding and charged if the request is cut.
+   */
+  maxOutputTokens: 64_000,
   /** Fraction of the daily budget at which `onAlert` fires (once per UTC day). */
   dailyAlertRatio: 0.8,
 } as const;

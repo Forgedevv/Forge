@@ -19,6 +19,7 @@ export class SseUsageReader {
   private usageValue: Usage = { ...EMPTY_USAGE };
   private modelValue: string | undefined;
   private stopped = false;
+  private startSeen = false;
 
   push(chunk: Uint8Array): void {
     this.pending += this.decoder.decode(chunk, { stream: true });
@@ -39,6 +40,11 @@ export class SseUsageReader {
   /** Model reported by `message_start`, if any. */
   get model(): string | undefined {
     return this.modelValue;
+  }
+
+  /** True once `message_start` was seen (its usage carries the real input counts). */
+  get started(): boolean {
+    return this.startSeen;
   }
 
   /** True once `message_stop` was seen. */
@@ -74,6 +80,7 @@ export class SseUsageReader {
     const e = event as Record<string, unknown>;
     if (e.type === 'message_start') {
       const message = e.message as Record<string, unknown> | undefined;
+      this.startSeen = true;
       if (typeof message?.model === 'string') this.modelValue = message.model;
       this.usageValue = mergeUsage(this.usageValue, parseUsage(message?.usage));
     } else if (e.type === 'message_delta') {
