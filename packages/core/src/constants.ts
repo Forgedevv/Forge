@@ -32,6 +32,22 @@ export {
   SECONDS_PER_DAY,
 } from '@meteora-ag/dynamic-bonding-curve-sdk';
 
+/**
+ * FORGE bound (stricter than the SDK): longest anti-sniper phase, i.e. fee scheduler
+ * `numberOfPeriod * periodFrequency`, in seconds. The SDK only caps the rate limiter's duration.
+ */
+export const MAX_ANTI_SNIPER_DURATION_SECONDS = 300;
+
+/** Slot length used to convert second bounds to slots (`activationType` = Slot). */
+export const MS_PER_SLOT = 400;
+
+/** `MAX_ANTI_SNIPER_DURATION_SECONDS` in slots, at `MS_PER_SLOT` ms per slot (750). */
+export const MAX_ANTI_SNIPER_DURATION_SLOTS =
+  (MAX_ANTI_SNIPER_DURATION_SECONDS * 1000) / MS_PER_SLOT;
+
+/** FORGE bound: highest anti-sniper starting (cliff) fee, in bps (99%). */
+export const MAX_ANTI_SNIPER_STARTING_FEE_BPS = 9900;
+
 /** Quote mint of every FORGE pool: wrapped SOL (classic SPL token program). */
 export const SOL_QUOTE_MINT = NATIVE_MINT;
 /** Token-2022 wrapped SOL: never a valid quote mint (the SDK rejects it too). */
