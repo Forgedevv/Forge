@@ -4,6 +4,7 @@ import {
   AuthNonceRequest,
   AuthNonceResponse,
   AuthVerifyRequest,
+  AuthLogoutResponse,
   AuthVerifyResponse,
   ChatRequest,
   ClientError,
@@ -53,11 +54,6 @@ import {
 import { readChatStream } from './stream';
 import { getServerSupabaseSnapshot, getSupabaseSnapshot, subscribeSupabase } from './supabase';
 
-/** Message the wallet signs to prove ownership; the server rebuilds it from the nonce. */
-export function buildSignInMessage(nonce: string): string {
-  return `Sign in to FORGE.\n\nNonce: ${nonce}`;
-}
-
 function useSupabaseClient(): SupabaseClient | null {
   return useSyncExternalStore(subscribeSupabase, getSupabaseSnapshot, getServerSupabaseSnapshot);
 }
@@ -71,6 +67,26 @@ export function useSession(): UseSessionResult {
   const wallet = useWallet();
   const modal = useWalletModal();
   const [status, setStatus] = useState<UseSessionResult['status']>('idle');
+  // Bumped by connect/disconnect so a late session restore never overrides them.
+  const epoch = useRef(0);
+
+  // Restore the cookie session (the HttpOnly cookie is the source of truth).
+  useEffect(() => {
+    const ctrl = new AbortController();
+    const startedAt = epoch.current;
+    request(WEB_API_ROUTES.authSession.path, AuthVerifyResponse, {
+      signal: ctrl.signal,
+      keepSessionOn401: true,
+    })
+      .then((res) => {
+        if (!ctrl.signal.aborted && epoch.current === startedAt) setSession({ wallet: res.wallet });
+      })
+      .catch((err: unknown) => {
+        if (ctrl.signal.aborted || epoch.current !== startedAt) return;
+        if (err instanceof ClientError && err.code === 'UNAUTHORIZED') setSession(null);
+      });
+    return () => ctrl.abort();
+  }, []);
 
   const connectedWallet = wallet.publicKey?.toBase58() ?? null;
   // A stored session only counts while the same wallet is connected (or still reconnecting).
@@ -81,6 +97,7 @@ export function useSession(): UseSessionResult {
 
   const connect = useCallback(async () => {
     setStatus('idle');
+    epoch.current += 1;
     try {
       if (!wallet.connected) {
         if (!wallet.wallet) {
@@ -102,13 +119,13 @@ export function useSession(): UseSessionResult {
       }
       setStatus('signing');
       const address = publicKey.toBase58();
-      const { nonce } = await request(WEB_API_ROUTES.authNonce.path, AuthNonceResponse, {
+      const { nonce, message } = await request(WEB_API_ROUTES.authNonce.path, AuthNonceResponse, {
         method: 'POST',
         body: validateBody(AuthNonceRequest, { wallet: address }),
       });
       let signature: Uint8Array;
       try {
-        signature = await signMessage(new TextEncoder().encode(buildSignInMessage(nonce)));
+        signature = await signMessage(new TextEncoder().encode(message));
       } catch (err) {
         if (isUserRejection(err)) {
           setStatus('idle');
@@ -121,6 +138,7 @@ export function useSession(): UseSessionResult {
         body: validateBody(AuthVerifyRequest, {
           wallet: address,
           signature: base58Encode(signature),
+          nonce,
         }),
       });
       setSession({ wallet: res.wallet });
@@ -132,8 +150,14 @@ export function useSession(): UseSessionResult {
   }, [wallet, modal]);
 
   const disconnect = useCallback(async () => {
-    setSession(null);
+    epoch.current += 1;
     setStatus('idle');
+    try {
+      await request(WEB_API_ROUTES.authLogout.path, AuthLogoutResponse, { method: 'POST' });
+    } catch {
+      // the local state is cleared anyway
+    }
+    setSession(null);
     try {
       await wallet.disconnect();
     } catch {

@@ -14,6 +14,10 @@ describe('mapHttpError', () => {
     [500, undefined, 'NETWORK'],
     [400, { code: 'WRONG_WALLET', message: 'Wrong wallet' }, 'WRONG_WALLET'],
     [503, { code: 'SIGNUPS_PAUSED' }, 'SIGNUPS_PAUSED'],
+    [403, { code: 'FORBIDDEN_ORIGIN', message: 'Cross-site request rejected.' }, 'NETWORK'],
+    [400, { code: 'BAD_REQUEST', message: 'Invalid wallet address.' }, 'NETWORK'],
+    [500, { code: 'SERVER_ERROR', message: 'Unavailable.' }, 'NETWORK'],
+    [401, { code: 'UNAUTHORIZED', message: 'Not signed in.' }, 'UNAUTHORIZED'],
   ])('maps %s %o to %s', (status, body, code) => {
     const err = mapHttpError(status, body);
     expect(err).toBeInstanceOf(ClientError);

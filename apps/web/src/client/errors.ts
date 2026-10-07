@@ -43,8 +43,11 @@ export function mapHttpError(status: number, body: unknown): ClientError {
   if (isCode(bodyCode)) code = bodyCode;
   else if (status === 401) code = 'UNAUTHORIZED';
   else if (status === 429) code = 'RATE_LIMITED';
-  else if (status === 402 || status === 403) code = 'GATING_REQUIRED';
   else if (status === 410) code = 'QUOTE_EXPIRED';
+  // A code the client does not know (BAD_REQUEST, FORBIDDEN_ORIGIN, SERVER_ERROR, ...) is
+  // reported as NETWORK with the server message; 402/403 mean gating only without a code.
+  else if (typeof bodyCode === 'string' && bodyCode.length > 0) code = 'NETWORK';
+  else if (status === 402 || status === 403) code = 'GATING_REQUIRED';
   else code = 'NETWORK';
   return new ClientError(code, message ?? defaultMessage(code));
 }

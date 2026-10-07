@@ -22,7 +22,6 @@ vi.mock('../supabase', () => ({
 }));
 
 import {
-  buildSignInMessage,
   useChat,
   useFlags,
   useGating,
@@ -105,9 +104,17 @@ describe('useSession', () => {
 
   it('runs nonce -> signMessage -> verify and stores the session', async () => {
     wallet();
-    const fetchFn = vi.fn((url: string) =>
-      Promise.resolve(url === '/api/auth/nonce' ? json({ nonce: 'abc123' }) : json({ wallet: address })),
-    );
+    const message = 'forge.example wants you to sign in. Nonce: abc123';
+    const fetchFn = vi.fn((url: string) => {
+      if (url === '/api/auth/nonce') {
+        return Promise.resolve(json({ nonce: 'abc123', message, expiresAt: '2030-01-01T00:00:00.000Z' }));
+      }
+      if (url === '/api/auth/verify') return Promise.resolve(json({ wallet: address }));
+      if (url === '/api/auth/session') {
+        return Promise.resolve(json({ code: 'UNAUTHORIZED', message: 'Not signed in.' }, 401));
+      }
+      return Promise.resolve(json({}));
+    });
     vi.stubGlobal('fetch', fetchFn);
     const { result } = renderHook(() => useSession());
     expect(result.current.session).toBeNull();
@@ -116,14 +123,16 @@ describe('useSession', () => {
     });
     const sign = walletState.value.signMessage as ReturnType<typeof vi.fn>;
     expect(new TextDecoder().decode(sign.mock.calls[0]?.[0] as Uint8Array)).toBe(
-      buildSignInMessage('abc123'),
+      message,
     );
-    const verifyInit = (fetchFn.mock.calls[1] as unknown[])[1] as RequestInit;
+    const verifyCall = fetchFn.mock.calls.find((c) => c[0] === '/api/auth/verify') as unknown[];
+    const verifyInit = verifyCall[1] as RequestInit;
     expect(JSON.parse(verifyInit.body as string)).toEqual({
       wallet: address,
       signature: base58Encode(new Uint8Array(64).fill(3)),
+      nonce: 'abc123',
     });
-    await waitFor(() => expect(result.current.session).toEqual({ wallet: address }));
+        await waitFor(() => expect(result.current.session).toEqual({ wallet: address }));
     expect(result.current.status).toBe('idle');
   });
 
@@ -131,20 +140,29 @@ describe('useSession', () => {
     wallet({
       signMessage: vi.fn().mockRejectedValue(Object.assign(new Error('User rejected'), { code: 4001 })),
     });
-    const fetchFn = vi.fn().mockResolvedValue(json({ nonce: 'n' }));
+    const fetchFn = vi.fn((url: string) =>
+      Promise.resolve(
+        url === '/api/auth/nonce'
+          ? json({ nonce: 'n', message: 'sign me', expiresAt: '2030-01-01T00:00:00.000Z' })
+          : json({ code: 'UNAUTHORIZED', message: 'Not signed in.' }, 401),
+      ),
+    );
     vi.stubGlobal('fetch', fetchFn);
     const { result } = renderHook(() => useSession());
     await act(async () => {
       await result.current.connect();
     });
-    expect(fetchFn).toHaveBeenCalledTimes(1);
+    expect(fetchFn.mock.calls.map((c) => c[0])).not.toContain('/api/auth/verify');
     expect(result.current.session).toBeNull();
     expect(result.current.status).toBe('idle');
   });
 
   it('sets status error and rejects with a ClientError on server failure', async () => {
     wallet();
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(json({ message: 'paused' }, 503)));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => Promise.resolve(json({ message: 'paused' }, 503))),
+    );
     const { result } = renderHook(() => useSession());
     let caught: unknown;
     await act(async () => {
@@ -158,14 +176,36 @@ describe('useSession', () => {
 
   it('opens the wallet modal when no wallet is selected', async () => {
     wallet({ connected: false, publicKey: null, wallet: null });
-    const fetchFn = vi.fn();
+    const fetchFn = vi.fn((url: string) =>
+      Promise.resolve(json({ code: 'UNAUTHORIZED', message: url }, 401)),
+    );
     vi.stubGlobal('fetch', fetchFn);
     const { result } = renderHook(() => useSession());
     await act(async () => {
       await result.current.connect();
     });
     expect(setVisible).toHaveBeenCalledWith(true);
-    expect(fetchFn).not.toHaveBeenCalled();
+    expect(fetchFn.mock.calls.map((c) => c[0])).not.toContain('/api/auth/nonce');
+  });
+
+  it('restores the session from GET /api/auth/session on mount', async () => {
+    wallet();
+    const fetchFn = vi.fn().mockResolvedValue(json({ wallet: address }));
+    vi.stubGlobal('fetch', fetchFn);
+    const { result } = renderHook(() => useSession());
+    await waitFor(() => expect(result.current.session).toEqual({ wallet: address }));
+    expect(fetchFn.mock.calls[0]?.[0]).toBe('/api/auth/session');
+  });
+
+  it('clears a stored session when /api/auth/session answers 401', async () => {
+    wallet();
+    setSession({ wallet: address });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(json({ code: 'UNAUTHORIZED', message: 'Not signed in.' }, 401)),
+    );
+    renderHook(() => useSession());
+    await waitFor(() => expect(getSessionSnapshot()).toBeNull());
   });
 
   it('ignores a stored session of another wallet and clears it on disconnect', async () => {
@@ -175,9 +215,14 @@ describe('useSession', () => {
     expect(result.current.session).toBeNull();
     setSession({ wallet: address });
     await waitFor(() => expect(result.current.session).toEqual({ wallet: address }));
+    const fetchFn = vi.fn((url: string) =>
+      Promise.resolve(url === '/api/auth/logout' ? json({ ok: true }) : json({ wallet: address })),
+    );
+    vi.stubGlobal('fetch', fetchFn);
     await act(async () => {
       await result.current.disconnect();
     });
+    expect(fetchFn).toHaveBeenCalledWith('/api/auth/logout', expect.objectContaining({ method: 'POST' }));
     expect(getSessionSnapshot()).toBeNull();
   });
 });

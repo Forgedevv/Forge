@@ -7,6 +7,8 @@ export interface RequestOptions {
   method?: 'GET' | 'POST';
   body?: unknown;
   signal?: AbortSignal;
+  /** Do not clear the stored session on a 401 (the caller handles it). */
+  keepSessionOn401?: boolean;
 }
 
 async function readJson(res: Response): Promise<unknown> {
@@ -36,7 +38,7 @@ export async function rawRequest(path: string, opts: RequestOptions = {}): Promi
   }
   if (!res.ok) {
     const err = mapHttpError(res.status, await readJson(res));
-    if (err.code === 'UNAUTHORIZED') emitUnauthorized();
+    if (err.code === 'UNAUTHORIZED' && !opts.keepSessionOn401) emitUnauthorized();
     throw err;
   }
   return res;
