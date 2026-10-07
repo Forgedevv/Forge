@@ -1,0 +1,3 @@
+# Formatting-only commits, ignored by git blame and GitHub blame
+# Format code with Prettier
+39e0956a583bf9caa385e8469b84a7b11d3ebb57
