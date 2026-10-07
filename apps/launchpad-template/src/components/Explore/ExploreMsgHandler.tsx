@@ -6,7 +6,7 @@ import {
   patchStreamPool,
 } from '@/components/Explore/pool-utils';
 import { ApeQueries, QueryData } from '@/components/Explore/queries';
-import { useDataStreamListener } from '@/contexts/DataStreamProvider';
+import { useDataStreamListener } from '@/forge/data/DataStreamProvider';
 import { ExploreTab, TokenListSortByField, normalizeSortByField } from '@/components/Explore/types';
 import { assertNever } from '@/lib/utils';
 

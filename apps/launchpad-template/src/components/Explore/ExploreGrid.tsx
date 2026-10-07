@@ -1,4 +1,4 @@
-import { useDataStream } from '@/contexts/DataStreamProvider';
+import { useDataStream } from '@/forge/data/DataStreamProvider';
 import { useEffect } from 'react';
 import { ExploreTab } from './types';
 import { ExploreColumn } from './ExploreColumn';

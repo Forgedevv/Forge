@@ -1,8 +1,8 @@
 import * as React from 'react';
-import { formatPoolAsTokenInfo } from '../Explore/pool-utils';
+import { formatPoolAsTokenInfo } from '@/components/Explore/pool-utils';
 import { Pool } from '@/contexts/types';
 import { TrenchesTokenIconImage, TrenchesTokenIconRoot } from '.';
-import { TrenchesTokenIconLaunchpad } from '../LaunchpadIndicator/LaunchpadIndicator';
+import { TrenchesTokenIconLaunchpad } from '@/components/LaunchpadIndicator/LaunchpadIndicator';
 
 type TrenchesPoolTokenIconProps = Omit<
   React.ComponentProps<typeof TrenchesTokenIconRoot>,

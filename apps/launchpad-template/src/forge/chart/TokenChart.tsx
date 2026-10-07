@@ -16,9 +16,9 @@ import {
   IChartingLibraryWidget,
   IChartWidgetApi,
   ResolutionString,
-} from '../AdvancedTradingView/charting_library';
+} from '@/components/AdvancedTradingView/charting_library';
 import { useMobile } from '@/hooks/useMobile';
-import Spinner from '../Spinner/Spinner';
+import Spinner from '@/components/Spinner/Spinner';
 import { cn } from '@/lib/utils';
 import { RefreshMarks } from './RefreshMarks';
 import { useTokenChart } from '@/contexts/TokenChartProvider';
@@ -411,7 +411,6 @@ export const TokenChart: React.FC<ChartProps> = memo(({ renderingId, style, opt 
       }
       widgetRef.current = null;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [symbol, chartTheme]);
 
   function updateButtonTitles(config: ChartConfig) {

@@ -5,6 +5,7 @@ import { CreatePoolButton } from './CreatePoolButton';
 import { ThemeToggle } from './ThemeToggle';
 import { useMemo } from 'react';
 import { shortenAddress } from '@/lib/utils';
+import { content } from '@/content';
 
 export const Header = () => {
   const { setShowModal } = useUnifiedWalletContext();
@@ -28,7 +29,7 @@ export const Header = () => {
             <span className="iconify h-5 w-5 ph--rocket-launch-bold" />
           </span>
           <span className="truncate whitespace-nowrap text-base font-bold tracking-tight md:text-xl">
-            Fun Launch
+            {content.name}
           </span>
         </Link>
 

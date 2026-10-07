@@ -4,7 +4,7 @@ import { Pool, TokenListTimeframe } from '../Explore/types';
 
 import { cn } from '@/lib/utils';
 import { Skeleton } from '../ui/Skeleton';
-import { TrenchesPoolTokenIcon } from '../TokenIcon/TokenIcon';
+import { TrenchesPoolTokenIcon } from '@/forge/token-icon/TokenIcon';
 import { Copyable } from '../ui/Copyable';
 import CopyIconSVG from '@/icons/CopyIconSVG';
 import { TokenAge } from '../TokenAge';

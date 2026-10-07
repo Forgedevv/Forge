@@ -1,12 +1,27 @@
-/* eslint-disable @next/next/no-img-element */
 import Image from 'next/image';
 import * as React from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { TokenIconInfo, TrenchesTokenIconContext, useTrenchesTokenIconContext } from './Context';
-import { Asset } from '../Explore/types';
-import { cn, getBaseUrl } from '@/lib/utils';
-import { TrenchesTokenIconLaunchpad } from '../LaunchpadIndicator/LaunchpadIndicator';
+import { Asset } from '@/components/Explore/types';
+import { cn } from '@/lib/utils';
+import { TrenchesTokenIconLaunchpad } from '@/components/LaunchpadIndicator/LaunchpadIndicator';
+
+export const getBaseUrl = () => {
+  if (process.env.NODE_ENV === 'development') {
+    return `http://localhost:3000`;
+  } else {
+    let url = process.env.NEXT_PUBLIC_VERCEL_BRANCH_URL;
+
+    if (url?.includes('vercel.app')) {
+      url = `https://${process.env.NEXT_PUBLIC_VERCEL_BRANCH_URL}`;
+    } else {
+      url = `https://jup.ag`;
+    }
+
+    return typeof window === 'undefined' ? url : window.location.origin;
+  }
+};
 
 /**
  * Hostnames with known issues using the CDN service
@@ -147,7 +162,6 @@ export const TrenchesTokenIconImage: React.FC<TrenchesTokenIconImageProps> = ({
     }
     // Effect should only run once on mount to check initial state,
     // subsequent errors are handled by onError.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   if (!resolvedSrc || !isValid) {

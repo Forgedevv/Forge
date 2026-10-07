@@ -16,7 +16,7 @@ import {
 } from 'react';
 import { Pool } from './types';
 import { GetChartRequest } from '@/components/Explore/types';
-import { useDataStreamListener } from './DataStreamProvider';
+import { useDataStreamListener } from '@/forge/data/DataStreamProvider';
 import { useTokenInfo } from '@/hooks/queries';
 import { useWallet } from '@jup-ag/wallet-adapter';
 import { asMarks } from './TokenChart/marks';

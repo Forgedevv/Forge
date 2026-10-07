@@ -3,7 +3,7 @@ import { atomMsgWithListeners } from '@/lib/jotai';
 import { InfiniteData, useQueryClient } from '@tanstack/react-query';
 import { useSetAtom } from 'jotai';
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef } from 'react';
-import { StreamRequest, StreamResponse } from './TokenChart/msg';
+import { StreamRequest, StreamResponse } from '@/contexts/TokenChart/msg';
 import { delay } from '@/lib/utils';
 
 const WS_URL = 'wss://trench-stream.jup.ag/ws';

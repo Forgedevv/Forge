@@ -2,7 +2,7 @@ import { QueryStatus } from '@tanstack/react-query';
 import React, { forwardRef, memo, useCallback, useEffect, useRef, useState } from 'react';
 
 import { Pool, TokenListTimeframe } from '../Explore/types';
-import { useDataStream } from '@/contexts/DataStreamProvider';
+import { useDataStream } from '@/forge/data/DataStreamProvider';
 import { cn } from '@/lib/utils';
 import { TokenCard } from './TokenCard';
 import { TokenCardSkeleton } from './TokenCard';

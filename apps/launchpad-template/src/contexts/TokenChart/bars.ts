@@ -4,7 +4,7 @@ import {
   ChartTimeInterval,
   chartTimeIntervalToMillis,
   resolutionToChartTimeInterval,
-} from '@/components/TokenChart/intervals';
+} from '@/forge/chart/intervals';
 
 export function getNextBar(
   mostRecentBar: Bar | undefined,

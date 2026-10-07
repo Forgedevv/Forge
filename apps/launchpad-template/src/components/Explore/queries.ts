@@ -1,4 +1,4 @@
-import { ApeClient } from '@/components/Explore/client';
+import { ApeClient } from '@/forge/data/client';
 import {
   GetGemsTokenListRequest,
   GetTxsResponse,

@@ -2,7 +2,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useCallback } from 'react';
 
 import { ApeQueries, QueryData } from '@/components/Explore/queries';
-import { useDataStreamListener } from '@/contexts/DataStreamProvider';
+import { useDataStreamListener } from '@/forge/data/DataStreamProvider';
 import { patchStreamPool } from '../Explore/pool-utils';
 
 export const TokenPageMsgHandler: React.FC = () => {

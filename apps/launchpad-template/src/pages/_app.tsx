@@ -1,12 +1,19 @@
 import '@/styles/globals.css';
+import '@/theme/theme.css';
 import { Adapter, UnifiedWalletProvider } from '@jup-ag/wallet-adapter';
 import type { AppProps } from 'next/app';
 import { ThemeProvider, useTheme } from 'next-themes';
 import { Toaster } from 'sonner';
-import { PhantomWalletAdapter, SolflareWalletAdapter } from '@solana/wallet-adapter-wallets';
+import { PhantomWalletAdapter } from '@solana/wallet-adapter-phantom';
+import { SolflareWalletAdapter } from '@solana/wallet-adapter-solflare';
 import { useMemo } from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useWindowWidthListener } from '@/lib/device';
+import { ThemeStyle } from '@/theme/ThemeStyle';
+import { defaultColorMode } from '@/theme';
+import { siteConfig } from '@/content';
+import { SleepingPage } from '@/components/modes/SleepingPage';
+import { DisabledPage } from '@/components/modes/DisabledPage';
 
 function AppProviders({ Component, pageProps }: AppProps) {
   const { resolvedTheme } = useTheme();
@@ -31,8 +38,8 @@ function AppProviders({ Component, pageProps }: AppProps) {
           env: 'mainnet-beta',
           autoConnect: true,
           metadata: {
-            name: 'UnifiedWallet',
-            description: 'UnifiedWallet',
+            name: siteConfig.name,
+            description: siteConfig.content.tagline,
             url: 'https://jup.ag',
             iconUrls: ['https://jup.ag/favicon.ico'],
           },
@@ -49,8 +56,19 @@ function AppProviders({ Component, pageProps }: AppProps) {
 }
 
 export default function App(props: AppProps) {
+  // sleeping / disabled: static pages only, no wallet, no data providers, no RPC, no Jupiter.
+  if (siteConfig.mode !== 'live') {
+    return (
+      <ThemeProvider attribute="class" defaultTheme={defaultColorMode} disableTransitionOnChange>
+        <ThemeStyle />
+        {siteConfig.mode === 'sleeping' ? <SleepingPage /> : <DisabledPage />}
+      </ThemeProvider>
+    );
+  }
+
   return (
-    <ThemeProvider attribute="class" defaultTheme="dark" disableTransitionOnChange>
+    <ThemeProvider attribute="class" defaultTheme={defaultColorMode} disableTransitionOnChange>
+      <ThemeStyle />
       <AppProviders {...props} />
     </ThemeProvider>
   );

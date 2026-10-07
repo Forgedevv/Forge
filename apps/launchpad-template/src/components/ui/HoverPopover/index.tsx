@@ -12,7 +12,6 @@ import { cn } from '@/lib/utils';
  *
  * More details, @see https://www.radix-ui.com/primitives/docs/components/popover#trigger
  */
-// eslint-disable-next-line react/display-name
 const HoverPopoverTrigger = forwardRef<
   React.ElementRef<typeof PopoverPrimitive.Trigger>,
   React.ComponentPropsWithoutRef<typeof PopoverPrimitive.Trigger>

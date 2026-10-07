@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 
-import { useTrenchesTokenIconContext } from '../TokenIcon/Context';
+import { useTrenchesTokenIconContext } from '@/forge/token-icon/Context';
 import { cn } from '@/lib/utils';
 import { Asset } from '../Explore/types';
 import { getLaunchpadInfo } from './info';

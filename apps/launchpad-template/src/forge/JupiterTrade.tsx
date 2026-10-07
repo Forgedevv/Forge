@@ -1,10 +1,24 @@
 import { useUnifiedWalletContext, useWallet } from '@jup-ag/wallet-adapter';
 import { useEffect, useState } from 'react';
-import { Skeleton } from '../ui/Skeleton';
+import { Skeleton } from '@/components/ui/Skeleton';
 
 const SOL_MINT = 'So11111111111111111111111111111111111111112';
 const PLUGIN_CONTAINER_ID = 'jupiter-plugin';
 const PLUGIN_HEIGHT = 568;
+const PLUGIN_SCRIPT_ID = 'jupiter-plugin-script';
+const PLUGIN_SCRIPT_URL = 'https://plugin.jup.ag/plugin-v1.js';
+
+/** Loads the Jupiter Plugin script once (kept here so no free zone injects external scripts). */
+function ensurePluginScript() {
+  if (typeof document === 'undefined' || document.getElementById(PLUGIN_SCRIPT_ID)) {
+    return;
+  }
+  const script = document.createElement('script');
+  script.id = PLUGIN_SCRIPT_ID;
+  script.src = PLUGIN_SCRIPT_URL;
+  script.async = true;
+  document.head.appendChild(script);
+}
 
 /**
  * Jupiter Plugin (successor of Jupiter Terminal) in integrated display mode.
@@ -12,14 +26,15 @@ const PLUGIN_HEIGHT = 568;
  * @see https://dev.jup.ag/docs/tool-kits/plugin
  * @see https://github.com/jup-ag/plugin
  */
-export function TerminalComponent({ mint }: { mint: string }) {
+export function JupiterTrade({ mint }: { mint: string }) {
   const walletContext = useWallet();
   const { setShowModal } = useUnifiedWalletContext();
 
   const [isReady, setIsReady] = useState(false);
 
-  // The plugin script is loaded with `defer`, so poll until it is available
+  // The plugin script is injected on mount, so poll until it is available
   useEffect(() => {
+    ensurePluginScript();
     if (typeof window.Jupiter?.init === 'function') {
       setIsReady(true);
       return;
@@ -63,7 +78,6 @@ export function TerminalComponent({ mint }: { mint: string }) {
       window.Jupiter?.close?.();
     };
     // walletContext is synced separately below to avoid re-initializing
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isReady, mint, setShowModal]);
 
   // Keep the plugin's wallet state in sync with the app's wallet
@@ -95,4 +109,4 @@ export function TerminalComponent({ mint }: { mint: string }) {
   );
 }
 
-export default TerminalComponent;
+export default JupiterTrade;

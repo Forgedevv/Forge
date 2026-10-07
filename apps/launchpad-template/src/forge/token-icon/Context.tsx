@@ -1,5 +1,5 @@
 import { createContext, useContext } from 'react';
-import { Asset } from '../Explore/types';
+import { Asset } from '@/components/Explore/types';
 
 export type TokenIconInfo = {
   readonly logoURI?: string;

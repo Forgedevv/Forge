@@ -13,22 +13,6 @@ export function assertNever(_arg: never, message = 'Unknown error occured.'): ne
   throw new Error(message);
 }
 
-export const getBaseUrl = () => {
-  if (process.env.NODE_ENV === 'development') {
-    return `http://localhost:3000`;
-  } else {
-    let url = process.env.NEXT_PUBLIC_VERCEL_BRANCH_URL;
-
-    if (url?.includes('vercel.app')) {
-      url = `https://${process.env.NEXT_PUBLIC_VERCEL_BRANCH_URL}`;
-    } else {
-      url = `https://jup.ag`;
-    }
-
-    return typeof window === 'undefined' ? url : window.location.origin;
-  }
-};
-
 /**
  * Serialize value to string
  */

@@ -1,17 +1,17 @@
 import { TokenPageMsgHandler } from '@/components/Token/TokenPageMsgHandler';
-import { TokenChart } from '@/components/TokenChart/TokenChart';
+import { TokenChart } from '@/forge/chart/TokenChart';
 import { TokenDetails } from '@/components/TokenHeader/TokenDetail';
 import { TokenHeader } from '@/components/TokenHeader/TokenHeader';
 import { TokenStats } from '@/components/TokenHeader/TokenStats';
 import { TokenBottomPanel } from '@/components/TokenTable';
 import Page from '@/components/ui/Page/Page';
-import { DataStreamProvider, useDataStream } from '@/contexts/DataStreamProvider';
+import { DataStreamProvider, useDataStream } from '@/forge/data/DataStreamProvider';
 import { TokenChartProvider } from '@/contexts/TokenChartProvider';
 import { useTokenAddress, useTokenInfo } from '@/hooks/queries';
 import dynamic from 'next/dynamic';
 import { useEffect } from 'react';
 
-const Terminal = dynamic(() => import('@/components/Terminal'), { ssr: false });
+const JupiterTrade = dynamic(() => import('@/forge/JupiterTrade'), { ssr: false });
 
 const SwapWidget = () => {
   const tokenId = useTokenAddress();
@@ -20,7 +20,7 @@ const SwapWidget = () => {
     return null;
   }
 
-  return <Terminal mint={tokenId} />;
+  return <JupiterTrade mint={tokenId} />;
 };
 
 export const TokenPageWithContext = () => {

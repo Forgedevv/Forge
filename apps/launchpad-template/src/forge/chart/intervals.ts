@@ -1,4 +1,4 @@
-import { ResolutionString } from '../AdvancedTradingView/charting_library';
+import { ResolutionString } from '@/components/AdvancedTradingView/charting_library';
 
 export const ChartTimeInterval = {
   ONE_SECOND: '1_SECOND',

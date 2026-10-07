@@ -1,11 +1,6 @@
 import { NextApiRequest, NextApiResponse } from 'next';
+import { rejectIfNotLive } from '@/forge/mode-guard';
 import { Connection, Keypair, sendAndConfirmRawTransaction, Transaction } from '@solana/web3.js';
-
-const RPC_URL = process.env.RPC_URL as string;
-
-if (!RPC_URL) {
-  throw new Error('Missing required environment variables');
-}
 
 type SendTransactionRequest = {
   signedTransaction: string; // base64 encoded signed transaction
@@ -13,11 +8,14 @@ type SendTransactionRequest = {
 };
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  if (rejectIfNotLive(req, res)) {
+    return;
+  }
+
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  console.log('req.body', req.body);
   try {
     const { signedTransaction, additionalSigners } = req.body as SendTransactionRequest;
 
@@ -25,7 +23,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       return res.status(400).json({ error: 'Missing signed transaction' });
     }
 
-    const connection = new Connection(RPC_URL, 'confirmed');
+    const rpcUrl = process.env.RPC_URL;
+    if (!rpcUrl) {
+      return res.status(500).json({ error: 'Missing required environment variable RPC_URL' });
+    }
+    const connection = new Connection(rpcUrl, 'confirmed');
     const transaction = Transaction.from(Buffer.from(signedTransaction, 'base64'));
 
     // if (!transaction.recentBlockhash) {

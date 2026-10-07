@@ -1,29 +1,29 @@
 import { NextApiRequest, NextApiResponse } from 'next';
+import { rejectIfNotLive } from '@/forge/mode-guard';
 import { PutObjectCommand, PutObjectCommandOutput, S3Client } from '@aws-sdk/client-s3';
 import { Connection, PublicKey } from '@solana/web3.js';
 import { DynamicBondingCurveClient } from '@meteora-ag/dynamic-bonding-curve-sdk';
 
-// Environment variables with type assertions
-const R2_ACCESS_KEY_ID = process.env.R2_ACCESS_KEY_ID as string;
-const R2_SECRET_ACCESS_KEY = process.env.R2_SECRET_ACCESS_KEY as string;
-const R2_ACCOUNT_ID = process.env.R2_ACCOUNT_ID as string;
-const R2_BUCKET = process.env.R2_BUCKET as string;
-const RPC_URL = process.env.RPC_URL as string;
-const POOL_CONFIG_KEY = process.env.POOL_CONFIG_KEY as string;
-
-if (
-  !R2_ACCESS_KEY_ID ||
-  !R2_SECRET_ACCESS_KEY ||
-  !R2_ACCOUNT_ID ||
-  !R2_BUCKET ||
-  !RPC_URL ||
-  !POOL_CONFIG_KEY
-) {
-  throw new Error('Missing required environment variables');
+// Environment is read lazily so that `next build` works without secrets.
+function readEnv() {
+  const env = {
+    R2_ACCESS_KEY_ID: process.env.R2_ACCESS_KEY_ID,
+    R2_SECRET_ACCESS_KEY: process.env.R2_SECRET_ACCESS_KEY,
+    R2_ACCOUNT_ID: process.env.R2_ACCOUNT_ID,
+    R2_BUCKET: process.env.R2_BUCKET,
+    R2_PUBLIC_URL: process.env.R2_PUBLIC_URL,
+    RPC_URL: process.env.RPC_URL,
+    POOL_CONFIG_KEY: process.env.POOL_CONFIG_KEY,
+  };
+  for (const [name, value] of Object.entries(env)) {
+    if (!value) throw new Error(`Missing required environment variable ${name}`);
+  }
+  return env as Record<keyof typeof env, string>;
 }
 
-const PRIVATE_R2_URL = `https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com`;
-const PUBLIC_R2_URL = 'https://pub-85c7f5f0dc104dc784e656b623d999e5.r2.dev';
+function publicUrl(fileName: string): string {
+  return `${readEnv().R2_PUBLIC_URL.replace(/\/+$/, '')}/${fileName}`;
+}
 
 // Types
 type UploadRequest = {
@@ -48,16 +48,23 @@ type MetadataUploadParams = {
 };
 
 // R2 client setup
-const r2 = new S3Client({
-  endpoint: PRIVATE_R2_URL,
-  credentials: {
-    accessKeyId: R2_ACCESS_KEY_ID,
-    secretAccessKey: R2_SECRET_ACCESS_KEY,
-  },
-  region: 'auto',
-});
+function getR2Client() {
+  const env = readEnv();
+  return new S3Client({
+    endpoint: `https://${env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com`,
+    credentials: {
+      accessKeyId: env.R2_ACCESS_KEY_ID,
+      secretAccessKey: env.R2_SECRET_ACCESS_KEY,
+    },
+    region: 'auto',
+  });
+}
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  if (rejectIfNotLive(req, res)) {
+    return;
+  }
+
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
@@ -122,7 +129,7 @@ async function uploadImage(tokenLogo: string, mint: string): Promise<string | fa
 
   try {
     await uploadToR2(fileBuffer, contentType, fileName);
-    return `${PUBLIC_R2_URL}/${fileName}`;
+    return `${publicUrl(fileName)}`;
   } catch (error) {
     console.error('Error uploading image:', error);
     return false;
@@ -139,7 +146,7 @@ async function uploadMetadata(params: MetadataUploadParams): Promise<string | fa
 
   try {
     await uploadToR2(Buffer.from(JSON.stringify(metadata, null, 2)), 'application/json', fileName);
-    return `${PUBLIC_R2_URL}/${fileName}`;
+    return `${publicUrl(fileName)}`;
   } catch (error) {
     console.error('Error uploading metadata:', error);
     return false;
@@ -151,9 +158,9 @@ async function uploadToR2(
   contentType: string,
   fileName: string
 ): Promise<PutObjectCommandOutput> {
-  return r2.send(
+  return getR2Client().send(
     new PutObjectCommand({
-      Bucket: R2_BUCKET,
+      Bucket: readEnv().R2_BUCKET,
       Key: fileName,
       Body: fileBuffer,
       ContentType: contentType,
@@ -174,11 +181,11 @@ async function createPoolTransaction({
   metadataUrl: string;
   userWallet: string;
 }) {
-  const connection = new Connection(RPC_URL, 'confirmed');
+  const connection = new Connection(readEnv().RPC_URL, 'confirmed');
   const client = new DynamicBondingCurveClient(connection, 'confirmed');
 
   const poolTx = await client.creator.createPool({
-    config: new PublicKey(POOL_CONFIG_KEY),
+    config: new PublicKey(readEnv().POOL_CONFIG_KEY),
     baseMint: new PublicKey(mint),
     name: tokenName,
     symbol: tokenSymbol,

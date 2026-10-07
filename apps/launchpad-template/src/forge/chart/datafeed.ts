@@ -9,9 +9,9 @@ import {
   LibrarySymbolInfo,
   Mark,
   SubscribeBarsCallback,
-} from '../AdvancedTradingView/charting_library';
-import { GetChartRequest, Pool } from '../Explore/types';
-import { ApeClient } from '../Explore/client';
+} from '@/components/AdvancedTradingView/charting_library';
+import { GetChartRequest, Pool } from '@/components/Explore/types';
+import { ApeClient } from '@/forge/data/client';
 import { asMarks } from '@/contexts/TokenChart/marks';
 
 export type ISymbolInfo = LibrarySymbolInfo & { address: string };

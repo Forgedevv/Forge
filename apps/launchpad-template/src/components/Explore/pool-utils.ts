@@ -46,8 +46,7 @@ export function getSorterFieldValue(
       if (stats?.numNetBuyers === undefined || stats?.numTraders === undefined) {
         return;
       }
-      const numNetSellers = stats.numTraders - stats.numNetBuyers;
-      return stats.numNetBuyers - numNetSellers;
+      return stats.numNetBuyers - (stats.numTraders - stats.numNetBuyers);
     case 'usdPrice':
       return pool.baseAsset.usdPrice;
     case 'mcap':
@@ -56,8 +55,6 @@ export function getSorterFieldValue(
       return pool.baseAsset.fdv;
     case 'holderCount':
       return pool.baseAsset.holderCount;
-    case 'organicScore':
-      return pool.baseAsset.organicScore;
     case 'organicScore':
       return pool.baseAsset.organicScore;
     case 'numOrganicBuyers':

@@ -1,5 +1,5 @@
 import ExploreGrid from './ExploreGrid';
-import { DataStreamProvider } from '@/contexts/DataStreamProvider';
+import { DataStreamProvider } from '@/forge/data/DataStreamProvider';
 import { ExploreMsgHandler } from './ExploreMsgHandler';
 import { ExploreProvider } from '@/contexts/ExploreProvider';
 import { PropsWithChildren } from 'react';

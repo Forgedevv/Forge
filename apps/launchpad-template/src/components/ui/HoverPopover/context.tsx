@@ -86,7 +86,6 @@ type HoverPopoverProps = HoverPopoverTriggerProps &
  * - `https://github.com/radix-ui/primitives/issues/2051`
  * - `https://github.com/radix-ui/primitives/blob/main/packages/react/tooltip/src/tooltip.tsx`
  */
-// eslint-disable-next-line react/display-name
 const HoverPopover: React.FC<PropsWithChildren<HoverPopoverProps>> = memo(
   ({
     delayDuration = 0,

@@ -1,5 +1,5 @@
 import { MutableRefObject, memo, useEffect } from 'react';
-import { IChartingLibraryWidget } from '../AdvancedTradingView/charting_library';
+import { IChartingLibraryWidget } from '@/components/AdvancedTradingView/charting_library';
 import { useWallet } from '@jup-ag/wallet-adapter';
 
 type RefreshMarksProps = {

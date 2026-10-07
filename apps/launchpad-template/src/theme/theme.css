@@ -1,0 +1,28 @@
+/*
+ * Theme variables (FREE ZONE).
+ * Primary/accent colours come from forge.config.json#theme (see ThemeStyle.tsx).
+ * The other variables are derived from the base design tokens in styles/globals.css, so they follow
+ * the light/dark mode automatically.
+ */
+:root {
+  --color-bg: rgb(var(--background));
+  --color-surface: rgb(var(--neutral-925));
+  --color-text: rgb(var(--foreground));
+  --color-text-muted: rgb(var(--neutral-400));
+  --color-border: rgb(var(--neutral-850));
+  --color-success: rgb(var(--emerald));
+  --color-danger: rgb(var(--rose));
+  --radius: 0.5rem;
+  --font-heading: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font-body: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+}
+
+body {
+  font-family: var(--font-body);
+}
+
+h1,
+h2,
+h3 {
+  font-family: var(--font-heading);
+}

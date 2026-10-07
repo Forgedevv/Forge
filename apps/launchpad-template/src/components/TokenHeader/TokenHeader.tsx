@@ -6,7 +6,7 @@ import { formatReadablePercentChange } from '@/lib/format/number';
 import { Copyable } from '../ui/Copyable';
 import { TruncatedAddress } from '../TruncatedAddress/TruncatedAddress';
 import CopyIconSVG from '@/icons/CopyIconSVG';
-import { TrenchesTokenIcon, TrenchesTokenIconImage } from '../TokenIcon';
+import { TrenchesTokenIcon, TrenchesTokenIconImage } from '@/forge/token-icon';
 
 type TokenHeaderProps = {
   className?: string;

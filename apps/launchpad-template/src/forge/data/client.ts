@@ -10,7 +10,7 @@ import {
   GetTopHoldersResponse,
   GetTxsRequest,
   GetTxsResponse,
-} from './types';
+} from '@/components/Explore/types';
 import { serializeParams } from '@/lib/utils';
 
 const BASE_URL = 'https://datapi.jup.ag';
