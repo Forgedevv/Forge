@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { SolanaAddress } from '@forge/shared';
 import { base58DecodeExact } from './base58';
 import { verifyEd25519 } from './ed25519';
-import { ConsumedNonceStore, consumedNonces } from './replay';
+import { consumedNonces, type NonceStore } from './replay';
 import { deriveKey, signToken, verifyToken } from './signed-token';
 
 /*
@@ -100,14 +100,14 @@ export interface VerifySignInInput {
   /** Domain expected for this request (see resolveSignInDomain). */
   expectedDomain: string;
   nowSeconds: number;
-  store?: ConsumedNonceStore;
+  store?: NonceStore;
 }
 
 /**
  * Checks, in order: token MAC, expiry, domain, wallet binding, nonce reuse, encodings, ed25519
  * signature. The nonce is consumed only after the signature is valid.
  */
-export function verifySignIn(input: VerifySignInInput): SignInResult {
+export async function verifySignIn(input: VerifySignInInput): Promise<SignInResult> {
   const store = input.store ?? consumedNonces;
   const challenge = verifyToken(deriveKey(input.secret, 'auth-nonce'), input.token);
   if (!isChallenge(challenge)) return { ok: false, reason: 'invalid_token' };
@@ -119,7 +119,7 @@ export function verifySignIn(input: VerifySignInInput): SignInResult {
   }
   if (challenge.domain !== input.expectedDomain) return { ok: false, reason: 'wrong_domain' };
   if (challenge.wallet !== input.wallet) return { ok: false, reason: 'wrong_wallet' };
-  if (store.has(challenge.nonce, input.nowSeconds)) return { ok: false, reason: 'reused_nonce' };
+  if (await store.has(challenge.nonce, input.nowSeconds)) return { ok: false, reason: 'reused_nonce' };
 
   if (!SolanaAddress.safeParse(input.wallet).success) return { ok: false, reason: 'bad_encoding' };
   const publicKey = base58DecodeExact(input.wallet, 32);
@@ -129,7 +129,7 @@ export function verifySignIn(input: VerifySignInInput): SignInResult {
   const message = Buffer.from(buildSignInMessage(challenge), 'utf8');
   if (!verifyEd25519(message, signature, publicKey)) return { ok: false, reason: 'bad_signature' };
 
-  if (!store.consume(challenge.nonce, challenge.exp, input.nowSeconds)) {
+  if (!(await store.consume(challenge.nonce, challenge.exp, input.nowSeconds))) {
     return { ok: false, reason: 'reused_nonce' };
   }
   return { ok: true, wallet: challenge.wallet };

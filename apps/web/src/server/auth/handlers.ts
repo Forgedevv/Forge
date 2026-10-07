@@ -73,7 +73,7 @@ export async function handleVerify(request: Request): Promise<Response> {
     const token = parsed.data.nonce ?? readCookie(request, NONCE_COOKIE);
     if (token === null) return errorResponse(401, 'UNAUTHORIZED', VERIFY_FAILURE_MESSAGE);
 
-    const result = verifySignIn({
+    const result = await verifySignIn({
       secret: getSessionSecret(),
       token,
       wallet: parsed.data.wallet,

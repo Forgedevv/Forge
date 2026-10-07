@@ -10,7 +10,7 @@ import {
   handleSupabaseToken,
   handleVerify,
 } from './handlers';
-import { ConsumedNonceStore, consumedNonces } from './replay';
+import { ConsumedNonceStore, consumedNonces, type NonceStore } from './replay';
 import { createSessionToken, getSession, requireSession, SESSION_TTL_SECONDS } from './session';
 import { deriveKey, signToken } from './signed-token';
 import { buildSignInMessage, issueChallenge, verifySignIn } from './sign-in';
@@ -351,7 +351,7 @@ describe('nonce store', () => {
     expect(store.size).toBe(2);
   });
 
-  it('only consumes a nonce once the signature is valid', () => {
+  it('only consumes a nonce once the signature is valid', async () => {
     const wallet = newWallet();
     const store = new ConsumedNonceStore();
     const now = 1_000_000;
@@ -364,10 +364,10 @@ describe('nonce store', () => {
       nowSeconds: now,
       store,
     };
-    const bad = verifySignIn({ ...base, signature: signMessage(newWallet(), issued.message) });
+    const bad = await verifySignIn({ ...base, signature: signMessage(newWallet(), issued.message) });
     expect(bad).toEqual({ ok: false, reason: 'bad_signature' });
     expect(store.size).toBe(0);
-    const good = verifySignIn({ ...base, signature: signMessage(wallet, issued.message) });
+    const good = await verifySignIn({ ...base, signature: signMessage(wallet, issued.message) });
     expect(good).toEqual({ ok: true, wallet: wallet.address });
     expect(buildSignInMessage(issued.challenge)).toBe(issued.message);
   });
@@ -523,5 +523,39 @@ describe('secrets', () => {
         expect(text).not.toContain(secret);
       }
     }
+  });
+});
+
+describe('pluggable nonce store', () => {
+  it('awaits an asynchronous NonceStore and rejects a replay across stores', async () => {
+    const wallet = newWallet();
+    const shared = new Set<string>();
+    const makeStore = (): NonceStore => ({
+      has: async (n) => shared.has(n),
+      consume: async (n) => {
+        if (shared.has(n)) return false;
+        shared.add(n);
+        return true;
+      },
+    });
+    const now = 1_000_000;
+    const issued = issueChallenge(Buffer.from(SESSION_SECRET), wallet.address, 'forge.app', now);
+    const input = {
+      secret: Buffer.from(SESSION_SECRET),
+      token: issued.token,
+      wallet: wallet.address,
+      expectedDomain: 'forge.app',
+      nowSeconds: now,
+      signature: signMessage(wallet, issued.message),
+    };
+    expect(await verifySignIn({ ...input, store: makeStore() })).toEqual({
+      ok: true,
+      wallet: wallet.address,
+    });
+    // a different "instance" sharing the backing store sees the nonce as consumed
+    expect(await verifySignIn({ ...input, store: makeStore() })).toEqual({
+      ok: false,
+      reason: 'reused_nonce',
+    });
   });
 });
