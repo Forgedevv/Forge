@@ -41,7 +41,17 @@ Kept up to date by the lead session. Agents read it, do not modify it.
 
 | Test | Result | Plan B applied |
 |---|---|---|
-| 1. Meteora referral | to do | — |
-| 2. Creator share | to do | — |
-| 3. Client first buy | to do | — |
-| 4. Platform fee | to do | — |
+| 1. Meteora referral | PASS — the referral gets exactly 20% of the protocol share (40,000 / 160,000 lamports on a 1,000,000 fee); partner share unchanged. `poolCreationFee = 0` accepted on-chain | none |
+| 2. Creator share | PASS — the creator gets 25.00% of the non-protocol fees and can claim them to another address; after migration to DAMM v2 the creator's permanently locked position keeps earning fees (claimed to the multisig stand-in) | none |
+| 3. Client first buy | PASS — one transaction: FORGE creator + mint partially sign, the client signs last and pays; the first buy pays the minimum fee under a 99% anti-sniper schedule | none |
+| 4. Platform fee | PASS — 30 bps SOL transfer + referral swap in one transaction (buy 754 bytes, sell 722 bytes, limit 1,232) | none |
+
+Run on devnet on 2026-10-07; reports with Solscan links are in `scripts/devnet-tests/reports/`. Fake $FORGE (devnet): `ES4otaE7FckJGJEKwpk3noaCZBt4FQZhuhWqUDdhuBEF` (6 decimals).
+
+Findings to apply in `@forge/core`:
+- `FORGE_PLATFORM_FEE_WALLET` (and any fresh fee recipient) must already be rent-exempt, otherwise the whole swap transaction fails: check it at startup.
+- `createPoolWithFirstBuy`: the pool creator **and** the mint sign; the client is the fee payer and the buyer.
+- DBC events come through self-CPI (event authority), not log lines; in `evtSwap`, `tradingFee` is partner + creator only.
+- Migration is scriptable (`migrationDammV2CreateMetadata` through the SDK's program object, then `migrateToDammV2`); the production threshold stays 10 SOL.
+- Confirm transactions by polling `getSignatureStatuses` (websocket subscriptions get rate-limited).
+- Never hard-code rent: read `getMinimumBalanceForRentExemption`.
