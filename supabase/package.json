@@ -1,0 +1,21 @@
+{
+  "name": "@forge/supabase",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "FORGE Supabase migrations and database tests.",
+  "scripts": {
+    "migrate": "node scripts/migrate.mjs",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "build": "tsc --noEmit"
+  },
+  "dependencies": {
+    "pg": "8.23.1"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "@types/pg": "8.23.1"
+  }
+}
