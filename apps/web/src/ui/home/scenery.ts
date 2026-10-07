@@ -70,11 +70,11 @@ function screenTexture(index: number) {
   canvas.height = 512;
   const ctx = canvas.getContext('2d');
   if (!ctx) throw new Error('Canvas 2D unavailable');
-  const accents = [palette.ember, palette.acid, '#a5a7b4', '#b59f9e'];
+  const accents = [palette.accent, palette.lilac, palette.magenta, palette.wire];
   const accent = accents[index % accents.length]!;
-  ctx.fillStyle = index % 2 ? palette.ivory : palette.ink;
+  ctx.fillStyle = index % 2 ? palette.light : palette.night;
   ctx.fillRect(0, 0, 768, 512);
-  ctx.fillStyle = index % 2 ? palette.ink : palette.ivory;
+  ctx.fillStyle = index % 2 ? palette.ink : palette.light;
   ctx.font = 'bold 14px monospace';
   ctx.fillText(copy.scenery.screenLabel, 32, 36);
   ctx.font = 'bold 62px Arial';
@@ -94,7 +94,7 @@ function screenTexture(index: number) {
     ctx.beginPath();
     ctx.arc(x + 26, 394, 22, 0, Math.PI * 2);
     ctx.fill();
-    ctx.fillStyle = index % 2 ? palette.ink : palette.ivory;
+    ctx.fillStyle = index % 2 ? palette.ink : palette.light;
     ctx.font = 'bold 17px monospace';
     ctx.fillText(copy.scenery.screenCoins[i]!, x + 60, 399);
     ctx.globalAlpha = 0.25;
@@ -121,7 +121,7 @@ export function createScenery(origins: T.Vector3[], portrait: boolean): ChapterS
     const title = textPlane(
       copy.scenery.hero,
       3.15,
-      palette.ink,
+      palette.accent,
       '900 350px Arial Black, Arial, sans-serif',
     );
     title.position.set(0, 0.2, -0.62);
@@ -134,7 +134,10 @@ export function createScenery(origins: T.Vector3[], portrait: boolean): ChapterS
           : i % 3 === 1
             ? new RoundedBoxGeometry(0.1, 0.28, 0.08, 2, 0.025)
             : new T.OctahedronGeometry(0.075);
-      const mesh = new T.Mesh(geometry, material(i % 2 ? palette.ember : palette.acid, 0.45));
+      const mesh = new T.Mesh(
+        geometry,
+        material(i % 5 === 0 ? palette.magenta : i % 2 ? palette.accent : palette.lilac, 0.45),
+      );
       const angle = (i / 15) * Math.PI * 2;
       mesh.position.set(
         Math.cos(angle) * (0.85 + random(i) * 0.55),
@@ -154,7 +157,7 @@ export function createScenery(origins: T.Vector3[], portrait: boolean): ChapterS
           Math.cos(t * 7) * 0.3 - 0.6,
         );
       }),
-      palette.ember,
+      palette.accent,
       0.013,
     );
     group.add(ribbon);
@@ -180,15 +183,15 @@ export function createScenery(origins: T.Vector3[], portrait: boolean): ChapterS
     field.rotation.z = -0.3;
     group.add(field);
     for (let i = -4; i <= 4; i++) {
-      const line = textPlane(copy.scenery.repetition, 11, '#a8b3a2', '900 155px Arial');
+      const line = textPlane(copy.scenery.repetition, 11, palette.faint, '900 155px Arial');
       line.position.set((i % 2) * 0.6, i * 0.6, -1.8);
       field.add(line);
     }
-    const title = textPlane(copy.scenery.glass, 5, palette.ember, '900 150px Arial');
+    const title = textPlane(copy.scenery.glass, 5, palette.accent, '900 150px Arial');
     title.position.set(0, 0.9, -0.55);
     group.add(title);
     const glass = new T.MeshPhysicalMaterial({
-      color: palette.ivory,
+      color: palette.light,
       transmission: 0.98,
       thickness: 1.2,
       roughness: 0.04,
@@ -235,7 +238,7 @@ export function createScenery(origins: T.Vector3[], portrait: boolean): ChapterS
       screen.rotation.set(-0.05, (1.5 - col) * 0.14, (random(i) - 0.5) * 0.13);
       const caseMesh = new T.Mesh(
         new RoundedBoxGeometry(1.24, 0.84, 0.11, 3, 0.05),
-        material('#29332c', 0.85),
+        material(palette.plum, 0.85),
       );
       screen.add(caseMesh);
       const display = new T.Mesh(
@@ -253,14 +256,14 @@ export function createScenery(origins: T.Vector3[], portrait: boolean): ChapterS
             new T.Vector3(screen.position.x + 0.2, -1.2, -0.9),
             new T.Vector3(screen.position.x * 0.5, -1.4, 0.4),
           ],
-          i % 2 ? palette.acid : palette.ember,
+          i % 2 ? palette.lilac : palette.accent,
           0.009,
           true,
         ),
       );
     }
     const floor = new Reflector(new T.PlaneGeometry(12, 12), {
-      color: 0x505a52,
+      color: palette.floor,
       textureWidth: portrait ? 256 : 512,
       textureHeight: portrait ? 256 : 512,
       clipBias: 0.003,
@@ -285,11 +288,11 @@ export function createScenery(origins: T.Vector3[], portrait: boolean): ChapterS
   // Built together: a drafting grid, changing type, and 26 small makers.
   {
     const group = make(3);
-    const grid = new T.GridHelper(34, 68, '#83917e', '#a4b09c');
+    const grid = new T.GridHelper(34, 68, palette.wire, palette.faint);
     grid.position.y = -1.18;
     group.add(grid);
     const words = copy.scenery.buildWords.map((word) => {
-      const mesh = textPlane(word, 8, palette.ember, '900 300px Arial Black, Arial');
+      const mesh = textPlane(word, 8, palette.accent, '900 300px Arial Black, Arial');
       mesh.position.set(0, -1.15, -0.9);
       mesh.rotation.x = -Math.PI / 2;
       group.add(mesh);
@@ -297,17 +300,17 @@ export function createScenery(origins: T.Vector3[], portrait: boolean): ChapterS
     });
     const heads = new T.InstancedMesh(
       new T.SphereGeometry(0.13, 10, 8),
-      material(palette.ivory),
+      material(palette.light),
       26,
     );
     const bodies = new T.InstancedMesh(
       new T.CapsuleGeometry(0.1, 0.2, 3, 8),
-      material(palette.ink),
+      material(palette.plum),
       26,
     );
     const boots = new T.InstancedMesh(
       new T.SphereGeometry(0.06, 8, 6),
-      material(palette.ember),
+      material(palette.accent),
       52,
     );
     group.add(heads, bodies, boots);
@@ -358,7 +361,7 @@ export function createScenery(origins: T.Vector3[], portrait: boolean): ChapterS
     group.add(orbit);
     for (let i = 0; i < 12; i++) {
       const angle = (i / 12) * Math.PI * 2;
-      const text = textPlane(copy.scenery.orbit, 1.8, palette.acid, 'bold 130px monospace');
+      const text = textPlane(copy.scenery.orbit, 1.8, palette.lilac, 'bold 130px monospace');
       text.position.set(Math.cos(angle) * 2.3, Math.sin(angle) * 2.3, -0.8);
       text.rotation.z = angle + Math.PI / 2;
       orbit.add(text);
@@ -366,7 +369,7 @@ export function createScenery(origins: T.Vector3[], portrait: boolean): ChapterS
     const sphere = new T.Mesh(
       new T.SphereGeometry(2.9, 32, 16),
       new T.MeshBasicMaterial({
-        color: '#485242',
+        color: palette.wire,
         wireframe: true,
         transparent: true,
         opacity: 0.2,
@@ -393,11 +396,11 @@ export function createScenery(origins: T.Vector3[], portrait: boolean): ChapterS
         -5 - t * 45,
       );
     });
-    const road = curve(roadPoints, palette.ember, 0.022, true);
+    const road = curve(roadPoints, palette.accent, 0.022, true);
     group.add(road);
     const inner = curve(
       roadPoints.map((p) => p.clone().add(new T.Vector3(0, 0.18, 0))),
-      palette.acid,
+      palette.magenta,
       0.009,
       true,
     );
@@ -405,7 +408,7 @@ export function createScenery(origins: T.Vector3[], portrait: boolean): ChapterS
     const streakCount = portrait ? 64 : 130;
     const streaks = new T.InstancedMesh(
       new T.CylinderGeometry(0.008, 0.008, 1, 3),
-      new T.MeshBasicMaterial({ color: palette.ivory, transparent: true, opacity: 0.26 }),
+      new T.MeshBasicMaterial({ color: palette.light, transparent: true, opacity: 0.26 }),
       streakCount,
     );
     group.add(streaks);

@@ -20,7 +20,7 @@ export const LIGHTING = {
   exposure: 0.82,
   environmentIntensity: 0.6,
   fillIntensity: 1.05,
-  fillGroundColor: '#4f5a73',
+  fillGroundColor: '#3d3366',
   keyIntensity: 1.7,
   /** Per-chapter intensity of the pointer-following light near the pilot. */
   pointerIntensity: [1.1, 1.1, 2.4, 1.1, 1.1, 1.4],
@@ -28,9 +28,9 @@ export const LIGHTING = {
   backdropGlow: [0.05, 0.018, 0.018, 0.025, 0.015, 0.03],
 } as const;
 
-/** The pilot's shell: a slightly greyed white with enough roughness to show its shading. */
+/** The pilot's shell: a lavender white with enough roughness to show its shading. */
 export const PILOT_SHELL = {
-  color: '#d9dde3',
+  color: '#e6e3f2',
   roughness: 0.55,
   /** Roughness removed while the shell turns to glass. */
   glassSmoothing: 0.45,

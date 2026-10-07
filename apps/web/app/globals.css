@@ -4,26 +4,28 @@
 @custom-variant dark (&:is(.dark *));
 
 :root {
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --border: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
+  /* FORGE palette, light variant: lavender surfaces with the electric violet accent. */
+  --background: #f4f2fb;
+  --foreground: #1a1530;
+  --primary: #6a2fd6;
+  --primary-foreground: #ffffff;
+  --muted: #eae6f7;
+  --muted-foreground: #575073;
+  --border: #cfc8e6;
+  --ring: #9b5cff;
   --radius: 0.625rem;
 }
 
 .dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --border: oklch(1 0 0 / 10%);
-  --ring: oklch(0.556 0 0);
+  /* FORGE palette, dark variant: violet black, night surfaces, electric violet. */
+  --background: #0b0a12;
+  --foreground: #f2f0ff;
+  --primary: #9b5cff;
+  --primary-foreground: #0b0a12;
+  --muted: #161426;
+  --muted-foreground: #aca6c8;
+  --border: #3a3360;
+  --ring: #9b5cff;
 }
 
 @theme inline {

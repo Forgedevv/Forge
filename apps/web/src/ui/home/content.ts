@@ -187,10 +187,28 @@ export const homeContent = {
   },
 } as const;
 
+/** FORGE neon palette for the 3D scene. Keep in sync with the tokens in home.css. */
 export const palette = {
-  ink: '#171c2b',
-  ivory: '#e4e6f0',
-  ember: '#939be5',
-  acid: '#bac7e4',
-  backgrounds: ['#bbc4d7', '#cbd2e1', '#252c40', '#c1cadd', '#232b3e', '#273247'],
+  /** Violet black: visor, shards, and the darkest scene surfaces. */
+  ink: '#0b0a12',
+  /** Night surface: dark launchpad screens. */
+  night: '#161426',
+  /** Dim violet for structural pieces that must read against the dark backdrop. */
+  plum: '#2a2347',
+  /** Cool white: light screens, glass, dust, and the light color. */
+  light: '#f2f0ff',
+  /** Electric violet: the main accent, trims, cables, and the liftoff road. */
+  accent: '#9b5cff',
+  /** Soft lilac companion to the accent. */
+  lilac: '#c4a8ff',
+  /** Magenta highlight, used sparingly: eyes, chest light, and a few accents. */
+  magenta: '#ff4fd8',
+  /** Faint violet for background typography and grid lines. */
+  faint: '#2e2654',
+  /** Mid violet for wireframes and the grid center line. */
+  wire: '#5b3fa8',
+  /** Per-chapter backdrop colors, from ignition to liftoff. */
+  backgrounds: ['#161426', '#1b1733', '#0b0a12', '#14112a', '#0b0a12', '#100d1e'],
+  /** Tint of the workshop floor reflection. */
+  floor: 0x524682,
 };

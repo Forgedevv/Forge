@@ -35,20 +35,20 @@ function PilotIllustration() {
       <g transform="rotate(-9 150 170)">
         <path
           d="m112 243-9 47h37l10-49m24-2 8 48h35l-19-53"
-          fill="var(--forge-ember)"
-          stroke="var(--forge-ink)"
+          fill="var(--forge-accent)"
+          stroke="var(--forge-pilot-outline)"
           strokeWidth="4"
         />
         <path
           d="M102 150c-35 7-47 54-35 64 16 7 21-29 38-23m90-38c36 4 51 38 40 55-12 12-26-16-37-18"
           fill="var(--forge-pilot-shell)"
-          stroke="var(--forge-ink)"
+          stroke="var(--forge-pilot-outline)"
           strokeWidth="4"
         />
         <path
           d="M150 129c-45 0-62 36-59 75s24 55 60 55 61-16 64-55-20-75-65-75Z"
           fill="var(--forge-pilot-shell)"
-          stroke="var(--forge-ink)"
+          stroke="var(--forge-pilot-outline)"
           strokeWidth="4"
         />
         <rect
@@ -58,32 +58,32 @@ function PilotIllustration() {
           height="103"
           rx="35"
           fill="var(--forge-pilot-shell)"
-          stroke="var(--forge-ink)"
+          stroke="var(--forge-pilot-outline)"
           strokeWidth="4"
         />
-        <rect x="94" y="102" width="114" height="43" rx="16" fill="var(--forge-ink)" />
-        <rect x="119" y="115" width="12" height="18" rx="6" fill="var(--forge-acid)" />
-        <rect x="171" y="115" width="12" height="18" rx="6" fill="var(--forge-acid)" />
-        <path d="m183 67 10-30" stroke="var(--forge-ember)" strokeWidth="9" />
+        <rect x="94" y="102" width="114" height="43" rx="16" fill="var(--forge-pilot-outline)" />
+        <rect x="119" y="115" width="12" height="18" rx="6" fill="var(--forge-accent-2)" />
+        <rect x="171" y="115" width="12" height="18" rx="6" fill="var(--forge-accent-2)" />
+        <path d="m183 67 10-30" stroke="var(--forge-accent)" strokeWidth="9" />
         <circle
           cx="195"
           cy="31"
           r="12"
-          fill="var(--forge-acid)"
-          stroke="var(--forge-ink)"
+          fill="var(--forge-accent-2)"
+          stroke="var(--forge-pilot-outline)"
           strokeWidth="3"
         />
-        <rect x="132" y="187" width="38" height="40" rx="9" fill="var(--forge-ember)" />
-        <path d="m154 193-13 16h10l-6 13 17-18h-11Z" fill="var(--forge-ivory)" />
-        <path d="M55 198v-66" stroke="var(--forge-ink)" strokeWidth="10" />
+        <rect x="132" y="187" width="38" height="40" rx="9" fill="var(--forge-accent)" />
+        <path d="m154 193-13 16h10l-6 13 17-18h-11Z" fill="var(--forge-text)" />
+        <path d="M55 198v-66" stroke="var(--forge-pilot-outline)" strokeWidth="10" />
         <rect
           x="27"
           y="115"
           width="59"
           height="28"
           rx="7"
-          fill="var(--forge-ember)"
-          stroke="var(--forge-ink)"
+          fill="var(--forge-accent)"
+          stroke="var(--forge-pilot-outline)"
           strokeWidth="3"
         />
       </g>
