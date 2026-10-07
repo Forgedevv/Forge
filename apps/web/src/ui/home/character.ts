@@ -21,7 +21,7 @@ export function createCharacter() {
     ior: 1.4,
   });
   const trim = new T.MeshStandardMaterial({
-    color: palette.ember,
+    color: palette.accent,
     roughness: 0.48,
     metalness: 0.3,
   });
@@ -32,12 +32,12 @@ export function createCharacter() {
     clearcoat: 0.6,
   });
   const eye = new T.MeshStandardMaterial({
-    color: palette.acid,
-    emissive: palette.acid,
+    color: palette.magenta,
+    emissive: palette.magenta,
     emissiveIntensity: PILOT_EMISSIVE.intensity,
   });
   const wire = new T.MeshBasicMaterial({
-    color: palette.ember,
+    color: palette.accent,
     wireframe: true,
     transparent: true,
     opacity: 0,
@@ -104,7 +104,7 @@ export function createCharacter() {
   part(hammer, visor, [0, 0.013, 0], [0.016, 0.103, 0.016]);
   part(hammer, trim, [0, 0.107, 0], [0.15, 0.063, 0.06], true);
   const color = new T.Color();
-  const darkColor = new T.Color('#29324a');
+  const darkColor = new T.Color(palette.plum);
   let yaw = 0,
     bank = 0;
   function update(

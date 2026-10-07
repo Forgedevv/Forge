@@ -90,12 +90,12 @@ function buildExperience(
   environment.dispose();
   pmrem.dispose();
   const ambient = new T.HemisphereLight(
-    palette.ivory,
+    palette.light,
     LIGHTING.fillGroundColor,
     LIGHTING.fillIntensity,
   );
   scene.add(ambient);
-  const key = new T.DirectionalLight(palette.ivory, LIGHTING.keyIntensity);
+  const key = new T.DirectionalLight(palette.light, LIGHTING.keyIntensity);
   key.castShadow = true;
   key.shadow.mapSize.set(
     element.clientWidth < 800 ? 512 : 1024,
@@ -105,7 +105,7 @@ function buildExperience(
   key.shadow.camera.left = key.shadow.camera.bottom = -5;
   key.shadow.camera.right = key.shadow.camera.top = 5;
   scene.add(key, key.target);
-  const pointerLight = new T.PointLight(palette.ember, LIGHTING.pointerIntensity[0], 12, 2);
+  const pointerLight = new T.PointLight(palette.accent, LIGHTING.pointerIntensity[0], 12, 2);
   scene.add(pointerLight);
 
   const backgrounds = palette.backgrounds.map((color) => new T.Color(color));
@@ -114,7 +114,7 @@ function buildExperience(
     new T.ShaderMaterial({
       uniforms: {
         color: { value: backgrounds[0]!.clone() },
-        accent: { value: new T.Color(palette.ember) },
+        accent: { value: new T.Color(palette.accent) },
         time: { value: 0 },
         glow: { value: LIGHTING.backdropGlow[0] },
       },
@@ -163,7 +163,7 @@ function buildExperience(
   const cloud = new T.Points(
     cloudGeometry,
     new T.PointsMaterial({
-      color: palette.ivory,
+      color: palette.light,
       size: 0.012,
       transparent: true,
       opacity: PILOT_HALO_OPACITY,
@@ -174,7 +174,7 @@ function buildExperience(
   const trail = new T.InstancedMesh(
     new T.SphereGeometry(1, 8, 6),
     new T.MeshBasicMaterial({
-      color: palette.ember,
+      color: palette.accent,
       transparent: true,
       opacity: 0.4,
       depthWrite: false,
