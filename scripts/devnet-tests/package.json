@@ -7,10 +7,19 @@
     "build": "tsc --noEmit",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --passWithNoTests",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "fund:status": "tsx src/fund-status.ts",
+    "mint:forge": "tsx src/forge-mint.ts",
+    "test:1": "tsx src/test1.ts",
+    "test:2": "tsx src/test2.ts",
+    "test:3": "tsx src/test3.ts",
+    "test:4": "tsx src/test4.ts",
+    "test:all": "tsx src/all.ts",
+    "summary": "tsx src/summary.ts"
   },
   "dependencies": {
     "@forge/shared": "workspace:*",
+    "@meteora-ag/cp-amm-sdk": "1.5.1",
     "@meteora-ag/dynamic-bonding-curve-sdk": "1.5.13",
     "@solana/spl-token": "0.4.15",
     "@solana/web3.js": "1.99.0",
