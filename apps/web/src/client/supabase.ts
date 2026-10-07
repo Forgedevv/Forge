@@ -5,6 +5,8 @@ import { request } from './http';
 let client: SupabaseClient | null = null;
 let currentToken: string | null = null;
 let refreshTimer: ReturnType<typeof setTimeout> | null = null;
+/** Bumped by start/stop so a token fetch started earlier can tell it was superseded. */
+let generation = 0;
 const listeners = new Set<() => void>();
 
 function emit(): void {
@@ -44,8 +46,10 @@ function ensureClient(): SupabaseClient | null {
   return client;
 }
 
-async function fetchToken(): Promise<void> {
+async function fetchToken(gen: number): Promise<void> {
   const res = await request(WEB_API_ROUTES.authSupabaseToken.path, SupabaseTokenResponse);
+  // stopSupabaseAuth/startSupabaseAuth ran while waiting: drop this response.
+  if (gen !== generation) return;
   currentToken = res.accessToken;
   const created = client === null;
   const sb = ensureClient();
@@ -55,9 +59,11 @@ async function fetchToken(): Promise<void> {
   const exp = tokenExpiryMs(res);
   // refresh 60 s before expiry (at least in 10 s, at most in 50 min)
   const delay = exp === null ? 50 * 60_000 : Math.min(50 * 60_000, Math.max(10_000, exp - Date.now() - 60_000));
+  if (refreshTimer) clearTimeout(refreshTimer);
   refreshTimer = setTimeout(() => {
-    void fetchToken().catch(() => {
-      refreshTimer = setTimeout(() => void fetchToken().catch(() => undefined), 15_000);
+    void fetchToken(gen).catch(() => {
+      if (gen !== generation) return;
+      refreshTimer = setTimeout(() => void fetchToken(gen).catch(() => undefined), 15_000);
     });
   }, delay);
 }
@@ -65,10 +71,11 @@ async function fetchToken(): Promise<void> {
 /** Authenticates the browser Supabase client with the server-issued token. */
 export async function startSupabaseAuth(): Promise<void> {
   stopSupabaseAuth();
-  await fetchToken();
+  await fetchToken(generation);
 }
 
 export function stopSupabaseAuth(): void {
+  generation += 1;
   if (refreshTimer) clearTimeout(refreshTimer);
   refreshTimer = null;
   currentToken = null;
