@@ -9,3 +9,4 @@ coverage/
 *.pem
 .vercel
 .DS_Store
+*.tsbuildinfo
