@@ -6,7 +6,7 @@ Implemented on 2026-10-07 in the `agent/frontend` worktree. This replaces the or
 
 - An original articulated workshop pilot, created from geometry in `character.ts`, with a matching original SVG illustration for the simple view. No downloaded character, scene model, animation track, font, or reference bundle is used.
 - Six scenes: ignition and floating hardware; glass and moving typography; eight launchpad displays with a planar reflection; a drafting grid with 26 instanced makers and jumping type; an orbital manifesto; a luminous flight path with accelerating wind.
-- The inspected camera/target path and character transforms, adapted to the new model, including the third chapter's vertical override. Camera movement and character orientation interpolate continuously across chapters.
+- An original FORGE camera journey in `camera-path.ts`: per-chapter camera position, roll and field of view, look-at target, character transform, and portrait field-of-view offset, all authored for this scene composition. The path starts low in front of the pilot, slides right for the glass chapter, drops to the launchpad wall, rises over it onto the drafting table, climbs into orbit, and banks away behind the pilot for liftoff. Camera movement and character orientation interpolate continuously across chapters.
 - Fixed-duration wheel navigation: one gesture advances one chapter over 1.8 seconds, regardless of wheel magnitude or tail length, following the user's revised direction. Timeline buttons retain their explicit target navigation. Junni's adapted touch spring uses an interpolated 60 Hz simulation; touch capture clears stale momentum.
 - A 0.85-second ignition sequence; a physics-based wall reveal; one-second material transitions; independent particle, FOV, and shake timing for the final boost; the 3.5-second jump cycle and 0.7-second word switch.
 - Newly authored character poses using the inspected loop durations and playback rates. The poses themselves are not the reference's authored skeletal animation.
@@ -31,7 +31,7 @@ The associated A2–A11 interface, contract mocks, gallery, validation and integ
 
 ## Fidelity limits
 
-The user's subsequent comfort feedback takes precedence over the original effect amplitudes. The current palette uses midnight ink, cool stone, and periwinkle, shared with the workshop controls. The latest feedback also shortened the intro, replaced momentum-driven wheel input with complete chapter transitions, and moved a thinner final flight path behind the subject to avoid near-camera clipping. Exposure, emission, bloom, specular highlights, wind streaks, camera shake, boost FOV, and chromatic separation have been reduced. Chapter lighting and postprocessing now blend continuously instead of switching when the selected chapter changes. The six scenes, camera path, and interaction timing remain.
+The user's subsequent comfort feedback takes precedence over the original effect amplitudes. The current palette uses midnight ink, cool stone, and periwinkle, shared with the workshop controls. The latest feedback also shortened the intro, replaced momentum-driven wheel input with complete chapter transitions, and moved a thinner final flight path behind the subject to avoid near-camera clipping. Exposure, emission, bloom, specular highlights, wind streaks, camera shake, boost FOV, and chromatic separation have been reduced. Chapter lighting and postprocessing now blend continuously instead of switching when the selected chapter changes. The six scenes and interaction timing remain; the camera path has since been replaced by the original FORGE path described above.
 
 Character yaw/bank integrate elapsed frame time instead of multiplying chapter weights by total session time. Chapter animation clocks survive overlapping transitions, cloud drift no longer wraps abruptly, and the pointer trail starts at the pointer with time-based smoothing. Scenery keeps a stable transparent shader variant during fades; duplicate size notifications no longer reallocate targets. Transmission renders at 50% viewport resolution on smaller screens and 75% on desktop, using Three's documented `transmissionResolutionScale` option. These changes are code-level improvements, not a measured GPU performance claim.
 
@@ -41,7 +41,7 @@ This is a source-informed reconstruction with a new art direction, not a certifi
 
 The implementation can be reviewed locally now. Pixel accuracy and motion equivalence must remain open until a browser can render both sites for comparison. No push, deployment, Git configuration change, or backend modification was performed.
 
-The retained upstream notice is in `THIRD_PARTY_NOTICES.md`. The source measurements and dependency review are in `../reference/loanmeme/`.
+The retained upstream notice is in `THIRD_PARTY_NOTICES.md`. No third-party camera, scene, or character data is stored in the repository.
 
 
 ## Workshop integration and review refinements
@@ -49,3 +49,7 @@ The retained upstream notice is in `THIRD_PARTY_NOTICES.md`. The source measurem
 On 2026-10-07, the homepage baseline was committed locally before A2–A11 work. Subsequent revisions integrate the shared development session, shorten ignition to 0.85 seconds, lock wheel transitions to 1.8 seconds, and update the palette/buttons. The final road is thinner and remains behind the subject, avoiding the near-camera tube seen in the user's screenshot. The renderer now requests PCFShadowMap directly, resolving the deprecation warning forwarded by the preview server. These changes intentionally revise the earlier reference amplitudes and scrolling behavior.
 
 The old palette contrast figures and test counts above describe the earlier committed revision; the final task report records the latest checks. No visual or frame-rate guarantee is made from HTTP or component tests.
+
+## Brightness pass
+
+On 2026-10-08 the pilot and its glow were toned down so the launchpad screens stay readable behind it. All values live in `appearance.ts`: bloom strength 0.3 initial with per-chapter 0.12–0.2 (threshold 1.3, radius 0.42), a greyed-white shell `#d9dde3` with roughness 0.55 and metalness 0.08, key light 1.7 against a 1.05 fill, environment 0.6, exposure 0.82, emissive eyes 0.4, and cables at emissive 0.3 with a 0.75 color tint. The simple view's illustrated pilot uses the same shell color through `--forge-pilot-shell`.

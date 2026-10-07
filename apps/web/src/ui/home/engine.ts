@@ -6,7 +6,8 @@ import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
-import measurements from '../reference/loanmeme/motion-measurements.json';
+import { BLOOM, LIGHTING, PILOT_HALO_OPACITY } from './appearance';
+import { INTRO_WALL_DISTANCE, chapterTransforms } from './camera-path';
 import { createCharacter } from './character';
 import { palette } from './content';
 import {
@@ -72,7 +73,7 @@ function buildExperience(
   );
   renderer.outputColorSpace = T.SRGBColorSpace;
   renderer.toneMapping = T.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 0.85;
+  renderer.toneMappingExposure = LIGHTING.exposure;
   renderer.transmissionResolutionScale = element.clientWidth < 800 ? 0.5 : 0.75;
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = T.PCFShadowMap;
@@ -85,12 +86,16 @@ function buildExperience(
   const pmrem = new T.PMREMGenerator(renderer);
   const environmentTarget = pmrem.fromScene(environment, 0.04);
   scene.environment = environmentTarget.texture;
-  scene.environmentIntensity = 0.8;
+  scene.environmentIntensity = LIGHTING.environmentIntensity;
   environment.dispose();
   pmrem.dispose();
-  const ambient = new T.HemisphereLight(palette.ivory, '#68748f', 1.5);
+  const ambient = new T.HemisphereLight(
+    palette.ivory,
+    LIGHTING.fillGroundColor,
+    LIGHTING.fillIntensity,
+  );
   scene.add(ambient);
-  const key = new T.DirectionalLight(palette.ivory, 2.1);
+  const key = new T.DirectionalLight(palette.ivory, LIGHTING.keyIntensity);
   key.castShadow = true;
   key.shadow.mapSize.set(
     element.clientWidth < 800 ? 512 : 1024,
@@ -100,7 +105,7 @@ function buildExperience(
   key.shadow.camera.left = key.shadow.camera.bottom = -5;
   key.shadow.camera.right = key.shadow.camera.top = 5;
   scene.add(key, key.target);
-  const pointerLight = new T.PointLight(palette.ember, 1.5, 12, 2);
+  const pointerLight = new T.PointLight(palette.ember, LIGHTING.pointerIntensity[0], 12, 2);
   scene.add(pointerLight);
 
   const backgrounds = palette.backgrounds.map((color) => new T.Color(color));
@@ -111,7 +116,7 @@ function buildExperience(
         color: { value: backgrounds[0]!.clone() },
         accent: { value: new T.Color(palette.ember) },
         time: { value: 0 },
-        glow: { value: 0.08 },
+        glow: { value: LIGHTING.backdropGlow[0] },
       },
       vertexShader:
         'varying vec2 vUv;void main(){vUv=uv;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0);}',
@@ -127,18 +132,7 @@ function buildExperience(
   background.renderOrder = -100;
   camera.add(background);
 
-  const transforms = measurements.chapters.map((chapter) => ({
-    camera: new T.Vector3().fromArray(chapter.camera.position),
-    target: new T.Vector3().fromArray(chapter.target.position),
-    position: new T.Vector3().fromArray(chapter.character.position),
-    quaternion: new T.Quaternion().fromArray(chapter.character.rotation),
-    scale: chapter.character.scale[0]!,
-    fov: chapter.camera.fovDegrees,
-    portraitFov: chapter.mobileFovOffsetDegrees,
-  }));
-  // The reference overrides this chapter's raw GLB transform after loading.
-  transforms[2]!.position.y = 0.2807 * transforms[2]!.scale - 12;
-  transforms[2]!.quaternion.setFromAxisAngle(new T.Vector3(0, 1, 0), Math.PI);
+  const transforms = chapterTransforms();
   const isPortrait = () => element.clientWidth / Math.max(1, element.clientHeight) < 1;
   const scenery = createScenery(
     transforms.map((t) => t.target),
@@ -149,7 +143,12 @@ function buildExperience(
   scene.add(character.root);
   const composer = new EffectComposer(renderer);
   composer.addPass(new RenderPass(scene, camera));
-  const bloom = new UnrealBloomPass(new T.Vector2(1, 1), 0.4, 0.65, 1.1);
+  const bloom = new UnrealBloomPass(
+    new T.Vector2(1, 1),
+    BLOOM.strength,
+    BLOOM.radius,
+    BLOOM.threshold,
+  );
   composer.addPass(bloom);
   const vignette = new ShaderPass(vignetteShader);
   composer.addPass(vignette);
@@ -167,7 +166,7 @@ function buildExperience(
       color: palette.ivory,
       size: 0.012,
       transparent: true,
-      opacity: 0.4,
+      opacity: PILOT_HALO_OPACITY,
       depthWrite: false,
     }),
   );
@@ -196,6 +195,12 @@ function buildExperience(
   const shardGeometry = new T.BoxGeometry(0.42, 0.39, 0.025);
   const shardMaterial = new T.MeshStandardMaterial({ color: palette.ink, roughness: 0.4 });
   const fragments: { mesh: T.Mesh; body: Body }[] = [];
+  // Assemble the wall across the first chapter's view, between the camera and the pilot.
+  const wallCenter = transforms[0]!.target
+    .clone()
+    .sub(transforms[0]!.camera)
+    .setLength(INTRO_WALL_DISTANCE)
+    .add(transforms[0]!.camera);
   for (let i = 0; i < 35; i++) {
     const x = ((i % 7) - 3) * 0.43,
       y = (Math.floor(i / 7) - 2) * 0.4;
@@ -204,7 +209,7 @@ function buildExperience(
     const body = new Body({
       mass: 1,
       shape: new Box(new Vec3(0.21, 0.195, 0.0125)),
-      position: new Vec3(x, y + 1.05, 0.4),
+      position: new Vec3(x + wallCenter.x, y + wallCenter.y, wallCenter.z),
     });
     body.velocity.set(x * 1.8, y * 1.8 + 1.4, 0.8 + Math.abs(x));
     body.angularVelocity.set(x * 3, y * 3, ((i % 3) - 1) * 2);
@@ -224,9 +229,9 @@ function buildExperience(
     lightOffset = new T.Vector3();
   const chapterTimes = Array<number>(6).fill(0);
   const atmosphere = {
-    pointer: [1.5, 1.5, 4, 1.5, 1.5, 2],
-    glow: [0.08, 0.025, 0.025, 0.035, 0.02, 0.04],
-    bloom: [0.16, 0.18, 0.38, 0.16, 0.24, 0.28],
+    pointer: LIGHTING.pointerIntensity,
+    glow: LIGHTING.backdropGlow,
+    bloom: BLOOM.chapterStrength,
     vignette: [0.16, 0.23, 0.16, 0.16, 0.18, 0.18],
   };
   let paused = options.paused,
@@ -293,7 +298,7 @@ function buildExperience(
     const from = transforms[index]!,
       to = transforms[index + 1]!;
     const atmosphereMix = smooth(blend);
-    const mixAtmosphere = (values: number[]) =>
+    const mixAtmosphere = (values: readonly number[]) =>
       T.MathUtils.lerp(values[index]!, values[index + 1]!, atmosphereMix);
     const chapterWeight = (chapter: number) => smooth(1 - Math.abs(value - chapter));
     for (let i = 0; i < chapterTimes.length; i++) {
@@ -327,6 +332,7 @@ function buildExperience(
       T.MathUtils.lerp(from.portraitFov, to.portraitFov, blend) * portrait +
       boostCamera.fov * 0.45 * chapterWeight(5);
     camera.lookAt(lookAt);
+    camera.rotateZ(T.MathUtils.lerp(from.roll, to.roll, blend));
     camera.updateProjectionMatrix();
     camera.updateMatrixWorld();
     character.root.position.lerpVectors(from.position, to.position, blend);
@@ -349,7 +355,7 @@ function buildExperience(
       .lerp(backgrounds[index + 1]!, atmosphereMix);
     background.material.uniforms.time!.value = time;
     background.material.uniforms.glow!.value = mixAtmosphere(atmosphere.glow);
-    bloom.strength = mixAtmosphere(atmosphere.bloom) + boost * 0.1 * chapterWeight(5);
+    bloom.strength = mixAtmosphere(atmosphere.bloom) + boost * BLOOM.boost * chapterWeight(5);
     vignette.uniforms.strength!.value = mixAtmosphere(atmosphere.vignette);
     vignette.uniforms.aberration!.value = boost * 0.00015 * chapterWeight(5);
     scenery.forEach((chapter, i) => {

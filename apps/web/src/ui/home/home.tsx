@@ -41,13 +41,13 @@ function PilotIllustration() {
         />
         <path
           d="M102 150c-35 7-47 54-35 64 16 7 21-29 38-23m90-38c36 4 51 38 40 55-12 12-26-16-37-18"
-          fill="var(--forge-ivory)"
+          fill="var(--forge-pilot-shell)"
           stroke="var(--forge-ink)"
           strokeWidth="4"
         />
         <path
           d="M150 129c-45 0-62 36-59 75s24 55 60 55 61-16 64-55-20-75-65-75Z"
-          fill="var(--forge-ivory)"
+          fill="var(--forge-pilot-shell)"
           stroke="var(--forge-ink)"
           strokeWidth="4"
         />
@@ -57,7 +57,7 @@ function PilotIllustration() {
           width="138"
           height="103"
           rx="35"
-          fill="var(--forge-ivory)"
+          fill="var(--forge-pilot-shell)"
           stroke="var(--forge-ink)"
           strokeWidth="4"
         />

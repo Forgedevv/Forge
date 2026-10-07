@@ -1,6 +1,6 @@
 # Third-party notices
 
-The spring response in `motion.ts` is adapted from `Scroller` in [next.junni.co.jp](https://github.com/junni-inc/next.junni.co.jp/blob/master/src/ts/MainScene/Scroller/index.ts). The camera measurements in `reference/loanmeme/motion-measurements.json` informed the chapter path. FORGE's scene geometry, character, textures, copy, and application code are newly authored; no reference artwork or character-animation tracks are included.
+The spring response in `motion.ts` is adapted from `Scroller` in [next.junni.co.jp](https://github.com/junni-inc/next.junni.co.jp/blob/master/src/ts/MainScene/Scroller/index.ts). FORGE's camera path (`camera-path.ts`), scene geometry, character, textures, copy, and application code are newly authored; no reference artwork or character-animation tracks are included.
 
 The upstream source carries this notice:
 
@@ -12,4 +12,4 @@ The above copyright notice and this permission notice shall be included in all c
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
-Three.js, Cannon ES, and Lethargy retain their respective notices in their installed packages. Dependency versions and review details are recorded in `../reference/loanmeme/dependencies.md`.
+Three.js, Cannon ES, and Lethargy retain their respective notices in their installed packages. The rendering dependencies are pinned in `apps/web/package.json`: `three` 0.186.1, `cannon-es` 0.20.0, and `lethargy` 1.0.9 (MIT), with `@types/three` 0.186.0 (MIT) for development.
