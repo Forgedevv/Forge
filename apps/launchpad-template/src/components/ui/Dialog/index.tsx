@@ -16,7 +16,7 @@ const DialogCloseButton = React.forwardRef<
     ref={ref}
     className={cn(
       'flex items-center justify-center rounded-lg p-2 text-neutral-500 hover:bg-neutral-800 hover:text-neutral-200 focus:outline-primary',
-      className
+      className,
     )}
     {...props}
   >
@@ -35,7 +35,7 @@ const DialogOverlay = React.forwardRef<
       'fixed inset-0 z-50 bg-black/20 backdrop-blur-sm',
       'data-[state=open]:animate-fade-in',
       'data-[state=closed]:animate-fade-out',
-      className
+      className,
     )}
     {...props}
   />
@@ -63,7 +63,7 @@ const DialogContent = React.forwardRef<
           'data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-[0.98] data-[state=open]:slide-in-from-left-1/2 data-[state=open]:slide-in-from-top-[48%]',
         animate &&
           'data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-[0.98] data-[state=closed]:slide-out-to-left-1/2 data-[state=closed]:slide-out-to-top-[48%]',
-        className
+        className,
       )}
       {...props}
     >
@@ -94,7 +94,7 @@ const DialogTitle = React.forwardRef<
     ref={ref}
     className={cn(
       'text-base font-semibold leading-none tracking-tight text-neutral-200',
-      className
+      className,
     )}
     {...props}
   />
@@ -116,7 +116,7 @@ const DialogSubmitButton: React.FC<React.ComponentProps<'button'>> = ({ classNam
         'w-full rounded-lg bg-primary py-2.5 text-base font-semibold text-neutral-950',
         'enabled:hover:bg-primary-300',
         'disabled:opacity-50',
-        className
+        className,
       )}
       {...props}
     />

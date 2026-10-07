@@ -8,10 +8,21 @@ export const ADDR_BYTES = Uint8Array.from({ length: 32 }, (_, i) => (i * 37 + 11
 export const ADDR2 = base58Encode(ADDR_BYTES);
 
 export function added(path: string, content: FileContent, mode?: string): ChangedFile {
-  return { path, status: 'added', oldContent: null, newContent: content, ...(mode ? { mode } : {}) };
+  return {
+    path,
+    status: 'added',
+    oldContent: null,
+    newContent: content,
+    ...(mode ? { mode } : {}),
+  };
 }
 
-export function modified(path: string, oldContent: FileContent, newContent: FileContent, mode?: string): ChangedFile {
+export function modified(
+  path: string,
+  oldContent: FileContent,
+  newContent: FileContent,
+  mode?: string,
+): ChangedFile {
   return { path, status: 'modified', oldContent, newContent, ...(mode ? { mode } : {}) };
 }
 
@@ -32,10 +43,16 @@ export function scan(files: ChangedFile[], options?: ScanOptions): ScanResult {
 }
 
 /** Scans a single new component file. */
-export function scanComponent(source: string, options?: ScanOptions, path = 'src/components/Widget.tsx'): RuleId[] {
+export function scanComponent(
+  source: string,
+  options?: ScanOptions,
+  path = 'src/components/Widget.tsx',
+): RuleId[] {
   return rulesOf(scan([added(path, source)], options));
 }
 
-export const PNG = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52]);
+export const PNG = Uint8Array.from([
+  0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52,
+]);
 export const WOFF2 = Uint8Array.from([0x77, 0x4f, 0x46, 0x32, 0, 1, 0, 0]);
 export const ELF = Uint8Array.from([0x7f, 0x45, 0x4c, 0x46, 2, 1, 1, 0]);

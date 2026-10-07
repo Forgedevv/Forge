@@ -24,7 +24,7 @@ export const ThemeToggle = ({ className }: ThemeToggleProps) => {
         'flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-full border border-neutral-800 text-neutral-300 transition-colors',
         'hover:bg-neutral-850 hover:text-neutral-100',
         'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60',
-        className
+        className,
       )}
     >
       {mounted ? (

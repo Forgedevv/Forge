@@ -68,7 +68,10 @@ export function mergeUsage(a: Usage, b: Usage): Usage {
     outputTokens: Math.max(a.outputTokens, b.outputTokens),
     cacheReadInputTokens: Math.max(a.cacheReadInputTokens, b.cacheReadInputTokens),
     cacheCreationInputTokens: Math.max(a.cacheCreationInputTokens, b.cacheCreationInputTokens),
-    cacheCreation1hInputTokens: Math.max(a.cacheCreation1hInputTokens, b.cacheCreation1hInputTokens),
+    cacheCreation1hInputTokens: Math.max(
+      a.cacheCreation1hInputTokens,
+      b.cacheCreation1hInputTokens,
+    ),
   };
 }
 

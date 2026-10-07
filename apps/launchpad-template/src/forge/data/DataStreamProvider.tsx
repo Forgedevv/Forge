@@ -11,7 +11,7 @@ const WS_URL = 'wss://trench-stream.jup.ag/ws';
 const RECONNECT_DELAY_MILLIS = 2_500;
 
 const [dataStreamMsgAtom, useDataStreamListener] = atomMsgWithListeners<StreamResponse | null>(
-  null
+  null,
 );
 export { useDataStreamListener };
 
@@ -30,7 +30,7 @@ export const DataStreamProvider = ({ children }: { children: React.ReactNode }) 
   const queryClient = useQueryClient();
   const partnerConfigs = useMemo(
     () => process.env.NEXT_PUBLIC_POOL_CONFIG_KEY?.split(',') || [],
-    []
+    [],
   );
   const setDataStreamMsg = useSetAtom(dataStreamMsgAtom);
 
@@ -50,7 +50,7 @@ export const DataStreamProvider = ({ children }: { children: React.ReactNode }) 
           filters: {
             partnerConfigs,
           },
-        })
+        }),
       );
     }
   }, [partnerConfigs]);
@@ -184,7 +184,7 @@ export const DataStreamProvider = ({ children }: { children: React.ReactNode }) 
               pages: newPages,
               pageParams: prev.pageParams,
             };
-          }
+          },
         );
       }
     };

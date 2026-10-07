@@ -35,9 +35,7 @@ describe('createSignerClient', () => {
   });
 
   it('signs "<ts>.<raw body>" and sends the exact same bytes', async () => {
-    const fetchMock = vi.fn(async () =>
-      json({ launchpadConfig: ADDR, launchpadCoinConfig: ADDR }),
-    );
+    const fetchMock = vi.fn(async () => json({ launchpadConfig: ADDR, launchpadCoinConfig: ADDR }));
     const res = await make(fetchMock).createConfigs(JOB);
     expect(res.launchpadConfig).toBe(ADDR);
     const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];

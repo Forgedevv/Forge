@@ -36,7 +36,7 @@ export const TokenStats: React.FC<TokenStatsProps> = memo(({ className }) => {
     >
       <div
         className={cn(
-          'overflow-y-none grid grid-cols-4 divide-x divide-neutral-850 overflow-x-auto border border-neutral-850 text-xs rounded-t-lg'
+          'overflow-y-none grid grid-cols-4 divide-x divide-neutral-850 overflow-x-auto border border-neutral-850 text-xs rounded-t-lg',
         )}
       >
         <ToggleGroupItem value={TokenStatsTimeframe.MIN_5} />
@@ -68,7 +68,7 @@ const ToggleGroupItem = React.forwardRef<
         'data-[state=off]:hover:bg-neutral-925 data-[state=off]:hover:text-neutral-300',
         'data-[state=on]:bg-neutral-900',
         'disabled:pointer-events-none disabled:opacity-50',
-        className
+        className,
       )}
       value={value}
       {...props}

@@ -27,7 +27,7 @@ export const ExploreColumn: React.FC<ExploreColumnProps> = ({ tab }) => {
   const isPaused = pausedTabs[tab];
   const setIsPaused = useCallback(
     (paused: boolean) => setTabPaused(tab, paused),
-    [setTabPaused, tab]
+    [setTabPaused, tab],
   );
 
   return (
@@ -122,7 +122,7 @@ const TokenCardListContainer: React.FC<TokenCardListContainerProps> = memo(
                 sortBy,
                 sortDir,
               },
-              timeframe
+              timeframe,
             );
             pools.sort(sorter);
           }
@@ -138,7 +138,7 @@ const TokenCardListContainer: React.FC<TokenCardListContainerProps> = memo(
               timeframe,
             },
           };
-        }
+        },
       );
     }, [queryClient, tab, request]);
 
@@ -176,7 +176,7 @@ const TokenCardListContainer: React.FC<TokenCardListContainerProps> = memo(
     const displayData = isPaused
       ? snapshotData?.map((snapshotPool) => {
           const current = currentData?.pools.find(
-            (p) => p.baseAsset.id === snapshotPool.baseAsset.id
+            (p) => p.baseAsset.id === snapshotPool.baseAsset.id,
           );
           if (current) {
             return current;
@@ -197,7 +197,7 @@ const TokenCardListContainer: React.FC<TokenCardListContainerProps> = memo(
         onMouseLeave={handleMouseLeave}
       />
     );
-  }
+  },
 );
 
 TokenCardListContainer.displayName = 'TokenCardListContainer';

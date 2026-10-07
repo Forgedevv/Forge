@@ -60,7 +60,8 @@ export function roundUpToTenth(lamports: bigint): bigint {
  */
 export async function ensureFunded(wallets: Wallets, budget: Budget): Promise<void> {
   const entries = Object.entries(budget) as Array<[Exclude<WalletName, 'funder'>, number]>;
-  const needs: Array<{ name: Exclude<WalletName, 'funder'>; required: bigint; balance: bigint }> = [];
+  const needs: Array<{ name: Exclude<WalletName, 'funder'>; required: bigint; balance: bigint }> =
+    [];
   for (const [name, solAmount] of entries) {
     const required = solToLamports(solAmount);
     const balance = await getBalance(wallets[name].publicKey);

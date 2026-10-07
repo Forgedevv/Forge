@@ -67,14 +67,14 @@ const BaseReadableNumber: React.FC<Omit<ReadableNumberProps, 'animated' | 'showD
   }, [format, num]);
   const formatted = useMemo(
     () => formatReadableNumber(num, { integer, format: resolvedFormat, prefix, suffix, subscript }),
-    [num, integer, resolvedFormat, prefix, suffix, subscript]
+    [num, integer, resolvedFormat, prefix, suffix, subscript],
   );
   return (
     <span
       className={cn(
         'relative inline-flex items-center rounded-sm',
         color ? getNumberColorCn(num) : num === undefined ? 'text-neutral-600' : '',
-        className
+        className,
       )}
       {...props}
     >
@@ -133,7 +133,7 @@ const AnimatedReadableNumber: React.FC<Omit<ReadableNumberProps, 'animated'>> = 
 
   const formatted = useMemo(
     () => formatReadableNumber(num, { integer, format: resolvedFormat, prefix, suffix, subscript }),
-    [num, integer, resolvedFormat, prefix, suffix, subscript]
+    [num, integer, resolvedFormat, prefix, suffix, subscript],
   );
 
   return (
@@ -142,7 +142,7 @@ const AnimatedReadableNumber: React.FC<Omit<ReadableNumberProps, 'animated'>> = 
         'relative inline-flex items-center rounded-sm',
         color ? getNumberColorCn(num) : num === undefined ? 'text-neutral-600' : '',
         isFlash && styles.flashBg,
-        className
+        className,
       )}
       {...props}
     >
@@ -157,7 +157,7 @@ const AnimatedReadableNumber: React.FC<Omit<ReadableNumberProps, 'animated'>> = 
               'opacity-0': !isSlowFlash || direction === null,
               'text-emerald': direction === 'up',
               'rotate-180 text-rose': direction === 'down',
-            }
+            },
           )}
         />
       )}

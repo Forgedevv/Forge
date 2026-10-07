@@ -13,8 +13,23 @@ import ts from 'typescript';
 
 import { isCamelWords, looksRandomBase58 } from './base58.js';
 import type { ResolvedConfig } from './config.js';
-import { Folder, UNKNOWN, bindingNames, memberChain, staticPropertyName, unwrap, type Value } from './fold.js';
-import { AddressCollector, activeHtmlFindings, cssFindings, decodeEntities, hiddenUnicodeFindings, scriptUrlFindings } from './text.js';
+import {
+  Folder,
+  UNKNOWN,
+  bindingNames,
+  memberChain,
+  staticPropertyName,
+  unwrap,
+  type Value,
+} from './fold.js';
+import {
+  AddressCollector,
+  activeHtmlFindings,
+  cssFindings,
+  decodeEntities,
+  hiddenUnicodeFindings,
+  scriptUrlFindings,
+} from './text.js';
 import type { Finding, RuleId } from './types.js';
 import { checkUrl, isScriptUrl, truncate, type UrlCandidate, type UrlKind } from './url.js';
 
@@ -58,7 +73,14 @@ const WALLET_NAMES = new Set([
 ]);
 
 /** Dynamic code execution. */
-const CODE_NAMES = new Set(['eval', 'execScript', 'Function', 'WebAssembly', 'importScripts', 'constructor']);
+const CODE_NAMES = new Set([
+  'eval',
+  'execScript',
+  'Function',
+  'WebAssembly',
+  'importScripts',
+  'constructor',
+]);
 
 /** Network APIs that are never allowed (no legitimate design use). */
 const NET_FORBIDDEN = new Set([
@@ -106,21 +128,63 @@ const HTML_SINKS = new Set([
 
 /** String values that name a dangerous element. */
 const DANGEROUS_TAG_STRINGS = new Set(['script', 'iframe', 'frame', 'frameset', 'embed']);
-const DANGEROUS_TAGS = new Set(['script', 'iframe', 'frame', 'frameset', 'embed', 'object', 'base', 'meta', 'link', 'form', 'portal', 'applet']);
+const DANGEROUS_TAGS = new Set([
+  'script',
+  'iframe',
+  'frame',
+  'frameset',
+  'embed',
+  'object',
+  'base',
+  'meta',
+  'link',
+  'form',
+  'portal',
+  'applet',
+]);
 
-const GLOBAL_OBJECTS = new Set(['window', 'globalThis', 'self', 'top', 'parent', 'frames', 'document', 'opener']);
+const GLOBAL_OBJECTS = new Set([
+  'window',
+  'globalThis',
+  'self',
+  'top',
+  'parent',
+  'frames',
+  'document',
+  'opener',
+]);
 /** Properties that return a window object from any receiver. */
 const WINDOW_PROPERTIES = new Set(['defaultView', 'contentWindow']);
 /** `Object` helpers that read every property of their argument without naming it. */
-const OBJECT_READERS = new Set(['values', 'entries', 'getOwnPropertyDescriptor', 'getOwnPropertyDescriptors']);
+const OBJECT_READERS = new Set([
+  'values',
+  'entries',
+  'getOwnPropertyDescriptor',
+  'getOwnPropertyDescriptors',
+]);
 /** `Object` helpers that change properties or the prototype of an object without naming them. */
-const OBJECT_WRITERS = new Set(['setPrototypeOf', 'defineProperty', 'defineProperties', '__defineGetter__', '__defineSetter__']);
+const OBJECT_WRITERS = new Set([
+  'setPrototypeOf',
+  'defineProperty',
+  'defineProperties',
+  '__defineGetter__',
+  '__defineSetter__',
+]);
 /** Element properties that load a URL when assigned. */
 const URL_PROPS = new Set(['src', 'action', 'formAction', 'poster']);
 /** Element properties and attributes holding a list of URLs. */
 const URL_LIST_PROPS = new Set(['srcset', 'srcSet', 'ping']);
 /** Attributes that load or send to a URL, checked when the element type is unknown. */
-const UNKNOWN_TAG_URL_ATTRS = ['src', 'href', 'action', 'formaction', 'data', 'poster', 'codebase', 'background'];
+const UNKNOWN_TAG_URL_ATTRS = [
+  'src',
+  'href',
+  'action',
+  'formaction',
+  'data',
+  'poster',
+  'codebase',
+  'background',
+];
 /** Marker returned by `jsxIntrinsic` for an element whose type cannot be determined. */
 const UNKNOWN_TAG = '*';
 /** Props commonly used to choose the rendered element of a polymorphic component. */
@@ -154,7 +218,17 @@ const BLOCKED_PACKAGES = new Set([
   'needle',
 ]);
 const BLOCKED_PREFIXES = ['next/dist/', 'react-dom/server'];
-const BLOCKED_SCOPES = ['@solana/', '@meteora-ag/', '@coral-xyz/', '@project-serum/', '@metaplex-foundation/', '@jup-ag/', '@wallet-standard/', '@noble/', '@forge/'];
+const BLOCKED_SCOPES = [
+  '@solana/',
+  '@meteora-ag/',
+  '@coral-xyz/',
+  '@project-serum/',
+  '@metaplex-foundation/',
+  '@jup-ag/',
+  '@wallet-standard/',
+  '@noble/',
+  '@forge/',
+];
 const BUILTINS = new Set(builtinModules.map((m: string) => m.replace(/^node:/, '')));
 
 function scriptKindFor(path: string): ts.ScriptKind {
@@ -181,7 +255,11 @@ function isTypePosition(node: ts.Node): boolean {
     if ((ts.isImportSpecifier(n) || ts.isExportSpecifier(n)) && n.isTypeOnly) return true;
     if (ts.isImportClause(n) && n.isTypeOnly) return true;
     if (ts.isStatement(n) || ts.isSourceFile(n) || ts.isBlock(n)) return false;
-    if ((ts.isVariableDeclaration(n) || ts.isParameter(n) || ts.isPropertyDeclaration(n)) && n.type === child) return true;
+    if (
+      (ts.isVariableDeclaration(n) || ts.isParameter(n) || ts.isPropertyDeclaration(n)) &&
+      n.type === child
+    )
+      return true;
     child = n;
     n = n.parent;
   }
@@ -192,7 +270,14 @@ function isTypePosition(node: ts.Node): boolean {
 function parentOf(node: ts.Node): { parent: ts.Node | undefined; child: ts.Node } {
   let child: ts.Node = node;
   let p = node.parent;
-  while (p && (ts.isParenthesizedExpression(p) || ts.isNonNullExpression(p) || ts.isAsExpression(p) || ts.isSatisfiesExpression(p) || ts.isTypeAssertionExpression(p))) {
+  while (
+    p &&
+    (ts.isParenthesizedExpression(p) ||
+      ts.isNonNullExpression(p) ||
+      ts.isAsExpression(p) ||
+      ts.isSatisfiesExpression(p) ||
+      ts.isTypeAssertionExpression(p))
+  ) {
     child = p;
     p = p.parent;
   }
@@ -202,7 +287,12 @@ function parentOf(node: ts.Node): { parent: ts.Node | undefined; child: ts.Node 
 /** The call/new expression for which `node` is the callee, if any. */
 function calleeOf(node: ts.Node): ts.CallExpression | ts.NewExpression | undefined {
   const { parent, child } = parentOf(node);
-  if (parent && (ts.isCallExpression(parent) || ts.isNewExpression(parent)) && parent.expression === child) return parent;
+  if (
+    parent &&
+    (ts.isCallExpression(parent) || ts.isNewExpression(parent)) &&
+    parent.expression === child
+  )
+    return parent;
   return undefined;
 }
 
@@ -243,7 +333,11 @@ function isValueReference(id: ts.Identifier): boolean {
   }
   if (ts.isImportSpecifier(p) || ts.isExportSpecifier(p)) return false;
   if (ts.isJsxAttribute(p)) return false;
-  if ((ts.isJsxOpeningElement(p) || ts.isJsxSelfClosingElement(p) || ts.isJsxClosingElement(p)) && p.tagName === id) return false;
+  if (
+    (ts.isJsxOpeningElement(p) || ts.isJsxSelfClosingElement(p) || ts.isJsxClosingElement(p)) &&
+    p.tagName === id
+  )
+    return false;
   if (ts.isLabeledStatement(p) || ts.isBreakOrContinueStatement(p)) return false;
   return true;
 }
@@ -268,7 +362,8 @@ function attrName(attr: ts.JsxAttribute): string {
 function isSafeStaticHtml(html: string): boolean {
   if (activeHtmlFindings(html).length > 0) return false;
   // eslint-disable-next-line no-control-regex
-  if (/(?:java|vb)script\s*:/i.test(decodeEntities(html).replace(/[\t\n\r\u0000]/g, ''))) return false;
+  if (/(?:java|vb)script\s*:/i.test(decodeEntities(html).replace(/[\t\n\r\u0000]/g, '')))
+    return false;
   return true;
 }
 
@@ -287,12 +382,20 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
     const spec = stmt.moduleSpecifier.text;
     const clause = stmt.importClause;
     const target =
-      spec === 'next/script' ? nextScriptNames : spec === 'next/image' || spec === 'next/legacy/image' ? nextImageNames : spec === 'next/link' ? nextLinkNames : null;
+      spec === 'next/script'
+        ? nextScriptNames
+        : spec === 'next/image' || spec === 'next/legacy/image'
+          ? nextImageNames
+          : spec === 'next/link'
+            ? nextLinkNames
+            : null;
     if (!target || !clause) continue;
     if (clause.name) target.add(ts.idText(clause.name));
     if (clause.namedBindings && spec === 'next/script') {
       // Namespace or named imports would allow <S.default src> or createElement(S, ...).
-      const names = ts.isNamespaceImport(clause.namedBindings) ? [clause.namedBindings.name] : clause.namedBindings.elements.map((e) => e.name);
+      const names = ts.isNamespaceImport(clause.namedBindings)
+        ? [clause.namedBindings.name]
+        : clause.namedBindings.elements.map((e) => e.name);
       for (const b of names) {
         findings.push({
           rule: 'external-script',
@@ -304,7 +407,8 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
     }
   }
 
-  const lineOf = (node: ts.Node): number => sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1;
+  const lineOf = (node: ts.Node): number =>
+    sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1;
   const snippet = (node: ts.Node): string => collapse(node.getText(sf));
   const add = (rule: RuleId, node: ts.Node, reason: string, detail?: string): void => {
     const dedupe = `${rule}@${node.getStart(sf)}@${reason}`;
@@ -313,17 +417,28 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
     findings.push({ rule, key: `${rule}|${detail ?? snippet(node)}`, line: lineOf(node), reason });
   };
 
-  const parseDiagnostics = (sf as unknown as { parseDiagnostics?: ts.DiagnosticWithLocation[] }).parseDiagnostics ?? [];
+  const parseDiagnostics =
+    (sf as unknown as { parseDiagnostics?: ts.DiagnosticWithLocation[] }).parseDiagnostics ?? [];
   for (const d of parseDiagnostics) {
     const message = ts.flattenDiagnosticMessageText(d.messageText, ' ');
     const line = d.start !== undefined ? sf.getLineAndCharacterOfPosition(d.start).line + 1 : 1;
-    findings.push({ rule: 'parse-error', key: `parse|${message}`, line, reason: `syntax error: ${truncate(message, 80)}` });
+    findings.push({
+      rule: 'parse-error',
+      key: `parse|${message}`,
+      line,
+      reason: `syntax error: ${truncate(message, 80)}`,
+    });
   }
 
   const isDeclared = (name: string): boolean => folder.isDeclared(name);
   const importedScript = (name: string): boolean =>
     sf.statements.some(
-      (st) => ts.isImportDeclaration(st) && ts.isStringLiteral(st.moduleSpecifier) && st.moduleSpecifier.text === 'next/script' && st.importClause?.name !== undefined && ts.idText(st.importClause.name) === name,
+      (st) =>
+        ts.isImportDeclaration(st) &&
+        ts.isStringLiteral(st.moduleSpecifier) &&
+        st.moduleSpecifier.text === 'next/script' &&
+        st.importClause?.name !== undefined &&
+        ts.idText(st.importClause.name) === name,
     );
 
   /** Names whose every declaration is a component (import, function, class, or const holding one). */
@@ -339,23 +454,40 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
     const componentInit = (init: ts.Expression | undefined): boolean => {
       if (!init) return false;
       const i = unwrap(init);
-      if (ts.isArrowFunction(i) || ts.isFunctionExpression(i) || ts.isClassExpression(i)) return true;
+      if (ts.isArrowFunction(i) || ts.isFunctionExpression(i) || ts.isClassExpression(i))
+        return true;
       // styled.form`...` or memo('form') render an intrinsic element: not treated as a component.
       if (ts.isCallExpression(i)) {
         const callee = unwrap(i.expression);
-        const name = ts.isIdentifier(callee) ? ts.idText(callee) : ts.isPropertyAccessExpression(callee) ? ts.idText(callee.name) : '';
+        const name = ts.isIdentifier(callee)
+          ? ts.idText(callee)
+          : ts.isPropertyAccessExpression(callee)
+            ? ts.idText(callee.name)
+            : '';
         const first = i.arguments[0] ? unwrap(i.arguments[0]) : undefined;
         if (!COMPONENT_FACTORIES.has(name) || !first) return false;
-        return ts.isArrowFunction(first) || ts.isFunctionExpression(first) || ts.isClassExpression(first) || ts.isIdentifier(first) || ts.isPropertyAccessExpression(first);
+        return (
+          ts.isArrowFunction(first) ||
+          ts.isFunctionExpression(first) ||
+          ts.isClassExpression(first) ||
+          ts.isIdentifier(first) ||
+          ts.isPropertyAccessExpression(first)
+        );
       }
       return false;
     };
     const walk = (node: ts.Node): void => {
       if (ts.isImportClause(node) && node.name) mark(node.name, true);
       else if (ts.isNamespaceImport(node) || ts.isImportSpecifier(node)) mark(node.name, true);
-      else if ((ts.isFunctionDeclaration(node) || ts.isClassDeclaration(node)) && node.name) mark(node.name, true);
+      else if ((ts.isFunctionDeclaration(node) || ts.isClassDeclaration(node)) && node.name)
+        mark(node.name, true);
       else if (ts.isVariableDeclaration(node)) {
-        if (ts.isIdentifier(node.name)) mark(node.name, (ts.getCombinedNodeFlags(node) & ts.NodeFlags.Const) !== 0 && componentInit(node.initializer));
+        if (ts.isIdentifier(node.name))
+          mark(
+            node.name,
+            (ts.getCombinedNodeFlags(node) & ts.NodeFlags.Const) !== 0 &&
+              componentInit(node.initializer),
+          );
         else for (const n of bindingNames(node.name)) mark(n, false);
       } else if (ts.isParameter(node) || ts.isBindingElement(node)) {
         for (const n of bindingNames(node.name)) mark(n, false);
@@ -364,25 +496,39 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
     };
     walk(sf);
     for (const st of sf.statements) {
-      if (!ts.isImportDeclaration(st) || !ts.isStringLiteral(st.moduleSpecifier) || !REACT_ELEMENT_MODULES.has(st.moduleSpecifier.text)) continue;
+      if (
+        !ts.isImportDeclaration(st) ||
+        !ts.isStringLiteral(st.moduleSpecifier) ||
+        !REACT_ELEMENT_MODULES.has(st.moduleSpecifier.text)
+      )
+        continue;
       const clause = st.importClause;
       if (clause?.name) reactNames.add(ts.idText(clause.name));
       const nb = clause?.namedBindings;
       if (nb && ts.isNamespaceImport(nb)) reactNames.add(ts.idText(nb.name));
       if (nb && ts.isNamedImports(nb)) {
-        for (const e of nb.elements) reactImports.set(ts.idText(e.name), e.propertyName ? e.propertyName.getText(sf) : ts.idText(e.name));
+        for (const e of nb.elements)
+          reactImports.set(
+            ts.idText(e.name),
+            e.propertyName ? e.propertyName.getText(sf) : ts.idText(e.name),
+          );
       }
     }
   }
   const isComponentName = (name: string): boolean => componentNames.get(name) === true;
   const isReactRef = (expr: ts.Expression): boolean => {
     const n = unwrap(expr);
-    return ts.isIdentifier(n) && reactNames.has(ts.idText(n)) && componentNames.get(ts.idText(n)) === true;
+    return (
+      ts.isIdentifier(n) &&
+      reactNames.has(ts.idText(n)) &&
+      componentNames.get(ts.idText(n)) === true
+    );
   };
   const isObjectCtor = (expr: ts.Expression): boolean => {
     const n = unwrap(expr);
     if (ts.isIdentifier(n)) return ts.idText(n) === 'Object' && !isDeclared('Object');
-    if (ts.isPropertyAccessExpression(n)) return ts.idText(n.name) === 'Object' && isGlobalRef(n.expression);
+    if (ts.isPropertyAccessExpression(n))
+      return ts.idText(n.name) === 'Object' && isGlobalRef(n.expression);
     return false;
   };
   /** A receiver that is a plain data literal of this file: indexing it with any key is harmless. */
@@ -391,7 +537,11 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
     if (ts.isIdentifier(n)) return folder.isLiteralConst(ts.idText(n));
     if (ts.isArrayLiteralExpression(n)) return n.elements.every((e) => !ts.isSpreadElement(e));
     if (ts.isObjectLiteralExpression(n)) {
-      return n.properties.every((p) => !ts.isSpreadAssignment(p) && (p.name === undefined || staticPropertyName(p.name, folder) !== '__proto__'));
+      return n.properties.every(
+        (p) =>
+          !ts.isSpreadAssignment(p) &&
+          (p.name === undefined || staticPropertyName(p.name, folder) !== '__proto__'),
+      );
     }
     return false;
   };
@@ -404,7 +554,12 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
     if (ts.isConditionalExpression(n)) return isNumericKey(n.whenTrue) && isNumericKey(n.whenFalse);
     if (ts.isBinaryExpression(n)) {
       const op = n.operatorToken.kind;
-      if (op === ts.SyntaxKind.PlusToken || op === ts.SyntaxKind.QuestionQuestionToken || op === ts.SyntaxKind.BarBarToken || op === ts.SyntaxKind.AmpersandAmpersandToken) {
+      if (
+        op === ts.SyntaxKind.PlusToken ||
+        op === ts.SyntaxKind.QuestionQuestionToken ||
+        op === ts.SyntaxKind.BarBarToken ||
+        op === ts.SyntaxKind.AmpersandAmpersandToken
+      ) {
         return isNumericKey(n.left) && isNumericKey(n.right);
       }
       if (op === ts.SyntaxKind.CommaToken) return isNumericKey(n.right);
@@ -435,7 +590,10 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
       if (chain === null) return false;
       const root = chain.split('.')[0] ?? '';
       if (isDeclared(root)) return false;
-      return /^Math\.[a-z0-9]+$/i.test(chain) || ['Number', 'parseInt', 'parseFloat', 'Number.parseInt', 'Number.parseFloat'].includes(chain);
+      return (
+        /^Math\.[a-z0-9]+$/i.test(chain) ||
+        ['Number', 'parseInt', 'parseFloat', 'Number.parseInt', 'Number.parseFloat'].includes(chain)
+      );
     }
     const v = folder.fold(n);
     return typeof v === 'number' || typeof v === 'boolean';
@@ -454,13 +612,18 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
   const isDocumentRef = (expr: ts.Expression): boolean => {
     const n = unwrap(expr);
     if (ts.isIdentifier(n)) return ts.idText(n) === 'document' && !isDeclared('document');
-    if (ts.isPropertyAccessExpression(n)) return ['document', 'ownerDocument'].includes(ts.idText(n.name));
+    if (ts.isPropertyAccessExpression(n))
+      return ['document', 'ownerDocument'].includes(ts.idText(n.name));
     return false;
   };
   const isLocationRef = (expr: ts.Expression): boolean => {
     const n = unwrap(expr);
     if (ts.isIdentifier(n)) return ts.idText(n) === 'location' && !isDeclared('location');
-    if (ts.isPropertyAccessExpression(n)) return ts.idText(n.name) === 'location' && (isGlobalRef(n.expression) || isDocumentRef(n.expression));
+    if (ts.isPropertyAccessExpression(n))
+      return (
+        ts.idText(n.name) === 'location' &&
+        (isGlobalRef(n.expression) || isDocumentRef(n.expression))
+      );
     if (ts.isElementAccessExpression(n)) {
       const k = folder.foldString(n.argumentExpression);
       return k === 'location' && (isGlobalRef(n.expression) || isDocumentRef(n.expression));
@@ -468,7 +631,13 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
     return false;
   };
 
-  const urlCheck = (sink: string, node: ts.Node, arg: ts.Expression | undefined, kind: UrlKind, ruleOverride?: RuleId): void => {
+  const urlCheck = (
+    sink: string,
+    node: ts.Node,
+    arg: ts.Expression | undefined,
+    kind: UrlKind,
+    ruleOverride?: RuleId,
+  ): void => {
     if (!arg) return;
     const candidates: UrlCandidate[] = folder.urlCandidates(arg);
     for (const c of candidates) {
@@ -485,18 +654,34 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
    * fully static value is accepted, and each of its URLs is checked unless
    * `staticAllowed` (media in JSX, where a static URL leaks nothing).
    */
-  const urlListCheck = (sink: string, node: ts.Node, arg: ts.Expression | undefined, rule: RuleId, staticAllowed = false): void => {
+  const urlListCheck = (
+    sink: string,
+    node: ts.Node,
+    arg: ts.Expression | undefined,
+    rule: RuleId,
+    staticAllowed = false,
+  ): void => {
     if (!arg) return;
     for (const c of folder.urlCandidates(arg)) {
       if (!c.complete) {
-        add(rule, node, `${sink}: URL list with a dynamic part`, `${sink}|list|${c.text}|${snippet(arg)}`);
+        add(
+          rule,
+          node,
+          `${sink}: URL list with a dynamic part`,
+          `${sink}|list|${c.text}|${snippet(arg)}`,
+        );
         continue;
       }
       for (const token of decodeEntities(c.text).split(/[\s,]+/)) {
         if (token === '' || /^\d+(?:\.\d+)?[wxh]$/i.test(token)) continue;
         const v = checkUrl({ text: token, complete: true }, 'network', config);
         if (v.ok || (staticAllowed && v.rule !== 'javascript-url')) continue;
-        add(v.rule === 'javascript-url' ? v.rule : rule, node, `${sink}: ${v.reason}`, `${sink}|url:${token}`);
+        add(
+          v.rule === 'javascript-url' ? v.rule : rule,
+          node,
+          `${sink}: ${v.reason}`,
+          `${sink}|url:${token}`,
+        );
       }
     }
   };
@@ -510,7 +695,8 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
       if (c?.name) out.push(`default:${ts.idText(c.name)}`);
       const nb = c?.namedBindings;
       if (nb && ts.isNamespaceImport(nb)) out.push(`*:${ts.idText(nb.name)}`);
-      if (nb && ts.isNamedImports(nb)) for (const e of nb.elements) out.push(e.getText(sf).replace(/\s+/g, ' '));
+      if (nb && ts.isNamedImports(nb))
+        for (const e of nb.elements) out.push(e.getText(sf).replace(/\s+/g, ' '));
     } else if (ts.isExportDeclaration(node)) {
       const ec = node.exportClause;
       if (!ec) out.push('*');
@@ -533,17 +719,32 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
       add('forbidden-import', node, 'dynamic module specifier');
       return;
     }
-    if (spec.startsWith('./') || spec.startsWith('../') || spec.startsWith('@/') || spec.startsWith('~/') || spec === '.' || spec === '..') return;
+    if (
+      spec.startsWith('./') ||
+      spec.startsWith('../') ||
+      spec.startsWith('@/') ||
+      spec.startsWith('~/') ||
+      spec === '.' ||
+      spec === '..'
+    )
+      return;
     if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(spec) && !spec.startsWith('node:')) {
       add('forbidden-import', node, `URL or scheme import "${truncate(spec)}"`, `import|${spec}`);
       return;
     }
     if (spec.startsWith('/') || spec.startsWith('\\')) {
-      add('forbidden-import', node, `absolute or protocol-relative import "${truncate(spec)}"`, `import|${spec}`);
+      add(
+        'forbidden-import',
+        node,
+        `absolute or protocol-relative import "${truncate(spec)}"`,
+        `import|${spec}`,
+      );
       return;
     }
     const bare = spec.replace(/^node:/, '');
-    const pkg = bare.startsWith('@') ? bare.split('/').slice(0, 2).join('/') : (bare.split('/')[0] ?? bare);
+    const pkg = bare.startsWith('@')
+      ? bare.split('/').slice(0, 2).join('/')
+      : (bare.split('/')[0] ?? bare);
     if (spec.startsWith('node:') || BUILTINS.has(pkg)) {
       add('forbidden-import', node, `Node.js built-in module "${spec}"`, `import|${spec}`);
       return;
@@ -554,7 +755,12 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
     }
     if (BLOCKED_PACKAGES.has(pkg) || BLOCKED_SCOPES.some((s) => `${pkg}/`.startsWith(s))) {
       // Full specifier and imported names in the key: any change to an existing import is a new finding.
-      add('forbidden-import', node, `package "${pkg}" may not be imported outside src/forge/`, `import|${spec}|${importedNames(node)}`);
+      add(
+        'forbidden-import',
+        node,
+        `package "${pkg}" may not be imported outside src/forge/`,
+        `import|${spec}|${importedNames(node)}`,
+      );
     }
   };
 
@@ -563,10 +769,15 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
     const a = unwrap(arg);
     if (ts.isObjectLiteralExpression(a)) {
       for (const p of a.properties) {
-        if (ts.isPropertyAssignment(p) && ts.isIdentifier(p.name) && ts.idText(p.name) === 'pathname') {
+        if (
+          ts.isPropertyAssignment(p) &&
+          ts.isIdentifier(p.name) &&
+          ts.idText(p.name) === 'pathname'
+        ) {
           urlCheck(sink, node, p.initializer, 'navigation', 'navigation-external');
         }
-        if (ts.isSpreadAssignment(p)) add('navigation-external', node, `${sink}: dynamic navigation target`);
+        if (ts.isSpreadAssignment(p))
+          add('navigation-external', node, `${sink}: dynamic navigation target`);
       }
       return;
     }
@@ -582,7 +793,12 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
       const v = folder.fold(a);
       if (v === UNKNOWN || (typeof v !== 'string' && typeof v !== 'number')) return;
     }
-    if (ts.isCallExpression(a) && ts.isPropertyAccessExpression(unwrap(a.expression)) && ts.idText((unwrap(a.expression) as ts.PropertyAccessExpression).name) === 'bind') return;
+    if (
+      ts.isCallExpression(a) &&
+      ts.isPropertyAccessExpression(unwrap(a.expression)) &&
+      ts.idText((unwrap(a.expression) as ts.PropertyAccessExpression).name) === 'bind'
+    )
+      return;
     add('dynamic-code', call, `${name} with a string or unknown argument`);
   };
 
@@ -593,7 +809,9 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
     }
     const v = folder.fold(value);
     const html =
-      v !== UNKNOWN && typeof v === 'object' && v !== null && !Array.isArray(v) ? v.props.get('__html') : undefined;
+      v !== UNKNOWN && typeof v === 'object' && v !== null && !Array.isArray(v)
+        ? v.props.get('__html')
+        : undefined;
     if (typeof html !== 'string') {
       add('dangerous-html', node, `${what} with a dynamic value`);
       return;
@@ -613,7 +831,9 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
     const lower = name.toLowerCase();
     if (lower.startsWith('on') || lower === 'srcdoc') {
       add('dangerous-html', call, `setAttribute("${name}")`);
-    } else if (['src', 'action', 'formaction', 'data', 'poster', 'codebase', 'background'].includes(lower)) {
+    } else if (
+      ['src', 'action', 'formaction', 'data', 'poster', 'codebase', 'background'].includes(lower)
+    ) {
       urlCheck(`setAttribute("${name}")`, call, valueNode, 'network', 'embed-external');
     } else if (lower === 'srcset' || lower === 'ping') {
       urlListCheck(`setAttribute("${name}")`, call, valueNode, 'embed-external');
@@ -623,12 +843,23 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
   };
 
   /** Props object of an element whose type is unknown: the URL attributes of every element are checked. */
-  const unknownTagPropsCheck = (call: ts.CallExpression | ts.NewExpression, props: ts.Expression | undefined): void => {
+  const unknownTagPropsCheck = (
+    call: ts.CallExpression | ts.NewExpression,
+    props: ts.Expression | undefined,
+  ): void => {
     if (!props) return;
     const p = unwrap(props);
-    if (p.kind === ts.SyntaxKind.NullKeyword || (ts.isIdentifier(p) && ts.idText(p) === 'undefined')) return;
+    if (
+      p.kind === ts.SyntaxKind.NullKeyword ||
+      (ts.isIdentifier(p) && ts.idText(p) === 'undefined')
+    )
+      return;
     if (!ts.isObjectLiteralExpression(p)) {
-      add('embed-external', call, 'createElement of a dynamic element type with props that cannot be checked');
+      add(
+        'embed-external',
+        call,
+        'createElement of a dynamic element type with props that cannot be checked',
+      );
       return;
     }
     for (const prop of p.properties) {
@@ -638,13 +869,23 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
       }
       const key = prop.name ? staticPropertyName(prop.name, folder) : UNKNOWN;
       if (key === UNKNOWN) {
-        add('embed-external', call, 'createElement of a dynamic element type with a computed prop name');
+        add(
+          'embed-external',
+          call,
+          'createElement of a dynamic element type with a computed prop name',
+        );
         continue;
       }
       const lower = key.toLowerCase();
-      const value = ts.isPropertyAssignment(prop) ? prop.initializer : ts.isShorthandPropertyAssignment(prop) ? prop.name : undefined;
-      if (UNKNOWN_TAG_URL_ATTRS.includes(lower)) urlCheck(`createElement prop "${key}"`, call, value, 'network', 'embed-external');
-      else if (lower === 'srcset' || lower === 'ping') urlListCheck(`createElement prop "${key}"`, call, value, 'embed-external');
+      const value = ts.isPropertyAssignment(prop)
+        ? prop.initializer
+        : ts.isShorthandPropertyAssignment(prop)
+          ? prop.name
+          : undefined;
+      if (UNKNOWN_TAG_URL_ATTRS.includes(lower))
+        urlCheck(`createElement prop "${key}"`, call, value, 'network', 'embed-external');
+      else if (lower === 'srcset' || lower === 'ping')
+        urlListCheck(`createElement prop "${key}"`, call, value, 'embed-external');
     }
   };
 
@@ -667,7 +908,8 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
     }
     const lower = tag.toLowerCase();
     if (lower === 'script') add('inline-script', call, 'script element created from code');
-    else if (DANGEROUS_TAGS.has(lower)) add('embed-external', call, `<${lower}> element created from code`);
+    else if (DANGEROUS_TAGS.has(lower))
+      add('embed-external', call, `<${lower}> element created from code`);
   };
 
   const globalValueCheck = (node: ts.Expression, label: string): void => {
@@ -703,7 +945,11 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
     for (const src of (call.arguments ?? []).slice(1)) {
       const s = unwrap(src);
       if (!isPlainLiteral(s)) {
-        add('global-access', call, 'Object.assign with a source that is not an inline object literal');
+        add(
+          'global-access',
+          call,
+          'Object.assign with a source that is not an inline object literal',
+        );
         continue;
       }
       for (const prop of s.properties) {
@@ -712,10 +958,19 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
           add('global-access', call, 'Object.assign with a computed property name');
           continue;
         }
-        const value = ts.isPropertyAssignment(prop) ? prop.initializer : ts.isShorthandPropertyAssignment(prop) ? prop.name : undefined;
+        const value = ts.isPropertyAssignment(prop)
+          ? prop.initializer
+          : ts.isShorthandPropertyAssignment(prop)
+            ? prop.name
+            : undefined;
         const lower = key.toLowerCase();
-        const urlProp = URL_PROPS.has(key) || ['src', 'action', 'formaction', 'poster', 'data', 'codebase'].includes(lower);
-        if ((urlProp || URL_LIST_PROPS.has(key) || lower === 'href' || lower.startsWith('on')) && !value) {
+        const urlProp =
+          URL_PROPS.has(key) ||
+          ['src', 'action', 'formaction', 'poster', 'data', 'codebase'].includes(lower);
+        if (
+          (urlProp || URL_LIST_PROPS.has(key) || lower === 'href' || lower.startsWith('on')) &&
+          !value
+        ) {
           add('dangerous-html', call, `Object.assign: accessor or method "${key}"`);
         } else if (lower.startsWith('on')) {
           add('dangerous-html', call, `Object.assign sets event handler "${key}"`);
@@ -739,12 +994,21 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
       return;
     }
     if (OBJECT_WRITERS.has(name)) {
-      add('global-access', callee, `Object.${name} (changes properties or prototype without naming them)`);
+      add(
+        'global-access',
+        callee,
+        `Object.${name} (changes properties or prototype without naming them)`,
+      );
     } else if (name === 'assign') {
       objectAssignCheck(callee);
     } else {
       const target = callee.arguments?.[0];
-      if (!target || !isLiteralData(target)) add('global-access', callee, `Object.${name} on a value that is not a data literal of this file`);
+      if (!target || !isLiteralData(target))
+        add(
+          'global-access',
+          callee,
+          `Object.${name} on a value that is not a data literal of this file`,
+        );
     }
   };
 
@@ -752,12 +1016,17 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
   const locationCheck = (node: ts.Expression): void => {
     const { parent, child } = parentOf(node);
     if (!parent) return;
-    if (ts.isBinaryExpression(parent) && parent.left === child && isAssign(parent.operatorToken.kind)) {
+    if (
+      ts.isBinaryExpression(parent) &&
+      parent.left === child &&
+      isAssign(parent.operatorToken.kind)
+    ) {
       navCheck('location assignment', parent, parent.right);
       return;
     }
     let prop: string | undefined;
-    if (ts.isPropertyAccessExpression(parent) && parent.expression === child) prop = ts.idText(parent.name);
+    if (ts.isPropertyAccessExpression(parent) && parent.expression === child)
+      prop = ts.idText(parent.name);
     else if (ts.isElementAccessExpression(parent) && parent.expression === child) {
       const k = folder.foldString(parent.argumentExpression);
       if (k === UNKNOWN) return; // reported as a dynamic access elsewhere
@@ -766,9 +1035,15 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
     if (prop !== undefined) {
       const access = parent as ts.Expression;
       const up = parentOf(access);
-      if (up.parent && ts.isBinaryExpression(up.parent) && up.parent.left === up.child && isAssign(up.parent.operatorToken.kind)) {
+      if (
+        up.parent &&
+        ts.isBinaryExpression(up.parent) &&
+        up.parent.left === up.child &&
+        isAssign(up.parent.operatorToken.kind)
+      ) {
         if (prop === 'href') navCheck('location.href assignment', up.parent, up.parent.right);
-        else if (!['pathname', 'search', 'hash'].includes(prop)) add('navigation-external', up.parent, `assignment to location.${prop}`);
+        else if (!['pathname', 'search', 'hash'].includes(prop))
+          add('navigation-external', up.parent, `assignment to location.${prop}`);
       } else if ((prop === 'assign' || prop === 'replace') && calleeOf(access)) {
         navCheck(`location.${prop}`, access, calleeOf(access)?.arguments?.[0]);
       }
@@ -778,14 +1053,21 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
   };
 
   /** Rules for a property name used on some receiver (`recv.name`, `recv['name']`). */
-  const memberRules = (name: string, access: ts.Expression, receiver: ts.Expression, nameNode: ts.Node): void => {
+  const memberRules = (
+    name: string,
+    access: ts.Expression,
+    receiver: ts.Expression,
+    nameNode: ts.Node,
+  ): void => {
     const callee = calleeOf(access);
-    if (WALLET_NAMES.has(name)) add('wallet-api', nameNode, `wallet/signing API "${name}" is not allowed outside src/forge/`);
+    if (WALLET_NAMES.has(name))
+      add('wallet-api', nameNode, `wallet/signing API "${name}" is not allowed outside src/forge/`);
     if (CODE_NAMES.has(name)) add('dynamic-code', nameNode, `"${name}" (dynamic code execution)`);
     if (name === '__proto__') add('dynamic-code', nameNode, '"__proto__" access');
     if (NET_FORBIDDEN.has(name)) add('network-api-forbidden', nameNode, `"${name}" is not allowed`);
     if (HTML_SINKS.has(name)) add('dangerous-html', nameNode, `HTML sink "${name}"`);
-    if (name === 'write' && isDocumentRef(receiver)) add('dangerous-html', nameNode, 'document.write');
+    if (name === 'write' && isDocumentRef(receiver))
+      add('dangerous-html', nameNode, 'document.write');
     if (NET_SINKS.has(name)) {
       if (callee) urlCheck(name, callee, callee.arguments?.[0], 'network');
       else add('network-api-forbidden', nameNode, `"${name}" used indirectly`);
@@ -794,16 +1076,30 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
       if (callee) timerCheck(name, callee);
       else if (isGlobalRef(receiver)) add('dynamic-code', nameNode, `"${name}" used indirectly`);
     }
-    if (name === 'process' && isGlobalRef(receiver)) add('server-secret', nameNode, 'access to process from client/page code');
-    if (name === 'location' && (isGlobalRef(receiver) || isDocumentRef(receiver))) locationCheck(access);
+    if (name === 'process' && isGlobalRef(receiver))
+      add('server-secret', nameNode, 'access to process from client/page code');
+    if (name === 'location' && (isGlobalRef(receiver) || isDocumentRef(receiver)))
+      locationCheck(access);
     if (GLOBAL_OBJECTS.has(name) && isGlobalRef(receiver)) globalValueCheck(access, name);
     // document.defaultView, iframe.contentWindow: a window object, whatever the receiver.
     if (WINDOW_PROPERTIES.has(name)) globalValueCheck(access, name);
     if (isObjectCtor(receiver)) objectReflectionCheck(name, access, nameNode);
-    if (['createAttribute', 'createAttributeNS', 'setAttributeNode', 'setAttributeNodeNS'].includes(name)) {
-      add('dangerous-html', nameNode, `"${name}" (attribute set without a checkable name and value)`);
+    if (
+      ['createAttribute', 'createAttributeNS', 'setAttributeNode', 'setAttributeNodeNS'].includes(
+        name,
+      )
+    ) {
+      add(
+        'dangerous-html',
+        nameNode,
+        `"${name}" (attribute set without a checkable name and value)`,
+      );
     }
-    if ((name === 'createElement' || name === 'createElementNS') && !callee && !isReactRef(receiver)) {
+    if (
+      (name === 'createElement' || name === 'createElementNS') &&
+      !callee &&
+      !isReactRef(receiver)
+    ) {
       add('dangerous-html', nameNode, `${name} used indirectly`);
     }
     if (name === 'open' && isGlobalRef(receiver)) {
@@ -813,32 +1109,46 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
     if (callee) {
       const recvChain = memberChain(receiver) ?? '';
       const last = recvChain.split('.').pop() ?? '';
-      if (['push', 'replace', 'prefetch'].includes(name) && /router$/i.test(last)) navCheck(`router.${name}`, callee, callee.arguments?.[0]);
-      if (name === 'redirect' || name === 'permanentRedirect') navCheck(name, callee, callee.arguments?.[0]);
-      if (['setHeader', 'writeHead', 'appendHeader'].includes(name)) add('server-response', callee, `response header manipulation (${name})`);
-      if (name === 'setAttribute' || name === 'setAttributeNS') setAttributeCheck(callee, name === 'setAttributeNS');
+      if (['push', 'replace', 'prefetch'].includes(name) && /router$/i.test(last))
+        navCheck(`router.${name}`, callee, callee.arguments?.[0]);
+      if (name === 'redirect' || name === 'permanentRedirect')
+        navCheck(name, callee, callee.arguments?.[0]);
+      if (['setHeader', 'writeHead', 'appendHeader'].includes(name))
+        add('server-response', callee, `response header manipulation (${name})`);
+      if (name === 'setAttribute' || name === 'setAttributeNS')
+        setAttributeCheck(callee, name === 'setAttributeNS');
       if (name === 'createElement' || name === 'createElementNS') {
         if (name === 'createElementNS') {
           const tag = callee.arguments?.[1] ? folder.foldString(callee.arguments[1]) : UNKNOWN;
-          if (tag === UNKNOWN || DANGEROUS_TAGS.has(tag.toLowerCase())) add('dangerous-html', callee, 'createElementNS with a dangerous or dynamic tag');
+          if (tag === UNKNOWN || DANGEROUS_TAGS.has(tag.toLowerCase()))
+            add('dangerous-html', callee, 'createElementNS with a dangerous or dynamic tag');
         } else {
           createElementCheck(callee, isReactRef(receiver));
         }
       }
-      if (ELEMENT_FACTORIES.has(name) && name !== 'createElement' && isReactRef(receiver)) createElementCheck(callee, true);
+      if (ELEMENT_FACTORIES.has(name) && name !== 'createElement' && isReactRef(receiver))
+        createElementCheck(callee, true);
       if (name === 'cloneElement') unknownTagPropsCheck(callee, callee.arguments?.[1]);
-      if (name === 'resolve' && memberChain(receiver) === 'require') add('forbidden-import', callee, 'require.resolve');
+      if (name === 'resolve' && memberChain(receiver) === 'require')
+        add('forbidden-import', callee, 'require.resolve');
     }
   };
 
   const nameAsString = (text: string, node: ts.Node): void => {
-    if (WALLET_NAMES.has(text)) add('wallet-api', node, `wallet/signing API name "${text}" used as a string`);
+    if (WALLET_NAMES.has(text))
+      add('wallet-api', node, `wallet/signing API name "${text}" used as a string`);
     if (CODE_NAMES.has(text)) add('dynamic-code', node, `"${text}" used as a string`);
-    if (NET_FORBIDDEN.has(text) || NET_SINKS.has(text)) add('network-api-forbidden', node, `network API name "${text}" used as a string`);
-    if (HTML_SINKS.has(text)) add('dangerous-html', node, `HTML sink name "${text}" used as a string`);
+    if (NET_FORBIDDEN.has(text) || NET_SINKS.has(text))
+      add('network-api-forbidden', node, `network API name "${text}" used as a string`);
+    if (HTML_SINKS.has(text))
+      add('dangerous-html', node, `HTML sink name "${text}" used as a string`);
     if (text === '__proto__') add('dynamic-code', node, '"__proto__" used as a string');
     if (DANGEROUS_TAG_STRINGS.has(text.toLowerCase())) {
-      add(text.toLowerCase() === 'script' ? 'inline-script' : 'embed-external', node, `element name "${text}" used as a string`);
+      add(
+        text.toLowerCase() === 'script' ? 'inline-script' : 'embed-external',
+        node,
+        `element name "${text}" used as a string`,
+      );
     }
   };
 
@@ -863,18 +1173,29 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
       memberRules(name, p, p.expression, id);
       return;
     }
-    if ((ts.isJsxOpeningElement(p) || ts.isJsxSelfClosingElement(p) || ts.isJsxClosingElement(p)) && p.tagName === id) return;
-    if (nextScriptNames.has(name) && isValueReference(id) && !isTypePosition(id) && (name !== 'Script' || !isDeclared(name) || importedScript(name))) {
+    if (
+      (ts.isJsxOpeningElement(p) || ts.isJsxSelfClosingElement(p) || ts.isJsxClosingElement(p)) &&
+      p.tagName === id
+    )
+      return;
+    if (
+      nextScriptNames.has(name) &&
+      isValueReference(id) &&
+      !isTypePosition(id) &&
+      (name !== 'Script' || !isDeclared(name) || importedScript(name))
+    ) {
       add('external-script', id, 'next/script used outside a JSX <Script> tag');
     }
     if (ts.isJsxAttribute(p)) {
       if (name === 'dangerouslySetInnerHTML') return; // checked with its value
-      if (WALLET_NAMES.has(name)) add('wallet-api', id, `wallet/signing API "${name}" passed as a prop`);
+      if (WALLET_NAMES.has(name))
+        add('wallet-api', id, `wallet/signing API "${name}" passed as a prop`);
       return;
     }
     const typePos = isTypePosition(id);
     if (name === '__proto__') add('dynamic-code', id, '"__proto__" (prototype change)');
-    if (WALLET_NAMES.has(name)) add('wallet-api', id, `wallet/signing API "${name}" is not allowed outside src/forge/`);
+    if (WALLET_NAMES.has(name))
+      add('wallet-api', id, `wallet/signing API "${name}" is not allowed outside src/forge/`);
     if (typePos) return;
     const valueRef = isValueReference(id);
     const callee = calleeOf(id);
@@ -893,14 +1214,25 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
       if (callee && valueRef) moduleCheck(callee, callee.arguments?.[0]);
       else add('forbidden-import', id, 'require used indirectly');
     }
-    if (name === 'createRequire' || name === '__non_webpack_require__' || name === '__webpack_require__') add('forbidden-import', id, `"${name}"`);
+    if (
+      name === 'createRequire' ||
+      name === '__non_webpack_require__' ||
+      name === '__webpack_require__'
+    )
+      add('forbidden-import', id, `"${name}"`);
     if (!valueRef) return;
     if (name === 'process' && !isDeclared(name)) {
       const a = id.parent;
       const b = a?.parent;
       const okEnv =
-        a && ts.isPropertyAccessExpression(a) && ts.idText(a.name) === 'env' && b && ts.isPropertyAccessExpression(b) && /^(?:NODE_ENV|NEXT_PUBLIC_[A-Z0-9_]+)$/.test(ts.idText(b.name));
-      if (!okEnv && !(a && ts.isTypeOfExpression(a))) add('server-secret', id, 'access to process / server environment variables');
+        a &&
+        ts.isPropertyAccessExpression(a) &&
+        ts.idText(a.name) === 'env' &&
+        b &&
+        ts.isPropertyAccessExpression(b) &&
+        /^(?:NODE_ENV|NEXT_PUBLIC_[A-Z0-9_]+)$/.test(ts.idText(b.name));
+      if (!okEnv && !(a && ts.isTypeOfExpression(a)))
+        add('server-secret', id, 'access to process / server environment variables');
     }
     if (GLOBAL_OBJECTS.has(name) && !isDeclared(name)) globalValueCheck(id, name);
     if (name === 'Object' && !isDeclared(name)) globalValueCheck(id, name);
@@ -911,12 +1243,16 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
     }
     if (name === 'Reflect' && !isDeclared(name)) add('global-access', id, 'Reflect API');
     const reactName = reactImports.get(name);
-    if (reactName !== undefined && (ELEMENT_FACTORIES.has(reactName) || reactName === 'cloneElement')) {
+    if (
+      reactName !== undefined &&
+      (ELEMENT_FACTORIES.has(reactName) || reactName === 'cloneElement')
+    ) {
       if (!callee) add('dangerous-html', id, `${reactName} used indirectly`);
       else if (reactName === 'cloneElement') unknownTagPropsCheck(callee, callee.arguments?.[1]);
       else createElementCheck(callee, true);
     }
-    if ((name === 'redirect' || name === 'permanentRedirect') && callee) navCheck(name, callee, callee.arguments?.[0]);
+    if ((name === 'redirect' || name === 'permanentRedirect') && callee)
+      navCheck(name, callee, callee.arguments?.[0]);
   };
 
   const handleElementAccess = (ea: ts.ElementAccessExpression): void => {
@@ -926,7 +1262,11 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
       memberRules(key, ea, ea.expression, ea.argumentExpression);
       return;
     }
-    if (isGlobalRef(ea.expression) || isDocumentRef(ea.expression) || isLocationRef(ea.expression)) {
+    if (
+      isGlobalRef(ea.expression) ||
+      isDocumentRef(ea.expression) ||
+      isLocationRef(ea.expression)
+    ) {
       add('global-access', ea, 'dynamic property access on a global object');
     } else if (isNumericKey(ea.argumentExpression)) {
       // Always a number or a boolean: cannot name an API.
@@ -941,7 +1281,11 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
       );
     }
     const recv = unwrap(ea.expression);
-    if (ts.isIdentifier(recv) && ['process', 'navigator', 'location'].includes(ts.idText(recv)) && !isDeclared(ts.idText(recv))) {
+    if (
+      ts.isIdentifier(recv) &&
+      ['process', 'navigator', 'location'].includes(ts.idText(recv)) &&
+      !isDeclared(ts.idText(recv))
+    ) {
       add('global-access', ea, `dynamic property access on ${ts.idText(recv)}`);
     }
   };
@@ -986,14 +1330,26 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
    * Links and media: any static URL is fine (no data can leak), but a URL with
    * a dynamic part must stay on the site's origin or an allowed host.
    */
-  const dynamicOnlyCheck = (a: ts.JsxAttribute | undefined, tag: string, attr: string, kind: UrlKind, rule: RuleId): void => {
+  const dynamicOnlyCheck = (
+    a: ts.JsxAttribute | undefined,
+    tag: string,
+    attr: string,
+    kind: UrlKind,
+    rule: RuleId,
+  ): void => {
     if (!a) return;
     const node = attrCandidatesNode(a);
     if (!node || ts.isStringLiteral(node)) return;
     for (const c of folder.urlCandidates(node)) {
       if (c.complete) continue;
       const v = checkUrl(c, kind, config);
-      if (!v.ok) add(v.rule === 'javascript-url' ? v.rule : rule, a, `<${tag} ${attr}> with a dynamic URL: ${v.reason}`, `${tag}|${attr}|${c.text}|${snippet(node)}`);
+      if (!v.ok)
+        add(
+          v.rule === 'javascript-url' ? v.rule : rule,
+          a,
+          `<${tag} ${attr}> with a dynamic URL: ${v.reason}`,
+          `${tag}|${attr}|${c.text}|${snippet(node)}`,
+        );
     }
   };
 
@@ -1013,7 +1369,13 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
       if (!node) return;
       if (ts.isStringLiteral(node)) {
         const v = checkUrl({ text: decodeEntities(node.text), complete: true }, kind, config);
-        if (!v.ok) add(v.rule === 'javascript-url' ? v.rule : rule, a, `<${tag} ${attr}>: ${v.reason}`, `${tag}|${attr}|${node.text}`);
+        if (!v.ok)
+          add(
+            v.rule === 'javascript-url' ? v.rule : rule,
+            a,
+            `<${tag} ${attr}>: ${v.reason}`,
+            `${tag}|${attr}|${node.text}`,
+          );
         return;
       }
       urlCheck(`<${tag} ${attr}>`, a, node, kind, rule);
@@ -1023,7 +1385,13 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
         // The element may be a form, link, object, script...: check every URL attribute strictly.
         if (spread) add('embed-external', el, 'element of a dynamic type with spread attributes');
         for (const attr of UNKNOWN_TAG_URL_ATTRS) checkAttr(attr, 'network', 'embed-external');
-        for (const attr of ['srcset', 'ping']) urlListCheck(`<${snippet(el.tagName)} ${attr}>`, el, attrs.get(attr) && attrCandidatesNode(attrs.get(attr)!), 'embed-external');
+        for (const attr of ['srcset', 'ping'])
+          urlListCheck(
+            `<${snippet(el.tagName)} ${attr}>`,
+            el,
+            attrs.get(attr) && attrCandidatesNode(attrs.get(attr)!),
+            'embed-external',
+          );
         break;
       case 'script':
         if (spread) add('external-script', el, '<script> with spread attributes');
@@ -1056,7 +1424,13 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
       case 'a':
       case 'area':
         dynamicOnlyCheck(attrs.get('href'), tag, 'href', 'navigation', 'navigation-external');
-        if (attrs.has('ping')) urlListCheck(`<${tag} ping>`, attrs.get('ping')!, attrCandidatesNode(attrs.get('ping')!), 'embed-external');
+        if (attrs.has('ping'))
+          urlListCheck(
+            `<${tag} ping>`,
+            attrs.get('ping')!,
+            attrCandidatesNode(attrs.get('ping')!),
+            'embed-external',
+          );
         break;
       case 'link':
         if (spread) add('embed-external', el, '<link> with spread attributes');
@@ -1068,7 +1442,10 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
         if (he) {
           const node = attrCandidatesNode(he);
           const v = node ? folder.foldString(node) : UNKNOWN;
-          if (v === UNKNOWN || ['refresh', 'set-cookie', 'content-security-policy'].includes(v.trim().toLowerCase())) {
+          if (
+            v === UNKNOWN ||
+            ['refresh', 'set-cookie', 'content-security-policy'].includes(v.trim().toLowerCase())
+          ) {
             add('navigation-external', el, `<meta http-equiv="${v === UNKNOWN ? '?' : v}">`);
           }
         }
@@ -1076,9 +1453,17 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
       }
       default:
         if (MEDIA_TAGS.has(tag)) {
-          for (const attr of ['src', 'poster']) dynamicOnlyCheck(attrs.get(attr), tag, attr, 'network', 'embed-external');
+          for (const attr of ['src', 'poster'])
+            dynamicOnlyCheck(attrs.get(attr), tag, attr, 'network', 'embed-external');
           const srcset = attrs.get('srcset');
-          if (srcset) urlListCheck(`<${tag} srcset>`, srcset, attrCandidatesNode(srcset), 'embed-external', true);
+          if (srcset)
+            urlListCheck(
+              `<${tag} srcset>`,
+              srcset,
+              attrCandidatesNode(srcset),
+              'embed-external',
+              true,
+            );
         }
         break;
     }
@@ -1088,7 +1473,11 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
     const name = attrName(attr);
     if (name === 'dangerouslySetInnerHTML') {
       const init = attr.initializer;
-      htmlCheck(attr, init && ts.isJsxExpression(init) ? init.expression : undefined, 'dangerouslySetInnerHTML');
+      htmlCheck(
+        attr,
+        init && ts.isJsxExpression(init) ? init.expression : undefined,
+        'dangerouslySetInnerHTML',
+      );
     } else if (name.toLowerCase() === 'srcdoc') {
       add('dangerous-html', attr, 'srcDoc attribute');
     } else if (POLYMORPHIC_PROPS.has(name.toLowerCase())) {
@@ -1096,7 +1485,11 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
       const node = attrCandidatesNode(attr);
       const v = node ? folder.foldString(node) : UNKNOWN;
       if (v !== UNKNOWN && DANGEROUS_TAGS.has(v.trim().toLowerCase())) {
-        add(v.trim().toLowerCase() === 'script' ? 'inline-script' : 'embed-external', attr, `${name}="${v}" renders a <${v.trim().toLowerCase()}> element`);
+        add(
+          v.trim().toLowerCase() === 'script' ? 'inline-script' : 'embed-external',
+          attr,
+          `${name}="${v}" renders a <${v.trim().toLowerCase()}> element`,
+        );
       }
     }
   };
@@ -1105,7 +1498,8 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
   const isCompositeRoot = (node: ts.Expression): boolean => {
     const { parent } = parentOf(node);
     if (!parent) return true;
-    if (ts.isBinaryExpression(parent) && parent.operatorToken.kind === ts.SyntaxKind.PlusToken) return false;
+    if (ts.isBinaryExpression(parent) && parent.operatorToken.kind === ts.SyntaxKind.PlusToken)
+      return false;
     if (ts.isTemplateSpan(parent)) return false;
     return true;
   };
@@ -1138,18 +1532,32 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
       const rest = c.text.slice(i + 4).replace(/^\s*["']?/, '');
       if (rest.length > 0 && !/^[a-z][a-z0-9+.-]*:|^[/\\]{2}/i.test(rest)) continue;
       const v = checkUrl({ text: rest, complete: false }, 'network', config);
-      if (!v.ok) add('embed-external', node, `CSS url() with a dynamic URL: ${v.reason}`, `cssurl|${rest}|${snippet(node)}`);
+      if (!v.ok)
+        add(
+          'embed-external',
+          node,
+          `CSS url() with a dynamic URL: ${v.reason}`,
+          `cssurl|${rest}|${snippet(node)}`,
+        );
     }
   };
 
   const visit = (node: ts.Node): void => {
     if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) {
       if (node.moduleSpecifier) moduleCheck(node, node.moduleSpecifier);
-      if (ts.isImportDeclaration(node) && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier) && node.moduleSpecifier.text === 'next/script') {
+      if (
+        ts.isImportDeclaration(node) &&
+        node.moduleSpecifier &&
+        ts.isStringLiteral(node.moduleSpecifier) &&
+        node.moduleSpecifier.text === 'next/script'
+      ) {
         const clause = node.importClause;
         if (clause?.name) nextScriptNames.add(ts.idText(clause.name));
       }
-    } else if (ts.isImportEqualsDeclaration(node) && ts.isExternalModuleReference(node.moduleReference)) {
+    } else if (
+      ts.isImportEqualsDeclaration(node) &&
+      ts.isExternalModuleReference(node.moduleReference)
+    ) {
       moduleCheck(node, node.moduleReference.expression);
     } else if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) {
       moduleCheck(node, node.arguments[0]);
@@ -1173,7 +1581,13 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
       if (chain === 'URL' || chain === 'window.URL' || chain === 'globalThis.URL') {
         for (const c of folder.urlCandidates(node)) {
           const v = checkUrl(c, 'network', config);
-          if (!v.ok) add(v.rule, node, `new URL: ${v.reason}`, `URL|${c.text}|${c.complete ? '' : snippet(node)}`);
+          if (!v.ok)
+            add(
+              v.rule,
+              node,
+              `new URL: ${v.reason}`,
+              `URL|${c.text}|${c.complete ? '' : snippet(node)}`,
+            );
         }
       }
     }
@@ -1191,12 +1605,18 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
         recv = left.expression;
       }
       if (prop !== undefined && recv && !isLocationRef(recv) && !isLocationRef(left)) {
-        if (URL_PROPS.has(prop)) urlCheck(`.${prop} assignment`, node, node.right, 'network', 'embed-external');
-        if (URL_LIST_PROPS.has(prop)) urlListCheck(`.${prop} assignment`, node, node.right, 'embed-external');
-        if (['value', 'nodeValue', 'textContent'].includes(prop) && /\.attributes\b/.test(recv.getText(sf))) {
+        if (URL_PROPS.has(prop))
+          urlCheck(`.${prop} assignment`, node, node.right, 'network', 'embed-external');
+        if (URL_LIST_PROPS.has(prop))
+          urlListCheck(`.${prop} assignment`, node, node.right, 'embed-external');
+        if (
+          ['value', 'nodeValue', 'textContent'].includes(prop) &&
+          /\.attributes\b/.test(recv.getText(sf))
+        ) {
           add('dangerous-html', node, 'attribute node value set through element.attributes');
         }
-        if (prop === 'href') urlCheck('.href assignment', node, node.right, 'navigation', 'navigation-external');
+        if (prop === 'href')
+          urlCheck('.href assignment', node, node.right, 'navigation', 'navigation-external');
       }
     }
 
@@ -1204,28 +1624,41 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
       const p = node.parent;
       const destructuring =
         ts.isBindingElement(p) ||
-        (ts.isPropertyAssignment(p) && ts.isObjectLiteralExpression(p.parent) && ts.isBinaryExpression(p.parent.parent) && p.parent.parent.left === p.parent);
-      if (destructuring) add('global-access', node, 'destructuring with a computed key that cannot be checked');
+        (ts.isPropertyAssignment(p) &&
+          ts.isObjectLiteralExpression(p.parent) &&
+          ts.isBinaryExpression(p.parent.parent) &&
+          p.parent.parent.left === p.parent);
+      if (destructuring)
+        add('global-access', node, 'destructuring with a computed key that cannot be checked');
     }
 
     if (ts.isPropertyAssignment(node)) {
-      const key = ts.isIdentifier(node.name) || ts.isStringLiteral(node.name) ? node.name.text : undefined;
+      const key =
+        ts.isIdentifier(node.name) || ts.isStringLiteral(node.name) ? node.name.text : undefined;
       if (key === 'destination') navCheck('redirect destination', node, node.initializer);
     }
 
     if (ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node)) handleJsxElement(node);
     if (ts.isJsxAttribute(node)) handleJsxAttribute(node);
 
-    if ((ts.isJsxElement(node) || ts.isJsxFragment(node)) && !ts.isJsxElement(node.parent) && !ts.isJsxFragment(node.parent)) {
+    if (
+      (ts.isJsxElement(node) || ts.isJsxFragment(node)) &&
+      !ts.isJsxElement(node.parent) &&
+      !ts.isJsxFragment(node.parent)
+    ) {
       const rendered = renderJsx(node);
       if (rendered.length >= 32) addresses.run('jsx', rendered, lineOf(node));
       if (rendered.length >= 16) addresses.fragments('jsx', rendered, lineOf(node));
     }
 
-    if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) literals.push(node.text);
+    if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node))
+      literals.push(node.text);
     else if (ts.isTemplateExpression(node)) literals.push(null);
 
-    if ((ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) && !consumed.has(node)) {
+    if (
+      (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) &&
+      !consumed.has(node)
+    ) {
       const inJsxAttr = ts.isJsxAttribute(node.parent);
       stringValue(inJsxAttr ? decodeEntities(node.text) : node.text, node, 'lit');
     }
@@ -1247,7 +1680,8 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
       const nums = numericArray(node);
       if (nums) addresses.bytes(nums, lineOf(node));
       const v = folder.fold(node);
-      if (Array.isArray(v) && v.length > 1 && v.every((x) => typeof x === 'string')) addresses.joined('array', v as string[], lineOf(node));
+      if (Array.isArray(v) && v.length > 1 && v.every((x) => typeof x === 'string'))
+        addresses.joined('array', v as string[], lineOf(node));
     }
 
     ts.forEachChild(node, visit);
@@ -1267,7 +1701,12 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
   collectIds(sf);
   addresses.textVariants(identifiers);
 
-  return [...findings, ...addresses.findings, ...scriptUrlFindings(text), ...hiddenUnicodeFindings(text, true)];
+  return [
+    ...findings,
+    ...addresses.findings,
+    ...scriptUrlFindings(text),
+    ...hiddenUnicodeFindings(text, true),
+  ];
 }
 
 function isAssign(kind: ts.SyntaxKind): boolean {

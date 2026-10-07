@@ -94,7 +94,8 @@ export function isBase58Only(value: string): boolean {
  */
 export function looksRandomBase58(value: string): boolean {
   if (!isBase58Only(value) || CAMEL_WORDS_RE.test(value)) return false;
-  const classes = Number(/[0-9]/.test(value)) + Number(/[A-Z]/.test(value)) + Number(/[a-z]/.test(value));
+  const classes =
+    Number(/[0-9]/.test(value)) + Number(/[A-Z]/.test(value)) + Number(/[a-z]/.test(value));
   return classes >= 2;
 }
 
@@ -146,7 +147,11 @@ export function findEncodedAddresses(text: string): EncodedHit[] {
     if (CAMEL_WORDS_RE.test(token)) continue;
     if (/^[0-9a-fA-F]+$/.test(token)) {
       if (token.length === 64 || token.length === 128) {
-        hits.push({ address: base58Encode(new Uint8Array(Buffer.from(token, 'hex'))), index, encoding: 'hex' });
+        hits.push({
+          address: base58Encode(new Uint8Array(Buffer.from(token, 'hex'))),
+          index,
+          encoding: 'hex',
+        });
       }
       continue;
     }
@@ -158,7 +163,8 @@ export function findEncodedAddresses(text: string): EncodedHit[] {
     }
     if (isPrintable(bytes)) {
       const decoded = Buffer.from(bytes).toString('latin1');
-      for (const run of findBase58Runs(decoded)) hits.push({ address: run.value, index, encoding: 'base64' });
+      for (const run of findBase58Runs(decoded))
+        hits.push({ address: run.value, index, encoding: 'base64' });
     }
   }
   return hits;

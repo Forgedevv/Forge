@@ -24,12 +24,12 @@ export const TokenPageMsgHandler: React.FC = () => {
                 return;
               }
               return patchStreamPool(m.pool, prev);
-            }
+            },
           );
         }
       },
-      [queryClient]
-    )
+      [queryClient],
+    ),
   );
 
   return null;

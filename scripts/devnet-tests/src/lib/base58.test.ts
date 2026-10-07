@@ -12,7 +12,9 @@ describe('base58Decode', () => {
     expect(Array.from(base58Decode('1112'))).toEqual([0, 0, 0, 1]);
   });
   it('decodes the system program id to 32 zero bytes', () => {
-    expect(Array.from(base58Decode('11111111111111111111111111111111'))).toEqual(new Array(32).fill(0));
+    expect(Array.from(base58Decode('11111111111111111111111111111111'))).toEqual(
+      new Array(32).fill(0),
+    );
   });
   it('rejects invalid characters', () => {
     expect(() => base58Decode('0OIl')).toThrow(/Invalid base58/);

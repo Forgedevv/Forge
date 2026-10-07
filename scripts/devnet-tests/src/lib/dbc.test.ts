@@ -83,7 +83,11 @@ describe('buildTestCurve', () => {
   });
 
   it('rejects a curve with less than 10% locked liquidity', () => {
-    const p = buildTestCurve({ ...base, partnerPermanentLockedLiquidityPercentage: 5, partnerLiquidityPercentage: 95 });
+    const p = buildTestCurve({
+      ...base,
+      partnerPermanentLockedLiquidityPercentage: 5,
+      partnerLiquidityPercentage: 95,
+    });
     expect(() => validateConfigParameters({ ...p, leftoverReceiver })).toThrow(/locked/i);
   });
 });

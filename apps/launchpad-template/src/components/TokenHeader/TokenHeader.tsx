@@ -40,7 +40,7 @@ export const TokenHeader: React.FC<TokenHeaderProps> = memo(({ className }) => {
               name="Address"
               copyText={minimalTokenInfo.address}
               className={cn(
-                'flex min-w-0 items-center gap-0.5 text-sm text-neutral-500 duration-500 hover:text-neutral-200'
+                'flex min-w-0 items-center gap-0.5 text-sm text-neutral-500 duration-500 hover:text-neutral-200',
               )}
             >
               {(copied) => (
@@ -50,7 +50,7 @@ export const TokenHeader: React.FC<TokenHeaderProps> = memo(({ className }) => {
                       'min-w-0 overflow-hidden text-clip whitespace-nowrap leading-none tracking-tight',
                       {
                         'text-primary': copied,
-                      }
+                      },
                     )}
                     address={minimalTokenInfo.address}
                   />

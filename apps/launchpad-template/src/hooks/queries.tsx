@@ -22,7 +22,7 @@ export function usePageTokenInfo<T = TokenInfoQueryData>(select?: (data: TokenIn
 }
 
 export function useTokenInfo<T = QueryData<typeof ApeQueries.tokenInfo>>(
-  select?: (data: QueryData<typeof ApeQueries.tokenInfo>) => T
+  select?: (data: QueryData<typeof ApeQueries.tokenInfo>) => T,
 ) {
   const tokenId = useTokenAddress();
   return useQuery({

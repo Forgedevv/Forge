@@ -130,10 +130,7 @@ export function mapLaunchpadSummary(row: LaunchpadRowData, jobs: Job[]): Launchp
   };
 }
 
-export function mapLaunchpadDetail(
-  row: LaunchpadRowData,
-  jobRows: JobRowData[],
-): LaunchpadDetail {
+export function mapLaunchpadDetail(row: LaunchpadRowData, jobRows: JobRowData[]): LaunchpadDetail {
   const jobs = jobRows.map((r) => mapJob(r)).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   const versions = jobRows
     .filter((r) => r.status === 'live')
@@ -187,7 +184,11 @@ export async function fetchJob(sb: SupabaseClient, jobId: string): Promise<Job |
 
 export async function fetchJobEvents(sb: SupabaseClient, jobId: string): Promise<JobEvent[]> {
   const rows = check(
-    await sb.from('job_events').select('id,job_id,message,created_at').eq('job_id', jobId).order('id'),
+    await sb
+      .from('job_events')
+      .select('id,job_id,message,created_at')
+      .eq('job_id', jobId)
+      .order('id'),
   );
   const parsed = z.array(JobEventRowSchema).safeParse(rows ?? []);
   return parsed.success ? parsed.data.map(mapJobEvent) : [];

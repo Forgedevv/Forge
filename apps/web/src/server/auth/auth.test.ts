@@ -364,7 +364,10 @@ describe('nonce store', () => {
       nowSeconds: now,
       store,
     };
-    const bad = await verifySignIn({ ...base, signature: signMessage(newWallet(), issued.message) });
+    const bad = await verifySignIn({
+      ...base,
+      signature: signMessage(newWallet(), issued.message),
+    });
     expect(bad).toEqual({ ok: false, reason: 'bad_signature' });
     expect(store.size).toBe(0);
     const good = await verifySignIn({ ...base, signature: signMessage(wallet, issued.message) });

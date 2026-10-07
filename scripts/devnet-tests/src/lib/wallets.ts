@@ -34,7 +34,10 @@ export function loadOrCreateWallet(name: WalletName): Keypair {
     return Keypair.fromSecretKey(Uint8Array.from(secret));
   }
   const kp = Keypair.generate();
-  writeFileSync(path, JSON.stringify(Array.from(kp.secretKey)) + '\n', { encoding: 'utf8', mode: 0o600 });
+  writeFileSync(path, JSON.stringify(Array.from(kp.secretKey)) + '\n', {
+    encoding: 'utf8',
+    mode: 0o600,
+  });
   return kp;
 }
 
@@ -55,6 +58,9 @@ export function loadOrCreateKeypair(fileName: string): Keypair {
     return Keypair.fromSecretKey(Uint8Array.from(secret));
   }
   const kp = Keypair.generate();
-  writeFileSync(path, JSON.stringify(Array.from(kp.secretKey)) + '\n', { encoding: 'utf8', mode: 0o600 });
+  writeFileSync(path, JSON.stringify(Array.from(kp.secretKey)) + '\n', {
+    encoding: 'utf8',
+    mode: 0o600,
+  });
   return kp;
 }

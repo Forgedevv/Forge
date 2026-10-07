@@ -17,7 +17,7 @@ export const TxnsTab: React.FC = memo(() => {
 
   const allRows = useMemo(
     () => (data && data.pages ? data.pages.flatMap((d) => d?.txs ?? []) : []),
-    [data]
+    [data],
   );
 
   // TODO: optimize re-renders, seems like tables re-render unnecessarily while paused

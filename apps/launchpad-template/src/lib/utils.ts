@@ -51,7 +51,7 @@ export function serializeParams(params: Record<string, unknown>): Record<string,
   return Object.fromEntries(
     Object.entries(params)
       .filter(([, v]) => v !== undefined) // Remove undefined values
-      .map(([k, v]) => [k, serializeValue(v)])
+      .map(([k, v]) => [k, serializeValue(v)]),
   );
 }
 

@@ -79,7 +79,7 @@ const HoverPopoverContent = forwardRef<
       children,
       ...props
     },
-    ref
+    ref,
   ) => {
     const { handleMouseEnter, handleMouseLeave, open } = useHoverPopover();
 
@@ -99,7 +99,7 @@ const HoverPopoverContent = forwardRef<
           {...props}
           className={cn(
             'z-50 w-full max-w-[360px] rounded-lg border border-neutral-800 bg-neutral-925 p-2 text-xs text-neutral-100 shadow-xl outline-none',
-            className
+            className,
           )}
           onMouseEnter={retainOnContentHover ? handleMouseEnter : undefined}
           onMouseLeave={handleMouseLeave}
@@ -110,7 +110,7 @@ const HoverPopoverContent = forwardRef<
     );
 
     return <>{portal ? <PopoverPrimitive.Portal>{content}</PopoverPrimitive.Portal> : content}</>;
-  }
+  },
 );
 
 // Add display name for better debugging

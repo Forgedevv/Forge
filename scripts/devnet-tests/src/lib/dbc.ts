@@ -44,7 +44,8 @@ export const big = (v: BN | bigint | number | string): bigint => BigInt(v.toStri
 export function jsonify(value: unknown): Json {
   if (value === null || value === undefined) return null;
   if (typeof value === 'bigint') return value.toString();
-  if (typeof value === 'number' || typeof value === 'string' || typeof value === 'boolean') return value;
+  if (typeof value === 'number' || typeof value === 'string' || typeof value === 'boolean')
+    return value;
   if (BN.isBN(value)) return value.toString();
   if (value instanceof PublicKey) return value.toBase58();
   if (Array.isArray(value)) return value.map(jsonify);
@@ -172,7 +173,9 @@ export function poolAddress(config: PublicKey, mint: PublicKey): PublicKey {
   return deriveDbcPoolAddress(NATIVE_MINT, mint, config);
 }
 
-export async function createPoolOnChain(a: CreatePoolArgs): Promise<{ pool: string; signature: string }> {
+export async function createPoolOnChain(
+  a: CreatePoolArgs,
+): Promise<{ pool: string; signature: string }> {
   const tx = await getDbc().creator.createPool({
     name: a.name,
     symbol: a.symbol,
@@ -182,7 +185,9 @@ export async function createPoolOnChain(a: CreatePoolArgs): Promise<{ pool: stri
     config: a.config,
     baseMint: a.mint.publicKey,
   });
-  const signers = a.poolCreator.publicKey.equals(a.payer.publicKey) ? [a.mint] : [a.mint, a.poolCreator];
+  const signers = a.poolCreator.publicKey.equals(a.payer.publicKey)
+    ? [a.mint]
+    : [a.mint, a.poolCreator];
   const signature = await sendAndConfirm(tx, a.payer, { signers, label: 'createPool' });
   return { pool: poolAddress(a.config, a.mint.publicKey).toBase58(), signature };
 }
@@ -201,7 +206,9 @@ export interface PoolSnapshot {
   [key: string]: Json;
 }
 
-export async function getPoolState(pool: PublicKey): Promise<{ virtualPool: VirtualPool; config: PoolConfig }> {
+export async function getPoolState(
+  pool: PublicKey,
+): Promise<{ virtualPool: VirtualPool; config: PoolConfig }> {
   const dbc = getDbc();
   const virtualPool = await dbc.state.getPool(pool);
   if (!virtualPool) throw new Error(`Pool ${pool.toBase58()} not found`);
@@ -240,7 +247,13 @@ export interface SwapArgs {
 
 export interface SwapOutcome {
   signature: string;
-  quote: { amountIn: string; outputAmount: string; tradingFee: string; protocolFee: string; referralFee: string };
+  quote: {
+    amountIn: string;
+    outputAmount: string;
+    tradingFee: string;
+    protocolFee: string;
+    referralFee: string;
+  };
   txBytes: number;
 }
 
@@ -268,7 +281,9 @@ export async function swapOnChain(a: SwapArgs): Promise<SwapOutcome> {
     referralTokenAccount: a.referralTokenAccount,
   });
   if (a.preInstructions?.length) tx.instructions.unshift(...a.preInstructions);
-  const signature = await sendAndConfirm(tx, a.owner, { label: a.swapBaseForQuote ? 'sell' : 'buy' });
+  const signature = await sendAndConfirm(tx, a.owner, {
+    label: a.swapBaseForQuote ? 'sell' : 'buy',
+  });
   return {
     signature,
     quote: {
@@ -283,7 +298,9 @@ export async function swapOnChain(a: SwapArgs): Promise<SwapOutcome> {
 }
 
 /** Partial-fill buy (swap2): used to fill the curve exactly up to the migration threshold. */
-export async function buyPartialFillOnChain(a: Omit<SwapArgs, 'swapBaseForQuote' | 'preInstructions'>): Promise<SwapOutcome> {
+export async function buyPartialFillOnChain(
+  a: Omit<SwapArgs, 'swapBaseForQuote' | 'preInstructions'>,
+): Promise<SwapOutcome> {
   const dbc = getDbc();
   const { virtualPool, config } = await getPoolState(a.pool);
   const currentPoint = await getCurrentPoint(getConnection(), config.activationType);
@@ -370,15 +387,22 @@ const EVENT_CPI_TAG = Buffer.from('e445a52e51cb9a1d', 'hex');
  * Decodes the DBC program events of a confirmed transaction. The program emits events through a
  * self-CPI (`eventAuthority` account), so they live in the inner instructions, not in the logs.
  */
-export async function decodeEvents(signature: string): Promise<Array<{ name: string; data: Json }>> {
+export async function decodeEvents(
+  signature: string,
+): Promise<Array<{ name: string; data: Json }>> {
   const conn = getConnection();
   let tx = null;
   for (let attempt = 0; attempt < 5 && !tx; attempt++) {
-    tx = await conn.getTransaction(signature, { commitment: COMMITMENT, maxSupportedTransactionVersion: 0 });
+    tx = await conn.getTransaction(signature, {
+      commitment: COMMITMENT,
+      maxSupportedTransactionVersion: 0,
+    });
     if (!tx) await sleep(1500);
   }
   if (!tx?.meta) return [];
-  const keys = tx.transaction.message.getAccountKeys({ accountKeysFromLookups: tx.meta.loadedAddresses ?? undefined });
+  const keys = tx.transaction.message.getAccountKeys({
+    accountKeysFromLookups: tx.meta.loadedAddresses ?? undefined,
+  });
   const coder = getDbc().pool.getProgram().coder;
   const out: Array<{ name: string; data: Json }> = [];
   for (const inner of tx.meta.innerInstructions ?? []) {
@@ -402,11 +426,9 @@ export async function decodeEvents(signature: string): Promise<Array<{ name: str
  * Fills `step.event` from the chain when a stored step has none (steps saved by an earlier run that
  * could not decode events), and persists the repaired step.
  */
-export async function withSwapEvent<T extends { signature: string; event: Record<string, Json> | null }>(
-  state: State,
-  key: string,
-  step: T,
-): Promise<T> {
+export async function withSwapEvent<
+  T extends { signature: string; event: Record<string, Json> | null },
+>(state: State, key: string, step: T): Promise<T> {
   if (step.event) return step;
   const event = pickSwapEvent(await decodeEvents(step.signature));
   if (!event) return step;
@@ -416,7 +438,9 @@ export async function withSwapEvent<T extends { signature: string; event: Record
 }
 
 /** The swap event of a transaction, flattened to the fields the reports use. */
-export function pickSwapEvent(events: Array<{ name: string; data: Json }>): Record<string, Json> | null {
+export function pickSwapEvent(
+  events: Array<{ name: string; data: Json }>,
+): Record<string, Json> | null {
   const ev = events.find((e) => e.name === 'evtSwap' || e.name === 'evtSwap2');
   if (!ev || typeof ev.data !== 'object' || ev.data === null || Array.isArray(ev.data)) return null;
   const data = ev.data as Record<string, Json>;

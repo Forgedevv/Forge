@@ -72,13 +72,18 @@ export interface SendOptions {
  * Confirmation by polling `getSignatureStatuses` (no websocket: the RPC rate-limits subscriptions,
  * which made web3.js report "expired" for transactions that had landed).
  */
-export async function confirmBySignature(signature: string, lastValidBlockHeight: number): Promise<void> {
+export async function confirmBySignature(
+  signature: string,
+  lastValidBlockHeight: number,
+): Promise<void> {
   const conn = getConnection();
   for (;;) {
     const status = (await conn.getSignatureStatuses([signature])).value[0];
     if (status) {
-      if (status.err) throw new Error(`Transaction ${signature} failed: ${JSON.stringify(status.err)}`);
-      if (status.confirmationStatus === 'confirmed' || status.confirmationStatus === 'finalized') return;
+      if (status.err)
+        throw new Error(`Transaction ${signature} failed: ${JSON.stringify(status.err)}`);
+      if (status.confirmationStatus === 'confirmed' || status.confirmationStatus === 'finalized')
+        return;
     }
     const height = await conn.getBlockHeight(COMMITMENT);
     if (height > lastValidBlockHeight) {
@@ -95,7 +100,11 @@ export async function confirmBySignature(signature: string, lastValidBlockHeight
  * Signs with `feePayer` (+ signers), sends and confirms. Retries on blockhash expiry or transient
  * network errors; a program error (custom error, simulation failure) is thrown immediately with logs.
  */
-export async function sendAndConfirm(tx: Transaction, feePayer: Keypair, opts: SendOptions = {}): Promise<string> {
+export async function sendAndConfirm(
+  tx: Transaction,
+  feePayer: Keypair,
+  opts: SendOptions = {},
+): Promise<string> {
   const conn = getConnection();
   const attempts = opts.attempts ?? 4;
   let lastError: unknown;
@@ -117,7 +126,9 @@ export async function sendAndConfirm(tx: Transaction, feePayer: Keypair, opts: S
       const msg = err instanceof Error ? err.message : String(err);
       const transient =
         err instanceof TransactionExpiredBlockheightExceededError ||
-        /block height exceeded|Blockhash not found|fetch failed|ECONNRESET|ETIMEDOUT|429|503|timed out/i.test(msg);
+        /block height exceeded|Blockhash not found|fetch failed|ECONNRESET|ETIMEDOUT|429|503|timed out/i.test(
+          msg,
+        );
       if (!transient || attempt === attempts) {
         const logs = (err as { logs?: string[] }).logs;
         if (logs) console.error(logs.join('\n'));
@@ -140,7 +151,12 @@ export async function sendSigned(tx: Transaction, label?: string): Promise<strin
   return signature;
 }
 
-export async function transferSol(from: Keypair, to: PublicKey, lamports: bigint, label?: string): Promise<string> {
+export async function transferSol(
+  from: Keypair,
+  to: PublicKey,
+  lamports: bigint,
+  label?: string,
+): Promise<string> {
   const tx = new Transaction().add(
     SystemProgram.transfer({ fromPubkey: from.publicKey, toPubkey: to, lamports }),
   );

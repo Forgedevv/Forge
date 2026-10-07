@@ -23,7 +23,7 @@ const TabsTrigger = React.forwardRef<
       'enabled:hover:text-neutral-300',
       'data-[state=active]:border-neutral-300 data-[state=active]:text-neutral-300',
       'disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50',
-      className
+      className,
     )}
     {...props}
   />

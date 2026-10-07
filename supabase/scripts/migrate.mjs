@@ -50,7 +50,9 @@ async function main() {
         console.log(`apply  ${f}`);
       } catch (e) {
         await client.query('rollback');
-        throw new Error(`migration ${f} failed: ${e instanceof Error ? e.message : String(e)}`, { cause: e });
+        throw new Error(`migration ${f} failed: ${e instanceof Error ? e.message : String(e)}`, {
+          cause: e,
+        });
       }
     }
   } finally {

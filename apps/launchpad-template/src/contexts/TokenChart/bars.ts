@@ -10,7 +10,7 @@ export function getNextBar(
   mostRecentBar: Bar | undefined,
   swaps: Tx[],
   resolution: ResolutionString,
-  baseAssetCircSupply?: number | undefined // if number, chart is showing mcap instead of price
+  baseAssetCircSupply?: number | undefined, // if number, chart is showing mcap instead of price
 ): Bar | undefined {
   if (!mostRecentBar || swaps.length === 0) {
     return mostRecentBar;
@@ -58,7 +58,7 @@ export function getNextBar(
 function constructBars(
   swaps: Tx[],
   timeInterval: ChartTimeInterval,
-  baseAssetCircSupply?: number | undefined // if number, chart is showing mcap instead of price
+  baseAssetCircSupply?: number | undefined, // if number, chart is showing mcap instead of price
 ): Bar[] {
   if (swaps.length === 0) {
     return [];

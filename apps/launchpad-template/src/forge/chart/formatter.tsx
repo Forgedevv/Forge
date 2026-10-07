@@ -15,7 +15,7 @@ const userLocale =
 export const formatChartPrice = (
   val: number,
   precision?: number,
-  keepTrailingZeros = false
+  keepTrailingZeros = false,
 ): string => {
   // Use the default precision if not provided
   const defaultDecimals = getDecimalCount(val.toString());
@@ -72,7 +72,7 @@ export const formatNumber = {
 // To find out the precision we should use
 export const getPrecisionTick = (
   value: number,
-  maxSuffix: number = 6
+  maxSuffix: number = 6,
 ): [number, string, string] => {
   if (value === 0) return [0, '0', '0'];
 

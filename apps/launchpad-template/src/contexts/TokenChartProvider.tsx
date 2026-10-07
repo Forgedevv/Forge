@@ -91,7 +91,7 @@ export const TokenChartProvider: React.FC<PropsWithChildren> = ({ children }) =>
           // Remove tiny swaps
           tx.usdVolume >= SMALL_TRADE_VALUE &&
           // Ensure swaps are from most reliable pool OR user/dev trades OR a "reliable swap" from another pool
-          (tx.isValidPrice || tx.traderAddress === userAddress || tx.traderAddress === devAddress)
+          (tx.isValidPrice || tx.traderAddress === userAddress || tx.traderAddress === devAddress),
       );
 
       if (filteredTxs.length === 0) {
@@ -108,7 +108,7 @@ export const TokenChartProvider: React.FC<PropsWithChildren> = ({ children }) =>
           const marks = asMarks(
             devSwaps,
             { id: baseAsset.id, circSupply: baseAsset.circSupply },
-            true
+            true,
           );
           onNewMarks(marks);
         }
@@ -130,7 +130,7 @@ export const TokenChartProvider: React.FC<PropsWithChildren> = ({ children }) =>
           {
             resolutionToMostRecentBar,
             mostRecentBarKey,
-          }
+          },
         );
         return;
       }
@@ -139,7 +139,7 @@ export const TokenChartProvider: React.FC<PropsWithChildren> = ({ children }) =>
         recentBar,
         filteredTxs,
         resolution,
-        chartTypeRef.current === 'mcap' ? baseAsset.circSupply : 1
+        chartTypeRef.current === 'mcap' ? baseAsset.circSupply : 1,
       );
       if (!nextBar) {
         console.error("DataStream: missing 'nextBar': ", {
@@ -157,7 +157,7 @@ export const TokenChartProvider: React.FC<PropsWithChildren> = ({ children }) =>
         return;
       }
       callback(nextBar);
-    }, [])
+    }, []),
   );
 
   return (

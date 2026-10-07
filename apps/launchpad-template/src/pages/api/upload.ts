@@ -156,7 +156,7 @@ async function uploadMetadata(params: MetadataUploadParams): Promise<string | fa
 async function uploadToR2(
   fileBuffer: Buffer,
   contentType: string,
-  fileName: string
+  fileName: string,
 ): Promise<PutObjectCommandOutput> {
   return getR2Client().send(
     new PutObjectCommand({
@@ -164,7 +164,7 @@ async function uploadToR2(
       Key: fileName,
       Body: fileBuffer,
       ContentType: contentType,
-    })
+    }),
   );
 }
 

@@ -109,7 +109,7 @@ export const ApeQueries = {
                 ...pageParam,
               }
             : {},
-          { signal }
+          { signal },
         );
         return Object.assign(res, {
           args,

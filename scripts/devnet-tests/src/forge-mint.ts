@@ -33,16 +33,17 @@ export async function ensureForgeMint(state: State): Promise<ForgeMintRecord> {
     const conn = getConnection();
     const payer = wallets.forgeCreator;
     const mintKeypair = loadOrCreateKeypair('forge-mint');
-    const mint = await createMint(
+    const mint = await createMint(conn, payer, payer.publicKey, null, FORGE_DECIMALS, mintKeypair, {
+      commitment: COMMITMENT,
+    });
+    const holderAta = await getOrCreateAssociatedTokenAccount(
       conn,
       payer,
+      mint,
       payer.publicKey,
-      null,
-      FORGE_DECIMALS,
-      mintKeypair,
-      { commitment: COMMITMENT },
+      false,
+      COMMITMENT,
     );
-    const holderAta = await getOrCreateAssociatedTokenAccount(conn, payer, mint, payer.publicKey, false, COMMITMENT);
     const signature = await mintTo(conn, payer, mint, holderAta.address, payer, FORGE_SUPPLY, [], {
       commitment: COMMITMENT,
     });

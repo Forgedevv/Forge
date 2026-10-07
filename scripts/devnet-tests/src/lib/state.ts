@@ -45,7 +45,8 @@ export class State {
 
   require<T extends Json>(key: string): T {
     const value = this.get<T>(key);
-    if (value === undefined) throw new Error(`Missing state step "${key}": run the previous steps first`);
+    if (value === undefined)
+      throw new Error(`Missing state step "${key}": run the previous steps first`);
     return value;
   }
 

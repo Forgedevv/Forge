@@ -21,7 +21,7 @@ describe('security headers', () => {
 
   it('adds the R2 origin from the environment', () => {
     expect(buildCsp(false, { R2_PUBLIC_URL: 'https://pub-x.r2.dev/path' })).toContain(
-      'https://pub-x.r2.dev'
+      'https://pub-x.r2.dev',
     );
   });
 

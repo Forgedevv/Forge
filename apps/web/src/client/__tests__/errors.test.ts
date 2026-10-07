@@ -55,12 +55,18 @@ describe('request', () => {
       'fetch',
       vi.fn().mockResolvedValue(new Response(JSON.stringify({ message: 'no' }), { status: 429 })),
     );
-    await expect(request('/x', schema)).rejects.toMatchObject({ code: 'RATE_LIMITED', message: 'no' });
+    await expect(request('/x', schema)).rejects.toMatchObject({
+      code: 'RATE_LIMITED',
+      message: 'no',
+    });
 
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')));
     await expect(request('/x', schema)).rejects.toMatchObject({ code: 'NETWORK' });
 
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('{"ok":"yes"}', { status: 200 })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(new Response('{"ok":"yes"}', { status: 200 })),
+    );
     await expect(request('/x', schema)).rejects.toMatchObject({ code: 'NETWORK' });
   });
 

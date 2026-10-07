@@ -13,7 +13,7 @@ export const bottomPanelTabAtom = atomWithStorage<BottomPanelTab | undefined>(
   'INTEL_BOTTOM_PANEL_TAB',
   BottomPanelTab.TXNS,
   undefined,
-  { getOnInit: true }
+  { getOnInit: true },
 );
 
 /**

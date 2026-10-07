@@ -305,7 +305,7 @@ export default function CreateCoin() {
                           : String(value)}
                     </p>
                   </div>
-                ))
+                )),
               )}
             </div>
           )}

@@ -4,7 +4,7 @@ import { useExplore } from '@/contexts/ExploreProvider';
 import { useQuery } from '@tanstack/react-query';
 
 export function useExploreGemsTokenList<T = QueryData<typeof ApeQueries.gemsTokenList>>(
-  select?: (data: QueryData<typeof ApeQueries.gemsTokenList>) => T
+  select?: (data: QueryData<typeof ApeQueries.gemsTokenList>) => T,
 ) {
   const { request } = useExplore();
 

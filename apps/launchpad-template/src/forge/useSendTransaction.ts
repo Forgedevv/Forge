@@ -18,7 +18,7 @@ export function useSendTransaction() {
   const sendTransaction = async (
     transaction: Transaction,
     connection: Connection,
-    options: SendTransactionOptions = {}
+    options: SendTransactionOptions = {},
   ) => {
     if (!publicKey || !signTransaction) {
       const walletError = new Error('Wallet not connected');
@@ -59,7 +59,7 @@ export function useSendTransaction() {
       const txSignature = await sendAndConfirmRawTransaction(
         connection,
         signedTransaction.serialize(),
-        { commitment: 'confirmed' }
+        { commitment: 'confirmed' },
       );
 
       setSignature(txSignature);

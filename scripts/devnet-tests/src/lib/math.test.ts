@@ -12,9 +12,21 @@ import {
 describe('expectedFeeSplit', () => {
   it('matches the DEVNET_TESTS.md expectation for test 1 (0.1 SOL, 1%, creator 0)', () => {
     const withRef = expectedFeeSplit(100_000_000n, 100, 0, true);
-    expect(withRef).toEqual({ totalFee: 1_000_000n, protocol: 160_000n, referral: 40_000n, partner: 800_000n, creator: 0n });
+    expect(withRef).toEqual({
+      totalFee: 1_000_000n,
+      protocol: 160_000n,
+      referral: 40_000n,
+      partner: 800_000n,
+      creator: 0n,
+    });
     const withoutRef = expectedFeeSplit(100_000_000n, 100, 0, false);
-    expect(withoutRef).toEqual({ totalFee: 1_000_000n, protocol: 200_000n, referral: 0n, partner: 800_000n, creator: 0n });
+    expect(withoutRef).toEqual({
+      totalFee: 1_000_000n,
+      protocol: 200_000n,
+      referral: 0n,
+      partner: 800_000n,
+      creator: 0n,
+    });
   });
 
   it('splits the non-protocol share between partner and creator (test 2, creator 25%)', () => {

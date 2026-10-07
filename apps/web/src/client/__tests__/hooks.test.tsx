@@ -107,7 +107,9 @@ describe('useSession', () => {
     const message = 'forge.example wants you to sign in. Nonce: abc123';
     const fetchFn = vi.fn((url: string) => {
       if (url === '/api/auth/nonce') {
-        return Promise.resolve(json({ nonce: 'abc123', message, expiresAt: '2030-01-01T00:00:00.000Z' }));
+        return Promise.resolve(
+          json({ nonce: 'abc123', message, expiresAt: '2030-01-01T00:00:00.000Z' }),
+        );
       }
       if (url === '/api/auth/verify') return Promise.resolve(json({ wallet: address }));
       if (url === '/api/auth/session') {
@@ -122,9 +124,7 @@ describe('useSession', () => {
       await result.current.connect();
     });
     const sign = walletState.value.signMessage as ReturnType<typeof vi.fn>;
-    expect(new TextDecoder().decode(sign.mock.calls[0]?.[0] as Uint8Array)).toBe(
-      message,
-    );
+    expect(new TextDecoder().decode(sign.mock.calls[0]?.[0] as Uint8Array)).toBe(message);
     const verifyCall = fetchFn.mock.calls.find((c) => c[0] === '/api/auth/verify') as unknown[];
     const verifyInit = verifyCall[1] as RequestInit;
     expect(JSON.parse(verifyInit.body as string)).toEqual({
@@ -132,13 +132,15 @@ describe('useSession', () => {
       signature: base58Encode(new Uint8Array(64).fill(3)),
       nonce: 'abc123',
     });
-        await waitFor(() => expect(result.current.session).toEqual({ wallet: address }));
+    await waitFor(() => expect(result.current.session).toEqual({ wallet: address }));
     expect(result.current.status).toBe('idle');
   });
 
   it('treats a rejected signature as idle, without calling verify', async () => {
     wallet({
-      signMessage: vi.fn().mockRejectedValue(Object.assign(new Error('User rejected'), { code: 4001 })),
+      signMessage: vi
+        .fn()
+        .mockRejectedValue(Object.assign(new Error('User rejected'), { code: 4001 })),
     });
     const fetchFn = vi.fn((url: string) =>
       Promise.resolve(
@@ -222,7 +224,10 @@ describe('useSession', () => {
     await act(async () => {
       await result.current.disconnect();
     });
-    expect(fetchFn).toHaveBeenCalledWith('/api/auth/logout', expect.objectContaining({ method: 'POST' }));
+    expect(fetchFn).toHaveBeenCalledWith(
+      '/api/auth/logout',
+      expect.objectContaining({ method: 'POST' }),
+    );
     expect(getSessionSnapshot()).toBeNull();
   });
 });
@@ -283,13 +288,15 @@ describe('useChat', () => {
   it('flags rateLimited on a RATE_LIMITED stream error event', async () => {
     vi.stubGlobal(
       'fetch',
-      vi.fn().mockResolvedValue(
-        sseResponse([
-          ev({ type: 'conversation', conversationId: CONV }),
-          ev({ type: 'error', code: 'RATE_LIMITED', message: 'Message limit reached' }),
-          ev({ type: 'done' }),
-        ]),
-      ),
+      vi
+        .fn()
+        .mockResolvedValue(
+          sseResponse([
+            ev({ type: 'conversation', conversationId: CONV }),
+            ev({ type: 'error', code: 'RATE_LIMITED', message: 'Message limit reached' }),
+            ev({ type: 'done' }),
+          ]),
+        ),
     );
     const { result } = renderHook(() => useChat({}));
     act(() => result.current.send('hi'));
@@ -374,7 +381,9 @@ describe('useJob', () => {
   it('fetches the job and its events then applies realtime changes', async () => {
     const sb = makeSb({
       jobs: jobRow(),
-      job_events: [{ id: 1, job_id: JOB_ID, message: 'Starting', created_at: '2026-01-01T00:00:01Z' }],
+      job_events: [
+        { id: 1, job_id: JOB_ID, message: 'Starting', created_at: '2026-01-01T00:00:01Z' },
+      ],
     });
     fakeSb.client = sb.client;
     const { result } = renderHook(() => useJob(JOB_ID));
@@ -388,12 +397,22 @@ describe('useJob', () => {
     expect(result.current.job).toMatchObject({ status: 'building', attempts: 1 });
     act(() =>
       events?.fn({
-        new: { id: 2, job_id: JOB_ID, message: 'Writing files', created_at: '2026-01-01T00:00:02Z' },
+        new: {
+          id: 2,
+          job_id: JOB_ID,
+          message: 'Writing files',
+          created_at: '2026-01-01T00:00:02Z',
+        },
       }),
     );
     act(() =>
       events?.fn({
-        new: { id: 2, job_id: JOB_ID, message: 'Writing files', created_at: '2026-01-01T00:00:02Z' },
+        new: {
+          id: 2,
+          job_id: JOB_ID,
+          message: 'Writing files',
+          created_at: '2026-01-01T00:00:02Z',
+        },
       }),
     );
     expect(result.current.events.map((e) => e.message)).toEqual(['Starting', 'Writing files']);

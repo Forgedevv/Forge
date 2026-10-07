@@ -127,7 +127,7 @@ const HoverPopover: React.FC<PropsWithChildren<HoverPopoverProps>> = memo(
           openTimerRef.current = 0;
         }, delayDuration);
       },
-      [delayDuration, setOpen, openTimerRef]
+      [delayDuration, setOpen, openTimerRef],
     );
 
     const handleOpenChange = useCallback(
@@ -137,7 +137,7 @@ const HoverPopover: React.FC<PropsWithChildren<HoverPopoverProps>> = memo(
         openTimerRef.current = 0;
         setOpen(newOpen);
       },
-      [setOpen, openTimerRef]
+      [setOpen, openTimerRef],
     );
 
     const handleMouseEnter = useCallback(() => {
@@ -168,7 +168,7 @@ const HoverPopover: React.FC<PropsWithChildren<HoverPopoverProps>> = memo(
           setOpen(newOpen);
         }
       },
-      [disableHover, setOpen]
+      [disableHover, setOpen],
     );
 
     useEffect(() => {
@@ -206,7 +206,7 @@ const HoverPopover: React.FC<PropsWithChildren<HoverPopoverProps>> = memo(
         </PopoverPrimitive.Root>
       </HoverPopoverContext.Provider>
     );
-  }
+  },
 );
 
 const useHoverPopover = () => {

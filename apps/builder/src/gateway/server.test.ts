@@ -12,7 +12,12 @@ const MODEL = 'claude-test-model';
 /** $1 per MTok of anything: 1M tokens = $1. */
 const PRICING: PricingTable = {
   [MODEL]: { inputPerMTok: 1, outputPerMTok: 1, cacheReadPerMTok: 1, cacheWritePerMTok: 1 },
-  'claude-other-model': { inputPerMTok: 2, outputPerMTok: 2, cacheReadPerMTok: 2, cacheWritePerMTok: 2 },
+  'claude-other-model': {
+    inputPerMTok: 2,
+    outputPerMTok: 2,
+    cacheReadPerMTok: 2,
+    cacheWritePerMTok: 2,
+  },
 };
 
 interface Received {
@@ -27,7 +32,11 @@ type Responder = (req: Received, res: http.ServerResponse) => void;
 function jsonResponder(usage: object, extra: object = {}): Responder {
   return (_req, res) => {
     const body = JSON.stringify({ id: 'msg_1', type: 'message', model: MODEL, usage, ...extra });
-    res.writeHead(200, { 'content-type': 'application/json', 'request-id': 'req_1', 'set-cookie': 'a=b' });
+    res.writeHead(200, {
+      'content-type': 'application/json',
+      'request-id': 'req_1',
+      'set-cookie': 'a=b',
+    });
     res.end(body);
   };
 }
@@ -36,15 +45,40 @@ function sseResponder(inputTokens: number, outputTokens: number): Responder {
   return (_req, res) => {
     res.writeHead(200, { 'content-type': 'text/event-stream' });
     const events = [
-      ['message_start', { type: 'message_start', message: { id: 'msg_1', model: MODEL, usage: { input_tokens: inputTokens, output_tokens: 1 } } }],
-      ['content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }],
-      ['content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'hello' } }],
+      [
+        'message_start',
+        {
+          type: 'message_start',
+          message: {
+            id: 'msg_1',
+            model: MODEL,
+            usage: { input_tokens: inputTokens, output_tokens: 1 },
+          },
+        },
+      ],
+      [
+        'content_block_start',
+        { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
+      ],
+      [
+        'content_block_delta',
+        { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'hello' } },
+      ],
       ['content_block_stop', { type: 'content_block_stop', index: 0 }],
-      ['message_delta', { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: outputTokens } }],
+      [
+        'message_delta',
+        {
+          type: 'message_delta',
+          delta: { stop_reason: 'end_turn' },
+          usage: { output_tokens: outputTokens },
+        },
+      ],
       ['message_stop', { type: 'message_stop' }],
     ] as const;
     // Split the stream at awkward byte boundaries to exercise the incremental parser.
-    const text = events.map(([name, data]) => `event: ${name}\ndata: ${JSON.stringify(data)}\n\n`).join('');
+    const text = events
+      .map(([name, data]) => `event: ${name}\ndata: ${JSON.stringify(data)}\n\n`)
+      .join('');
     const parts = [text.slice(0, 7), text.slice(7, 150), text.slice(150)];
     let i = 0;
     const next = () => {
@@ -95,7 +129,10 @@ describe('AI gateway', () => {
     path = '/v1/messages',
     header: 'bearer' | 'x-api-key' = 'bearer',
   ) {
-    const headers: Record<string, string> = { 'content-type': 'application/json', 'anthropic-version': '2023-06-01' };
+    const headers: Record<string, string> = {
+      'content-type': 'application/json',
+      'anthropic-version': '2023-06-01',
+    };
     if (token) {
       if (header === 'bearer') headers.authorization = `Bearer ${token}`;
       else headers['x-api-key'] = token;
@@ -114,7 +151,12 @@ describe('AI gateway', () => {
       const chunks: Buffer[] = [];
       req.on('data', (c: Buffer) => chunks.push(c));
       req.on('end', () => {
-        const r = { method: req.method, url: req.url, headers: req.headers, body: Buffer.concat(chunks).toString() };
+        const r = {
+          method: req.method,
+          url: req.url,
+          headers: req.headers,
+          body: Buffer.concat(chunks).toString(),
+        };
         received.push(r);
         responder(r, res);
       });
@@ -174,7 +216,10 @@ describe('AI gateway', () => {
     expect((await call(undefined)).status).toBe(401);
     const res = await call('forge_gw_unknown');
     expect(res.status).toBe(401);
-    expect(await res.json()).toMatchObject({ type: 'error', error: { type: 'authentication_error' } });
+    expect(await res.json()).toMatchObject({
+      type: 'error',
+      error: { type: 'authentication_error' },
+    });
     expect(received).toHaveLength(0);
   });
 
@@ -234,7 +279,10 @@ describe('AI gateway', () => {
 
     const blocked = await call(token, { model: MODEL, max_tokens: 10, stream: true, messages: [] });
     expect(blocked.status).toBe(402);
-    expect(await blocked.json()).toMatchObject({ type: 'error', error: { type: 'budget_exceeded_error' } });
+    expect(await blocked.json()).toMatchObject({
+      type: 'error',
+      error: { type: 'budget_exceeded_error' },
+    });
     expect(received).toHaveLength(1);
   });
 
@@ -264,7 +312,11 @@ describe('AI gateway', () => {
       tools: [{ type: 'web_search_20260209', name: 'web_search' }],
     });
     expect(webSearch.status).toBe(403);
-    const mcp = await call(token, { model: MODEL, messages: [], mcp_servers: [{ type: 'url', url: 'https://x' }] });
+    const mcp = await call(token, {
+      model: MODEL,
+      messages: [],
+      mcp_servers: [{ type: 'url', url: 'https://x' }],
+    });
     expect(mcp.status).toBe(403);
     const custom = await call(token, {
       model: MODEL,
@@ -277,11 +329,19 @@ describe('AI gateway', () => {
 
   it('refuses disallowed paths and methods', async () => {
     const token = await gateway.issueToken('job-1');
-    for (const path of ['/v1/models', '/v1/messages/batches', '/v1/messages/../files', '/v1/complete', '/']) {
+    for (const path of [
+      '/v1/models',
+      '/v1/messages/batches',
+      '/v1/messages/../files',
+      '/v1/complete',
+      '/',
+    ]) {
       const res = await call(token, undefined, path);
       expect(res.status, path).toBe(404);
     }
-    const get = await fetch(`${gatewayUrl}/v1/messages`, { headers: { authorization: `Bearer ${token}` } });
+    const get = await fetch(`${gatewayUrl}/v1/messages`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
     expect(get.status).toBe(405);
     expect(received).toHaveLength(0);
   });
@@ -314,7 +374,10 @@ describe('AI gateway', () => {
     });
     gatewayUrl = `http://127.0.0.1:${(await gateway.listen(0)).port}`;
     const token = await gateway.issueToken('job-1');
-    const res = await call(token, { model: MODEL, messages: [{ role: 'user', content: 'x'.repeat(5000) }] });
+    const res = await call(token, {
+      model: MODEL,
+      messages: [{ role: 'user', content: 'x'.repeat(5000) }],
+    });
     expect(res.status).toBe(413);
     expect(received).toHaveLength(0);
   });
@@ -351,7 +414,11 @@ describe('AI gateway', () => {
     expect(alerts).toHaveLength(0);
     expect((await call(token)).status).toBe(200); // $9 -> 90% >= 80%
     expect(alerts).toHaveLength(1);
-    expect(alerts[0]).toMatchObject({ kind: 'daily_budget_threshold', day: '2026-10-07', dailyBudgetUsd: 10 });
+    expect(alerts[0]).toMatchObject({
+      kind: 'daily_budget_threshold',
+      day: '2026-10-07',
+      dailyBudgetUsd: 10,
+    });
     expect((await call(token)).status).toBe(200); // $12
     expect(alerts).toHaveLength(1);
     const blocked = await call(token);
@@ -363,7 +430,12 @@ describe('AI gateway', () => {
     const token = await gateway.issueToken('job-1');
     responder = (_req, res) => {
       res.writeHead(401, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ type: 'error', error: { type: 'authentication_error', message: `bad key ${REAL_KEY}` } }));
+      res.end(
+        JSON.stringify({
+          type: 'error',
+          error: { type: 'authentication_error', message: `bad key ${REAL_KEY}` },
+        }),
+      );
     };
     const echoed = await call(token);
     expect(echoed.status).toBe(401);
@@ -389,8 +461,15 @@ describe('AI gateway', () => {
   it('charges max_tokens when a stream is cut before message_delta', async () => {
     responder = (_req, res) => {
       res.writeHead(200, { 'content-type': 'text/event-stream' });
-      const start = { type: 'message_start', message: { id: 'msg_1', model: MODEL, usage: { input_tokens: 1000, output_tokens: 1 } } };
-      const delta = { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'hello' } };
+      const start = {
+        type: 'message_start',
+        message: { id: 'msg_1', model: MODEL, usage: { input_tokens: 1000, output_tokens: 1 } },
+      };
+      const delta = {
+        type: 'content_block_delta',
+        index: 0,
+        delta: { type: 'text_delta', text: 'hello' },
+      };
       res.write(`event: message_start
 data: ${JSON.stringify(start)}
 
@@ -413,7 +492,9 @@ data: ${JSON.stringify(delta)}
     await reader.read();
     client.abort();
     // Real input (1000) + max_tokens (50k) at $1/MTok.
-    await vi.waitFor(async () => expect(await store.getJobCost('job-1')).toBeCloseTo(0.051, 10), { timeout: 5000 });
+    await vi.waitFor(async () => expect(await store.getJobCost('job-1')).toBeCloseTo(0.051, 10), {
+      timeout: 5000,
+    });
   });
 
   it('charges an estimate when a non-streaming request is cut before the response', async () => {
@@ -431,7 +512,10 @@ data: ${JSON.stringify(delta)}
     await vi.waitFor(() => expect(received).toHaveLength(1), { timeout: 5000 });
     client.abort();
     await pending;
-    await vi.waitFor(async () => expect(await store.getJobCost('job-1')).toBeGreaterThanOrEqual(0.05), { timeout: 5000 });
+    await vi.waitFor(
+      async () => expect(await store.getJobCost('job-1')).toBeGreaterThanOrEqual(0.05),
+      { timeout: 5000 },
+    );
   });
 
   it('charges an estimate when a non-streaming body read is interrupted', async () => {
@@ -452,7 +536,10 @@ data: ${JSON.stringify(delta)}
     await new Promise((resolve) => setTimeout(resolve, 50));
     client.abort();
     await pending;
-    await vi.waitFor(async () => expect(await store.getJobCost('job-1')).toBeGreaterThanOrEqual(0.05), { timeout: 5000 });
+    await vi.waitFor(
+      async () => expect(await store.getJobCost('job-1')).toBeGreaterThanOrEqual(0.05),
+      { timeout: 5000 },
+    );
   });
 
   it('reserves in-flight cost so parallel requests cannot overrun the job budget', async () => {
@@ -461,7 +548,9 @@ data: ${JSON.stringify(delta)}
     // Each request may cost up to 60k output tokens = $0.06, above the $0.05 budget.
     const token = await gateway.issueToken('job-1', { budgetUsd: 0.05 });
     const body = { model: MODEL, max_tokens: 60_000, messages: [] };
-    const statuses = (await Promise.all([call(token, body), call(token, body), call(token, body)])).map((r) => r.status);
+    const statuses = (
+      await Promise.all([call(token, body), call(token, body), call(token, body)])
+    ).map((r) => r.status);
     expect(statuses.sort()).toEqual([200, 402, 402]);
     expect(received).toHaveLength(1);
     // The reservation is settled to the real cost, so the job is not blocked afterwards.
@@ -478,8 +567,17 @@ data: ${JSON.stringify(delta)}
   });
 
   it('refuses invalid configuration', () => {
-    const base = { upstreamUrl, apiKey: REAL_KEY, store, pricing: PRICING, dailyBudgetUsd: 1, onAlert: () => {} };
-    expect(() => createGateway({ ...base, allowedModels: ['unpriced-model'] })).toThrow(/no pricing/);
+    const base = {
+      upstreamUrl,
+      apiKey: REAL_KEY,
+      store,
+      pricing: PRICING,
+      dailyBudgetUsd: 1,
+      onAlert: () => {},
+    };
+    expect(() => createGateway({ ...base, allowedModels: ['unpriced-model'] })).toThrow(
+      /no pricing/,
+    );
     expect(() => createGateway({ ...base, apiKey: '' })).toThrow(/apiKey/);
     expect(() => createGateway({ ...base, dailyBudgetUsd: 0 })).toThrow(/dailyBudgetUsd/);
   });

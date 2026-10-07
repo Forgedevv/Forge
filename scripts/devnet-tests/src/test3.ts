@@ -11,7 +11,13 @@ import { SwapMode, getCurrentPoint } from '@meteora-ag/dynamic-bonding-curve-sdk
 import { BUDGETS, ensureFunded, runMain } from './lib/funding.js';
 import { State, type Json } from './lib/state.js';
 import { loadOrCreateKeypair, loadWallets } from './lib/wallets.js';
-import { ata, getBalance, getConnection, getTokenAccountBalance, sendSigned } from './lib/solana.js';
+import {
+  ata,
+  getBalance,
+  getConnection,
+  getTokenAccountBalance,
+  sendSigned,
+} from './lib/solana.js';
 import {
   big,
   bn,
@@ -31,7 +37,11 @@ import { approxEqual, expectedFeeSplit, solToLamports } from './lib/math.js';
 import { Report, accountLink, sol, txLink } from './lib/report.js';
 
 export const TEST3_FEE_BPS = 100;
-export const TEST3_ANTI_SNIPER = { startingFeeBps: 9900, numberOfPeriod: 10, totalDurationSeconds: 600 };
+export const TEST3_ANTI_SNIPER = {
+  startingFeeBps: 9900,
+  numberOfPeriod: 10,
+  totalDurationSeconds: 600,
+};
 export const TEST3_FIRST_BUY = solToLamports(0.05);
 export const TEST3_SECOND_BUY = solToLamports(0.05);
 export const MAX_TX_BYTES = 1232;
@@ -100,8 +110,13 @@ export async function runTest3(): Promise<boolean> {
       const existing = poolAddress(config, mint.publicKey);
       if (!(await conn.getAccountInfo(existing))) break;
       const sigs = await conn.getSignaturesForAddress(existing, { limit: 5 }, 'confirmed');
-      previousAttempts.push({ pool: existing.toBase58(), signatures: sigs.map((s) => s.signature) });
-      console.log(`  pool ${existing.toBase58()} already exists (earlier attempt), using another mint`);
+      previousAttempts.push({
+        pool: existing.toBase58(),
+        signatures: sigs.map((s) => s.signature),
+      });
+      console.log(
+        `  pool ${existing.toBase58()} already exists (earlier attempt), using another mint`,
+      );
     }
     if (previousAttempts.length) state.set('test3.previousAttempts', previousAttempts);
     const poolConfig = await dbc.state.getPoolConfig(config);
@@ -145,18 +160,24 @@ export async function runTest3(): Promise<boolean> {
     tx.feePayer = wallets.client.publicKey;
     tx.partialSign(wallets.forgeCreator, mint);
     const serialized = tx.serialize({ requireAllSignatures: false, verifySignatures: true });
-    const signersAfterForge = tx.signatures.filter((s) => s.signature).map((s) => s.publicKey.toBase58());
+    const signersAfterForge = tx.signatures
+      .filter((s) => s.signature)
+      .map((s) => s.publicKey.toBase58());
 
     // Client side: deserialize, sign, send.
     const clientSolBefore = await getBalance(wallets.client.publicKey);
     const forgeSolBefore = await getBalance(wallets.forgeCreator.publicKey);
     const clientTx = Transaction.from(serialized);
     clientTx.partialSign(wallets.client);
-    const signersAfterClient = clientTx.signatures.filter((s) => s.signature).map((s) => s.publicKey.toBase58());
+    const signersAfterClient = clientTx.signatures
+      .filter((s) => s.signature)
+      .map((s) => s.publicKey.toBase58());
     const signature = await sendSigned(clientTx, 'createPoolWithFirstBuy');
 
     const pool = poolAddress(config, mint.publicKey);
-    const clientTokens = await getTokenAccountBalance(ata(wallets.client.publicKey, mint.publicKey));
+    const clientTokens = await getTokenAccountBalance(
+      ata(wallets.client.publicKey, mint.publicKey),
+    );
     return {
       pool: pool.toBase58(),
       mint: mint.publicKey.toBase58(),
@@ -191,7 +212,11 @@ export async function runTest3(): Promise<boolean> {
         referralTokenAccount: null,
         slippageBps: 500,
       });
-      return { signature: outcome.signature, event: pickSwapEvent(await decodeEvents(outcome.signature)), txBytes: outcome.txBytes };
+      return {
+        signature: outcome.signature,
+        event: pickSwapEvent(await decodeEvents(outcome.signature)),
+        txBytes: outcome.txBytes,
+      };
     }),
   );
   launch.event = launchWithEvent.event;
@@ -199,7 +224,11 @@ export async function runTest3(): Promise<boolean> {
   // In the swap event, `tradingFee` is the partner + creator share and `protocolFee` (+ `referralFee`)
   // the rest: the total fee charged on the input is their sum.
   const totalFeeOf = (ev: Record<string, Json> | null): bigint =>
-    ev ? BigInt(String(ev.tradingFee)) + BigInt(String(ev.protocolFee)) + BigInt(String(ev.referralFee)) : -1n;
+    ev
+      ? BigInt(String(ev.tradingFee)) +
+        BigInt(String(ev.protocolFee)) +
+        BigInt(String(ev.referralFee))
+      : -1n;
   const firstFee = totalFeeOf(launch.event);
   const secondFee = totalFeeOf(second.event);
   const minFee = expectedFeeSplit(TEST3_FIRST_BUY, TEST3_FEE_BPS, 25, false).totalFee;
@@ -208,48 +237,102 @@ export async function runTest3(): Promise<boolean> {
   const checks: Array<[string, boolean]> = [
     ['one transaction creates the pool and performs the first buy', launch.signature.length > 0],
     ['transaction fits the size limit', launch.txBytes <= MAX_TX_BYTES],
-    ['forgeCreator and the mint signed first, client signed last', launch.signersAfterForge.length === 2 && launch.signersAfterClient.length === 3],
-    ['pool creator is forgeCreator', launch.poolAfter.creator === wallets.forgeCreator.publicKey.toBase58()],
-    ['tokens received by client', BigInt(launch.clientTokens) > 0n && BigInt(launch.clientTokens) === eventOut],
+    [
+      'forgeCreator and the mint signed first, client signed last',
+      launch.signersAfterForge.length === 2 && launch.signersAfterClient.length === 3,
+    ],
+    [
+      'pool creator is forgeCreator',
+      launch.poolAfter.creator === wallets.forgeCreator.publicKey.toBase58(),
+    ],
+    [
+      'tokens received by client',
+      BigInt(launch.clientTokens) > 0n && BigInt(launch.clientTokens) === eventOut,
+    ],
     ['SOL debited from client (buy + tx fee + token account rents)', clientDebit > TEST3_FIRST_BUY],
     ['first buy pays the minimum fee (1%) despite the 99% anti-sniper fee', firstFee === minFee],
     ['second buy pays the anti-sniper fee (> 50%)', secondFee > TEST3_SECOND_BUY / 2n],
-    ['SDK quote matches the on-chain output', eventOut === BigInt(launch.quotedOut) || approxEqual(eventOut, BigInt(launch.quotedOut), BigInt(launch.quotedOut) / 100n)],
+    [
+      'SDK quote matches the on-chain output',
+      eventOut === BigInt(launch.quotedOut) ||
+        approxEqual(eventOut, BigInt(launch.quotedOut), BigInt(launch.quotedOut) / 100n),
+    ],
   ];
   const ok = checks.every(([, c]) => c);
 
   const r = new Report('Test 3 — First buy paid by the client');
-  r.p('Goal: confirm that a single transaction can create the pool (signed by forgeCreator) and make the first buy paid and signed by client, with tokens received by client; and that with `enableFirstSwapWithMinFee` the first buy pays the minimum fee under the anti-sniper schedule.');
+  r.p(
+    'Goal: confirm that a single transaction can create the pool (signed by forgeCreator) and make the first buy paid and signed by client, with tokens received by client; and that with `enableFirstSwapWithMinFee` the first buy pays the minimum fee under the anti-sniper schedule.',
+  );
   r.h2('Setup');
-  r.bullet(`Config: ${accountLink(configStep.config, configStep.config)} — ${txLink(configStep.signature)}`);
-  r.bullet(`Fee scheduler: ${TEST3_ANTI_SNIPER.startingFeeBps} bps → ${TEST3_FEE_BPS} bps over ${TEST3_ANTI_SNIPER.totalDurationSeconds} s (${TEST3_ANTI_SNIPER.numberOfPeriod} periods, linear), enableFirstSwapWithMinFee = true, creator share 25%`);
-  r.bullet(`forgeCreator: ${accountLink(wallets.forgeCreator.publicKey)}; client: ${accountLink(wallets.client.publicKey)}; trader: ${accountLink(wallets.trader.publicKey)}`);
+  r.bullet(
+    `Config: ${accountLink(configStep.config, configStep.config)} — ${txLink(configStep.signature)}`,
+  );
+  r.bullet(
+    `Fee scheduler: ${TEST3_ANTI_SNIPER.startingFeeBps} bps → ${TEST3_FEE_BPS} bps over ${TEST3_ANTI_SNIPER.totalDurationSeconds} s (${TEST3_ANTI_SNIPER.numberOfPeriod} periods, linear), enableFirstSwapWithMinFee = true, creator share 25%`,
+  );
+  r.bullet(
+    `forgeCreator: ${accountLink(wallets.forgeCreator.publicKey)}; client: ${accountLink(wallets.client.publicKey)}; trader: ${accountLink(wallets.trader.publicKey)}`,
+  );
   r.h2('Launch transaction');
-  for (const attempt of state.get<Array<{ pool: string; signatures: string[] }>>('test3.previousAttempts') ?? []) {
+  for (const attempt of state.get<Array<{ pool: string; signatures: string[] }>>(
+    'test3.previousAttempts',
+  ) ?? []) {
     r.bullet(
       `Earlier attempt: pool ${accountLink(attempt.pool, attempt.pool)} was created on-chain (${attempt.signatures.map((s) => txLink(s)).join(', ')}) ` +
         'but the script lost the confirmation (RPC websocket rate limit, HTTP 429); the measurements below come from a fresh pool.',
     );
   }
   r.bullet(`${txLink(launch.signature)} — ${launch.txBytes} bytes (limit ${MAX_TX_BYTES})`);
-  r.bullet(`Pool ${accountLink(launch.pool, launch.pool)}, mint ${accountLink(launch.mint, launch.mint)}, creator in pool state: ${launch.poolAfter.creator}`);
+  r.bullet(
+    `Pool ${accountLink(launch.pool, launch.pool)}, mint ${accountLink(launch.mint, launch.mint)}, creator in pool state: ${launch.poolAfter.creator}`,
+  );
   r.bullet(`Signatures after the signer side: ${launch.signersAfterForge.join(', ')}`);
   r.bullet(`Signatures after the client side: ${launch.signersAfterClient.join(', ')}`);
-  r.bullet(`Client SOL ${launch.clientSolBefore} → ${launch.clientSolAfter} (debit ${sol(clientDebit)}; buy ${sol(TEST3_FIRST_BUY)})`);
-  r.bullet(`forgeCreator SOL ${launch.forgeSolBefore} → ${launch.forgeSolAfter} (pays the pool rent and the pool creation fee, not the buy)`);
-  r.bullet(`Client token balance: ${launch.clientTokens} (event outputAmount ${eventOut}, SDK quote ${launch.quotedOut})`);
+  r.bullet(
+    `Client SOL ${launch.clientSolBefore} → ${launch.clientSolAfter} (debit ${sol(clientDebit)}; buy ${sol(TEST3_FIRST_BUY)})`,
+  );
+  r.bullet(
+    `forgeCreator SOL ${launch.forgeSolBefore} → ${launch.forgeSolAfter} (pays the pool rent and the pool creation fee, not the buy)`,
+  );
+  r.bullet(
+    `Client token balance: ${launch.clientTokens} (event outputAmount ${eventOut}, SDK quote ${launch.quotedOut})`,
+  );
   r.h2('Fees');
   r.table(
-    ['Swap', 'Amount in', 'On-chain total fee (tradingFee + protocolFee + referralFee)', 'Expected', 'Tx'],
     [
-      ['First buy (client, inside creation tx)', TEST3_FIRST_BUY.toString(), firstFee.toString(), `${minFee} (min fee ${TEST3_FEE_BPS} bps)`, txLink(launch.signature)],
-      ['Second buy (trader, right after)', TEST3_SECOND_BUY.toString(), secondFee.toString(), `≈ ${TEST3_ANTI_SNIPER.startingFeeBps} bps (anti-sniper)`, txLink(second.signature)],
+      'Swap',
+      'Amount in',
+      'On-chain total fee (tradingFee + protocolFee + referralFee)',
+      'Expected',
+      'Tx',
+    ],
+    [
+      [
+        'First buy (client, inside creation tx)',
+        TEST3_FIRST_BUY.toString(),
+        firstFee.toString(),
+        `${minFee} (min fee ${TEST3_FEE_BPS} bps)`,
+        txLink(launch.signature),
+      ],
+      [
+        'Second buy (trader, right after)',
+        TEST3_SECOND_BUY.toString(),
+        secondFee.toString(),
+        `≈ ${TEST3_ANTI_SNIPER.startingFeeBps} bps (anti-sniper)`,
+        txLink(second.signature),
+      ],
     ],
   );
   r.h2('Checks');
   for (const [label, c] of checks) r.bullet(`${c ? 'OK' : 'FAIL'} — ${label}`);
   r.blank();
-  r.verdict(ok, ok ? 'the client pays and signs the first buy inside the pool creation transaction, with the minimum fee. Plan A holds.' : 'see failed checks; plan B in SUMMARY.md (FORGE creates the pool, the client buys in a separate transaction).');
+  r.verdict(
+    ok,
+    ok
+      ? 'the client pays and signs the first buy inside the pool creation transaction, with the minimum fee. Plan A holds.'
+      : 'see failed checks; plan B in SUMMARY.md (FORGE creates the pool, the client buys in a separate transaction).',
+  );
   r.write('test3-first-buy.md');
   state.set('test3.result', { ok, checks: checks.map(([label, c]) => ({ label, ok: c })) });
   return ok;

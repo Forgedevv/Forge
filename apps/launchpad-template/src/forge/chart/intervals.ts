@@ -59,7 +59,7 @@ export const resolutionToChartTimeInterval: Record<string, ChartTimeInterval> = 
 };
 
 export const SUPPORTED_RESOLUTIONS: ResolutionString[] = Object.keys(
-  resolutionToChartTimeInterval
+  resolutionToChartTimeInterval,
 ) as ResolutionString[];
 
 export const FAVORITE_INTERVALS: ResolutionString[] = ['1', '30', '1h'] as ResolutionString[];

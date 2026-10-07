@@ -60,7 +60,7 @@ const BaseTag: React.FC<ComponentProps<'div'>> = memo(({ className, ...props }) 
     <div
       className={cn(
         'ml-1.5 rounded-full bg-neutral-850 px-2 py-0.5 text-xs font-medium text-neutral-400',
-        className
+        className,
       )}
       {...props}
     />

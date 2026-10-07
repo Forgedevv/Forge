@@ -52,7 +52,7 @@ const ExploreContext = createContext<ExploreContextType>({
 const ExploreProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const partnerConfigs = useMemo(
     () => process.env.NEXT_PUBLIC_POOL_CONFIG_KEY?.split(',') || [],
-    []
+    [],
   );
 
   const [mobileTab, setMobileTab] = useState<ExploreTab>(DEFAULT_TAB);
@@ -65,7 +65,7 @@ const ExploreProvider: React.FC<{ children: React.ReactNode }> = ({ children }) 
   // Store all filters in an object to avoid tab -> filter state sync issues
   const [filtersConfig, setFiltersConfig] = useLocalStorage<FiltersConfig>(
     StorageKey.INTEL_EXPLORER_FILTERS_CONFIG,
-    {}
+    {},
   );
 
   const setFilters = useCallback(
@@ -75,7 +75,7 @@ const ExploreProvider: React.FC<{ children: React.ReactNode }> = ({ children }) 
         [tab]: newFilters,
       });
     },
-    [setFiltersConfig, filtersConfig]
+    [setFiltersConfig, filtersConfig],
   );
 
   const setTabPaused = useCallback((tab: ExploreTab, isPaused: boolean) => {
@@ -96,7 +96,7 @@ const ExploreProvider: React.FC<{ children: React.ReactNode }> = ({ children }) 
             partnerConfigs,
           },
         },
-      ])
+      ]),
     ) as Required<GemsTokenListQueryArgs>;
   }, [filtersConfig, partnerConfigs]);
 

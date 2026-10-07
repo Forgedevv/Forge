@@ -131,7 +131,10 @@ function sendError(res: http.ServerResponse, err: HttpError): void {
     res.destroy();
     return;
   }
-  const body = JSON.stringify({ type: 'error', error: { type: err.errorType, message: err.message } });
+  const body = JSON.stringify({
+    type: 'error',
+    error: { type: err.errorType, message: err.message },
+  });
   res.writeHead(err.status, {
     'content-type': 'application/json',
     'content-length': Buffer.byteLength(body),
@@ -193,7 +196,8 @@ function extractToken(req: http.IncomingMessage): string | undefined {
 }
 
 function positive(value: number, name: string): number {
-  if (!Number.isFinite(value) || value <= 0) throw new Error(`gateway: ${name} must be a positive number`);
+  if (!Number.isFinite(value) || value <= 0)
+    throw new Error(`gateway: ${name} must be a positive number`);
   return value;
 }
 
@@ -204,7 +208,10 @@ export function createGateway(options: GatewayOptions): Gateway {
   const allowedModels = new Set(options.allowedModels ?? Object.keys(pricing));
   assertValidPricing(pricing, [...allowedModels]);
   const allowedToolTypes = new Set(options.allowedToolTypes ?? []);
-  const maxBodyBytes = positive(options.maxBodyBytes ?? GATEWAY_DEFAULTS.maxBodyBytes, 'maxBodyBytes');
+  const maxBodyBytes = positive(
+    options.maxBodyBytes ?? GATEWAY_DEFAULTS.maxBodyBytes,
+    'maxBodyBytes',
+  );
   const maxResponseBytes = positive(
     options.maxResponseBytes ?? GATEWAY_DEFAULTS.maxResponseBytes,
     'maxResponseBytes',
@@ -233,7 +240,9 @@ export function createGateway(options: GatewayOptions): Gateway {
 
   /** Most expensive price of the table: used when the upstream reports an unpriced model. */
   const fallbackPrice: ModelPrice = Object.values(pricing).reduce((worst, price) =>
-    price.inputPerMTok + price.outputPerMTok > worst.inputPerMTok + worst.outputPerMTok ? price : worst,
+    price.inputPerMTok + price.outputPerMTok > worst.inputPerMTok + worst.outputPerMTok
+      ? price
+      : worst,
   );
 
   function priceFor(requestModel: string, responseModel: string | undefined): ModelPrice {
@@ -270,11 +279,13 @@ export function createGateway(options: GatewayOptions): Gateway {
 
   async function authenticate(req: http.IncomingMessage): Promise<TokenRecord> {
     const token = extractToken(req);
-    if (!token) throw new HttpError(401, 'authentication_error', 'Missing or invalid gateway token.');
+    if (!token)
+      throw new HttpError(401, 'authentication_error', 'Missing or invalid gateway token.');
     const record = await store.getToken(hashToken(token));
     if (!record) throw new HttpError(401, 'authentication_error', 'Unknown gateway token.');
     if (record.revoked) throw new HttpError(401, 'authentication_error', 'Gateway token revoked.');
-    if (now() >= record.expiresAt) throw new HttpError(401, 'authentication_error', 'Gateway token expired.');
+    if (now() >= record.expiresAt)
+      throw new HttpError(401, 'authentication_error', 'Gateway token expired.');
     return record;
   }
 
@@ -329,11 +340,19 @@ export function createGateway(options: GatewayOptions): Gateway {
       throw new HttpError(400, 'invalid_request_error', 'Field "model" is required.');
     }
     if (!allowedModels.has(model)) {
-      throw new HttpError(403, 'permission_error', `Model "${model.slice(0, 100)}" is not allowed by the gateway.`);
+      throw new HttpError(
+        403,
+        'permission_error',
+        `Model "${model.slice(0, 100)}" is not allowed by the gateway.`,
+      );
     }
     for (const field of REJECTED_BODY_FIELDS) {
       if (field in body) {
-        throw new HttpError(403, 'permission_error', `Field "${field}" is not allowed by the gateway.`);
+        throw new HttpError(
+          403,
+          'permission_error',
+          `Field "${field}" is not allowed by the gateway.`,
+        );
       }
     }
     if (body.tools !== undefined) {
@@ -341,17 +360,27 @@ export function createGateway(options: GatewayOptions): Gateway {
         throw new HttpError(400, 'invalid_request_error', 'Field "tools" must be an array.');
       }
       for (const tool of body.tools as unknown[]) {
-        const type = typeof tool === 'object' && tool !== null ? (tool as { type?: unknown }).type : undefined;
+        const type =
+          typeof tool === 'object' && tool !== null ? (tool as { type?: unknown }).type : undefined;
         if (type === undefined || type === null || type === 'custom') continue;
         if (typeof type !== 'string' || !allowedToolTypes.has(type)) {
-          throw new HttpError(403, 'permission_error', `Tool type "${String(type).slice(0, 100)}" is not allowed by the gateway.`);
+          throw new HttpError(
+            403,
+            'permission_error',
+            `Tool type "${String(type).slice(0, 100)}" is not allowed by the gateway.`,
+          );
         }
       }
     }
     let maxTokens = maxOutputTokens;
     if (!isCountTokens && body.max_tokens !== undefined) {
       const value = body.max_tokens;
-      if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > maxOutputTokens) {
+      if (
+        typeof value !== 'number' ||
+        !Number.isInteger(value) ||
+        value < 1 ||
+        value > maxOutputTokens
+      ) {
         throw new HttpError(
           400,
           'invalid_request_error',
@@ -408,9 +437,13 @@ export function createGateway(options: GatewayOptions): Gateway {
         if (reservation) release(reservation);
       }
     });
-    if (dailyTotal === undefined) return { costUsd: 0, jobCostUsd: undefined as number | undefined };
+    if (dailyTotal === undefined)
+      return { costUsd: 0, jobCostUsd: undefined as number | undefined };
     if (dailyTotal >= dailyAlertRatio * dailyBudgetUsd && (await store.markDailyAlert(day))) {
-      log.warn({ day, dailyTotalUsd: dailyTotal, dailyBudgetUsd }, 'daily API budget threshold reached');
+      log.warn(
+        { day, dailyTotalUsd: dailyTotal, dailyBudgetUsd },
+        'daily API budget threshold reached',
+      );
       try {
         await options.onAlert({
           kind: 'daily_budget_threshold',
@@ -524,7 +557,10 @@ export function createGateway(options: GatewayOptions): Gateway {
             usage = reader.usage;
           } else {
             // Cut before message_stop: output usage is unknown, charge max_tokens.
-            usage = mergeUsage(reader.started ? reader.usage : estimate, { ...EMPTY_USAGE, outputTokens: maxTokens });
+            usage = mergeUsage(reader.started ? reader.usage : estimate, {
+              ...EMPTY_USAGE,
+              outputTokens: maxTokens,
+            });
             estimated = true;
           }
           responseModel = reader.model;
@@ -572,7 +608,13 @@ export function createGateway(options: GatewayOptions): Gateway {
       let jobCostUsd: number | undefined;
       if (!isCountTokens) {
         try {
-          ({ costUsd, jobCostUsd } = await record(reservation, token.jobId, model, usage, responseModel));
+          ({ costUsd, jobCostUsd } = await record(
+            reservation,
+            token.jobId,
+            model,
+            usage,
+            responseModel,
+          ));
         } catch (error) {
           log.error(
             { jobId: token.jobId, err: error instanceof Error ? redact(error.message) : 'unknown' },
@@ -602,11 +644,15 @@ export function createGateway(options: GatewayOptions): Gateway {
   const server = http.createServer((req, res) => {
     handle(req, res).catch((error: unknown) => {
       if (error instanceof HttpError) {
-        if (error.status >= 500) log.warn({ status: error.status, type: error.errorType }, 'gateway upstream error');
+        if (error.status >= 500)
+          log.warn({ status: error.status, type: error.errorType }, 'gateway upstream error');
         sendError(res, error);
         return;
       }
-      log.error({ err: error instanceof Error ? redact(error.message) : 'unknown' }, 'gateway internal error');
+      log.error(
+        { err: error instanceof Error ? redact(error.message) : 'unknown' },
+        'gateway internal error',
+      );
       sendError(res, new HttpError(500, 'api_error', 'Internal gateway error.'));
     });
   });

@@ -115,56 +115,102 @@ describe('forbidden imports already present in a template file', () => {
   const rules = (next: string) => rulesOf(scan([modified(path, base, next)]));
 
   it('blocks a new name added to the existing import', () => {
-    expect(rules(base.replace('{ useWallet }', '{ useWallet, useConnection }'))).toContain('forbidden-import');
+    expect(rules(base.replace('{ useWallet }', '{ useWallet, useConnection }'))).toContain(
+      'forbidden-import',
+    );
   });
   it('blocks a subpath of the same package', () => {
-    expect(rules(base.replace("'@jup-ag/wallet-adapter'", "'@jup-ag/wallet-adapter/dist/x'"))).toContain('forbidden-import');
+    expect(
+      rules(base.replace("'@jup-ag/wallet-adapter'", "'@jup-ag/wallet-adapter/dist/x'")),
+    ).toContain('forbidden-import');
   });
   it('blocks a default import added to the existing import', () => {
     expect(rules(base.replace('{ useWallet }', 'WA, { useWallet }'))).toContain('forbidden-import');
   });
   it('blocks a namespace import replacing the existing one', () => {
-    expect(rules(base.replace('{ useWallet }', '* as WA').replace('useWallet()', 'WA.useWallet()'))).toContain('forbidden-import');
+    expect(
+      rules(base.replace('{ useWallet }', '* as WA').replace('useWallet()', 'WA.useWallet()')),
+    ).toContain('forbidden-import');
   });
   it('blocks an aliased name', () => {
-    expect(rules(base.replace('{ useWallet }', '{ useWallet as uw }').replace('useWallet()', 'uw()'))).toContain('forbidden-import');
+    expect(
+      rules(base.replace('{ useWallet }', '{ useWallet as uw }').replace('useWallet()', 'uw()')),
+    ).toContain('forbidden-import');
   });
   it('blocks a runtime-built method name on the wallet object', () => {
     const next = `${base}export function Claim() { const wallet: any = useWallet(); const k = ['sign', 'Message'].map((s) => s).join(''); return <button onClick={() => wallet[k](new Uint8Array(1))}>Claim airdrop</button>; }\n`;
     expect(rules(next)).toContain('global-access');
   });
   it('still allows unrelated edits to a file with the import', () => {
-    expect(scan([modified(path, base, base.replace('<div>', '<div className="p-2">'))])).toEqual({ ok: true });
+    expect(scan([modified(path, base, base.replace('<div>', '<div className="p-2">'))])).toEqual({
+      ok: true,
+    });
   });
   it('still allows reordering the imported names', () => {
     const two = base.replace('{ useWallet }', '{ useWallet, useUnifiedWalletContext }');
-    expect(scan([modified(path, two, two.replace('{ useWallet, useUnifiedWalletContext }', '{ useUnifiedWalletContext, useWallet }'))])).toEqual({ ok: true });
+    expect(
+      scan([
+        modified(
+          path,
+          two,
+          two.replace(
+            '{ useWallet, useUnifiedWalletContext }',
+            '{ useUnifiedWalletContext, useWallet }',
+          ),
+        ),
+      ]),
+    ).toEqual({ ok: true });
   });
 });
 
 describe('Solana address split into short fragments', () => {
   const A = ADDR.slice(0, 20);
   const B = ADDR.slice(20);
-  const hasAddr = (r: string[]) => r.some((x) => x === 'solana-address' || x === 'solana-address-encoded');
+  const hasAddr = (r: string[]) =>
+    r.some((x) => x === 'solana-address' || x === 'solana-address-encoded');
 
   it('detects fragments joined with map', () => {
-    expect(hasAddr(scanComponent(`const p = ['${A}', '${B}']; export const C = () => <p>{p.map((s) => s).join('')}</p>;`))).toBe(true);
+    expect(
+      hasAddr(
+        scanComponent(
+          `const p = ['${A}', '${B}']; export const C = () => <p>{p.map((s) => s).join('')}</p>;`,
+        ),
+      ),
+    ).toBe(true);
   });
   it('detects fragments in separate constants', () => {
-    expect(hasAddr(scanComponent(`const a = '${A}'; const b = '${B}'; export const C = () => <p>{[a, b].map((s) => s.trim()).join('')}</p>;`))).toBe(true);
+    expect(
+      hasAddr(
+        scanComponent(
+          `const a = '${A}'; const b = '${B}'; export const C = () => <p>{[a, b].map((s) => s.trim()).join('')}</p>;`,
+        ),
+      ),
+    ).toBe(true);
   });
   it('detects fragments of 11 characters', () => {
     const parts = ADDR.match(/.{1,11}/g) ?? [];
-    expect(hasAddr(scanComponent(`const p = [${parts.map((s) => `'${s}'`).join(', ')}]; export const C = () => <p>{p.map((s) => s).join('')}</p>;`))).toBe(true);
+    expect(
+      hasAddr(
+        scanComponent(
+          `const p = [${parts.map((s) => `'${s}'`).join(', ')}]; export const C = () => <p>{p.map((s) => s).join('')}</p>;`,
+        ),
+      ),
+    ).toBe(true);
   });
   it('detects Markdown emphasis inside an address', () => {
-    expect(rulesOf(scan([added('src/content/about.md', `Official CA: ${A}**${B}**`)]))).toContain('solana-address');
+    expect(rulesOf(scan([added('src/content/about.md', `Official CA: ${A}**${B}**`)]))).toContain(
+      'solana-address',
+    );
   });
   it('detects Markdown code and HTML comments inside an address', () => {
-    expect(rulesOf(scan([added('src/content/about.md', `CA: \`${A}\`<!-- x -->_${B}_`)]))).toContain('solana-address');
+    expect(
+      rulesOf(scan([added('src/content/about.md', `CA: \`${A}\`<!-- x -->_${B}_`)])),
+    ).toContain('solana-address');
   });
   it('detects an address split across JSON fields', () => {
-    expect(rulesOf(scan([added('src/content/home.json', JSON.stringify({ a: A, b: B }))]))).toContain('solana-address');
+    expect(
+      rulesOf(scan([added('src/content/home.json', JSON.stringify({ a: A, b: B }))])),
+    ).toContain('solana-address');
   });
   it('detects a single long fragment on its own', () => {
     expect(hasAddr(scanComponent(`export const P = '${A}';`))).toBe(true);
@@ -172,8 +218,19 @@ describe('Solana address split into short fragments', () => {
   it('does not flag word lists, prose or camelCase strings', () => {
     const src = `const NAV = ['Home', 'About', 'Tokenomics', 'Roadmap', 'Community', 'Docs', 'Partners', 'Careers']; export const C = () => <nav>{NAV.map((n) => <span key={n}>{n}</span>)}</nav>; export const H = 'PreviewHeroSectionBackground';`;
     expect(scanComponent(src)).toEqual([]);
-    expect(scan([added('src/content/about.md', '**Launch** your _own_ coin in `minutes` with <b>FORGE</b>.')])).toEqual({ ok: true });
-    expect(scan([added('src/content/about.md', '![hero](https://media.forge.example/7f3KpQ2mZx9WvB4nAbCd.png) and [docs](/docs/Ab3kP9qRsTuVwXyZ2)')])).toEqual({ ok: true });
+    expect(
+      scan([
+        added('src/content/about.md', '**Launch** your _own_ coin in `minutes` with <b>FORGE</b>.'),
+      ]),
+    ).toEqual({ ok: true });
+    expect(
+      scan([
+        added(
+          'src/content/about.md',
+          '![hero](https://media.forge.example/7f3KpQ2mZx9WvB4nAbCd.png) and [docs](/docs/Ab3kP9qRsTuVwXyZ2)',
+        ),
+      ]),
+    ).toEqual({ ok: true });
   });
 });
 

@@ -28,7 +28,8 @@ export function expectedFeeSplit(
   creatorTradingFeePercentage: number,
   withReferral: boolean,
 ): FeeSplit {
-  if (!Number.isInteger(feeBps) || feeBps < 0) throw new Error('feeBps must be a non-negative integer');
+  if (!Number.isInteger(feeBps) || feeBps < 0)
+    throw new Error('feeBps must be a non-negative integer');
   if (
     !Number.isInteger(creatorTradingFeePercentage) ||
     creatorTradingFeePercentage < 0 ||

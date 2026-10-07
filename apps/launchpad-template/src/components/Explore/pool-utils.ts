@@ -15,7 +15,7 @@ import { Launchpad } from '@/contexts/types';
 export function getSorterFieldValue(
   field: TokenListSortByField,
   timeframe: TokenListTimeframe,
-  pool: Pool
+  pool: Pool,
 ) {
   const stats = pool.baseAsset[`stats${timeframe}`];
   switch (field) {
@@ -98,7 +98,7 @@ export function createPoolSorter(
     sortBy: TokenListSortByField | TokenListSortBy;
     sortDir: TokenListSortDir;
   },
-  timeframe: TokenListTimeframe
+  timeframe: TokenListTimeframe,
 ) {
   const sortBy = normalizeSortByField(sorter.sortBy);
 
@@ -129,7 +129,7 @@ export function watchlistSortBy(timeframe: TokenListTimeframe): TokenListSortBy 
 
 export function categorySortBy(
   category: TokenListTab,
-  timeframe: TokenListTimeframe
+  timeframe: TokenListTimeframe,
 ): TokenListSortBy | undefined {
   switch (category) {
     case TokenListTab.NEW:
@@ -152,7 +152,7 @@ export function categorySortDir(category: TokenListTab): TokenListSortDir {
 
 export function sortPools(
   pools: Pool[],
-  options: { tab: TokenListTab; timeframe: TokenListTimeframe }
+  options: { tab: TokenListTab; timeframe: TokenListTimeframe },
 ) {
   const sortDir = categorySortDir(options.tab);
   let sortBy: TokenListSortByField | undefined;
@@ -273,6 +273,6 @@ export function patchStreamPool<T extends Pool>(streamedPool: Pool, existingPool
   return Object.assign(
     {},
     streamedPool,
-    'bondingCurveId' in existingPool ? { bondingCurveId: existingPool.bondingCurveId } : {}
+    'bondingCurveId' in existingPool ? { bondingCurveId: existingPool.bondingCurveId } : {},
   ) as T;
 }

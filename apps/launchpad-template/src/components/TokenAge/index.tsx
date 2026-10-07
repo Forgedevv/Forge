@@ -24,7 +24,7 @@ export const TokenAge: React.FC<TokenAgeProps> = memo(({ date: dateStr, classNam
           'text-neutral-500': date === undefined,
           'text-primary': isRecent,
         },
-        className
+        className,
       )}
       {...props}
     >

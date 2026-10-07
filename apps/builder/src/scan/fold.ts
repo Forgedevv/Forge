@@ -41,7 +41,9 @@ interface Binding {
 }
 
 function isObjectValue(v: Result): v is ObjectValue {
-  return typeof v === 'object' && v !== null && !Array.isArray(v) && (v as ObjectValue).__object === true;
+  return (
+    typeof v === 'object' && v !== null && !Array.isArray(v) && (v as ObjectValue).__object === true
+  );
 }
 
 function makeObject(props: Map<string, Value | Unknown>): ObjectValue {
@@ -75,7 +77,13 @@ function capped(s: string): string | Unknown {
 function unwrap(node: ts.Expression): ts.Expression {
   let n: ts.Expression = node;
   for (;;) {
-    if (ts.isParenthesizedExpression(n) || ts.isAsExpression(n) || ts.isNonNullExpression(n) || ts.isSatisfiesExpression(n) || ts.isTypeAssertionExpression(n)) {
+    if (
+      ts.isParenthesizedExpression(n) ||
+      ts.isAsExpression(n) ||
+      ts.isNonNullExpression(n) ||
+      ts.isSatisfiesExpression(n) ||
+      ts.isTypeAssertionExpression(n)
+    ) {
       n = n.expression;
     } else {
       return n;
@@ -86,7 +94,12 @@ function unwrap(node: ts.Expression): ts.Expression {
 /** Name of a property name node, if static. */
 export function staticPropertyName(name: ts.PropertyName, folder?: Folder): string | Unknown {
   if (ts.isIdentifier(name) || ts.isPrivateIdentifier(name)) return ts.idText(name);
-  if (ts.isStringLiteral(name) || ts.isNumericLiteral(name) || ts.isNoSubstitutionTemplateLiteral(name)) return name.text;
+  if (
+    ts.isStringLiteral(name) ||
+    ts.isNumericLiteral(name) ||
+    ts.isNoSubstitutionTemplateLiteral(name)
+  )
+    return name.text;
   if (ts.isComputedPropertyName(name) && folder) {
     const v = folder.fold(name.expression);
     if (v === UNKNOWN) return UNKNOWN;
@@ -114,7 +127,12 @@ const SELF_ORIGIN_CHAINS = new Set([
   'document.location.origin',
   'window.origin',
 ]);
-const SELF_HREF_CHAINS = new Set(['window.location.href', 'location.href', 'document.location.href', 'document.URL']);
+const SELF_HREF_CHAINS = new Set([
+  'window.location.href',
+  'location.href',
+  'document.location.href',
+  'document.URL',
+]);
 
 export class Folder {
   private readonly bindings = new Map<string, Binding>();
@@ -125,7 +143,12 @@ export class Folder {
     this.collect(sourceFile);
   }
 
-  private declare(name: string, kind: Binding['kind'], init?: ts.Expression, returns?: ts.Expression): void {
+  private declare(
+    name: string,
+    kind: Binding['kind'],
+    init?: ts.Expression,
+    returns?: ts.Expression,
+  ): void {
     const existing = this.bindings.get(name);
     if (existing) {
       existing.declarations += 1;
@@ -142,7 +165,8 @@ export class Folder {
       if (ts.isVariableDeclaration(node)) {
         if (ts.isIdentifier(node.name)) {
           const flags = ts.getCombinedNodeFlags(node);
-          const kind = flags & ts.NodeFlags.Const ? 'const' : flags & ts.NodeFlags.Let ? 'let' : 'var';
+          const kind =
+            flags & ts.NodeFlags.Const ? 'const' : flags & ts.NodeFlags.Let ? 'let' : 'var';
           const init = node.initializer;
           let returns: ts.Expression | undefined;
           if (init && (ts.isArrowFunction(unwrap(init)) || ts.isFunctionExpression(unwrap(init)))) {
@@ -159,7 +183,12 @@ export class Folder {
         for (const id of bindingNames(node.name)) this.declare(id, 'var');
       } else if (ts.isClassDeclaration(node) && node.name) {
         this.declare(ts.idText(node.name), 'var');
-      } else if (ts.isImportClause(node) || ts.isImportSpecifier(node) || ts.isNamespaceImport(node) || ts.isImportEqualsDeclaration(node)) {
+      } else if (
+        ts.isImportClause(node) ||
+        ts.isImportSpecifier(node) ||
+        ts.isNamespaceImport(node) ||
+        ts.isImportEqualsDeclaration(node)
+      ) {
         if (node.name) this.declare(ts.idText(node.name), 'var');
       } else if (ts.isEnumDeclaration(node) || ts.isModuleDeclaration(node)) {
         if (ts.isIdentifier(node.name)) this.declare(ts.idText(node.name), 'var');
@@ -169,7 +198,8 @@ export class Folder {
           const name = ts.idText(target);
           const b = this.bindings.get(name);
           const record = (bb: Binding): void => {
-            if (node.operatorToken.kind === ts.SyntaxKind.PlusEqualsToken) bb.appends.push(node.right);
+            if (node.operatorToken.kind === ts.SyntaxKind.PlusEqualsToken)
+              bb.appends.push(node.right);
             else bb.reassigned = true;
           };
           if (b) record(b);
@@ -177,12 +207,21 @@ export class Folder {
         } else if (ts.isObjectLiteralExpression(target) || ts.isArrayLiteralExpression(target)) {
           this.markDestructuringTargets(target);
         }
-      } else if ((ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node)) && ts.isIdentifier(unwrap(node.operand))) {
-        if (node.operator === ts.SyntaxKind.PlusPlusToken || node.operator === ts.SyntaxKind.MinusMinusToken) {
+      } else if (
+        (ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node)) &&
+        ts.isIdentifier(unwrap(node.operand))
+      ) {
+        if (
+          node.operator === ts.SyntaxKind.PlusPlusToken ||
+          node.operator === ts.SyntaxKind.MinusMinusToken
+        ) {
           const name = ts.idText(unwrap(node.operand) as ts.Identifier);
           this.pendingAssignments.push({ name, record: (bb) => (bb.reassigned = true) });
         }
-      } else if ((ts.isForInStatement(node) || ts.isForOfStatement(node)) && ts.isIdentifier(unwrap(node.initializer as ts.Expression))) {
+      } else if (
+        (ts.isForInStatement(node) || ts.isForOfStatement(node)) &&
+        ts.isIdentifier(unwrap(node.initializer as ts.Expression))
+      ) {
         const name = ts.idText(unwrap(node.initializer as ts.Expression) as ts.Identifier);
         this.pendingAssignments.push({ name, record: (bb) => (bb.reassigned = true) });
       }
@@ -222,9 +261,14 @@ export class Folder {
     const b = this.binding(name);
     if (!b || b.kind !== 'const' || !b.init) return false;
     const init = unwrap(b.init);
-    if (ts.isArrayLiteralExpression(init)) return init.elements.every((e) => !ts.isSpreadElement(e));
+    if (ts.isArrayLiteralExpression(init))
+      return init.elements.every((e) => !ts.isSpreadElement(e));
     if (ts.isObjectLiteralExpression(init)) {
-      return init.properties.every((p) => !ts.isSpreadAssignment(p) && (p.name === undefined || staticPropertyName(p.name, this) !== '__proto__'));
+      return init.properties.every(
+        (p) =>
+          !ts.isSpreadAssignment(p) &&
+          (p.name === undefined || staticPropertyName(p.name, this) !== '__proto__'),
+      );
     }
     return false;
   }
@@ -323,9 +367,12 @@ export class Folder {
       const op = n.operatorToken.kind;
       if (op === ts.SyntaxKind.CommaToken) return this.fold(n.right, depth);
       const l = this.fold(n.left, depth);
-      if (op === ts.SyntaxKind.BarBarToken) return l === UNKNOWN ? UNKNOWN : l ? l : this.fold(n.right, depth);
-      if (op === ts.SyntaxKind.AmpersandAmpersandToken) return l === UNKNOWN ? UNKNOWN : l ? this.fold(n.right, depth) : l;
-      if (op === ts.SyntaxKind.QuestionQuestionToken) return l === UNKNOWN ? UNKNOWN : l === null ? this.fold(n.right, depth) : l;
+      if (op === ts.SyntaxKind.BarBarToken)
+        return l === UNKNOWN ? UNKNOWN : l ? l : this.fold(n.right, depth);
+      if (op === ts.SyntaxKind.AmpersandAmpersandToken)
+        return l === UNKNOWN ? UNKNOWN : l ? this.fold(n.right, depth) : l;
+      if (op === ts.SyntaxKind.QuestionQuestionToken)
+        return l === UNKNOWN ? UNKNOWN : l === null ? this.fold(n.right, depth) : l;
       if (op === ts.SyntaxKind.PlusToken) {
         const r = this.fold(n.right, depth);
         if (l === UNKNOWN || r === UNKNOWN) return UNKNOWN;
@@ -442,7 +489,9 @@ export class Folder {
       if (args === UNKNOWN) return UNKNOWN;
       const nums = args.flat() as Value[];
       if (!nums.every((x) => typeof x === 'number')) return UNKNOWN;
-      return chain === 'String.fromCharCode' ? String.fromCharCode(...(nums as number[])) : String.fromCodePoint(...(nums as number[]));
+      return chain === 'String.fromCharCode'
+        ? String.fromCharCode(...(nums as number[]))
+        : String.fromCodePoint(...(nums as number[]));
     }
     if (chain === 'String' && n.arguments.length === 1) {
       const a = n.arguments[0];
@@ -456,7 +505,10 @@ export class Folder {
     if (chain === 'decodeURIComponent' || chain === 'decodeURI' || chain === 'unescape') {
       const s = n.arguments[0] ? this.foldString(n.arguments[0]) : UNKNOWN;
       if (s === UNKNOWN) return UNKNOWN;
-      if (chain === 'unescape') return s.replace(/%u([0-9a-fA-F]{4})|%([0-9a-fA-F]{2})/g, (_m, u: string, h: string) => String.fromCharCode(parseInt(u ?? h, 16)));
+      if (chain === 'unescape')
+        return s.replace(/%u([0-9a-fA-F]{4})|%([0-9a-fA-F]{2})/g, (_m, u: string, h: string) =>
+          String.fromCharCode(parseInt(u ?? h, 16)),
+        );
       return chain === 'decodeURI' ? decodeURI(s) : decodeURIComponent(s);
     }
     if (chain === 'JSON.parse' && n.arguments[0]) {
@@ -468,7 +520,8 @@ export class Folder {
     // Parameterless local function returning a single expression
     if (ts.isIdentifier(callee) && n.arguments.length === 0) {
       const b = this.bindings.get(ts.idText(callee));
-      if (b && b.declarations === 1 && !b.reassigned && b.returns) return this.fold(b.returns, depth);
+      if (b && b.declarations === 1 && !b.reassigned && b.returns)
+        return this.fold(b.returns, depth);
     }
 
     if (!ts.isPropertyAccessExpression(callee)) return UNKNOWN;
@@ -484,7 +537,8 @@ export class Folder {
         if (src === UNKNOWN || enc === UNKNOWN || out === UNKNOWN) return UNKNOWN;
         let buf: Buffer;
         if (typeof src === 'string') buf = Buffer.from(src, enc as BufferEncoding);
-        else if (Array.isArray(src) && src.every((x) => typeof x === 'number')) buf = Buffer.from(src as number[]);
+        else if (Array.isArray(src) && src.every((x) => typeof x === 'number'))
+          buf = Buffer.from(src as number[]);
         else return UNKNOWN;
         return capped(buf.toString(out as BufferEncoding));
       }
@@ -492,9 +546,16 @@ export class Folder {
     // new TextDecoder().decode(new Uint8Array([...]))
     if (method === 'decode') {
       const recv = unwrap(callee.expression);
-      if (ts.isNewExpression(recv) && memberChain(recv.expression) === 'TextDecoder' && n.arguments[0]) {
+      if (
+        ts.isNewExpression(recv) &&
+        memberChain(recv.expression) === 'TextDecoder' &&
+        n.arguments[0]
+      ) {
         const arg = unwrap(n.arguments[0]);
-        const arr = ts.isNewExpression(arg) && arg.arguments?.[0] ? this.fold(arg.arguments[0], depth) : this.fold(arg, depth);
+        const arr =
+          ts.isNewExpression(arg) && arg.arguments?.[0]
+            ? this.fold(arg.arguments[0], depth)
+            : this.fold(arg, depth);
         if (!Array.isArray(arr) || !arr.every((x) => typeof x === 'number')) return UNKNOWN;
         return Buffer.from(arr as number[]).toString('utf8');
       }
@@ -503,7 +564,9 @@ export class Folder {
     const recv = this.fold(callee.expression, depth);
     if (recv === UNKNOWN) return UNKNOWN;
     // Regex literal arguments (replace/split) are read directly by stringMethod.
-    const argNodes = n.arguments.map((a) => (ts.isRegularExpressionLiteral(unwrap(a)) ? ts.factory.createNull() : a));
+    const argNodes = n.arguments.map((a) =>
+      ts.isRegularExpressionLiteral(unwrap(a)) ? ts.factory.createNull() : a,
+    );
     const args = this.foldArgs(argNodes, depth);
     if (args === UNKNOWN) return UNKNOWN;
 
@@ -520,8 +583,10 @@ export class Folder {
     if (depth > MAX_DEPTH) return [{ text: '', complete: false }];
     const n = unwrap(node);
     const chain = memberChain(n);
-    if (chain !== null && SELF_ORIGIN_CHAINS.has(chain)) return [{ text: SELF_ORIGIN, complete: true }];
-    if (chain !== null && SELF_HREF_CHAINS.has(chain)) return [{ text: `${SELF_ORIGIN}/`, complete: false }];
+    if (chain !== null && SELF_ORIGIN_CHAINS.has(chain))
+      return [{ text: SELF_ORIGIN, complete: true }];
+    if (chain !== null && SELF_HREF_CHAINS.has(chain))
+      return [{ text: `${SELF_ORIGIN}/`, complete: false }];
 
     const folded = this.fold(n);
     if (folded !== UNKNOWN && (typeof folded === 'string' || typeof folded === 'number')) {
@@ -539,15 +604,25 @@ export class Folder {
     if (ts.isBinaryExpression(n)) {
       const op = n.operatorToken.kind;
       if (op === ts.SyntaxKind.PlusToken) {
-        return combine(this.urlCandidates(n.left, depth + 1), this.urlCandidates(n.right, depth + 1), '');
+        return combine(
+          this.urlCandidates(n.left, depth + 1),
+          this.urlCandidates(n.right, depth + 1),
+          '',
+        );
       }
       if (op === ts.SyntaxKind.BarBarToken || op === ts.SyntaxKind.QuestionQuestionToken) {
-        return limit([...this.urlCandidates(n.left, depth + 1), ...this.urlCandidates(n.right, depth + 1)]);
+        return limit([
+          ...this.urlCandidates(n.left, depth + 1),
+          ...this.urlCandidates(n.right, depth + 1),
+        ]);
       }
       if (op === ts.SyntaxKind.CommaToken) return this.urlCandidates(n.right, depth + 1);
     }
     if (ts.isConditionalExpression(n)) {
-      return limit([...this.urlCandidates(n.whenTrue, depth + 1), ...this.urlCandidates(n.whenFalse, depth + 1)]);
+      return limit([
+        ...this.urlCandidates(n.whenTrue, depth + 1),
+        ...this.urlCandidates(n.whenFalse, depth + 1),
+      ]);
     }
     if (ts.isIdentifier(n)) {
       const b = this.binding(ts.idText(n));
@@ -557,8 +632,10 @@ export class Folder {
     if (ts.isNewExpression(n)) {
       const ctor = memberChain(n.expression);
       const args = n.arguments ?? [];
-      if ((ctor === 'Request' || ctor === 'window.Request') && args[0]) return this.urlCandidates(args[0], depth + 1);
-      if ((ctor === 'URL' || ctor === 'window.URL') && args[0]) return this.newUrlCandidates(args[0], args[1], depth);
+      if ((ctor === 'Request' || ctor === 'window.Request') && args[0])
+        return this.urlCandidates(args[0], depth + 1);
+      if ((ctor === 'URL' || ctor === 'window.URL') && args[0])
+        return this.newUrlCandidates(args[0], args[1], depth);
     }
     if (ts.isPropertyAccessExpression(n) && ['href', 'toString'].includes(ts.idText(n.name))) {
       return this.urlCandidates(n.expression, depth + 1);
@@ -569,13 +646,21 @@ export class Folder {
         return this.urlCandidates(callee.expression, depth + 1);
       }
     }
-    if (ts.isCallExpression(n) && n.arguments[0] && ['String', 'encodeURI'].includes(memberChain(n.expression) ?? '')) {
+    if (
+      ts.isCallExpression(n) &&
+      n.arguments[0] &&
+      ['String', 'encodeURI'].includes(memberChain(n.expression) ?? '')
+    ) {
       return this.urlCandidates(n.arguments[0], depth + 1);
     }
     return [{ text: '', complete: false }];
   }
 
-  private newUrlCandidates(input: ts.Expression, base: ts.Expression | undefined, depth: number): UrlCandidate[] {
+  private newUrlCandidates(
+    input: ts.Expression,
+    base: ts.Expression | undefined,
+    depth: number,
+  ): UrlCandidate[] {
     const inputs = this.urlCandidates(input, depth + 1);
     if (!base) return inputs;
     const bases = this.urlCandidates(base, depth + 1);
@@ -589,7 +674,11 @@ export class Folder {
         if (b.complete) {
           try {
             const origin = new URL(b.text).origin;
-            out.push(i.complete ? { text: new URL(i.text, b.text).href, complete: true } : { text: `${origin}/`, complete: false });
+            out.push(
+              i.complete
+                ? { text: new URL(i.text, b.text).href, complete: true }
+                : { text: `${origin}/`, complete: false },
+            );
           } catch {
             out.push({ text: '', complete: false });
           }
@@ -621,7 +710,11 @@ function combine(left: UrlCandidate[], right: UrlCandidate[], suffix: string): U
       continue;
     }
     for (const r of right) {
-      out.push(r.complete ? { text: l.text + r.text + suffix, complete: true } : { text: l.text + r.text, complete: false });
+      out.push(
+        r.complete
+          ? { text: l.text + r.text + suffix, complete: true }
+          : { text: l.text + r.text, complete: false },
+      );
     }
   }
   return limit(out);
@@ -666,7 +759,12 @@ function regexFrom(node: ts.Expression | undefined): RegExp | null {
   }
 }
 
-function stringMethod(s: string, method: string, args: Value[], argNodes: readonly ts.Expression[]): Result {
+function stringMethod(
+  s: string,
+  method: string,
+  args: Value[],
+  argNodes: readonly ts.Expression[],
+): Result {
   const a0 = args[0];
   const a1 = args[1];
   switch (method) {
@@ -780,7 +878,8 @@ function arrayMethod(arr: Value[], method: string, args: Value[]): Result {
 }
 
 function fromJson(v: unknown): Result {
-  if (v === null || typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') return v;
+  if (v === null || typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean')
+    return v;
   if (Array.isArray(v)) {
     const out: Value[] = [];
     for (const e of v) {
@@ -792,13 +891,16 @@ function fromJson(v: unknown): Result {
   }
   if (typeof v === 'object') {
     const props = new Map<string, Value | Unknown>();
-    for (const [k, val] of Object.entries(v as Record<string, unknown>)) props.set(k, fromJson(val));
+    for (const [k, val] of Object.entries(v as Record<string, unknown>))
+      props.set(k, fromJson(val));
     return makeObject(props);
   }
   return UNKNOWN;
 }
 
-function singleReturn(fn: ts.ArrowFunction | ts.FunctionExpression | ts.FunctionDeclaration): ts.Expression | undefined {
+function singleReturn(
+  fn: ts.ArrowFunction | ts.FunctionExpression | ts.FunctionDeclaration,
+): ts.Expression | undefined {
   if (fn.parameters.length > 0) return undefined;
   const body = fn.body;
   if (!body) return undefined;

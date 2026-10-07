@@ -10,7 +10,14 @@ export type FileKind = 'code' | 'style' | 'json' | 'markdown' | 'text' | 'svg' |
 export const FORGE_CONFIG_PATH = 'forge.config.json';
 export const ROOT_PACKAGE_JSON = 'package.json';
 
-const LOCKFILES = new Set(['pnpm-lock.yaml', 'package-lock.json', 'npm-shrinkwrap.json', 'yarn.lock', 'bun.lockb', 'bun.lock']);
+const LOCKFILES = new Set([
+  'pnpm-lock.yaml',
+  'package-lock.json',
+  'npm-shrinkwrap.json',
+  'yarn.lock',
+  'bun.lockb',
+  'bun.lock',
+]);
 
 const KIND_BY_EXT: Record<string, FileKind> = {
   ts: 'code',
@@ -37,7 +44,20 @@ const KIND_BY_EXT: Record<string, FileKind> = {
 };
 
 /** Extensions accepted in public/ (served as-is): images and fonts only. */
-const PUBLIC_EXTS = new Set(['svg', 'png', 'jpg', 'jpeg', 'gif', 'webp', 'avif', 'ico', 'woff', 'woff2', 'ttf', 'otf']);
+const PUBLIC_EXTS = new Set([
+  'svg',
+  'png',
+  'jpg',
+  'jpeg',
+  'gif',
+  'webp',
+  'avif',
+  'ico',
+  'woff',
+  'woff2',
+  'ttf',
+  'otf',
+]);
 
 const SRC_ZONES = ['src/theme/', 'src/content/', 'src/components/', 'src/pages/'] as const;
 
@@ -62,12 +82,15 @@ export function normalizePath(raw: string): PathCheck {
   if (raw.length === 0) return { ok: false, reason: 'empty path' };
   if (raw.length > 400) return { ok: false, reason: 'path too long' };
   const path = raw.startsWith('./') ? raw.slice(2) : raw;
-  if (path.startsWith('/') || /^[A-Za-z]:/.test(path)) return { ok: false, reason: 'absolute path' };
+  if (path.startsWith('/') || /^[A-Za-z]:/.test(path))
+    return { ok: false, reason: 'absolute path' };
   if (path.includes('\\')) return { ok: false, reason: 'backslash in path' };
   const segments = path.split('/');
   for (const seg of segments) {
-    if (seg === '' || seg === '.' || seg === '..') return { ok: false, reason: `invalid path segment "${seg}"` };
-    if (!/^[A-Za-z0-9._@()[\]+-]+$/.test(seg)) return { ok: false, reason: 'unsupported characters in path' };
+    if (seg === '' || seg === '.' || seg === '..')
+      return { ok: false, reason: `invalid path segment "${seg}"` };
+    if (!/^[A-Za-z0-9._@()[\]+-]+$/.test(seg))
+      return { ok: false, reason: 'unsupported characters in path' };
   }
   return { ok: true, path };
 }
@@ -85,14 +108,28 @@ export function classifyPath(path: string): ZoneClass {
   const segments = lower.split('/');
   const base = segments[segments.length - 1] ?? '';
 
-  if (segments.includes('node_modules')) return { zone: 'blocked', rule: 'node-modules', reason: 'file under node_modules/' };
-  if (segments.slice(0, -1).includes('patches') || /\.(?:patch|diff)$/.test(base) || base.startsWith('.patch-package')) {
-    return { zone: 'blocked', rule: 'patch-package', reason: 'patch file (patch-package / patches/)' };
+  if (segments.includes('node_modules'))
+    return { zone: 'blocked', rule: 'node-modules', reason: 'file under node_modules/' };
+  if (
+    segments.slice(0, -1).includes('patches') ||
+    /\.(?:patch|diff)$/.test(base) ||
+    base.startsWith('.patch-package')
+  ) {
+    return {
+      zone: 'blocked',
+      rule: 'patch-package',
+      reason: 'patch file (patch-package / patches/)',
+    };
   }
   if (lower === 'src/forge' || lower.startsWith('src/forge/')) {
     return { zone: 'blocked', rule: 'forge-locked-zone', reason: 'src/forge/ is locked' };
   }
-  if (base.startsWith('next.config.')) return { zone: 'blocked', rule: 'next-config', reason: 'next.config is locked (security headers)' };
+  if (base.startsWith('next.config.'))
+    return {
+      zone: 'blocked',
+      rule: 'next-config',
+      reason: 'next.config is locked (security headers)',
+    };
   if (path === FORGE_CONFIG_PATH) return { zone: 'forge-config' };
   if (LOCKFILES.has(base)) return { zone: 'lockfile' };
   if (path === ROOT_PACKAGE_JSON) return { zone: 'package-json' };
@@ -103,15 +140,27 @@ export function classifyPath(path: string): ZoneClass {
   const inSrcZone = SRC_ZONES.some((z) => path.startsWith(z));
   const inPublic = path.startsWith('public/');
   if (!inSrcZone && !inPublic) {
-    return { zone: 'blocked', rule: 'zone-outside-allowed', reason: 'file outside the allowed zones' };
+    return {
+      zone: 'blocked',
+      rule: 'zone-outside-allowed',
+      reason: 'file outside the allowed zones',
+    };
   }
   if (segments.some((s) => s.startsWith('.')) || SPECIAL_BASENAME_RE.test(base)) {
-    return { zone: 'blocked', rule: 'special-file', reason: `configuration or hidden file "${base}" is not allowed` };
+    return {
+      zone: 'blocked',
+      rule: 'special-file',
+      reason: `configuration or hidden file "${base}" is not allowed`,
+    };
   }
   const ext = extensionOf(path);
   const kind = KIND_BY_EXT[ext];
   if (kind === undefined || (inPublic && !PUBLIC_EXTS.has(ext))) {
-    return { zone: 'blocked', rule: 'file-type-not-allowed', reason: `file type ".${ext}" is not allowed here` };
+    return {
+      zone: 'blocked',
+      rule: 'file-type-not-allowed',
+      reason: `file type ".${ext}" is not allowed here`,
+    };
   }
   return { zone: 'free', kind };
 }

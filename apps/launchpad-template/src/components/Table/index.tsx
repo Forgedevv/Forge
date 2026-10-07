@@ -4,7 +4,7 @@ import * as React from 'react';
 const Table = React.forwardRef<HTMLTableElement, React.HTMLAttributes<HTMLTableElement>>(
   ({ className, ...props }, ref) => (
     <table ref={ref} className={cn('sm w-full caption-bottom', className)} {...props} />
-  )
+  ),
 );
 Table.displayName = 'Table';
 
@@ -18,7 +18,7 @@ TableHeader.displayName = 'TableHeader';
 
 type TableBodyProps = React.ComponentProps<'tbody'>;
 const TableBody = React.forwardRef<HTMLTableSectionElement, TableBodyProps>(
-  ({ className, ...props }, ref) => <tbody ref={ref} className={cn(className)} {...props} />
+  ({ className, ...props }, ref) => <tbody ref={ref} className={cn(className)} {...props} />,
 );
 TableBody.displayName = 'TableBody';
 
@@ -44,11 +44,11 @@ const TableRow = React.forwardRef<HTMLTableRowElement, TableRowProps>(
           'border-b border-b-neutral-900': !isSticky,
           'shadow-[0_1px_0_0_theme(colors.neutral.900)]': isSticky,
         },
-        className
+        className,
       )}
       {...props}
     />
-  )
+  ),
 );
 TableRow.displayName = 'TableRow';
 
@@ -60,7 +60,7 @@ const TableHead = React.forwardRef<
     ref={ref}
     className={cn(
       'h-8 whitespace-nowrap px-1 text-left align-middle font-medium text-neutral-500 sm:h-10 sm:px-2',
-      className
+      className,
     )}
     {...props}
   />
@@ -76,8 +76,8 @@ const TableCell = React.memo(
         className={cn('table-cell whitespace-nowrap px-1 align-middle sm:px-2', className)}
         {...props}
       />
-    )
-  )
+    ),
+  ),
 );
 TableCell.displayName = 'TableCell';
 

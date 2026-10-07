@@ -54,7 +54,10 @@ function normalizeHostPattern(raw: string): string {
 }
 
 export function resolveConfig(options: ScanOptions = {}): ResolvedConfig {
-  const hosts = [...(options.allowedHosts ?? DEFAULT_ALLOWED_HOSTS), ...(options.extraAllowedHosts ?? [])];
+  const hosts = [
+    ...(options.allowedHosts ?? DEFAULT_ALLOWED_HOSTS),
+    ...(options.extraAllowedHosts ?? []),
+  ];
   if (options.rpcRelayHost) hosts.push(options.rpcRelayHost);
   if (options.r2PublicHost) hosts.push(options.r2PublicHost);
   return {

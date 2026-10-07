@@ -42,9 +42,13 @@ const funder = balances.get('funder') ?? 0n;
 const reserve = solToLamports(0.05);
 const missing = totalShortfall + reserve > funder ? totalShortfall + reserve - funder : 0n;
 console.log('');
-console.log(`Funder holds ${formatSol(funder)}; total still to distribute ${formatSol(totalShortfall)} (+ reserve).`);
+console.log(
+  `Funder holds ${formatSol(funder)}; total still to distribute ${formatSol(totalShortfall)} (+ reserve).`,
+);
 if (missing > 0n) {
-  console.log(`=> Send at least ${formatSol(roundUpToTenth(missing))} to ${wallets.funder.publicKey.toBase58()}`);
+  console.log(
+    `=> Send at least ${formatSol(roundUpToTenth(missing))} to ${wallets.funder.publicKey.toBase58()}`,
+  );
 } else {
   console.log('=> Funding is sufficient for the remaining tests.');
 }

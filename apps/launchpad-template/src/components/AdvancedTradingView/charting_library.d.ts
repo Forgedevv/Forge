@@ -767,7 +767,7 @@ export interface AccountManagerInfo {
    */
   contextMenuActions?(
     contextMenuEvent: MouseEvent | TouchEvent,
-    activePageActions: ActionMetaInfo[]
+    activePageActions: ActionMetaInfo[],
   ): Promise<ActionMetaInfo[]>;
 }
 /** A description of an additional Account Manager tab. */
@@ -1575,7 +1575,7 @@ export interface BrokerCustomUI {
    */
   showOrderDialog?: (
     order: OrderTemplate | Order,
-    focus?: OrderTicketFocusControl
+    focus?: OrderTicketFocusControl,
   ) => Promise<boolean>;
   /**
    * Shows the Position Dialog
@@ -1586,7 +1586,7 @@ export interface BrokerCustomUI {
   showPositionDialog?: (
     position: Position | Trade,
     brackets: Brackets,
-    focus?: OrderTicketFocusControl
+    focus?: OrderTicketFocusControl,
   ) => Promise<boolean>;
   /**
    * Shows a confirmation dialog and executes handler if YES/OK is pressed.
@@ -2884,7 +2884,7 @@ export interface ChartingLibraryWidgetConstructor {
    * @param  {ChartingLibraryWidgetOptions|TradingTerminalWidgetOptions} options - Constructor options
    */
   new (
-    options: ChartingLibraryWidgetOptions | TradingTerminalWidgetOptions
+    options: ChartingLibraryWidgetOptions | TradingTerminalWidgetOptions,
   ): IChartingLibraryWidget;
 }
 export interface ChartingLibraryWidgetOptions {
@@ -6894,7 +6894,7 @@ export interface IBrokerCommon {
    */
   chartContextMenuActions(
     context: TradeContext,
-    options?: DefaultContextMenuActionsParams
+    options?: DefaultContextMenuActionsParams,
   ): Promise<ActionMetaInfo[]>;
   /**
    * This function is required for the Floating Trading Panel.
@@ -7001,7 +7001,7 @@ export interface IBrokerConnectionAdapterFactory {
     minMove?: number,
     fractional?: boolean,
     minMove2?: number,
-    variableMinTick?: string
+    variableMinTick?: string,
   ): IPriceFormatter;
 }
 /**
@@ -7034,7 +7034,7 @@ export interface IBrokerConnectionAdapterHost {
    */
   defaultContextMenuActions(
     context: TradeContext,
-    params?: DefaultContextMenuActionsParams
+    params?: DefaultContextMenuActionsParams,
   ): Promise<ActionMetaInfo[]>;
   /**
    * Provides default dropdown list of actions. You can use default actions in {@link IBrokerConnectionAdapterHost.setButtonDropdownActions}
@@ -7187,7 +7187,7 @@ export interface IBrokerConnectionAdapterHost {
     symbol: string,
     side: Side,
     qty: number,
-    handler: () => Promise<void>
+    handler: () => Promise<void>,
   ): Promise<void>;
   /**
    * Shows the cancel brackets dialog
@@ -7216,7 +7216,7 @@ export interface IBrokerConnectionAdapterHost {
   showPositionBracketsDialog(
     position: Position | Trade,
     brackets: Brackets,
-    focus: OrderTicketFocusControl
+    focus: OrderTicketFocusControl,
   ): Promise<boolean>;
   /**
    * Bottom Trading Panel has a button with a list of dropdown items. This method can be used to replace existing items.
@@ -7256,7 +7256,7 @@ export interface IBrokerConnectionAdapterHost {
     content: string | string[],
     mainButtonText?: string,
     cancelButtonText?: string,
-    showDisableConfirmationsCheckbox?: boolean
+    showDisableConfirmationsCheckbox?: boolean,
   ): Promise<boolean>;
   /**
    * Displays a simple confirmation dialog to a user and returns a Promise to the result.
@@ -7271,7 +7271,7 @@ export interface IBrokerConnectionAdapterHost {
     content: string | string[],
     mainButtonText?: string,
     cancelButtonText?: string,
-    showDisableConfirmationsCheckbox?: boolean
+    showDisableConfirmationsCheckbox?: boolean,
   ): Promise<boolean>;
 }
 export interface IBrokerTerminal extends IBrokerWithoutRealtime {
@@ -7356,7 +7356,7 @@ export interface IBrokerWithoutRealtime extends IBrokerCommon {
   editPositionBrackets?(
     positionId: string,
     brackets: Brackets,
-    customFields?: CustomInputFieldsValues
+    customFields?: CustomInputFieldsValues,
   ): Promise<void>;
   /**
    * This method is called if `supportTradeBrackets` configuration flag is on. It displays a dialog that enables take profit and stop loss editing.
@@ -7465,7 +7465,7 @@ export interface IChartWidgetApi {
          * Otherwise `timeframe` is `undefined` and you can change it to display a certain range of bars. Valid timeframe is a `TimeFrameValue` object.
          */
         timeframe?: TimeFrameValue;
-      }
+      },
     ) => void
   >;
   /**
@@ -7678,7 +7678,7 @@ export interface IChartWidgetApi {
     lock?: boolean,
     inputs?: Record<string, StudyInputValue>,
     overrides?: TOverrides,
-    options?: CreateStudyOptions
+    options?: CreateStudyOptions,
   ): Promise<EntityId | null>;
   /**
    * @deprecated Prefer `createStudy` function that relies on named properties for `inputs`.
@@ -7690,7 +7690,7 @@ export interface IChartWidgetApi {
     lock?: boolean,
     inputs?: TStudyInputValue[],
     overrides?: TOverrides,
-    options?: CreateStudyOptions
+    options?: CreateStudyOptions,
   ): Promise<EntityId | null>;
   /**
    * Get a study by ID.
@@ -7714,7 +7714,7 @@ export interface IChartWidgetApi {
    */
   createShape<TOverrides extends object>(
     point: ShapePoint,
-    options: CreateShapeOptions<TOverrides>
+    options: CreateShapeOptions<TOverrides>,
   ): EntityId | null;
   /**
    * Create a new multi point drawing.
@@ -7725,7 +7725,7 @@ export interface IChartWidgetApi {
    */
   createMultipointShape<TOverrides extends object>(
     points: ShapePoint[],
-    options: CreateMultipointShapeOptions<TOverrides>
+    options: CreateMultipointShapeOptions<TOverrides>,
   ): EntityId | null;
   /**
    * Create a new anchored drawing. Anchored drawings maintain their position when the chart's visible range changes.
@@ -7735,7 +7735,7 @@ export interface IChartWidgetApi {
    */
   createAnchoredShape<TOverrides extends object>(
     position: PositionPercents,
-    options: CreateAnchoredShapeOptions<TOverrides>
+    options: CreateAnchoredShapeOptions<TOverrides>,
   ): EntityId | null;
   /**
    * Get a drawing by ID.
@@ -8022,7 +8022,7 @@ export interface IChartingLibraryWidget {
    */
   subscribe<EventName extends keyof SubscribeEventsMap>(
     event: EventName,
-    callback: SubscribeEventsMap[EventName]
+    callback: SubscribeEventsMap[EventName],
   ): void;
   /**
    * Unsubscribe from library events.
@@ -8032,7 +8032,7 @@ export interface IChartingLibraryWidget {
    */
   unsubscribe<EventName extends keyof SubscribeEventsMap>(
     event: EventName,
-    callback: SubscribeEventsMap[EventName]
+    callback: SubscribeEventsMap[EventName],
   ): void;
   /**
    * Get an API instance that can be used to interact with a chart.
@@ -8137,7 +8137,7 @@ export interface IChartingLibraryWidget {
   saveChartToServer(
     onComplete?: EmptyCallback,
     onFail?: EmptyCallback,
-    options?: SaveChartToServerOptions
+    options?: SaveChartToServerOptions,
   ): void;
   /**
    * Remove a saved chart from the server.
@@ -8496,7 +8496,7 @@ export interface IContext {
     tickerid: string,
     period: string,
     currencyCode?: string,
-    unitId?: string
+    unitId?: string,
   ): ISymbolInstrument;
   /**
    * Switch context to the other symbol received through {@link IContext.new_sym}
@@ -8715,7 +8715,7 @@ export interface IDatafeedChartApi {
     from: number,
     to: number,
     onDataCallback: GetMarksCallback<Mark>,
-    resolution: ResolutionString
+    resolution: ResolutionString,
   ): void;
   /**
    * The Library calls this function to get timescale marks for visible bars range.
@@ -8734,7 +8734,7 @@ export interface IDatafeedChartApi {
     from: number,
     to: number,
     onDataCallback: GetMarksCallback<TimescaleMark>,
-    resolution: ResolutionString
+    resolution: ResolutionString,
   ): void;
   /**
    * This function is called if configuration flag supports_time is set to true when chart needs to know the server time.
@@ -8754,7 +8754,7 @@ export interface IDatafeedChartApi {
     userInput: string,
     exchange: string,
     symbolType: string,
-    onResult: SearchSymbolsCallback
+    onResult: SearchSymbolsCallback,
   ): void;
   /**
    * The library will call this function when it needs to get SymbolInfo by symbol name.
@@ -8768,7 +8768,7 @@ export interface IDatafeedChartApi {
     symbolName: string,
     onResolve: ResolveCallback,
     onError: ErrorCallback,
-    extension?: SymbolResolveExtension
+    extension?: SymbolResolveExtension,
   ): void;
   /**
    * This function is called when the chart needs a history fragment defined by dates range.
@@ -8784,7 +8784,7 @@ export interface IDatafeedChartApi {
     resolution: ResolutionString,
     periodParams: PeriodParams,
     onResult: HistoryCallback,
-    onError: ErrorCallback
+    onError: ErrorCallback,
   ): void;
   /**
    * Charting Library calls this function when it wants to receive real-time updates for a symbol.
@@ -8801,7 +8801,7 @@ export interface IDatafeedChartApi {
     resolution: ResolutionString,
     onTick: SubscribeBarsCallback,
     listenerGuid: string,
-    onResetCacheNeededCallback: () => void
+    onResetCacheNeededCallback: () => void,
   ): void;
   /**
    * The library calls this function when it doesn't want to receive updates anymore.
@@ -8840,7 +8840,7 @@ export interface IDatafeedChartApi {
     currentResolution: ResolutionString,
     from: number,
     to: number,
-    symbolInfo: LibrarySymbolInfo
+    symbolInfo: LibrarySymbolInfo,
   ): ResolutionString;
 }
 /** Quotes datafeed API */
@@ -8855,7 +8855,7 @@ export interface IDatafeedQuotesApi {
   getQuotes(
     symbols: string[],
     onDataCallback: QuotesCallback,
-    onErrorCallback: QuotesErrorCallback
+    onErrorCallback: QuotesErrorCallback,
   ): void;
   /**
    * Trading Terminal calls this function when it wants to receive real-time quotes for a symbol.
@@ -8869,7 +8869,7 @@ export interface IDatafeedQuotesApi {
     symbols: string[],
     fastSymbols: string[],
     onRealtimeCallback: QuotesCallback,
-    listenerGUID: string
+    listenerGUID: string,
   ): void;
   /**
    * Trading Terminal calls this function when it doesn't want to receive updates for this listener anymore.
@@ -9935,7 +9935,7 @@ export interface IPriceFormatter extends ISymbolValueFormatter {
     tailSize?: number,
     signNegative?: boolean,
     useRtlFormat?: boolean,
-    cutFractionalByPrecision?: boolean
+    cutFractionalByPrecision?: boolean,
   ): string;
 }
 /**
@@ -10123,7 +10123,7 @@ export interface ISeriesApi {
   /** Sets properties for a specific chart style */
   setChartStyleProperties<T extends ChartStyle>(
     chartStyle: T,
-    newPrefs: Partial<SeriesPreferencesMap[T]>
+    newPrefs: Partial<SeriesPreferencesMap[T]>,
   ): void;
 }
 export interface ISettingsAdapter {
@@ -11151,7 +11151,7 @@ export interface LibraryPineStudy<TPineStudyResult> {
    */
   main(
     ctx: IContext,
-    inputs: <T extends StudyInputValue>(index: number) => T
+    inputs: <T extends StudyInputValue>(index: number) => T,
   ): TPineStudyResult | null;
   // Indicator defined properties
   // tslint:disable-next-line:no-any
@@ -12583,7 +12583,7 @@ export interface PineJSStd {
     sourceA: IPineSeries,
     sourceB: IPineSeries,
     length: number,
-    context: IContext
+    context: IContext,
   ): number;
   /**
    * Stochastic. It is calculated by a formula: `100 * (close - lowest(low, length)) / (highest(high, length) - lowest(low, length))`
@@ -12600,7 +12600,7 @@ export interface PineJSStd {
     high: IPineSeries,
     low: IPineSeries,
     length: number,
-    context: IContext
+    context: IContext,
   ): number;
   /**
    * True strength index. It uses moving averages of the underlying momentum of a financial instrument.
@@ -12716,7 +12716,7 @@ export interface PineJSStd {
   dmi(
     diLength: number,
     adxSmoothingLength: number,
-    context: IContext
+    context: IContext,
   ): [number, number, number, number, number];
   /**
    * Test value if it's a NaN.
@@ -17062,7 +17062,7 @@ export type ColorTypes = 'solid' | 'gradient';
  */
 export type ContextMenuItemsProcessor = (
   items: readonly IActionVariant[],
-  actionsFactory: ActionsFactory
+  actionsFactory: ActionsFactory,
 ) => Promise<readonly IActionVariant[]>;
 /**
  * @param  {readonlyIActionVariant[]} items - an array of items the library wants to display
@@ -17072,7 +17072,7 @@ export type ContextMenuItemsProcessor = (
 export type ContextMenuRendererFactory = (
   items: readonly IActionVariant[],
   params: CreateContextMenuParams,
-  onDestroy: () => void
+  onDestroy: () => void,
 ) => Promise<IContextMenuRenderer>;
 export type CreateButtonOptions = CreateHTMLButtonOptions | CreateTradingViewStyledButtonOptions;
 export type CustomStudyFormatter = Omit<INumberFormatter, 'parse'>;
@@ -17081,7 +17081,7 @@ export type CustomStudyFormatter = Omit<INumberFormatter, 'parse'>;
  */
 export type CustomStudyFormatterFactory = (
   format: CustomStudyFormatterFormat,
-  symbolInfo: LibrarySymbolInfo | null
+  symbolInfo: LibrarySymbolInfo | null,
 ) => CustomStudyFormatter | null;
 /**
  * A function that takes an {@link TableFormatterInputs} object and returns a `string` or an `HTMLElement`.
@@ -17443,7 +17443,7 @@ export type FormatterName = Nominal<string, 'FormatterName'>;
 export type GetMarksCallback<T> = (marks: T[]) => void;
 export type GetNewsFunction = (
   symbol: string,
-  callback: (response: GetNewsResponse) => void
+  callback: (response: GetNewsResponse) => void,
 ) => void;
 /**
  * GMT timezone ID.
@@ -17642,7 +17642,7 @@ export type SeriesEventType = 'price_scale_changed';
 export type SeriesFormat = 'price' | 'volume';
 export type SeriesFormatterFactory = (
   symbolInfo: LibrarySymbolInfo | null,
-  minTick: string
+  minTick: string,
 ) => ISymbolValueFormatter | null;
 /**
  * Where to attach the price scale.
@@ -17843,7 +17843,7 @@ export type SupportedLineTools =
  */
 export type SymbolSearchCompleteOverrideFunction = (
   symbol: string,
-  searchResultItem?: SearchSymbolResultItem
+  searchResultItem?: SearchSymbolResultItem,
 ) => Promise<SymbolSearchCompleteData>;
 export type SymbolSource = SymbolInputSymbolSource;
 export type SymbolType =
@@ -18007,7 +18007,7 @@ export type WatchListSymbolListRemovedCallback = (listId: string) => void;
 export type WatchListSymbolListRenamedCallback = (
   listId: string,
   oldName: string,
-  newName: string
+  newName: string,
 ) => void;
 export type WatchedValueCallback<T> = (value: T) => void;
 /**

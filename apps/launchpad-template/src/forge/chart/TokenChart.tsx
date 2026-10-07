@@ -119,7 +119,7 @@ export const TokenChart: React.FC<ChartProps> = memo(({ renderingId, style, opt 
   const chartColors = CHART_THEME_COLORS[chartTheme];
   const [chartConfig, setChartConfig] = useLocalStorage<ChartConfig>(
     'chart_config',
-    DEFAULT_CHART_CONFIG
+    DEFAULT_CHART_CONFIG,
   );
 
   const {
@@ -150,7 +150,7 @@ export const TokenChart: React.FC<ChartProps> = memo(({ renderingId, style, opt 
       ...opt,
       isMobile,
     }),
-    [opt, isMobile]
+    [opt, isMobile],
   );
 
   const widgetRef = useRef<IChartingLibraryWidget | null>(null);
@@ -234,7 +234,7 @@ export const TokenChart: React.FC<ChartProps> = memo(({ renderingId, style, opt 
             showDevTradesRef,
             showUserTradesRef,
             isMarksLoadingRef,
-            resetCacheFnRef
+            resetCacheFnRef,
           ),
           library_path: `${TRADING_VIEW_DOMAIN}/tv/charting_library/bundles`,
           disabled_features: disabledFeatures,
@@ -500,7 +500,7 @@ export const TokenChart: React.FC<ChartProps> = memo(({ renderingId, style, opt 
           className={cn(
             `pointer-events-none absolute left-0 top-0 h-full w-full transition-all`,
             isLoaded && isDataReady ? 'bg-transparent' : `bg-neutral-950`,
-            `flex items-center justify-center`
+            `flex items-center justify-center`,
           )}
         >
           {!isLoaded || !isDataReady ? <Spinner /> : null}

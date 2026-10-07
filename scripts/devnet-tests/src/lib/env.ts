@@ -47,7 +47,9 @@ export function parseDotenv(content: string): Record<string, string> {
 export function assertDevnet(cluster: string | undefined, rpcUrl: string | undefined): Env {
   if (!rpcUrl) throw new Error('RPC_URL is missing: set it in scripts/devnet-tests/.env');
   if (!rpcUrl.toLowerCase().includes('devnet')) {
-    throw new Error('Refusing to run: RPC_URL does not contain "devnet". These scripts are devnet only.');
+    throw new Error(
+      'Refusing to run: RPC_URL does not contain "devnet". These scripts are devnet only.',
+    );
   }
   if (cluster !== undefined && cluster !== 'devnet') {
     throw new Error(`Refusing to run: SOLANA_CLUSTER is "${cluster}", expected "devnet".`);

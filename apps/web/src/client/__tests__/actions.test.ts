@@ -31,7 +31,11 @@ function txB64(payer = owner): string {
     payerKey: payer,
     recentBlockhash: Keypair.generate().publicKey.toBase58(),
     instructions: [
-      SystemProgram.transfer({ fromPubkey: payer, toPubkey: Keypair.generate().publicKey, lamports: 1 }),
+      SystemProgram.transfer({
+        fromPubkey: payer,
+        toPubkey: Keypair.generate().publicKey,
+        lamports: 1,
+      }),
     ],
   }).compileToV0Message();
   return bytesToBase64(new VersionedTransaction(msg).serialize());
@@ -113,7 +117,10 @@ describe('simple actions', () => {
     await expect(confirmSpec(conversationId, spec)).resolves.toEqual(out);
     const [url, init] = fetchFn.mock.calls[0] as [string, RequestInit];
     expect(url).toBe('/api/spec/confirm');
-    expect(JSON.parse(init.body as string)).toMatchObject({ conversationId, spec: { slug: 'acme' } });
+    expect(JSON.parse(init.body as string)).toMatchObject({
+      conversationId,
+      spec: { slug: 'acme' },
+    });
   });
 
   it('confirmSpec rejects an invalid conversation id without calling the server', async () => {
@@ -230,7 +237,9 @@ describe('getQuote + payQuote', () => {
     const q = quoteResponse();
     setWallet(
       async (tx) => tx,
-      fakeConnection({ sendRawTransaction: vi.fn().mockRejectedValue(new Error('blockhash not found')) }),
+      fakeConnection({
+        sendRawTransaction: vi.fn().mockRejectedValue(new Error('blockhash not found')),
+      }),
     );
     mockFetch(() => json(q));
     const quote = await getQuote(id(), 'creation');
@@ -245,7 +254,9 @@ describe('getQuote + payQuote', () => {
     setWallet(
       async (tx) => tx,
       fakeConnection({
-        getSignatureStatuses: vi.fn().mockResolvedValue({ value: [{ err: { InstructionError: [0, 'x'] } }] }),
+        getSignatureStatuses: vi
+          .fn()
+          .mockResolvedValue({ value: [{ err: { InstructionError: [0, 'x'] } }] }),
       }),
     );
     mockFetch(() => json(q));
@@ -304,7 +315,12 @@ describe('getQuote + payQuote', () => {
     const q = quoteResponse();
     mockFetch(() => json(q));
     const quote = await getQuote(id(), 'creation');
-    setWalletBridge({ publicKey: null, signTransaction: undefined, signMessage: undefined, connection: null });
+    setWalletBridge({
+      publicKey: null,
+      signTransaction: undefined,
+      signMessage: undefined,
+      connection: null,
+    });
     await expect(payQuote(quote, () => undefined)).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
   });
 });
@@ -321,7 +337,9 @@ describe('signOwnerTransaction', () => {
   it('signs and submits through the server route', async () => {
     const jobId = id();
     const fetchFn = mockFetch((_url, init) =>
-      init?.method === 'POST' ? json({ signature: SIG }) : json({ transaction: txB64(), summary: summary() }),
+      init?.method === 'POST'
+        ? json({ signature: SIG })
+        : json({ transaction: txB64(), summary: summary() }),
     );
     const p = phases();
     const result = await signOwnerTransaction(jobId, p.on);
@@ -335,7 +353,9 @@ describe('signOwnerTransaction', () => {
   it('throws WRONG_WALLET when the connected wallet is not the owner', async () => {
     const sign = vi.fn();
     setWallet(sign);
-    mockFetch(() => json({ transaction: txB64(), summary: summary(Keypair.generate().publicKey.toBase58()) }));
+    mockFetch(() =>
+      json({ transaction: txB64(), summary: summary(Keypair.generate().publicKey.toBase58()) }),
+    );
     const p = phases();
     await expect(signOwnerTransaction(id(), p.on)).rejects.toMatchObject({ code: 'WRONG_WALLET' });
     expect(sign).not.toHaveBeenCalled();
@@ -354,7 +374,9 @@ describe('signOwnerTransaction', () => {
 
   it('maps server errors on submit', async () => {
     mockFetch((_u, init) =>
-      init?.method === 'POST' ? json({ message: 'nope' }, 429) : json({ transaction: txB64(), summary: summary() }),
+      init?.method === 'POST'
+        ? json({ message: 'nope' }, 429)
+        : json({ transaction: txB64(), summary: summary() }),
     );
     const p = phases();
     await expect(signOwnerTransaction(id(), p.on)).rejects.toMatchObject({ code: 'RATE_LIMITED' });
@@ -363,7 +385,9 @@ describe('signOwnerTransaction', () => {
 
   it('rejects an invalid transaction from the server', async () => {
     mockFetch(() => json({ transaction: 'AAAA', summary: summary() }));
-    await expect(signOwnerTransaction(id(), () => undefined)).rejects.toMatchObject({ code: 'NETWORK' });
+    await expect(signOwnerTransaction(id(), () => undefined)).rejects.toMatchObject({
+      code: 'NETWORK',
+    });
   });
 });
 

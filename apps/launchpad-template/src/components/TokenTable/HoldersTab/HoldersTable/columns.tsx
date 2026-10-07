@@ -69,7 +69,7 @@ export const columns: ColumnDef<HolderInfo>[] = [
         <div className="truncate text-right font-medium">
           {formatReadablePercentChange(
             row.original.percentage === undefined ? undefined : row.original.percentage / 100,
-            { hideSign: 'positive' }
+            { hideSign: 'positive' },
           )}
         </div>
       );

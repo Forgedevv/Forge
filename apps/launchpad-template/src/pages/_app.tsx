@@ -20,7 +20,7 @@ function AppProviders({ Component, pageProps }: AppProps) {
 
   const wallets: Adapter[] = useMemo(() => {
     return [new PhantomWalletAdapter(), new SolflareWalletAdapter()].filter(
-      (item) => item && item.name && item.icon
+      (item) => item && item.name && item.icon,
     ) as Adapter[];
   }, []);
 

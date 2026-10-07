@@ -14,7 +14,7 @@ type FilteredCallback<Value extends Msg, FilterTypes extends ReadonlyArray<strin
   get: Getter,
   set: Setter,
   newVal: Extract<Value, { type: FilterTypes[number] }>,
-  prevVal: Value
+  prevVal: Value,
 ) => void;
 
 type ListenerEntry<Value extends Msg> = {
@@ -64,12 +64,12 @@ export function atomMsgWithListeners<Value extends Msg<TypeDiscriminable>>(initi
 
         listener.callback(get, set, newVal, prevVal);
       });
-    }
+    },
   );
 
   function useListener<FilterTypes extends ReadonlyArray<ExtractType<Value>>>(
     filterTypes: FilterTypes,
-    callback: FilteredCallback<Value, FilterTypes>
+    callback: FilteredCallback<Value, FilterTypes>,
   ): void {
     const setListeners = useSetAtom(listenersAtom);
 

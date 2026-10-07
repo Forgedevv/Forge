@@ -44,7 +44,7 @@ export const TokenCardList = memo(
           {
             rootMargin: `${ROW_HEIGHT_ESTIMATE * ROWS_OVERSCAN}px`,
             threshold: 0.1,
-          }
+          },
         );
         observer.current = newObserver;
 
@@ -107,6 +107,6 @@ export const TokenCardList = memo(
           )}
         </div>
       );
-    }
-  )
+    },
+  ),
 );

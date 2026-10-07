@@ -58,7 +58,8 @@ async function fetchToken(gen: number): Promise<void> {
   if (created) emit();
   const exp = tokenExpiryMs(res);
   // refresh 60 s before expiry (at least in 10 s, at most in 50 min)
-  const delay = exp === null ? 50 * 60_000 : Math.min(50 * 60_000, Math.max(10_000, exp - Date.now() - 60_000));
+  const delay =
+    exp === null ? 50 * 60_000 : Math.min(50 * 60_000, Math.max(10_000, exp - Date.now() - 60_000));
   if (refreshTimer) clearTimeout(refreshTimer);
   refreshTimer = setTimeout(() => {
     void fetchToken(gen).catch(() => {

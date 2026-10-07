@@ -35,7 +35,10 @@ export function dammConfigFor(option: MigrationFeeOption): PublicKey {
 }
 
 /** Creates the DAMM v2 migration metadata account if it does not exist yet. Returns the signature or null. */
-export async function ensureDammV2MigrationMetadata(pool: PublicKey, payer: Keypair): Promise<string | null> {
+export async function ensureDammV2MigrationMetadata(
+  pool: PublicKey,
+  payer: Keypair,
+): Promise<string | null> {
   const metadata = deriveDammV2MigrationMetadataAddress(pool);
   const existing = await getConnection().getAccountInfo(metadata);
   if (existing) return null;
@@ -65,14 +68,19 @@ export type MigrateResult = {
   secondPositionNftMint: string;
 };
 
-export async function migrateToDammV2(pool: PublicKey, payer: Keypair, option: MigrationFeeOption): Promise<MigrateResult> {
+export async function migrateToDammV2(
+  pool: PublicKey,
+  payer: Keypair,
+  option: MigrationFeeOption,
+): Promise<MigrateResult> {
   const dammConfig = dammConfigFor(option);
   const { virtualPool } = await getPoolState(pool);
-  const { transaction, firstPositionNftKeypair, secondPositionNftKeypair } = await getDbc().migration.migrateToDammV2({
-    payer: payer.publicKey,
-    pool,
-    dammConfig,
-  });
+  const { transaction, firstPositionNftKeypair, secondPositionNftKeypair } =
+    await getDbc().migration.migrateToDammV2({
+      payer: payer.publicKey,
+      pool,
+      dammConfig,
+    });
   const signature = await sendAndConfirm(transaction, payer, {
     signers: [firstPositionNftKeypair, secondPositionNftKeypair],
     label: 'migrateToDammV2',
@@ -114,7 +122,9 @@ export async function dammSwap(a: DammSwapArgs): Promise<DammSwapOutcome> {
   const conn = getConnection();
   const slot = await conn.getSlot('confirmed');
   const blockTime = (await conn.getBlockTime(slot)) ?? Math.floor(Date.now() / 1000);
-  const outputMint = a.inputMint.equals(poolState.tokenAMint) ? poolState.tokenBMint : poolState.tokenAMint;
+  const outputMint = a.inputMint.equals(poolState.tokenAMint)
+    ? poolState.tokenBMint
+    : poolState.tokenAMint;
   const quote = amm.getQuote({
     inAmount: bn(a.amountIn),
     inputTokenMint: a.inputMint,
@@ -167,7 +177,9 @@ export async function positionsOf(dammPool: PublicKey, owner: PublicKey): Promis
   const amm = getCpAmm();
   const poolState = await amm.fetchPoolState(dammPool);
   const positions = await amm.getUserPositionByPool(dammPool, owner);
-  return positions.map((p) => describePosition(poolState, p.position, p.positionNftAccount, p.positionState));
+  return positions.map((p) =>
+    describePosition(poolState, p.position, p.positionNftAccount, p.positionState),
+  );
 }
 
 function describePosition(

@@ -3,7 +3,15 @@
  * Solana addresses, javascript: URLs, hidden Unicode, active HTML content.
  */
 
-import { bytesToAddress, findBase58Fragments, findBase58Runs, findEncodedAddresses, isBase58Only, isCamelWords, looksRandomBase58 } from './base58.js';
+import {
+  bytesToAddress,
+  findBase58Fragments,
+  findBase58Runs,
+  findEncodedAddresses,
+  isBase58Only,
+  isCamelWords,
+  looksRandomBase58,
+} from './base58.js';
 import { hostMatches, type ResolvedConfig } from './config.js';
 import { checkUrl, truncate } from './url.js';
 import type { Finding, RuleId } from './types.js';
@@ -37,7 +45,10 @@ const NAMED_ENTITIES: Record<string, string> = {
 export function decodeEntities(text: string): string {
   return text.replace(/&(#[xX][0-9a-fA-F]+|#[0-9]+|[a-zA-Z]+);?/g, (m, body: string) => {
     if (body.startsWith('#')) {
-      const cp = body[1] === 'x' || body[1] === 'X' ? parseInt(body.slice(2), 16) : parseInt(body.slice(1), 10);
+      const cp =
+        body[1] === 'x' || body[1] === 'X'
+          ? parseInt(body.slice(2), 16)
+          : parseInt(body.slice(1), 10);
       return Number.isFinite(cp) && cp >= 0 && cp <= 0x10ffff ? String.fromCodePoint(cp) : m;
     }
     return NAMED_ENTITIES[body.toLowerCase()] ?? m;
@@ -46,21 +57,27 @@ export function decodeEntities(text: string): string {
 
 /** Decodes JS escapes (`\uXXXX`, `\u{...}`, `\xXX`) found in source text. */
 export function decodeJsEscapes(text: string): string {
-  return text.replace(/\\u\{([0-9a-fA-F]{1,6})\}|\\u([0-9a-fA-F]{4})|\\x([0-9a-fA-F]{2})/g, (m, a?: string, b?: string, c?: string) => {
-    const cp = parseInt(a ?? b ?? c ?? '', 16);
-    return Number.isFinite(cp) && cp <= 0x10ffff ? String.fromCodePoint(cp) : m;
-  });
+  return text.replace(
+    /\\u\{([0-9a-fA-F]{1,6})\}|\\u([0-9a-fA-F]{4})|\\x([0-9a-fA-F]{2})/g,
+    (m, a?: string, b?: string, c?: string) => {
+      const cp = parseInt(a ?? b ?? c ?? '', 16);
+      return Number.isFinite(cp) && cp <= 0x10ffff ? String.fromCodePoint(cp) : m;
+    },
+  );
 }
 
 /** Decodes CSS escapes (`\75 rl(`, `\:`). */
 export function decodeCssEscapes(text: string): string {
-  return text.replace(/\\([0-9a-fA-F]{1,6})[ \t\n\r\f]?|\\([^\n0-9a-fA-F])/g, (m, hex?: string, ch?: string) => {
-    if (hex) {
-      const cp = parseInt(hex, 16);
-      return cp > 0 && cp <= 0x10ffff ? String.fromCodePoint(cp) : m;
-    }
-    return ch ?? m;
-  });
+  return text.replace(
+    /\\([0-9a-fA-F]{1,6})[ \t\n\r\f]?|\\([^\n0-9a-fA-F])/g,
+    (m, hex?: string, ch?: string) => {
+      if (hex) {
+        const cp = parseInt(hex, 16);
+        return cp > 0 && cp <= 0x10ffff ? String.fromCodePoint(cp) : m;
+      }
+      return ch ?? m;
+    },
+  );
 }
 
 const INVISIBLE_RE = new RegExp(
@@ -101,7 +118,9 @@ export class AddressCollector {
       this.findings.push({
         rule: 'solana-address',
         key: `addr:${variant}:${hit.value}`,
-        line: line ?? (source === this.text ? lineAt(this.text, hit.index) : lineOfValue(this.text, hit.value)),
+        line:
+          line ??
+          (source === this.text ? lineAt(this.text, hit.index) : lineOfValue(this.text, hit.value)),
         reason: long
           ? `long base58 string added (may embed an address or a key): ${truncate(hit.value, 20)}`
           : `Solana address added: ${hit.value}`,
@@ -155,7 +174,14 @@ export class AddressCollector {
   joined(variant: string, parts: readonly (string | null)[], line?: number): void {
     let current = '';
     const flush = (): void => {
-      if (current.length >= 32 && current.length <= 400 && !isCamelWords(current) && /[0-9]/.test(current) && /[A-Z]/.test(current) && /[a-z]/.test(current)) {
+      if (
+        current.length >= 32 &&
+        current.length <= 400 &&
+        !isCamelWords(current) &&
+        /[0-9]/.test(current) &&
+        /[A-Z]/.test(current) &&
+        /[a-z]/.test(current)
+      ) {
         this.run(variant, current, line);
       }
       current = '';
@@ -171,12 +197,18 @@ export class AddressCollector {
   /** Markdown and plain text: inline markup removed (emphasis, code, tags, comments), then addresses and pieces. */
   markup(): void {
     const t = stripInvisible(decodeEntities(this.text));
-    const stripped = t.replace(/<!--[\s\S]*?-->/g, '').replace(/<[^>]*>/g, '').replace(/[*_`~\\]/g, '');
+    const stripped = t
+      .replace(/<!--[\s\S]*?-->/g, '')
+      .replace(/<[^>]*>/g, '')
+      .replace(/[*_`~\\]/g, '');
     for (const hit of findBase58Runs(stripped)) {
       if (!isCamelWords(hit.value)) this.run('markup', hit.value);
     }
     // Pieces: URLs removed first (random-looking file names are not addresses).
-    this.fragments('markup', stripped.replace(/\]\([^)]*\)/g, '] ').replace(/[a-z][a-z0-9+.-]*:\/\/\S+/gi, ' '));
+    this.fragments(
+      'markup',
+      stripped.replace(/\]\([^)]*\)/g, '] ').replace(/[a-z][a-z0-9+.-]*:\/\/\S+/gi, ' '),
+    );
   }
 
   /** JSON: string values glued in document order, and pieces standing alone. */
@@ -199,7 +231,10 @@ export class AddressCollector {
 
 /** Removes base64 payloads of image/font data URIs (binary noise for address detection). */
 function stripDataImages(text: string): string {
-  return text.replace(/data:(?:image|font|application\/font-[a-z]+|application\/x-font-[a-z]+)\/?[a-z0-9.+-]*;base64,[A-Za-z0-9+/=]+/gi, 'data:');
+  return text.replace(
+    /data:(?:image|font|application\/font-[a-z]+|application\/x-font-[a-z]+)\/?[a-z0-9.+-]*;base64,[A-Za-z0-9+/=]+/gi,
+    'data:',
+  );
 }
 
 /** javascript: URLs anywhere in the text (after decoding escapes and entities). */
@@ -211,7 +246,12 @@ export function scriptUrlFindings(text: string): Finding[] {
   const re = /(?:java|vb|live)script\s*:/gi;
   for (const m of normalized.matchAll(re)) {
     const context = normalized.slice(m.index ?? 0, (m.index ?? 0) + 40);
-    out.push({ rule: 'javascript-url', key: `jsurl:${context}`, line: lineOfValue(text, 'script') || 1, reason: 'javascript: URL' });
+    out.push({
+      rule: 'javascript-url',
+      key: `jsurl:${context}`,
+      line: lineOfValue(text, 'script') || 1,
+      reason: 'javascript: URL',
+    });
   }
   return out;
 }
@@ -239,7 +279,8 @@ export function hiddenUnicodeFindings(text: string, code: boolean): Finding[] {
   return out;
 }
 
-const ACTIVE_TAG_RE = /<\s*(script|iframe|frame|frameset|object|embed|form|meta|base|link|style|portal|foreignobject|applet)\b/gi;
+const ACTIVE_TAG_RE =
+  /<\s*(script|iframe|frame|frameset|object|embed|form|meta|base|link|style|portal|foreignobject|applet)\b/gi;
 const EVENT_ATTR_RE = /<[^>]*?[\s/"']on[a-z]+\s*=/gi;
 
 /** Active HTML in Markdown, SVG or content strings. */
@@ -250,18 +291,34 @@ export function activeHtmlFindings(text: string, allowStyle = false): Finding[] 
     const tag = (m[1] ?? '').toLowerCase();
     if (allowStyle && tag === 'style') continue;
     const rule: RuleId = tag === 'script' ? 'inline-script' : 'html-active-content';
-    out.push({ rule, key: `html:${tag}:${t.slice(m.index ?? 0, (m.index ?? 0) + 60)}`, line: lineAt(t, m.index ?? 0), reason: `<${tag}> is not allowed here` });
+    out.push({
+      rule,
+      key: `html:${tag}:${t.slice(m.index ?? 0, (m.index ?? 0) + 60)}`,
+      line: lineAt(t, m.index ?? 0),
+      reason: `<${tag}> is not allowed here`,
+    });
   }
   for (const m of t.matchAll(EVENT_ATTR_RE)) {
-    out.push({ rule: 'html-active-content', key: `html:on:${m[0].slice(-60)}`, line: lineAt(t, m.index ?? 0), reason: 'inline event handler attribute' });
+    out.push({
+      rule: 'html-active-content',
+      key: `html:on:${m[0].slice(-60)}`,
+      line: lineAt(t, m.index ?? 0),
+      reason: 'inline event handler attribute',
+    });
   }
   if (/<!\s*(?:entity|doctype)/i.test(t)) {
-    out.push({ rule: 'html-active-content', key: 'html:doctype', line: 1, reason: 'DOCTYPE/ENTITY declaration' });
+    out.push({
+      rule: 'html-active-content',
+      key: 'html:doctype',
+      line: 1,
+      reason: 'DOCTYPE/ENTITY declaration',
+    });
   }
   return out;
 }
 
-const SAFE_DATA_URI_RE = /^data:(?:image\/(?:png|jpe?g|gif|webp|avif|x-icon|vnd\.microsoft\.icon)|font\/[a-z0-9.+-]+|application\/(?:x-)?font-[a-z0-9.+-]+)[;,]/i;
+const SAFE_DATA_URI_RE =
+  /^data:(?:image\/(?:png|jpe?g|gif|webp|avif|x-icon|vnd\.microsoft\.icon)|font\/[a-z0-9.+-]+|application\/(?:x-)?font-[a-z0-9.+-]+)[;,]/i;
 
 /** URLs referenced from CSS (`url()`, `@import`). */
 export function cssFindings(text: string, config: ResolvedConfig): Finding[] {
@@ -277,20 +334,36 @@ export function cssFindings(text: string, config: ResolvedConfig): Finding[] {
   for (const u of urls) {
     const line = lineAt(t, u.index);
     if (/#\{|\$\{|var\(/.test(u.value)) {
-      out.push({ rule: 'network-dynamic-url', key: `css:dyn:${u.value}`, line, reason: `dynamic CSS URL "${truncate(u.value)}"` });
+      out.push({
+        rule: 'network-dynamic-url',
+        key: `css:dyn:${u.value}`,
+        line,
+        reason: `dynamic CSS URL "${truncate(u.value)}"`,
+      });
       continue;
     }
     if (/^\s*data:/i.test(u.value)) {
       if (!SAFE_DATA_URI_RE.test(u.value.trim()) || /^\s*data:image\/svg/i.test(u.value)) {
-        out.push({ rule: 'html-active-content', key: `css:data:${u.value.slice(0, 40)}`, line, reason: 'CSS data: URL of a non-image type' });
+        out.push({
+          rule: 'html-active-content',
+          key: `css:data:${u.value.slice(0, 40)}`,
+          line,
+          reason: 'CSS data: URL of a non-image type',
+        });
       }
       continue;
     }
     const v = checkUrl({ text: u.value, complete: true }, 'network', config);
-    if (!v.ok) out.push({ rule: v.rule, key: `css:url:${u.value}`, line, reason: `CSS URL: ${v.reason}` });
+    if (!v.ok)
+      out.push({ rule: v.rule, key: `css:url:${u.value}`, line, reason: `CSS URL: ${v.reason}` });
   }
   for (const m of t.matchAll(/expression\s*\(|behavior\s*:|-moz-binding\s*:/gi)) {
-    out.push({ rule: 'html-active-content', key: `css:active:${m[0]}`, line: lineAt(t, m.index ?? 0), reason: `active CSS construct "${m[0]}"` });
+    out.push({
+      rule: 'html-active-content',
+      key: `css:active:${m[0]}`,
+      line: lineAt(t, m.index ?? 0),
+      reason: `active CSS construct "${m[0]}"`,
+    });
   }
   return out;
 }
@@ -306,7 +379,12 @@ export function svgFindings(text: string, config: ResolvedConfig): Finding[] {
     const v = checkUrl({ text: value, complete: true }, 'network', config);
     const isRelative = v.ok && !/^[a-z][a-z0-9+.-]*:|^[/\\]{2}/i.test(value);
     if (!v.ok || !isRelative) {
-      out.push({ rule: v.ok ? 'embed-external' : v.rule, key: `svg:href:${value}`, line, reason: `SVG reference "${truncate(value)}" is not allowed` });
+      out.push({
+        rule: v.ok ? 'embed-external' : v.rule,
+        key: `svg:href:${value}`,
+        line,
+        reason: `SVG reference "${truncate(value)}" is not allowed`,
+      });
     }
   }
   return out;
@@ -317,7 +395,9 @@ export function jsonStrings(value: unknown, path = '$'): { path: string; value: 
   if (typeof value === 'string') return [{ path, value }];
   if (Array.isArray(value)) return value.flatMap((v, i) => jsonStrings(v, `${path}[${i}]`));
   if (value && typeof value === 'object') {
-    return Object.entries(value as Record<string, unknown>).flatMap(([k, v]) => jsonStrings(v, `${path}.${k}`));
+    return Object.entries(value as Record<string, unknown>).flatMap(([k, v]) =>
+      jsonStrings(v, `${path}.${k}`),
+    );
   }
   return [];
 }
@@ -331,7 +411,12 @@ export function jsonFindings(text: string): Finding[] {
   }
   const out: Finding[] = [];
   for (const s of jsonStrings(parsed)) {
-    for (const f of activeHtmlFindings(s.value)) out.push({ ...f, key: `json:${s.path}:${f.key}`, line: lineOfValue(text, s.value.slice(0, 20)) });
+    for (const f of activeHtmlFindings(s.value))
+      out.push({
+        ...f,
+        key: `json:${s.path}:${f.key}`,
+        line: lineOfValue(text, s.value.slice(0, 20)),
+      });
   }
   return out;
 }

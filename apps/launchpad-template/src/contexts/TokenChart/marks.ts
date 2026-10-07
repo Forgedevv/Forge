@@ -60,7 +60,7 @@ const intlDate = new _IntlDate('en-US');
 export function asMarks(
   txs: Tx[],
   baseAsset: { id: string; circSupply: number | undefined },
-  isDev?: boolean
+  isDev?: boolean,
 ): Mark[] {
   const marks: Mark[] = [];
   for (const tx of txs) {
@@ -86,7 +86,7 @@ export function asMarks(
       time,
       color,
       text: `${tradeText} ${formatReadableNumber(amount)} ($${formatReadableNumber(volume)}) at $${formatReadableNumber(
-        price
+        price,
       )} (${secondaryPrice}) on ${intlDate.format(date, {
         withoutYear: true,
         hour12: false,

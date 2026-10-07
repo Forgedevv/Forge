@@ -18,7 +18,7 @@ const BASE_URL = 'https://datapi.jup.ag';
 export class ApeClient {
   static async getGemsTokenList<T extends GetGemsTokenListRequest>(
     req: T,
-    options?: Options
+    options?: Options,
   ): Promise<{
     [K in keyof T]: undefined extends T[K]
       ? GetGemsTokenListIndividualResponse | undefined
@@ -49,7 +49,7 @@ export class ApeClient {
   static async getChart(
     assetId: string,
     params: GetChartRequest,
-    options?: Options
+    options?: Options,
   ): Promise<GetChartResponse> {
     return ky
       .get(`${BASE_URL}/v2/charts/${assetId}`, {
@@ -62,7 +62,7 @@ export class ApeClient {
   static async getTokenTxs(
     assetId: string,
     req: GetTxsRequest,
-    options?: Options
+    options?: Options,
   ): Promise<GetTxsResponse> {
     return ky
       .get(`${BASE_URL}/v1/txs/${assetId}`, {
@@ -74,7 +74,7 @@ export class ApeClient {
 
   static async getTokenDescription(
     assetId: string,
-    options?: Options
+    options?: Options,
   ): Promise<GetTokenDescriptionResponse> {
     return ky.get(`${BASE_URL}/v1/assets/${assetId}/description`, options).json();
   }

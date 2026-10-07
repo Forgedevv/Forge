@@ -3,7 +3,7 @@ import { useIsomorphicLayoutEffect } from 'react-use';
 
 export const useMobile = (width = 1024) => {
   const [isDesktop, setIsDesktop] = useState<boolean>(
-    typeof window === 'undefined' ? false : window.matchMedia(`(min-width: ${width}px)`).matches
+    typeof window === 'undefined' ? false : window.matchMedia(`(min-width: ${width}px)`).matches,
   );
 
   useIsomorphicLayoutEffect(() => {

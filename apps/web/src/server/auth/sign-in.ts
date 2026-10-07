@@ -119,7 +119,8 @@ export async function verifySignIn(input: VerifySignInInput): Promise<SignInResu
   }
   if (challenge.domain !== input.expectedDomain) return { ok: false, reason: 'wrong_domain' };
   if (challenge.wallet !== input.wallet) return { ok: false, reason: 'wrong_wallet' };
-  if (await store.has(challenge.nonce, input.nowSeconds)) return { ok: false, reason: 'reused_nonce' };
+  if (await store.has(challenge.nonce, input.nowSeconds))
+    return { ok: false, reason: 'reused_nonce' };
 
   if (!SolanaAddress.safeParse(input.wallet).success) return { ok: false, reason: 'bad_encoding' };
   const publicKey = base58DecodeExact(input.wallet, 32);

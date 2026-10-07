@@ -48,7 +48,7 @@ export class _IntlDate {
     input: Date | string | number,
     options?: {
       timezone?: string | undefined;
-    }
+    },
   ): string {
     const date = new Date(input);
     const timeZonePart = new Intl.DateTimeFormat(this.locale, {
@@ -70,7 +70,7 @@ export class _IntlDate {
       withoutYear?: boolean | undefined;
       withTimezone?: boolean | undefined;
       hour12?: boolean | undefined;
-    }
+    },
   ): string {
     const date = this.toDate(inputDate);
     if (date === null) {

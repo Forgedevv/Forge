@@ -26,7 +26,7 @@ export function createDataFeed(
   showDevTradesRef: MutableRefObject<boolean>,
   showUserTradesRef: MutableRefObject<boolean>,
   isMarksLoadingRef: MutableRefObject<boolean>,
-  resetCacheFnRef: MutableRefObject<Record<string, () => void>>
+  resetCacheFnRef: MutableRefObject<Record<string, () => void>>,
 ): IExternalDatafeed & IDatafeedChartApi {
   return {
     onReady: (callback) => {
@@ -35,7 +35,7 @@ export function createDataFeed(
           supported_resolutions: SUPPORTED_RESOLUTIONS,
           supports_marks: true,
           exchanges: [],
-        })
+        }),
       );
     },
 
@@ -158,7 +158,7 @@ export function createDataFeed(
       resolution,
       onRealtimeCallback,
       subscriberUID,
-      onResetCacheNeededCallback
+      onResetCacheNeededCallback,
     ) => {
       const baseAssetId = baseAssetRef.current?.id;
       if (!baseAssetId) {
@@ -208,7 +208,7 @@ export function createDataFeed(
             const devMarks = asMarks(
               devActions.txs,
               { id: baseAsset.id, circSupply: baseAsset.circSupply },
-              true
+              true,
             );
             onDataCallback(devMarks);
           });

@@ -33,7 +33,7 @@ export const ExploreMsgHandler: React.FC = () => {
             // Update or add
             if (recentPools) {
               const newIdx = recentPools?.findIndex(
-                (p) => p.baseAsset.id === update.pool.baseAsset.id
+                (p) => p.baseAsset.id === update.pool.baseAsset.id,
               );
               if (newIdx !== -1) {
                 const existingPool = recentPools[newIdx];
@@ -54,14 +54,14 @@ export const ExploreMsgHandler: React.FC = () => {
                 aboutToGraduatePools[aboutToGraduatePools.length - 1]?.bondingCurve ?? 0;
 
               const aboutToGraduateIdx = aboutToGraduatePools.findIndex(
-                (p) => p.baseAsset.id === update.pool.baseAsset.id
+                (p) => p.baseAsset.id === update.pool.baseAsset.id,
               );
               if (aboutToGraduateIdx !== -1) {
                 const existingPool = aboutToGraduatePools[aboutToGraduateIdx];
                 if (existingPool) {
                   aboutToGraduatePools[aboutToGraduateIdx] = patchStreamPool(
                     update.pool,
-                    existingPool
+                    existingPool,
                   );
                 }
               } else if (
@@ -82,7 +82,7 @@ export const ExploreMsgHandler: React.FC = () => {
             // Update or add
             if (graduatedPools) {
               const graduatedIdx = graduatedPools.findIndex(
-                (p) => p.baseAsset.id === update.pool.baseAsset.id
+                (p) => p.baseAsset.id === update.pool.baseAsset.id,
               );
               if (graduatedIdx !== -1) {
                 const existingPool = graduatedPools[graduatedIdx];
@@ -102,7 +102,7 @@ export const ExploreMsgHandler: React.FC = () => {
             }
             if (aboutToGraduatePools) {
               aboutToGraduatePools = aboutToGraduatePools.filter(
-                (p) => p.baseAsset.id !== update.pool.baseAsset.id
+                (p) => p.baseAsset.id !== update.pool.baseAsset.id,
               );
             }
 
@@ -133,7 +133,7 @@ export const ExploreMsgHandler: React.FC = () => {
             // Update or add if higher bonding curve
             if (aboutToGraduatePools && !update.pool.baseAsset.graduatedPool) {
               const idx = aboutToGraduatePools.findIndex(
-                (p) => p.baseAsset.id === update.pool.baseAsset.id
+                (p) => p.baseAsset.id === update.pool.baseAsset.id,
               );
               if (idx !== -1) {
                 const existingPool = aboutToGraduatePools[idx];
@@ -158,7 +158,7 @@ export const ExploreMsgHandler: React.FC = () => {
             // Update existing
             if (graduatedPools) {
               const idx = graduatedPools.findIndex(
-                (p) => p.baseAsset.id === update.pool.baseAsset.id
+                (p) => p.baseAsset.id === update.pool.baseAsset.id,
               );
               if (idx !== -1) {
                 const existingPool = graduatedPools[idx];
@@ -196,7 +196,7 @@ export const ExploreMsgHandler: React.FC = () => {
                 sortBy,
                 sortDir,
               },
-              recentArgs.timeframe
+              recentArgs.timeframe,
             );
             recentPools.sort(sorter);
           }
@@ -208,7 +208,7 @@ export const ExploreMsgHandler: React.FC = () => {
           if (!sortBy) {
             const defaultSortBy = categorySortBy(
               ExploreTab.GRADUATING,
-              aboutToGraduateArgs.timeframe
+              aboutToGraduateArgs.timeframe,
             );
             if (defaultSortBy) {
               sortBy = normalizeSortByField(defaultSortBy);
@@ -221,7 +221,7 @@ export const ExploreMsgHandler: React.FC = () => {
                 sortBy,
                 sortDir,
               },
-              aboutToGraduateArgs.timeframe
+              aboutToGraduateArgs.timeframe,
             );
             aboutToGraduatePools.sort(sorter);
           }
@@ -243,7 +243,7 @@ export const ExploreMsgHandler: React.FC = () => {
                 sortBy,
                 sortDir,
               },
-              graduatedArgs.timeframe
+              graduatedArgs.timeframe,
             );
             graduatedPools.sort(sorter);
           }
@@ -264,7 +264,7 @@ export const ExploreMsgHandler: React.FC = () => {
         };
 
         return next;
-      }
+      },
     );
   });
   return null;

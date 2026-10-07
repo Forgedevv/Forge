@@ -17,7 +17,10 @@ function lineOfKey(text: string, key: string): number | null {
 }
 
 /** JSON parse that also rejects duplicate keys (parsers disagree on which one wins). */
-export function parseStrictJson(path: string, text: string): { ok: true; value: unknown } | { ok: false; reason: string } {
+export function parseStrictJson(
+  path: string,
+  text: string,
+): { ok: true; value: unknown } | { ok: false; reason: string } {
   let value: unknown;
   try {
     value = JSON.parse(text);
@@ -32,7 +35,10 @@ export function parseStrictJson(path: string, text: string): { ok: true; value: 
       const seen = new Set<string>();
       for (const p of n.properties) {
         if (!p.name) continue;
-        const k = ts.isStringLiteral(p.name) || ts.isIdentifier(p.name) || ts.isNumericLiteral(p.name) ? p.name.text : null;
+        const k =
+          ts.isStringLiteral(p.name) || ts.isIdentifier(p.name) || ts.isNumericLiteral(p.name)
+            ? p.name.text
+            : null;
         if (k === null) continue;
         if (seen.has(k)) {
           dup = k;
@@ -52,11 +58,14 @@ export function deepEqual(a: unknown, b: unknown): boolean {
   if (a === b) return true;
   if (typeof a !== typeof b || a === null || b === null || typeof a !== 'object') return false;
   if (Array.isArray(a) !== Array.isArray(b)) return false;
-  if (Array.isArray(a) && Array.isArray(b)) return a.length === b.length && a.every((x, i) => deepEqual(x, b[i]));
+  if (Array.isArray(a) && Array.isArray(b))
+    return a.length === b.length && a.every((x, i) => deepEqual(x, b[i]));
   const ka = Object.keys(a as object).sort();
   const kb = Object.keys(b as object).sort();
   if (ka.length !== kb.length || ka.some((k, i) => k !== kb[i])) return false;
-  return ka.every((k) => deepEqual((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k]));
+  return ka.every((k) =>
+    deepEqual((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k]),
+  );
 }
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
@@ -74,7 +83,12 @@ export function checkForgeConfig(
 ): Violation[] {
   const out: Violation[] = [];
   if (status !== 'modified' || oldText === null || newText === null) {
-    out.push({ rule: 'forge-config-locked-field', file, line: null, reason: `forge.config.json must not be ${status === 'modified' ? 'emptied' : status}` });
+    out.push({
+      rule: 'forge-config-locked-field',
+      file,
+      line: null,
+      reason: `forge.config.json must not be ${status === 'modified' ? 'emptied' : status}`,
+    });
     return out;
   }
   const parsedNew = parseStrictJson(file, newText);
@@ -86,30 +100,55 @@ export function checkForgeConfig(
   const oldValue = parsedOld.ok ? parsedOld.value : undefined;
   const newValue = parsedNew.value;
   if (!isPlainObject(newValue) || !isPlainObject(oldValue)) {
-    out.push({ rule: 'forge-config-invalid', file, line: null, reason: 'forge.config.json must be a JSON object' });
+    out.push({
+      rule: 'forge-config-invalid',
+      file,
+      line: null,
+      reason: 'forge.config.json must be a JSON object',
+    });
     return out;
   }
   const keys = new Set([...Object.keys(oldValue), ...Object.keys(newValue)]);
   for (const key of keys) {
     if (AGENT_EDITABLE_KEYS.has(key)) continue;
     if (!deepEqual(oldValue[key], newValue[key])) {
-      out.push({ rule: 'forge-config-locked-field', file, line: lineOfKey(newText, key), reason: `field "${key}" may not be changed by the agent` });
+      out.push({
+        rule: 'forge-config-locked-field',
+        file,
+        line: lineOfKey(newText, key),
+        reason: `field "${key}" may not be changed by the agent`,
+      });
     }
   }
   for (const key of AGENT_EDITABLE_KEYS) {
     const v = newValue[key];
     if (v !== undefined && !isPlainObject(v)) {
-      out.push({ rule: 'forge-config-invalid', file, line: lineOfKey(newText, key), reason: `field "${key}" must be an object` });
+      out.push({
+        rule: 'forge-config-invalid',
+        file,
+        line: lineOfKey(newText, key),
+        reason: `field "${key}" must be an object`,
+      });
     }
   }
   for (const s of jsonStrings(newValue.theme, '$.theme')) {
     if (!SAFE_THEME_VALUE_RE.test(s.value) || /url\s*\(|expression\s*\(|\/\*/i.test(s.value)) {
-      out.push({ rule: 'forge-config-unsafe-value', file, line: lineOfKey(newText, s.path.split('.').pop() ?? ''), reason: `unsafe theme value at ${s.path}` });
+      out.push({
+        rule: 'forge-config-unsafe-value',
+        file,
+        line: lineOfKey(newText, s.path.split('.').pop() ?? ''),
+        reason: `unsafe theme value at ${s.path}`,
+      });
     }
   }
   for (const s of jsonStrings(newValue.content, '$.content')) {
     if (isScriptUrl(s.value) || activeHtmlFindings(s.value).length > 0) {
-      out.push({ rule: 'forge-config-unsafe-value', file, line: lineOfKey(newText, s.path.split('.').pop() ?? ''), reason: `active content at ${s.path}` });
+      out.push({
+        rule: 'forge-config-unsafe-value',
+        file,
+        line: lineOfKey(newText, s.path.split('.').pop() ?? ''),
+        reason: `active content at ${s.path}`,
+      });
     }
   }
   return out;
@@ -124,7 +163,9 @@ function forgeCoreEntries(value: unknown, path: string[] = []): string[] {
     const s = JSON.stringify(value);
     return FORGE_CORE.test(here) || FORGE_CORE.test(String(value)) ? [`${here}=${s}`] : [];
   }
-  const entries = Array.isArray(value) ? value.map((v, i) => [String(i), v] as const) : Object.entries(value as Record<string, unknown>);
+  const entries = Array.isArray(value)
+    ? value.map((v, i) => [String(i), v] as const)
+    : Object.entries(value as Record<string, unknown>);
   const out = entries.flatMap(([k, v]) => forgeCoreEntries(v, [...path, k]));
   if (entries.length === 0 && FORGE_CORE.test(here)) out.push(`${here}={}`);
   return out;
@@ -137,26 +178,52 @@ function multisetDiff(a: string[], b: string[]): boolean {
   return sa.some((x, i) => x !== sb[i]);
 }
 
-export function checkPackageJson(status: string, oldText: string | null, newText: string | null, file: string): Violation[] {
+export function checkPackageJson(
+  status: string,
+  oldText: string | null,
+  newText: string | null,
+  file: string,
+): Violation[] {
   const out: Violation[] = [];
   if (newText === null) {
-    out.push({ rule: 'forge-core-dependency', file, line: null, reason: `package.json ${status} (the @forge/core dependency would be lost)` });
+    out.push({
+      rule: 'forge-core-dependency',
+      file,
+      line: null,
+      reason: `package.json ${status} (the @forge/core dependency would be lost)`,
+    });
     return out;
   }
   const parsedNew = parseStrictJson(file, newText);
   if (!parsedNew.ok) {
-    out.push({ rule: 'forge-core-dependency', file, line: null, reason: `package.json: ${parsedNew.reason}` });
+    out.push({
+      rule: 'forge-core-dependency',
+      file,
+      line: null,
+      reason: `package.json: ${parsedNew.reason}`,
+    });
     return out;
   }
   const parsedOld = oldText === null ? null : parseStrictJson(file, oldText);
   const oldEntries = parsedOld?.ok ? forgeCoreEntries(parsedOld.value) : [];
   const newEntries = forgeCoreEntries(parsedNew.value);
   if (multisetDiff(oldEntries, newEntries)) {
-    out.push({ rule: 'forge-core-dependency', file, line: lineOfKey(newText, '@forge/core'), reason: 'change to the @forge/core dependency (version, presence, alias or override)' });
+    out.push({
+      rule: 'forge-core-dependency',
+      file,
+      line: lineOfKey(newText, '@forge/core'),
+      reason: 'change to the @forge/core dependency (version, presence, alias or override)',
+    });
   }
-  const mentions = (t: string | null): number => (t ? (t.match(/patch-package|patchedDependencies/g) ?? []).length : 0);
+  const mentions = (t: string | null): number =>
+    t ? (t.match(/patch-package|patchedDependencies/g) ?? []).length : 0;
   if (mentions(newText) > mentions(oldText)) {
-    out.push({ rule: 'patch-package', file, line: null, reason: 'patch-package / patchedDependencies added' });
+    out.push({
+      rule: 'patch-package',
+      file,
+      line: null,
+      reason: 'patch-package / patchedDependencies added',
+    });
   }
   return out;
 }
@@ -181,21 +248,39 @@ function forgeCoreBlocks(text: string): string[] {
   return blocks;
 }
 
-export function checkLockfile(path: string, oldContent: string | Uint8Array | null, newContent: string | Uint8Array | null, file: string): Violation[] {
+export function checkLockfile(
+  path: string,
+  oldContent: string | Uint8Array | null,
+  newContent: string | Uint8Array | null,
+  file: string,
+): Violation[] {
   const base = path.slice(path.lastIndexOf('/') + 1).toLowerCase();
-  const asText = (c: string | Uint8Array | null): string | null => (c === null ? null : typeof c === 'string' ? c : Buffer.from(c).toString('utf8'));
+  const asText = (c: string | Uint8Array | null): string | null =>
+    c === null ? null : typeof c === 'string' ? c : Buffer.from(c).toString('utf8');
   const oldText = asText(oldContent);
   const newText = asText(newContent);
-  const violation: Violation = { rule: 'lockfile-forge-core', file, line: null, reason: 'lockfile change touching @forge/core' };
+  const violation: Violation = {
+    rule: 'lockfile-forge-core',
+    file,
+    line: null,
+    reason: 'lockfile change touching @forge/core',
+  };
   if (base === 'bun.lockb' || oldText === null || newText === null) {
     if (oldText === null && newText !== null && !FORGE_CORE.test(newText)) return [];
-    return [{ ...violation, reason: 'lockfile added, deleted or binary: @forge/core resolution cannot be verified' }];
+    return [
+      {
+        ...violation,
+        reason: 'lockfile added, deleted or binary: @forge/core resolution cannot be verified',
+      },
+    ];
   }
   if (base.endsWith('.json')) {
     const a = parseStrictJson(file, oldText);
     const b = parseStrictJson(file, newText);
     if (!b.ok) return [{ ...violation, reason: `lockfile: ${b.reason}` }];
-    return multisetDiff(a.ok ? forgeCoreEntries(a.value) : [], forgeCoreEntries(b.value)) ? [violation] : [];
+    return multisetDiff(a.ok ? forgeCoreEntries(a.value) : [], forgeCoreEntries(b.value))
+      ? [violation]
+      : [];
   }
   return multisetDiff(forgeCoreBlocks(oldText), forgeCoreBlocks(newText)) ? [violation] : [];
 }

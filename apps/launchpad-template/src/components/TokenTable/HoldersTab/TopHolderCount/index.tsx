@@ -14,12 +14,12 @@ export const TopHolderCount: React.FC = () => {
           ? 'text-neutral-500'
           : isAuditTopHoldersPass(audit)
             ? 'text-emerald'
-            : 'text-rose'
+            : 'text-rose',
       )}
     >
       {formatReadablePercentChange(
         audit?.topHoldersPercentage === undefined ? undefined : audit?.topHoldersPercentage / 100,
-        { hideSign: 'positive' }
+        { hideSign: 'positive' },
       )}
     </span>
   );

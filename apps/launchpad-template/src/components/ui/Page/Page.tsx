@@ -15,7 +15,7 @@ const Page: React.FC<React.PropsWithChildren<IProps>> = ({
     <div
       className={cn(
         'flex min-h-screen flex-col justify-between bg-background text-foreground',
-        pageClassName
+        pageClassName,
       )}
     >
       <Header />
@@ -23,7 +23,7 @@ const Page: React.FC<React.PropsWithChildren<IProps>> = ({
       <div
         className={cn(
           'flex flex-1 flex-col items-center px-2 pt-3 pb-8 md:px-4',
-          containerClassName
+          containerClassName,
         )}
       >
         <div className="flex w-full flex-1 flex-col">{children}</div>

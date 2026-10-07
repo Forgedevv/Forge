@@ -10,7 +10,14 @@ import { SwapMode, getCurrentPoint } from '@meteora-ag/dynamic-bonding-curve-sdk
 import { BUDGETS, ensureFunded, runMain } from './lib/funding.js';
 import { State, type Json } from './lib/state.js';
 import { loadOrCreateKeypair, loadWallets } from './lib/wallets.js';
-import { ata, getBalance, getConnection, getTokenAccountBalance, getTxFee, sendAndConfirm } from './lib/solana.js';
+import {
+  ata,
+  getBalance,
+  getConnection,
+  getTokenAccountBalance,
+  getTxFee,
+  sendAndConfirm,
+} from './lib/solana.js';
 import {
   bn,
   buildTestCurve,
@@ -99,9 +106,15 @@ export async function runTest4(): Promise<boolean> {
 
   const referralStep = await state.step<ReferralStep>('test4.referralAccount', async () => {
     const tokenAccount = ata(wallets.referral.publicKey, NATIVE_MINT);
-    if (await getConnection().getAccountInfo(tokenAccount)) return { tokenAccount: tokenAccount.toBase58(), signature: null };
+    if (await getConnection().getAccountInfo(tokenAccount))
+      return { tokenAccount: tokenAccount.toBase58(), signature: null };
     const tx = new Transaction().add(
-      createAssociatedTokenAccountIdempotentInstruction(wallets.referral.publicKey, tokenAccount, wallets.referral.publicKey, NATIVE_MINT),
+      createAssociatedTokenAccountIdempotentInstruction(
+        wallets.referral.publicKey,
+        tokenAccount,
+        wallets.referral.publicKey,
+        NATIVE_MINT,
+      ),
     );
     const signature = await sendAndConfirm(tx, wallets.referral, { label: 'referral WSOL ATA' });
     return { tokenAccount: tokenAccount.toBase58(), signature };
@@ -109,9 +122,18 @@ export async function runTest4(): Promise<boolean> {
   const referralTokenAccount = new PublicKey(referralStep.tokenAccount);
 
   const platformTransfer = (lamports: bigint) =>
-    SystemProgram.transfer({ fromPubkey: wallets.trader.publicKey, toPubkey: wallets.platformFee.publicKey, lamports });
+    SystemProgram.transfer({
+      fromPubkey: wallets.trader.publicKey,
+      toPubkey: wallets.platformFee.publicKey,
+      lamports,
+    });
 
-  const measure = async (kind: 'buy' | 'sell', amountIn: bigint, platformFee: bigint, quotedOut: string): Promise<SwapStep> => {
+  const measure = async (
+    kind: 'buy' | 'sell',
+    amountIn: bigint,
+    platformFee: bigint,
+    quotedOut: string,
+  ): Promise<SwapStep> => {
     const platformBefore = await getBalance(wallets.platformFee.publicKey);
     const traderBefore = await getBalance(wallets.trader.publicKey);
     const referralBefore = await getTokenAccountBalance(referralTokenAccount);
@@ -145,7 +167,9 @@ export async function runTest4(): Promise<boolean> {
   const buy = await withSwapEvent(
     state,
     'test4.buy',
-    await state.step<SwapStep>('test4.buy', async () => measure('buy', TEST4_BUY, platformFeeLamports(TEST4_BUY, PLATFORM_FEE_BPS), '')),
+    await state.step<SwapStep>('test4.buy', async () =>
+      measure('buy', TEST4_BUY, platformFeeLamports(TEST4_BUY, PLATFORM_FEE_BPS), ''),
+    ),
   );
 
   // Sell everything bought: platform fee = 30 bps of the expected SOL out (from the quote).
@@ -165,7 +189,12 @@ export async function runTest4(): Promise<boolean> {
       amountIn: bn(held),
     });
     const expectedSolOut = BigInt(quote.outputAmount.toString());
-    return measure('sell', held, platformFeeLamports(expectedSolOut, PLATFORM_FEE_BPS), expectedSolOut.toString());
+    return measure(
+      'sell',
+      held,
+      platformFeeLamports(expectedSolOut, PLATFORM_FEE_BPS),
+      expectedSolOut.toString(),
+    );
   });
   const sell = await withSwapEvent(state, 'test4.sell', sellStep);
 
@@ -174,26 +203,55 @@ export async function runTest4(): Promise<boolean> {
   const traderDelta = (s: SwapStep) => BigInt(s.traderAfter) - BigInt(s.traderBefore);
   const sellOut = sell.event ? BigInt(String(sell.event.outputAmount)) : 0n;
   const checks: Array<[string, boolean]> = [
-    ['buy: platform fee received in the swap transaction', platformDelta(buy) === BigInt(buy.platformFee)],
+    [
+      'buy: platform fee received in the swap transaction',
+      platformDelta(buy) === BigInt(buy.platformFee),
+    ],
     ['buy: referral still credited', referralDelta(buy) > 0n],
     ['buy: transaction within the size limit', buy.txBytes <= MAX_TX_BYTES],
-    ['sell: platform fee received in the swap transaction', platformDelta(sell) === BigInt(sell.platformFee)],
+    [
+      'sell: platform fee received in the swap transaction',
+      platformDelta(sell) === BigInt(sell.platformFee),
+    ],
     ['sell: referral still credited', referralDelta(sell) > 0n],
     ['sell: transaction within the size limit', sell.txBytes <= MAX_TX_BYTES],
-    ['sell: trader received the SOL of the sale minus platform fee and tx fee', traderDelta(sell) === sellOut - BigInt(sell.platformFee) - BigInt(sell.txFee)],
+    [
+      'sell: trader received the SOL of the sale minus platform fee and tx fee',
+      traderDelta(sell) === sellOut - BigInt(sell.platformFee) - BigInt(sell.txFee),
+    ],
   ];
   const ok = checks.every(([, c]) => c);
 
   const r = new Report('Test 4 — Platform fee in the swap');
-  r.p(`Goal: confirm that a ${PLATFORM_FEE_BPS} bps SOL transfer can be added in the same transaction as the swap (with referral), on both buy and sell, within the Solana transaction size limit.`);
+  r.p(
+    `Goal: confirm that a ${PLATFORM_FEE_BPS} bps SOL transfer can be added in the same transaction as the swap (with referral), on both buy and sell, within the Solana transaction size limit.`,
+  );
   r.h2('Setup');
-  r.bullet(`Config: ${accountLink(configStep.config, configStep.config)} — ${txLink(configStep.signature)} (trading fee ${TEST4_FEE_BPS} bps, no creator share)`);
-  r.bullet(`Pool: ${accountLink(poolStep.pool, poolStep.pool)} — mint ${accountLink(poolStep.mint)} — ${txLink(poolStep.signature)}`);
-  r.bullet(`Referral WSOL token account: ${accountLink(referralStep.tokenAccount, referralStep.tokenAccount)}${referralStep.signature ? ` — ${txLink(referralStep.signature)}` : ' (already existed)'}`);
-  r.bullet(`Platform fee wallet: ${accountLink(wallets.platformFee.publicKey)}; trader: ${accountLink(wallets.trader.publicKey)}`);
+  r.bullet(
+    `Config: ${accountLink(configStep.config, configStep.config)} — ${txLink(configStep.signature)} (trading fee ${TEST4_FEE_BPS} bps, no creator share)`,
+  );
+  r.bullet(
+    `Pool: ${accountLink(poolStep.pool, poolStep.pool)} — mint ${accountLink(poolStep.mint)} — ${txLink(poolStep.signature)}`,
+  );
+  r.bullet(
+    `Referral WSOL token account: ${accountLink(referralStep.tokenAccount, referralStep.tokenAccount)}${referralStep.signature ? ` — ${txLink(referralStep.signature)}` : ' (already existed)'}`,
+  );
+  r.bullet(
+    `Platform fee wallet: ${accountLink(wallets.platformFee.publicKey)}; trader: ${accountLink(wallets.trader.publicKey)}`,
+  );
   r.h2('Swaps');
   r.table(
-    ['Swap', 'Amount in', 'Platform fee (30 bps)', 'Platform wallet Δ', 'Referral Δ', 'Trader SOL Δ', 'Tx fee', 'Size', 'Tx'],
+    [
+      'Swap',
+      'Amount in',
+      'Platform fee (30 bps)',
+      'Platform wallet Δ',
+      'Referral Δ',
+      'Trader SOL Δ',
+      'Tx fee',
+      'Size',
+      'Tx',
+    ],
     [buy, sell].map((s) => [
       s.kind,
       s.amountIn,
@@ -206,13 +264,22 @@ export async function runTest4(): Promise<boolean> {
       txLink(s.signature),
     ]),
   );
-  r.bullet(`Sell: SDK quoted ${sell.quotedOut} lamports out (platform fee computed on the quote), on-chain outputAmount ${sellOut}.`);
-  r.bullet('Instruction layout: [SystemProgram.transfer to platform fee wallet] + SDK swap instructions (ATA creation, wrap SOL, swap, unwrap).');
+  r.bullet(
+    `Sell: SDK quoted ${sell.quotedOut} lamports out (platform fee computed on the quote), on-chain outputAmount ${sellOut}.`,
+  );
+  r.bullet(
+    'Instruction layout: [SystemProgram.transfer to platform fee wallet] + SDK swap instructions (ATA creation, wrap SOL, swap, unwrap).',
+  );
   r.blank();
   r.h2('Checks');
   for (const [label, c] of checks) r.bullet(`${c ? 'OK' : 'FAIL'} — ${label}`);
   r.blank();
-  r.verdict(ok, ok ? 'the platform fee transfer fits in the swap transaction on buy and sell, alongside the referral. Plan A holds.' : 'see failed checks; plan B in SUMMARY.md (address lookup table / display the fee before signing / lower rate).');
+  r.verdict(
+    ok,
+    ok
+      ? 'the platform fee transfer fits in the swap transaction on buy and sell, alongside the referral. Plan A holds.'
+      : 'see failed checks; plan B in SUMMARY.md (address lookup table / display the fee before signing / lower rate).',
+  );
   r.write('test4-platform-fee.md');
   state.set('test4.result', { ok, checks: checks.map(([label, c]) => ({ label, ok: c })) });
   return ok;

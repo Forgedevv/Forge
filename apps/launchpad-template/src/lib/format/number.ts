@@ -138,7 +138,7 @@ type FormatReadableNumberOptions = {
 
 function getReadableNumberFormatter(
   value: number,
-  options: FormatReadableNumberOptions
+  options: FormatReadableNumberOptions,
 ): Intl.NumberFormat {
   if (
     (!options.format && value > COMPACT_THRESHOLD) ||
@@ -162,7 +162,7 @@ function getReadableNumberFormatter(
  */
 export function formatReadableNumber(
   num?: number | null,
-  options: FormatReadableNumberOptions = {}
+  options: FormatReadableNumberOptions = {},
 ): string {
   if (num === null || num === undefined || isNaN(num)) {
     return DASH;
@@ -202,7 +202,7 @@ export function formatReadableNumber(
  */
 export function formatReadablePercentChange(
   num?: number | null,
-  options: { hideSign?: 'all' | 'positive'; decimals?: 0 | 1 | 2 } = {}
+  options: { hideSign?: 'all' | 'positive'; decimals?: 0 | 1 | 2 } = {},
 ): string {
   if (num === null || num === undefined || isNaN(num)) {
     return DASH;

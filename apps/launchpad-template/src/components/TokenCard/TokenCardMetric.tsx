@@ -40,7 +40,7 @@ export const TokenCardTopHoldersMetric: React.FC<TokenCardTopHoldersMetricProps>
             ? 'text-neutral-600'
             : isPass
               ? 'text-emerald'
-              : 'text-rose'
+              : 'text-rose',
         )}
       >
         {formatReadablePercentChange(
@@ -48,7 +48,7 @@ export const TokenCardTopHoldersMetric: React.FC<TokenCardTopHoldersMetricProps>
           {
             hideSign: 'positive',
             decimals: 0,
-          }
+          },
         )}
       </span>
     </Metric>
@@ -115,8 +115,8 @@ export const TokenCardNetBuyersMetric: React.FC<TokenCardNetBuyersMetricProps> =
         className={cn(
           'opacity-80',
           getNumberColorCn(
-            isNetBuyersDominant === undefined ? undefined : isNetBuyersDominant ? 1 : -1
-          )
+            isNetBuyersDominant === undefined ? undefined : isNetBuyersDominant ? 1 : -1,
+          ),
         )}
         format="compact"
         num={numNetBuyers}

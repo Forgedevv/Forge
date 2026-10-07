@@ -101,7 +101,7 @@ export const TrenchesTokenIconRoot: React.FC<TrenchesTokenIconRootProps> = ({
         setIsValid(false);
       }
     },
-    [onError, resolvedSrc, imageUrl]
+    [onError, resolvedSrc, imageUrl],
   );
 
   return (

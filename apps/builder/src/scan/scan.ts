@@ -10,8 +10,25 @@ import { analyzeCode } from './code.js';
 import { resolveConfig, type ResolvedConfig } from './config.js';
 import { checkForgeConfig, checkLockfile, checkPackageJson } from './manifest.js';
 import { classifyPath, extensionOf, kindOf, normalizePath, type FileKind } from './paths.js';
-import { AddressCollector, cssFindings, hiddenUnicodeFindings, jsonFindings, jsonStrings, activeHtmlFindings, scriptUrlFindings, svgFindings } from './text.js';
-import type { ChangedFile, FileContent, Finding, ScanInput, ScanOptions, ScanResult, Violation } from './types.js';
+import {
+  AddressCollector,
+  cssFindings,
+  hiddenUnicodeFindings,
+  jsonFindings,
+  jsonStrings,
+  activeHtmlFindings,
+  scriptUrlFindings,
+  svgFindings,
+} from './text.js';
+import type {
+  ChangedFile,
+  FileContent,
+  Finding,
+  ScanInput,
+  ScanOptions,
+  ScanResult,
+  Violation,
+} from './types.js';
 
 const STATUSES = new Set(['added', 'modified', 'deleted', 'renamed']);
 
@@ -54,7 +71,10 @@ export function matchesMagic(ext: string, bytes: Uint8Array): boolean {
     case 'webp':
       return startsWith(bytes, ascii('RIFF')) && startsWith(bytes, ascii('WEBP'), 8);
     case 'avif':
-      return startsWith(bytes, ascii('ftyp'), 4) && (startsWith(bytes, ascii('avif'), 8) || startsWith(bytes, ascii('avis'), 8));
+      return (
+        startsWith(bytes, ascii('ftyp'), 4) &&
+        (startsWith(bytes, ascii('avif'), 8) || startsWith(bytes, ascii('avis'), 8))
+      );
     case 'ico':
       return startsWith(bytes, [0x00, 0x00, 0x01, 0x00]);
     case 'woff':
@@ -71,7 +91,12 @@ export function matchesMagic(ext: string, bytes: Uint8Array): boolean {
 }
 
 /** Content findings for one text file. */
-export function analyzeText(path: string, kind: FileKind, text: string, config: ResolvedConfig): Finding[] {
+export function analyzeText(
+  path: string,
+  kind: FileKind,
+  text: string,
+  config: ResolvedConfig,
+): Finding[] {
   if (kind === 'code') return analyzeCode(path, text, config);
   const out: Finding[] = [];
   const addresses = new AddressCollector(text, config);
@@ -84,7 +109,11 @@ export function analyzeText(path: string, kind: FileKind, text: string, config: 
       // Invalid JSON is reported by jsonFindings.
     }
   }
-  out.push(...addresses.findings, ...scriptUrlFindings(text), ...hiddenUnicodeFindings(text, false));
+  out.push(
+    ...addresses.findings,
+    ...scriptUrlFindings(text),
+    ...hiddenUnicodeFindings(text, false),
+  );
   if (kind === 'style') out.push(...cssFindings(text, config));
   if (kind === 'svg') out.push(...svgFindings(text, config));
   if (kind === 'markdown' || kind === 'text') out.push(...activeHtmlFindings(text));
@@ -129,7 +158,14 @@ export function newFindings(prev: Finding[], next: Finding[], added: Set<number>
 function fileModeViolation(file: ChangedFile, path: string): Violation | null {
   const mode = file.mode ?? '100644';
   if (mode === '100644') return null;
-  const what = mode === '120000' ? 'symlink' : mode === '160000' ? 'submodule' : mode === '100755' ? 'executable file' : `file mode ${mode}`;
+  const what =
+    mode === '120000'
+      ? 'symlink'
+      : mode === '160000'
+        ? 'submodule'
+        : mode === '100755'
+          ? 'executable file'
+          : `file mode ${mode}`;
   return { rule: 'file-mode', file: path, line: null, reason: `${what} not allowed` };
 }
 
@@ -137,16 +173,32 @@ function scanFile(file: ChangedFile, config: ResolvedConfig): Violation[] {
   const out: Violation[] = [];
   const rawPath = typeof file.path === 'string' ? file.path : '';
   if (!STATUSES.has(file.status)) {
-    return [{ rule: 'path-invalid', file: rawPath || '<unknown>', line: null, reason: `unknown status "${String(file.status)}"` }];
+    return [
+      {
+        rule: 'path-invalid',
+        file: rawPath || '<unknown>',
+        line: null,
+        reason: `unknown status "${String(file.status)}"`,
+      },
+    ];
   }
   const p = normalizePath(rawPath);
-  if (!p.ok) return [{ rule: 'path-invalid', file: rawPath || '<empty>', line: null, reason: p.reason }];
+  if (!p.ok)
+    return [{ rule: 'path-invalid', file: rawPath || '<empty>', line: null, reason: p.reason }];
   const path = p.path;
 
   let oldPath = path;
   if (file.status === 'renamed') {
     const op = normalizePath(file.oldPath ?? '');
-    if (!op.ok) return [{ rule: 'path-invalid', file: file.oldPath ?? '<missing oldPath>', line: null, reason: `rename source: ${op.reason}` }];
+    if (!op.ok)
+      return [
+        {
+          rule: 'path-invalid',
+          file: file.oldPath ?? '<missing oldPath>',
+          line: null,
+          reason: `rename source: ${op.reason}`,
+        },
+      ];
     oldPath = op.path;
   }
 
@@ -162,22 +214,43 @@ function scanFile(file: ChangedFile, config: ResolvedConfig): Violation[] {
         out.push({ rule: zone.rule, file: candidate, line: null, reason: zone.reason });
         break;
       case 'forge-config': {
-        const asText = (c: FileContent | null): string | null => (c === null ? null : decodeText(c));
+        const asText = (c: FileContent | null): string | null =>
+          c === null ? null : decodeText(c);
         const status = file.status === 'renamed' ? 'renamed' : file.status;
-        out.push(...checkForgeConfig(status, asText(file.oldContent), asText(file.newContent), candidate));
+        out.push(
+          ...checkForgeConfig(status, asText(file.oldContent), asText(file.newContent), candidate),
+        );
         if (isTarget && !deleted) contentPolicy = 'json';
         break;
       }
       case 'package-json': {
-        out.push({ rule: 'zone-outside-allowed', file: candidate, line: null, reason: 'package.json is locked' });
-        const asText = (c: FileContent | null): string | null => (c === null ? null : decodeText(c));
+        out.push({
+          rule: 'zone-outside-allowed',
+          file: candidate,
+          line: null,
+          reason: 'package.json is locked',
+        });
+        const asText = (c: FileContent | null): string | null =>
+          c === null ? null : decodeText(c);
         const newText = isTarget && !deleted ? asText(file.newContent) : null;
         out.push(...checkPackageJson(file.status, asText(file.oldContent), newText, candidate));
         break;
       }
       case 'lockfile':
-        out.push({ rule: 'zone-outside-allowed', file: candidate, line: null, reason: 'lockfiles are locked' });
-        out.push(...checkLockfile(candidate, file.oldContent, isTarget && !deleted ? file.newContent : null, candidate));
+        out.push({
+          rule: 'zone-outside-allowed',
+          file: candidate,
+          line: null,
+          reason: 'lockfiles are locked',
+        });
+        out.push(
+          ...checkLockfile(
+            candidate,
+            file.oldContent,
+            isTarget && !deleted ? file.newContent : null,
+            candidate,
+          ),
+        );
         break;
       case 'free':
         if (isTarget && !deleted) contentPolicy = zone.kind;
@@ -200,30 +273,61 @@ function scanFile(file: ChangedFile, config: ResolvedConfig): Violation[] {
 
   if (kind === 'binary') {
     if (byteLength(content) > config.maxBinaryBytes) {
-      out.push({ rule: 'file-too-large', file: path, line: null, reason: `binary file over ${config.maxBinaryBytes} bytes` });
+      out.push({
+        rule: 'file-too-large',
+        file: path,
+        line: null,
+        reason: `binary file over ${config.maxBinaryBytes} bytes`,
+      });
     }
     const ext = extensionOf(path);
     if (typeof content === 'string') {
-      out.push({ rule: 'binary-file', file: path, line: null, reason: 'binary file content must be provided as bytes' });
+      out.push({
+        rule: 'binary-file',
+        file: path,
+        line: null,
+        reason: 'binary file content must be provided as bytes',
+      });
     } else if (!matchesMagic(ext, content)) {
-      out.push({ rule: 'binary-file', file: path, line: null, reason: `content is not a valid .${ext} file` });
+      out.push({
+        rule: 'binary-file',
+        file: path,
+        line: null,
+        reason: `content is not a valid .${ext} file`,
+      });
     }
     return out;
   }
 
   if (byteLength(content) > config.maxTextBytes) {
-    out.push({ rule: 'file-too-large', file: path, line: null, reason: `text file over ${config.maxTextBytes} bytes` });
+    out.push({
+      rule: 'file-too-large',
+      file: path,
+      line: null,
+      reason: `text file over ${config.maxTextBytes} bytes`,
+    });
     return out;
   }
   const text = decodeText(content);
   if (text === null) {
-    out.push({ rule: 'encoding-invalid', file: path, line: null, reason: 'not valid UTF-8 text (binary content in a text file)' });
+    out.push({
+      rule: 'encoding-invalid',
+      file: path,
+      line: null,
+      reason: 'not valid UTF-8 text (binary content in a text file)',
+    });
     return out;
   }
 
   let oldText: string | null = null;
-  if (file.oldContent !== null && file.oldContent !== undefined && file.status !== 'added' && kindOf(oldPath) === kindOf(path)) {
-    oldText = byteLength(file.oldContent) <= config.maxTextBytes ? decodeText(file.oldContent) : null;
+  if (
+    file.oldContent !== null &&
+    file.oldContent !== undefined &&
+    file.status !== 'added' &&
+    kindOf(oldPath) === kindOf(path)
+  ) {
+    oldText =
+      byteLength(file.oldContent) <= config.maxTextBytes ? decodeText(file.oldContent) : null;
   }
   const next = analyzeText(path, kind, text, config);
   const prev = oldText === null ? [] : analyzeText(oldPath, kind, oldText, config);
@@ -242,18 +346,36 @@ function dedupe(violations: Violation[]): Violation[] {
     seen.add(k);
     out.push(v);
   }
-  return out.sort((a, b) => a.file.localeCompare(b.file) || (a.line ?? 0) - (b.line ?? 0) || a.rule.localeCompare(b.rule));
+  return out.sort(
+    (a, b) =>
+      a.file.localeCompare(b.file) || (a.line ?? 0) - (b.line ?? 0) || a.rule.localeCompare(b.rule),
+  );
 }
 
 /**
  * Scans the agent's changes. Any violation means: no push, job failed
  * (`failed_stage = 'build'`) with the violation list.
  */
-export function scanDiff(input: ScanInput | readonly ChangedFile[], options: ScanOptions = {}): ScanResult {
+export function scanDiff(
+  input: ScanInput | readonly ChangedFile[],
+  options: ScanOptions = {},
+): ScanResult {
   const config = resolveConfig(options);
-  const files = Array.isArray(input) ? (input as readonly ChangedFile[]) : (input as ScanInput)?.files;
+  const files = Array.isArray(input)
+    ? (input as readonly ChangedFile[])
+    : (input as ScanInput)?.files;
   if (!Array.isArray(files)) {
-    return { ok: false, violations: [{ rule: 'path-invalid', file: '<input>', line: null, reason: 'scan input must be a list of changed files' }] };
+    return {
+      ok: false,
+      violations: [
+        {
+          rule: 'path-invalid',
+          file: '<input>',
+          line: null,
+          reason: 'scan input must be a list of changed files',
+        },
+      ],
+    };
   }
   const violations: Violation[] = [];
   const seenPaths = new Set<string>();
@@ -263,12 +385,24 @@ export function scanDiff(input: ScanInput | readonly ChangedFile[], options: Sca
       result = scanFile(file, config);
     } catch (e) {
       // Fail closed: an analyzer crash is a violation, never a pass.
-      result = [{ rule: 'parse-error', file: String(file?.path ?? '<unknown>'), line: null, reason: `scanner error: ${(e as Error).message.slice(0, 80)}` }];
+      result = [
+        {
+          rule: 'parse-error',
+          file: String(file?.path ?? '<unknown>'),
+          line: null,
+          reason: `scanner error: ${(e as Error).message.slice(0, 80)}`,
+        },
+      ];
     }
     violations.push(...result);
     const key = String(file?.path ?? '').toLowerCase();
     if (seenPaths.has(key)) {
-      violations.push({ rule: 'path-invalid', file: String(file.path), line: null, reason: 'path listed twice (or differs only by case)' });
+      violations.push({
+        rule: 'path-invalid',
+        file: String(file.path),
+        line: null,
+        reason: 'path listed twice (or differs only by case)',
+      });
     }
     seenPaths.add(key);
   }

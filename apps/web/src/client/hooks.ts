@@ -63,7 +63,11 @@ function useSupabaseClient(): SupabaseClient | null {
 // ---------------------------------------------------------------------------
 
 export function useSession(): UseSessionResult {
-  const stored = useSyncExternalStore(subscribeSession, getSessionSnapshot, getServerSessionSnapshot);
+  const stored = useSyncExternalStore(
+    subscribeSession,
+    getSessionSnapshot,
+    getServerSessionSnapshot,
+  );
   const wallet = useWallet();
   const modal = useWalletModal();
   const [status, setStatus] = useState<UseSessionResult['status']>('idle');
@@ -185,7 +189,11 @@ export function useFlags(): Flags {
 }
 
 export function useGating(): UseGatingResult {
-  const stored = useSyncExternalStore(subscribeSession, getSessionSnapshot, getServerSessionSnapshot);
+  const stored = useSyncExternalStore(
+    subscribeSession,
+    getSessionSnapshot,
+    getServerSessionSnapshot,
+  );
   const [gating, setGating] = useState<Gating | null>(null);
   const [loading, setLoading] = useState(true);
   const mounted = useRef(true);

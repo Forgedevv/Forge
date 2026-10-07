@@ -1,14 +1,15 @@
 'use client';
 
-import { ConnectionProvider, WalletProvider, useConnection, useWallet } from '@solana/wallet-adapter-react';
+import {
+  ConnectionProvider,
+  WalletProvider,
+  useConnection,
+  useWallet,
+} from '@solana/wallet-adapter-react';
 import { WalletModalProvider } from '@solana/wallet-adapter-react-ui';
 import type { VersionedTransaction } from '@solana/web3.js';
 import { useEffect, useState, useSyncExternalStore, type ReactNode } from 'react';
-import {
-  getServerSessionSnapshot,
-  getSessionSnapshot,
-  subscribeSession,
-} from './session-store';
+import { getServerSessionSnapshot, getSessionSnapshot, subscribeSession } from './session-store';
 import { startSupabaseAuth, stopSupabaseAuth } from './supabase';
 import { setWalletBridge } from './wallet-bridge';
 
@@ -59,7 +60,9 @@ function Bridge({ children }: { children: ReactNode }) {
  */
 export function ForgeClientProvider({ children }: { children: ReactNode }) {
   const [endpoint] = useState(() =>
-    typeof window === 'undefined' ? `http://localhost${RPC_PATH}` : `${window.location.origin}${RPC_PATH}`,
+    typeof window === 'undefined'
+      ? `http://localhost${RPC_PATH}`
+      : `${window.location.origin}${RPC_PATH}`,
   );
   return (
     <ConnectionProvider endpoint={endpoint} config={{ commitment: 'confirmed' }}>

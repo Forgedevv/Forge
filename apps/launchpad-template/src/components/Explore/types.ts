@@ -66,25 +66,25 @@ export const TokenListTimeframeSortByPrefix = [
 ] as const;
 type TokenListTimeframeSortByPrefix = (typeof TokenListTimeframeSortByPrefix)[number];
 export function isTokenListTimeframeSortByPrefix(
-  sortBy: string
+  sortBy: string,
 ): sortBy is TokenListTimeframeSortByPrefix {
   return TokenListTimeframeSortByPrefix.includes(sortBy as TokenListTimeframeSortByPrefix);
 }
 
 type TokenListTimeframeSortBy = `${TokenListTimeframeSortByPrefix}${TokenListTimeframe}`;
 export const TokenListTimeframeSortBy = TokenListTimeframeSortByPrefix.flatMap((prefix) =>
-  Object.values(TokenListTimeframe).map((timeframe) => `${prefix}${timeframe}` as const)
+  Object.values(TokenListTimeframe).map((timeframe) => `${prefix}${timeframe}` as const),
 );
 export function isTokenListTimeframeSortBy(sortBy: string): sortBy is TokenListTimeframeSortBy {
   return TokenListTimeframeSortBy.includes(sortBy as TokenListTimeframeSortBy);
 }
 export function normalizeSortByField(
-  sortBy: TokenListSortByField | TokenListSortBy
+  sortBy: TokenListSortByField | TokenListSortBy,
 ): TokenListSortByField {
   return isTokenListTimeframeSortBy(sortBy) ? stripTokenListTimeframeSortBy(sortBy) : sortBy;
 }
 function stripTokenListTimeframeSortBy(
-  sortBy: TokenListTimeframeSortBy
+  sortBy: TokenListTimeframeSortBy,
 ): TokenListTimeframeSortByPrefix {
   return sortBy.replace(TokenListTimeframeRegex, '') as TokenListTimeframeSortByPrefix;
 }
@@ -135,7 +135,7 @@ export function resolveTokenListFilter(filter: TokenListFilter, timeframe: Token
 }
 
 export function resolveTokenListFilters(
-  filters: TokenListFilters | undefined
+  filters: TokenListFilters | undefined,
 ): ResolvedTokenListFilters | undefined {
   if (!filters) {
     return;
