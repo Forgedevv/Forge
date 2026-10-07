@@ -4,6 +4,8 @@ import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import type { Flags } from '@forge/shared';
 import type { ExperienceHandle } from './engine';
 import { homeContent as copy } from './content';
+import Link from 'next/link';
+import { useWorkspace } from '../workspace/provider';
 import './home.css';
 
 export function ForgeMark({ className = '' }: { className?: string }) {
@@ -177,7 +179,11 @@ function Manifesto({ paused }: { paused: boolean }) {
   );
 }
 
-export function ForgeHome({ flags = { signupsPaused: false } }: { flags?: Flags }) {
+export function ForgeHome({ flags: suppliedFlags }: { flags?: Flags }) {
+  const workspace = useWorkspace();
+  const clientFlags = workspace.client.useFlags();
+  const { session, disconnect } = workspace.client.useSession();
+  const flags = suppliedFlags ?? clientFlags;
   const root = useRef<HTMLDivElement>(null),
     stage = useRef<HTMLDivElement>(null),
     dialog = useRef<HTMLDialogElement>(null);
@@ -287,6 +293,11 @@ export function ForgeHome({ flags = { signupsPaused: false } }: { flags?: Flags 
   };
   const openConnection = () => {
     skipIntro();
+    if (workspace.available) {
+      if (session) workspace.navigate('/new');
+      else workspace.openLogin();
+      return;
+    }
     setPanel('connect');
   };
   const showSimple = () => {
@@ -310,6 +321,17 @@ export function ForgeHome({ flags = { signupsPaused: false } }: { flags?: Flags 
           <span>{copy.brand}</span>
         </a>
         <div className="forge-header-actions">
+          {session && (
+            <details className="forge-account">
+              <summary>
+                <span aria-hidden="true">◒</span> {workspace.client.shortAddress(session.wallet)}
+              </summary>
+              <div>
+                <Link href="/dashboard">{copy.dashboard}</Link>
+                <button onClick={() => void disconnect()}>{copy.disconnect}</button>
+              </div>
+            </details>
+          )}
           <button className="forge-details-link" onClick={openDetails}>
             {copy.menu}
             <span aria-hidden="true">+</span>

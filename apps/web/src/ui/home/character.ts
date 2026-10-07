@@ -103,7 +103,7 @@ export function createCharacter() {
   part(hammer, visor, [0, 0.013, 0], [0.016, 0.103, 0.016]);
   part(hammer, trim, [0, 0.107, 0], [0.15, 0.063, 0.06], true);
   const color = new T.Color();
-  const darkColor = new T.Color('#313935');
+  const darkColor = new T.Color('#29324a');
   let yaw = 0,
     bank = 0;
   function update(

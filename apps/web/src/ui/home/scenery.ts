@@ -383,17 +383,17 @@ export function createScenery(origins: T.Vector3[], portrait: boolean): ChapterS
     const roadPoints = Array.from({ length: 50 }, (_, i) => {
       const t = i / 49;
       return new T.Vector3(
-        Math.sin(t * 11) * (2 + t * 6),
-        -2.5 + Math.sin(t * 6) * 1.3,
-        4 - t * 60,
+        Math.sin(t * 7) * (2 + t * 4),
+        -3.5 + Math.sin(t * 5) * 0.5,
+        -5 - t * 45,
       );
     });
-    const road = curve(roadPoints, palette.ember, 0.15, true);
+    const road = curve(roadPoints, palette.ember, 0.022, true);
     group.add(road);
     const inner = curve(
-      roadPoints.map((p) => p.clone().add(new T.Vector3(0, 0.05, 0))),
+      roadPoints.map((p) => p.clone().add(new T.Vector3(0, 0.18, 0))),
       palette.acid,
-      0.035,
+      0.009,
       true,
     );
     group.add(inner);

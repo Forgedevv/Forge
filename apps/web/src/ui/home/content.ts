@@ -8,6 +8,8 @@ export const homeContent = {
   close: 'Close',
   connect: 'Connect my wallet',
   create: 'Create my launchpad',
+  dashboard: 'My dashboard',
+  disconnect: 'Disconnect',
   scroll: 'SCROLL TO EXPLORE',
   next: 'Next chapter',
   previous: 'Previous chapter',
@@ -186,9 +188,9 @@ export const homeContent = {
 } as const;
 
 export const palette = {
-  ink: '#26302c',
-  ivory: '#e0e4d8',
-  ember: '#bf8b73',
-  acid: '#aab99e',
-  backgrounds: ['#b6bfb1', '#c5ccbf', '#333e37', '#b9c2b3', '#303a33', '#37463b'],
+  ink: '#171c2b',
+  ivory: '#e4e6f0',
+  ember: '#939be5',
+  acid: '#bac7e4',
+  backgrounds: ['#bbc4d7', '#cbd2e1', '#252c40', '#c1cadd', '#232b3e', '#273247'],
 };

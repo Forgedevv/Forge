@@ -69,3 +69,11 @@ Agents write here when they need a change outside their folder (shared contract,
 - Proposal: Deliver the `useSession()` and `useFlags()` functions from the shared client contract so the homepage can use the actual authenticated and paused states. This continues the earlier client request.
 - Current workaround: `ForgeHome` accepts the shared `Flags` type for paused-state rendering. Creation actions open a preview-availability message without authentication or transaction simulation. No endpoint or money logic was invented.
 - Decision (lead): Pending.
+
+
+### [open] Complete the operational frontend client and missing display data
+- Agent: Agent 6 — Frontend
+- Need: A2–A11 now consume the shared WebClient through a development adapter, while `apps/web/src/client/` remains empty. A9 requires claimed-fee history, but LaunchpadDetail has no claim-history field. A3 lacks an official token acquisition URL and token decimals/symbol for formatting the raw gating amounts.
+- Proposal: Deliver the existing WebClient exports and configured wallet selector; add backend-owned claim history (amount, date, signature), official token acquisition URL and display metadata. Define a reliable rejected-login result and a streamed-chat error channel; current session status and UseChatResult do not distinguish these states fully.
+- Current workaround: Exact-signature mocks are enabled only with NEXT_PUBLIC_USE_MOCKS=1 outside production. Claim history displays an unavailable state; access amounts are labelled as raw units and the acquisition link opens explanatory FAQ content. Mock signatures/addresses are deliberately non-chain identifiers. No real connection, payment, claim, transaction construction, or external endpoint has been invented.
+- Decision (lead): Pending.

@@ -1,5 +1,7 @@
 // Spring equations adapted from Junni's Scroller. See THIRD_PARTY_NOTICES.md.
 export const CHAPTER_COUNT = 6;
+export const SCROLL_DURATION = 1.8;
+export const INTRO_SECONDS = 0.85;
 export const clamp = (value: number, min = 0, max = 1) => Math.min(max, Math.max(min, value));
 export const cubic = (t: number) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
 export const smooth = (t: number) => {
@@ -16,7 +18,6 @@ export class ChapterMotion {
   private position = 0;
   private previousPosition = 0;
   private wheelTime = -Infinity;
-  private previousWheel = 0;
   private touching = false;
   private touchOrigin = 0;
   private touchMove = 0;
@@ -58,16 +59,12 @@ export class ChapterMotion {
 
   wheel(delta: number, now: number) {
     if (!Number.isFinite(delta) || delta === 0) return;
-    const decaying =
-      Math.sign(delta) === Math.sign(this.previousWheel) &&
-      now - this.wheelTime < 100 &&
-      Math.abs(delta) < Math.abs(this.previousWheel);
+    const newGesture = now - this.wheelTime > 180;
     this.wheelTime = now;
-    this.previousWheel = delta;
-    if (decaying) return;
-    if (this.tween) this.synchronize();
-    this.tween = null;
-    this.acceleration += clamp(delta, -1600, 1600) * 0.00005;
+    // One gesture starts one complete transition. Its inertia cannot queue more chapters.
+    if (!newGesture || this.tween || this.touching) return;
+    this.to(this.chapter + Math.sign(delta), SCROLL_DURATION);
+    this.wheelTime = now;
   }
 
   grab() {

@@ -79,18 +79,35 @@ describe('chapter navigation', () => {
     }
   });
 
-  it('accepts a smaller reverse wheel gesture immediately after a larger one', () => {
+  it('accepts a fresh reverse gesture once the current chapter transition has finished', () => {
     const forward = new ChapterMotion(),
       reversed = new ChapterMotion();
     for (const motion of [forward, reversed]) {
       motion.to(2, 0);
       motion.wheel(600, 0);
-      advance(motion, 0.05);
+      advance(motion, 2);
     }
-    reversed.wheel(-300, 50);
-    advance(forward, 0.1);
-    advance(reversed, 0.1);
+    reversed.wheel(-300, 2200);
+    advance(forward, 2);
+    advance(reversed, 2);
     expect(reversed.value).toBeLessThan(forward.value);
+  });
+
+  it('keeps the same transition duration regardless of wheel speed or burst size', () => {
+    const slow = new ChapterMotion(),
+      fast = new ChapterMotion();
+    slow.wheel(20, 0);
+    fast.wheel(1600, 0);
+    for (let frame = 1; frame <= 180; frame++) {
+      fast.wheel(1600, (frame * 1000) / 60);
+      slow.tick(1 / 60);
+      fast.tick(1 / 60);
+      expect(fast.value).toBeCloseTo(slow.value, 9);
+    }
+    expect(fast.value).toBe(1);
+    fast.wheel(400, 3400);
+    advance(fast, 2);
+    expect(fast.value).toBe(2);
   });
 
   it('discards old wheel momentum when a touch gesture takes over', () => {

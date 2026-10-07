@@ -9,7 +9,16 @@ import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import measurements from '../reference/loanmeme/motion-measurements.json';
 import { createCharacter } from './character';
 import { palette } from './content';
-import { ChapterMotion, boostAt, boostCameraAt, clamp, jumpAt, sigmoid, smooth } from './motion';
+import {
+  INTRO_SECONDS,
+  ChapterMotion,
+  boostAt,
+  boostCameraAt,
+  clamp,
+  jumpAt,
+  sigmoid,
+  smooth,
+} from './motion';
 import { createScenery } from './scenery';
 
 export interface ExperienceHandle {
@@ -66,7 +75,7 @@ function buildExperience(
   renderer.toneMappingExposure = 0.85;
   renderer.transmissionResolutionScale = element.clientWidth < 800 ? 0.5 : 0.75;
   renderer.shadowMap.enabled = true;
-  renderer.shadowMap.type = T.PCFSoftShadowMap;
+  renderer.shadowMap.type = T.PCFShadowMap;
   renderer.domElement.setAttribute('aria-hidden', 'true');
   element.append(renderer.domElement);
   const scene = new T.Scene();
@@ -79,7 +88,7 @@ function buildExperience(
   scene.environmentIntensity = 0.8;
   environment.dispose();
   pmrem.dispose();
-  const ambient = new T.HemisphereLight(palette.ivory, '#697267', 1.5);
+  const ambient = new T.HemisphereLight(palette.ivory, '#68748f', 1.5);
   scene.add(ambient);
   const key = new T.DirectionalLight(palette.ivory, 2.1);
   key.castShadow = true;
@@ -225,10 +234,8 @@ function buildExperience(
     disposed = false,
     failed = false,
     frameId = 0;
-  // The intro timeline is authored over ~6.3 s; play it faster so the logo shows and the wall breaks quickly.
-  const INTRO_SPEED = 3.5;
   let time = 0,
-    introClock = paused ? 6.4 : 0,
+    introClock = paused ? INTRO_SECONDS + 1.1 : 0,
     introDone = paused,
     wallDone = paused;
   let lastTimestamp = performance.now(),
@@ -325,7 +332,8 @@ function buildExperience(
     character.root.position.lerpVectors(from.position, to.position, blend);
     character.root.quaternion.slerpQuaternions(from.quaternion, to.quaternion, blend);
     character.root.scale.setScalar(T.MathUtils.lerp(from.scale, to.scale, blend));
-    if (introClock < 5.8) character.root.position.z -= (1 - smooth((introClock - 4.8) / 1)) * 1.7;
+    if (introClock < INTRO_SECONDS + 0.6)
+      character.root.position.z -= (1 - smooth((introClock - INTRO_SECONDS) / 0.6)) * 1.7;
     appearance = paused
       ? value
       : T.MathUtils.lerp(appearanceFrom, selected, sigmoid(time - appearanceStarted));
@@ -377,7 +385,7 @@ function buildExperience(
         trail.instanceMatrix.needsUpdate = true;
       }
     } else trailReady = false;
-    shards.visible = introClock >= 4.8 && introClock < 6.3 && !wallDone;
+    shards.visible = introClock >= INTRO_SECONDS && introClock < INTRO_SECONDS + 0.85 && !wallDone;
     if (shards.visible) {
       world.step(1 / 60, Math.min(dt, 0.05), 3);
       fragments.forEach(({ body, mesh }) => {
@@ -390,11 +398,11 @@ function buildExperience(
         );
       });
     }
-    if (!wallDone && introClock >= 6.3) {
+    if (!wallDone && introClock >= INTRO_SECONDS + 0.85) {
       wallDone = true;
       fragments.forEach(({ body }) => world.removeBody(body));
     }
-    options.onProgress(value, clamp(introClock / 4.8));
+    options.onProgress(value, clamp(introClock / INTRO_SECONDS));
     try {
       composer.render(dt);
     } catch {
@@ -411,8 +419,8 @@ function buildExperience(
     lastTimestamp = now;
     if (!paused && !document.hidden) {
       time += dt;
-      introClock += dt * INTRO_SPEED;
-      if (introClock >= 4.8) {
+      introClock += dt;
+      if (introClock >= INTRO_SECONDS) {
         finishIntro();
         motion.tick(dt);
       }
@@ -428,7 +436,7 @@ function buildExperience(
     options.onFailure();
   }
   function skipIntro() {
-    introClock = 6.4;
+    introClock = INTRO_SECONDS + 1.1;
     wallDone = true;
     finishIntro();
     draw();
