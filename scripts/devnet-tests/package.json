@@ -15,7 +15,8 @@
     "test:3": "tsx src/test3.ts",
     "test:4": "tsx src/test4.ts",
     "test:all": "tsx src/all.ts",
-    "summary": "tsx src/summary.ts"
+    "summary": "tsx src/summary.ts",
+    "core:config-pool": "tsx src/core-config-pool.ts"
   },
   "dependencies": {
     "@forge/shared": "workspace:*",
