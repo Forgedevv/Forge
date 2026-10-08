@@ -15,6 +15,7 @@
     "test:3": "tsx src/test3.ts",
     "test:4": "tsx src/test4.ts",
     "test:all": "tsx src/all.ts",
+    "core:swap": "tsx src/core-swap.ts",
     "summary": "tsx src/summary.ts"
   },
   "dependencies": {
