@@ -7,6 +7,7 @@ import {
   FOLLOW_TIME_CONSTANT,
   jumpAt,
   sigmoid,
+  TOUCH_CHAPTERS_PER_SCREEN,
   WHEEL_SENSITIVITY,
   wheelPixels,
 } from './motion';
@@ -38,7 +39,7 @@ describe('continuous scroll progress', () => {
   });
 
   it('maps a mouse notch to a fraction of a chapter and normalizes line and page deltas', () => {
-    expect(100 * WHEEL_SENSITIVITY).toBeGreaterThanOrEqual(0.12);
+    expect(100 * WHEEL_SENSITIVITY).toBeGreaterThanOrEqual(0.08);
     expect(100 * WHEEL_SENSITIVITY).toBeLessThanOrEqual(0.18);
     expect(wheelPixels(3, 1, SCREEN)).toBe(48);
     expect(wheelPixels(1, 2, SCREEN)).toBe(SCREEN);
@@ -62,7 +63,7 @@ describe('continuous scroll progress', () => {
     }
     advance(motion, 2);
     expect(motion.value).toBeCloseTo(40 * 16 * WHEEL_SENSITIVITY, 6);
-    expect(motion.value).toBeGreaterThan(0.8);
+    expect(motion.value).toBeGreaterThan(0.5);
     expect(motion.value).toBeLessThan(1.2);
   });
 
@@ -150,12 +151,12 @@ describe('continuous scroll progress', () => {
 });
 
 describe('touch', () => {
-  it('maps one full-screen swipe to about one chapter', () => {
+  it('maps one full-screen swipe to TOUCH_CHAPTERS_PER_SCREEN chapters', () => {
     const motion = new ChapterMotion();
     const end = swipe(motion, -SCREEN, 1);
     motion.release(end + 500);
     advance(motion, 3);
-    expect(motion.value).toBeCloseTo(1, 4);
+    expect(motion.value).toBeCloseTo(TOUCH_CHAPTERS_PER_SCREEN, 4);
   });
 
   it('does not snap to a chapter after release', () => {
@@ -163,7 +164,7 @@ describe('touch', () => {
     const end = swipe(motion, -SCREEN * 0.3, 1);
     motion.release(end + 500);
     advance(motion, 5);
-    expect(motion.value).toBeCloseTo(0.3, 4);
+    expect(motion.value).toBeCloseTo(0.3 * TOUCH_CHAPTERS_PER_SCREEN, 4);
     expect(motion.moving).toBe(false);
   });
 
@@ -178,7 +179,7 @@ describe('touch', () => {
       expect(samples[i]!).toBeGreaterThanOrEqual(samples[i - 1]!);
     const rest = samples.at(-1)!;
     expect(rest).toBeGreaterThan(atRelease);
-    expect(rest).toBeGreaterThan(0.6);
+    expect(rest).toBeGreaterThan(0.4 * TOUCH_CHAPTERS_PER_SCREEN);
     expect(Number.isInteger(rest)).toBe(false);
     expect(motion.moving).toBe(false);
   });
@@ -268,7 +269,7 @@ describe('explicit navigation', () => {
     motion.grab(0);
     motion.drag(-SCREEN / 2, SCREEN, 16);
     motion.settle();
-    expect(motion.value).toBeCloseTo(0.5, 6);
+    expect(motion.value).toBeCloseTo(0.5 * TOUCH_CHAPTERS_PER_SCREEN, 6);
     motion.release();
   });
 });

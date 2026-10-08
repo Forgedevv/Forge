@@ -2,18 +2,18 @@ export const CHAPTER_COUNT = 6;
 export const INTRO_SECONDS = 0.85;
 
 // Continuous scroll tuning. Progress is measured in chapters: 0 is the first, CHAPTER_COUNT - 1 the last.
-/** Chapters per wheel pixel: a ~100 px mouse notch moves 0.15 chapter; a ~650 px trackpad swipe about one. */
-export const WHEEL_SENSITIVITY = 0.0015;
+/** Chapters per wheel pixel: a ~100 px mouse notch moves 0.1 chapter; a ~1000 px trackpad swipe about one. */
+export const WHEEL_SENSITIVITY = 0.001;
 /** Pixels per wheel line when the browser reports `deltaMode` 1. Page mode uses the viewport height. */
 export const WHEEL_LINE_HEIGHT = 16;
 /** Largest progress change one wheel event can request, so a single huge event cannot skip chapters. */
 export const WHEEL_MAX_STEP = 0.5;
 /** Time constant (s) of the exponential approach from the displayed value to the scroll target. */
-export const FOLLOW_TIME_CONSTANT = 0.15;
+export const FOLLOW_TIME_CONSTANT = 0.18;
 /** Tighter time constant (s) while a finger is down, so the scene stays under the finger. */
 export const TOUCH_FOLLOW_TIME_CONSTANT = 0.06;
 /** Chapters travelled by a vertical drag across the full viewport height. */
-export const TOUCH_CHAPTERS_PER_SCREEN = 1;
+export const TOUCH_CHAPTERS_PER_SCREEN = 0.7;
 /** Time constant (s) of the post-release coast; a release at v chapters/s travels v times this. */
 export const TOUCH_INERTIA_TIME_CONSTANT = 0.3;
 /** Release speed cap (chapters/s), limiting a flick's coast to about 1.2 chapters. */
