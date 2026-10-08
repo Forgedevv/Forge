@@ -20,7 +20,8 @@
   --forge-backdrop: #0b0a12cc;
   --scene-ink: var(--forge-text);
   --forge-mono: 'Courier New', monospace;
-  --forge-sans: Arial, Helvetica, sans-serif;
+  --forge-sans: var(--font-space-grotesk), Arial, Helvetica, sans-serif;
+  --forge-display: var(--font-unbounded), var(--forge-sans);
   --forge-serif: Georgia, 'Times New Roman', serif;
   font-family: var(--forge-sans);
   color: var(--forge-text);
@@ -94,9 +95,16 @@
   font-size: 24px;
   letter-spacing: -1px;
 }
-.forge-brand svg {
-  width: 29px;
-  height: 32px;
+.forge-logo {
+  display: block;
+  width: 156px;
+  height: auto;
+}
+.forge-footer-logo {
+  display: block;
+  width: 72px;
+  height: auto;
+  opacity: 0.85;
 }
 .forge-header-actions {
   display: flex;
@@ -1103,8 +1111,8 @@
     font-size: 20px;
     gap: 3px;
   }
-  .forge-brand svg {
-    width: 24px;
+  .forge-logo {
+    width: 116px;
   }
   .forge-details-link {
     font-size: 10px !important;
