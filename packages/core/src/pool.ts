@@ -19,12 +19,10 @@ import {
   DYNAMIC_BONDING_CURVE_PROGRAM_ID,
   DynamicBondingCurveClient,
   MigrationOption,
-  SwapMode,
   TokenType,
   deriveDbcPoolAddress,
   type PoolConfig,
   type SwapQuoteConfig,
-  type SwapQuote2Result,
 } from '@meteora-ag/dynamic-bonding-curve-sdk';
 import {
   ACCOUNT_SIZE,
@@ -43,6 +41,7 @@ import {
 } from '@solana/web3.js';
 import BN from 'bn.js';
 import type { OwnerTransactionSummary } from '@forge/shared';
+import { quoteFirstBuyOnConfig, type FirstBuyQuote } from './config.js';
 import { FEES, MIGRATION_THRESHOLD_LAMPORTS, SOL_QUOTE_MINT, solToLamports } from './constants.js';
 import {
   MAX_TRANSACTION_BYTES,
@@ -355,52 +354,24 @@ export function quoteConfigFromPoolConfig(config: PoolConfig): SwapQuoteConfig {
 
 const toBigInt = (value: BN): bigint => BigInt(value.toString());
 
-interface FirstBuyQuote {
-  outputAmount: BN;
-  minimumAmountOut: BN;
-  feeLamports: bigint;
-}
-
-/** Quote of the first buy on a pool that does not exist yet, at the minimum (ending) fee. */
+/** First buy quote on the on-chain config, mapped to `LaunchCoinError`. */
 function quoteFirstBuy(
-  client: DynamicBondingCurveClient,
   poolConfig: PoolConfig,
   firstBuyLamports: bigint,
   slippageBps: number,
   hasReferral: boolean,
 ): FirstBuyQuote {
-  let quote: SwapQuote2Result;
-  try {
-    quote = client.pool.getQuoteFromInputAmount({
-      config: quoteConfigFromPoolConfig(poolConfig),
-      swapBaseForQuote: false,
-      amountIn: new BN(firstBuyLamports.toString()),
-      swapMode: SwapMode.ExactIn,
-      slippageBps,
-      hasReferral,
-      eligibleForFirstSwapWithMinFee: true,
-      currentPoint: new BN(0),
-    });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (/insufficient liquidity|completed/i.test(message)) {
-      fail(
-        'FIRST_BUY_EXCEEDS_CURVE',
-        `first buy of ${firstBuyLamports} lamports does not fit in the curve before migration`,
-      );
-    }
-    fail('QUOTE_FAILED', `first buy quote failed: ${message}`);
+  const quote = quoteFirstBuyOnConfig(quoteConfigFromPoolConfig(poolConfig), firstBuyLamports, {
+    slippageBps,
+    hasReferral,
+  });
+  if (!quote.ok) {
+    fail(
+      quote.reason === 'EXCEEDS_CURVE' ? 'FIRST_BUY_EXCEEDS_CURVE' : 'QUOTE_FAILED',
+      quote.message,
+    );
   }
-  const { outputAmount, minimumAmountOut } = quote;
-  if (!minimumAmountOut || outputAmount.lten(0) || minimumAmountOut.lten(0)) {
-    fail('QUOTE_FAILED', 'first buy is too small to receive any token');
-  }
-  return {
-    outputAmount,
-    minimumAmountOut,
-    feeLamports:
-      toBigInt(quote.tradingFee) + toBigInt(quote.protocolFee) + toBigInt(quote.referralFee),
-  };
+  return quote;
 }
 
 /** Writable flag of a key in the compiled legacy message. */
@@ -518,7 +489,7 @@ export async function buildLaunchCoinTx(params: BuildLaunchCoinTxParams): Promis
   //    trade before it, the pool is created in the same transaction).
   const quote =
     params.firstBuyLamports > 0n
-      ? quoteFirstBuy(client, poolConfig, params.firstBuyLamports, slippageBps, referral !== null)
+      ? quoteFirstBuy(poolConfig, params.firstBuyLamports, slippageBps, referral !== null)
       : null;
 
   // 4. SDK instructions (proven call pattern of test 3).
@@ -538,7 +509,7 @@ export async function buildLaunchCoinTx(params: BuildLaunchCoinTxParams): Promis
             buyer: owner,
             receiver: owner,
             buyAmount: new BN(params.firstBuyLamports.toString()),
-            minimumAmountOut: quote.minimumAmountOut,
+            minimumAmountOut: new BN(quote.minimumTokensOut.toString()),
             referralTokenAccount: referral,
           },
         }
@@ -676,8 +647,8 @@ export async function buildLaunchCoinTx(params: BuildLaunchCoinTxParams): Promis
       name: params.name,
       symbol: params.symbol,
       metadataUri: params.metadataUri,
-      expectedTokensOut: quote ? toBigInt(quote.outputAmount) : 0n,
-      minimumTokensOut: quote ? toBigInt(quote.minimumAmountOut) : 0n,
+      expectedTokensOut: quote ? quote.tokensOut : 0n,
+      minimumTokensOut: quote ? quote.minimumTokensOut : 0n,
       slippageBps,
       costs,
       durableNonce: nonce

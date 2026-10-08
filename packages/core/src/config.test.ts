@@ -33,6 +33,7 @@ import {
   buildLaunchpadCoinConfig,
   buildLaunchpadConfig,
   parseLaunchpadSpec,
+  quoteFirstBuyOnConfig,
   type LaunchpadConfigParams,
 } from './config.js';
 import {
@@ -41,6 +42,7 @@ import {
   MIGRATION_THRESHOLD_LAMPORTS,
   MIN_LOCKED_LIQUIDITY_BPS,
   SOL_QUOTE_MINT,
+  solToLamports,
 } from './constants.js';
 import {
   ValidationError,
@@ -268,14 +270,69 @@ describe.each(builders)('%s config: bounds', (_kind, build) => {
     expect(violationCodes(() => build(makeSpec({ ownerWallet: 'not-a-wallet' })))).toContain(
       'SPEC_INVALID',
     );
-    // Base58 of the right length but not 32 bytes.
-    expect(() => build(makeSpec({ ownerWallet: '1'.repeat(44) }))).toThrow();
+    // Base58 of the right length but not 32 bytes, and the all-zero key.
+    for (const ownerWallet of ['1'.repeat(44), '11111111111111111111111111111111']) {
+      expect(violationCodes(() => build(makeSpec({ ownerWallet })))).toEqual(['INVALID_ADDRESS']);
+    }
   });
 
   it('rejects a quote other than SOL', () => {
     expect(
       violationCodes(() => build({ ...makeSpec(), quote: 'USDC' } as unknown as LaunchpadSpec)),
     ).toContain('SPEC_INVALID');
+  });
+});
+
+describe('first buy on the launchpad coin config', () => {
+  const coinConfig = buildLaunchpadCoinConfig(makeSpec({ tradingFeeBps: 100 }));
+
+  it('quotes exactly what the devnet launch delivered (0.01 SOL)', () => {
+    // scripts/devnet-tests/reports/core-config-pool.md
+    expect(quoteFirstBuyOnConfig(coinConfig, solToLamports(0.01))).toEqual({
+      ok: true,
+      tokensOut: 3_158_618_642_371n,
+      minimumTokensOut: 3_158_618_642_371n,
+      feeLamports: 100_000n,
+    });
+  });
+
+  it('quotes exactly what devnet test 3 delivered (0.05 SOL, same curve)', () => {
+    const quote = quoteFirstBuyOnConfig(coinConfig, solToLamports(0.05), { slippageBps: 100 });
+    expect(quote.ok && quote.tokensOut).toBe(15_608_216_690_980n);
+    expect(quote.ok && quote.minimumTokensOut).toBe((15_608_216_690_980n * 9900n) / 10_000n);
+    expect(quote.ok && quote.feeLamports).toBe(500_000n);
+  });
+
+  it('pays the minimum fee even with the anti-sniper schedule on', () => {
+    const quote = quoteFirstBuyOnConfig(coinConfig, solToLamports(1));
+    expect(quote.ok && quote.feeLamports).toBe(solToLamports(1) / 100n);
+  });
+
+  it('refuses a first buy larger than the curve, a zero buy is not quoted', () => {
+    const tooBig = quoteFirstBuyOnConfig(coinConfig, solToLamports(10.2));
+    expect(tooBig).toMatchObject({ ok: false, reason: 'EXCEEDS_CURVE' });
+    expect(quoteFirstBuyOnConfig(coinConfig, solToLamports(10)).ok).toBe(true);
+    expect(quoteFirstBuyOnConfig(coinConfig, 0n)).toMatchObject({ ok: false, reason: 'TOO_SMALL' });
+  });
+
+  it('makes the coin config refuse a spec whose first buy cannot be launched', () => {
+    const coin = makeSpec().launchpadCoin;
+    const spec = makeSpec({ launchpadCoin: { ...coin, firstBuySol: 50 } });
+    let error: unknown;
+    try {
+      buildLaunchpadCoinConfig(spec);
+    } catch (e) {
+      error = e;
+    }
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as ValidationError).violations).toEqual([
+      expect.objectContaining({ field: 'launchpadCoin.firstBuySol', code: 'SPEC_INVALID' }),
+    ]);
+    // The launchpad config does not depend on the launchpad coin's first buy.
+    expect(() => buildLaunchpadConfig(spec)).not.toThrow();
+    // No first buy is fine.
+    const none = makeSpec({ launchpadCoin: { ...coin, firstBuySol: 0 } });
+    expect(() => buildLaunchpadCoinConfig(none)).not.toThrow();
   });
 });
 
@@ -308,6 +365,10 @@ describe('parseLaunchpadSpec', () => {
 });
 
 describe('buildConfigParams', () => {
+  it('refuses an unknown kind', () => {
+    expect(() => buildConfigParams(makeSpec(), 'other' as never)).toThrow(TypeError);
+  });
+
   it('passes the validators for both kinds', () => {
     const spec = makeSpec({ coinCreatorSharePct: 0, poolCreationFeeSol: 0, antiSniper: false });
     expect(validateLaunchpadConfigParams(buildConfigParams(spec, 'launchpad'), spec)).toEqual({

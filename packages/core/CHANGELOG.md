@@ -17,7 +17,10 @@ publish:packages`, which runs typecheck, lint, tests and build first). Not publi
   `ConfigParameters` plus `feeClaimer`, `leftoverReceiver` (both the client wallet,
   `spec.ownerWallet`) and `quoteMint` (SOL), built with `buildCurve` and validated before they
   are returned (`ValidationError` otherwise). `buildCreateConfigTx` returns the unsigned
-  `createConfig` transaction; the config keypair is the caller's.
+  `createConfig` transaction; the config keypair is the caller's. `buildLaunchpadCoinConfig`
+  also refuses a spec whose `launchpadCoin.firstBuySol` does not fit in the curve (about 10.1
+  SOL at a 1% fee), so an un-launchable spec fails before any config is created.
+  `quoteFirstBuyOnConfig` is the pure quote of a first buy on a fresh pool.
 - `pool.ts`: `buildLaunchCoinTx` builds the launch of the launchpad coin
   (`createPoolWithFirstBuy`): the FORGE creator wallet and the mint sign on the signer side, the
   client is fee payer and buyer and signs last. Optional durable nonce (`nonceAdvance` first,
@@ -25,7 +28,8 @@ publish:packages`, which runs typecheck, lint, tests and build first). Not publi
   (it must be the client's launchpad coin config), size check, and a summary of every lamport
   the client pays (`toOwnerTransactionSummary` maps it to the shared `OwnerTransactionSummary`).
 - `tx.ts`: `confirmSignature` (polling `getSignatureStatuses` with a deadline), base64
-  (de)serialization of partially signed transactions, `transactionSignature`, signer and size
+  (de)serialization of partially signed transactions, `assertSignedCopyOf` (a returned
+  transaction must be the stored one, fully signed), `transactionSignature`, signer and size
   helpers, `computeBudgetInstructions`, `readNonce`, `buildCreateNonceAccountTx` (rent read from
   the cluster), `assertRentExempt`.
 
@@ -45,5 +49,13 @@ Not fixed by the docs; each is a named constant in `config.ts`:
 
 ### Devnet
 
-`scripts/devnet-tests/reports/core-config-pool.md`: both configs, a nonce account and the
-durable-nonce launch, end to end (all checks pass; the client's debit equals the summary).
+`scripts/devnet-tests/reports/core-config-pool.md`: both configs, a nonce account and two
+durable-nonce launches (the second reuses the nonce account), end to end. All checks pass; the
+client's debit equals the summary to the lamport.
+
+### Limits
+
+- The launch is a legacy transaction of at most 1,232 bytes: 1,120 bytes with short metadata, a
+  nonce held by the creator and no priority fee, leaving 112 bytes for longer metadata (a 32-byte
+  name, a 10-character symbol and a 102-byte URI fit; a priority fee adds 12 bytes, a referral
+  32, a nonce authority other than the creator or the owner 96). `TX_TOO_LARGE` otherwise.

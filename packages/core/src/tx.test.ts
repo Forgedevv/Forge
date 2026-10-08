@@ -20,6 +20,7 @@ import {
   TransactionExpiredError,
   TransactionFailedError,
   assertRentExempt,
+  assertSignedCopyOf,
   buildCreateNonceAccountTx,
   computeBudgetInstructions,
   confirmSignature,
@@ -286,6 +287,50 @@ describe('base64 serialization', () => {
     const signature = transactionSignature(tx)!;
     expect(signature).toMatch(/^[1-9A-HJ-NP-Za-km-z]{64,88}$/);
     expect(signature).toBe(encodeBase58(tx.signature!));
+  });
+
+  it('accepts the fully signed copy of a transaction', () => {
+    const payer = Keypair.generate();
+    const other = Keypair.generate();
+    const tx = sampleTx(payer.publicKey, other.publicKey);
+    tx.partialSign(other);
+    const stored = serializeTransactionBase64(tx);
+    const returned = deserializeTransactionBase64(stored);
+    returned.partialSign(payer);
+    const signed = serializeTransactionBase64(returned, { requireAllSignatures: true });
+    expect(assertSignedCopyOf(stored, signed).verifySignatures(true)).toBe(true);
+    expect(() => assertSignedCopyOf(tx, returned)).not.toThrow();
+  });
+
+  it('refuses a substitute transaction or a missing signature', () => {
+    const payer = Keypair.generate();
+    const other = Keypair.generate();
+    const tx = sampleTx(payer.publicKey, other.publicKey);
+    tx.partialSign(other);
+    const stored = serializeTransactionBase64(tx);
+
+    const substitute = new Transaction({
+      feePayer: payer.publicKey,
+      blockhash: BLOCKHASH,
+      lastValidBlockHeight: 1,
+    }).add(
+      SystemProgram.transfer({
+        fromPubkey: payer.publicKey,
+        toPubkey: other.publicKey,
+        lamports: 1,
+      }),
+    );
+    substitute.sign(payer);
+    const codeOf = (fn: () => unknown) => {
+      try {
+        fn();
+        return null;
+      } catch (e) {
+        return (e as TransactionEncodingError).code;
+      }
+    };
+    expect(codeOf(() => assertSignedCopyOf(stored, substitute))).toBe('MESSAGE_MISMATCH');
+    expect(codeOf(() => assertSignedCopyOf(stored, stored))).toBe('MISSING_SIGNATURE');
   });
 
   it('computes the wire size without signing', () => {

@@ -76,7 +76,12 @@ export class ConfirmationTimeoutError extends Error {
 }
 
 export type TransactionEncodingErrorCode =
-  'INVALID_BASE64' | 'TOO_LARGE' | 'INVALID_TRANSACTION' | 'INVALID_SIGNATURE';
+  | 'INVALID_BASE64'
+  | 'TOO_LARGE'
+  | 'INVALID_TRANSACTION'
+  | 'INVALID_SIGNATURE'
+  | 'MESSAGE_MISMATCH'
+  | 'MISSING_SIGNATURE';
 
 /** A transaction could not be encoded or decoded. */
 export class TransactionEncodingError extends Error {
@@ -314,6 +319,39 @@ export function deserializeTransactionBase64(base64: string): Transaction {
     );
   }
   return transaction;
+}
+
+/**
+ * Checks that `signed` is `original` (same message, byte for byte) with every required signature
+ * present and valid. Use it before sending a transaction a wallet returns (e.g. the client's
+ * signed launch transaction against the one stored in `jobs.owner_tx`): any change to the
+ * message, or a substitute transaction, is refused.
+ *
+ * @throws TransactionEncodingError `MESSAGE_MISMATCH`, `MISSING_SIGNATURE`, or a decoding code.
+ */
+export function assertSignedCopyOf(
+  original: Transaction | string,
+  signed: Transaction | string,
+): Transaction {
+  const expected = typeof original === 'string' ? deserializeTransactionBase64(original) : original;
+  const actual = typeof signed === 'string' ? deserializeTransactionBase64(signed) : signed;
+  if (!actual.serializeMessage().equals(expected.serializeMessage())) {
+    throw new TransactionEncodingError(
+      'MESSAGE_MISMATCH',
+      'the signed transaction is not the expected transaction',
+    );
+  }
+  const missing = missingSigners(actual);
+  if (missing.length > 0) {
+    throw new TransactionEncodingError(
+      'MISSING_SIGNATURE',
+      `missing signature(s): ${missing.map((k) => k.toBase58()).join(', ')}`,
+    );
+  }
+  if (!actual.verifySignatures(true)) {
+    throw new TransactionEncodingError('INVALID_SIGNATURE', 'a signature does not verify');
+  }
+  return actual;
 }
 
 function shortVecLength(value: number): number {

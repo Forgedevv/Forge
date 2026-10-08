@@ -35,10 +35,16 @@ import {
   TokenDecimal,
   TokenType,
   buildCurve,
+  getMigrationThresholdPrice,
+  swapQuoteExactIn,
   type BuildCurveParams,
   type ConfigParameters,
+  type PoolConfig,
+  type SwapQuoteConfig,
+  type VirtualPool,
 } from '@meteora-ag/dynamic-bonding-curve-sdk';
 import { PublicKey, Transaction, type Connection } from '@solana/web3.js';
+import BN from 'bn.js';
 import { LaunchpadSpec } from '@forge/shared';
 import {
   CLIENT_BOUNDS,
@@ -46,6 +52,7 @@ import {
   MAX_ANTI_SNIPER_STARTING_FEE_BPS,
   SOL_DECIMALS,
   SOL_QUOTE_MINT,
+  solToLamports,
 } from './constants.js';
 import { computeBudgetInstructions } from './tx.js';
 import {
@@ -132,7 +139,32 @@ export function parseLaunchpadSpec(spec: unknown): LaunchpadSpec {
   if (!parsed.success) {
     throw new ValidationError('launchpad spec', specViolations(parsed.error.issues));
   }
+  ownerKeyOf(parsed.data);
   return parsed.data;
+}
+
+/**
+ * The owner wallet as a public key: canonical base58 of 32 bytes, not the all-zero key.
+ *
+ * @throws ValidationError `INVALID_ADDRESS`.
+ */
+function ownerKeyOf(spec: LaunchpadSpec): PublicKey {
+  let key: PublicKey | null;
+  try {
+    key = new PublicKey(spec.ownerWallet);
+  } catch {
+    key = null;
+  }
+  if (!key || key.toBase58() !== spec.ownerWallet || key.equals(PublicKey.default)) {
+    throw new ValidationError('launchpad spec', [
+      {
+        field: 'ownerWallet',
+        code: 'INVALID_ADDRESS',
+        message: 'ownerWallet must be a valid Solana public key',
+      },
+    ]);
+  }
+  return key;
 }
 
 /** Creator share of the trading fees for each config kind. */
@@ -199,8 +231,11 @@ export function curveParamsFor(spec: LaunchpadSpec, kind: ConfigKind): BuildCurv
  * @throws ValidationError when the spec or the resulting parameters break a bound.
  */
 export function buildConfigParams(spec: LaunchpadSpec, kind: ConfigKind): LaunchpadConfigParams {
+  if (kind !== 'launchpad' && kind !== 'launchpadCoin') {
+    throw new TypeError(`unknown config kind: ${String(kind)}`);
+  }
   const parsed = parseLaunchpadSpec(spec);
-  const owner = new PublicKey(parsed.ownerWallet);
+  const owner = ownerKeyOf(parsed);
 
   let curve: ConfigParameters;
   try {
@@ -226,6 +261,18 @@ export function buildConfigParams(spec: LaunchpadSpec, kind: ConfigKind): Launch
       ? validateLaunchpadCoinConfigParams(params, parsed)
       : validateLaunchpadConfigParams(params, parsed);
   assertValid(result, `${kind} config`);
+
+  // The launchpad coin is launched with the client's first buy on this config: a first buy the
+  // curve cannot take would only fail at launch, after the configs are paid for.
+  if (kind === 'launchpadCoin') {
+    const firstBuy = solToLamports(parsed.launchpadCoin.firstBuySol);
+    const quote = firstBuy > 0n ? quoteFirstBuyOnConfig(params, firstBuy) : null;
+    if (quote && !quote.ok) {
+      throw new ValidationError(`${kind} config`, [
+        { field: 'launchpadCoin.firstBuySol', code: 'SPEC_INVALID', message: quote.message },
+      ]);
+    }
+  }
   return params;
 }
 
@@ -237,6 +284,113 @@ export function buildLaunchpadConfig(spec: LaunchpadSpec): LaunchpadConfigParams
 /** Launchpad coin config: the launchpad's own coin, FORGE is the creator (25%). */
 export function buildLaunchpadCoinConfig(spec: LaunchpadSpec): LaunchpadConfigParams {
   return buildConfigParams(spec, 'launchpadCoin');
+}
+
+// ---------------------------------------------------------------------------------------------
+// First buy quote
+// ---------------------------------------------------------------------------------------------
+
+export interface FirstBuyQuote {
+  /** Raw base units (6 decimals) delivered by the first buy. */
+  tokensOut: bigint;
+  /** `tokensOut` minus the slippage tolerance: the swap's `minimumAmountOut`. */
+  minimumTokensOut: bigint;
+  /** Fee charged on the first buy (trading + protocol + referral), in lamports. */
+  feeLamports: bigint;
+}
+
+export type FirstBuyQuoteResult =
+  | ({ ok: true } & FirstBuyQuote)
+  | { ok: false; reason: 'EXCEEDS_CURVE' | 'TOO_SMALL' | 'FAILED'; message: string };
+
+/**
+ * Quote of the first buy of a pool that does not exist yet, at the minimum (ending) fee
+ * (`enableFirstSwapWithMinFee`), on a config given either as built here (`ConfigParameters`) or
+ * as read from the chain (see `quoteConfigFromPoolConfig`). Pure: it replays the SDK's
+ * `getQuoteFromInputAmount` (fresh pool at the start price, empty reserves) with
+ * `swapQuoteExactIn`. Exact on devnet (scripts/devnet-tests/reports/core-config-pool.md).
+ */
+export function quoteFirstBuyOnConfig(
+  config: SwapQuoteConfig,
+  firstBuyLamports: bigint,
+  options: { slippageBps?: number; hasReferral?: boolean } = {},
+): FirstBuyQuoteResult {
+  if (firstBuyLamports <= 0n) {
+    return { ok: false, reason: 'TOO_SMALL', message: 'the first buy must be positive' };
+  }
+  const dynamicFee = config.poolFees.dynamicFee;
+  const quoteConfig = {
+    ...config,
+    migrationSqrtPrice:
+      config.migrationSqrtPrice ??
+      getMigrationThresholdPrice(
+        config.migrationQuoteThreshold,
+        config.sqrtStartPrice,
+        config.curve,
+      ),
+    poolFees: {
+      ...config.poolFees,
+      dynamicFee: dynamicFee
+        ? { ...dynamicFee, initialized: dynamicFee.initialized ?? 1 }
+        : { initialized: 0, binStep: 0, variableFeeControl: 0 },
+    },
+  };
+  const freshPool = {
+    poolState: {
+      sqrtPrice: new BN(config.sqrtStartPrice),
+      baseReserve: new BN(0),
+      quoteReserve: new BN(0),
+      activationPoint: new BN(0),
+      volatilityTracker: {
+        lastUpdateTimestamp: new BN(0),
+        sqrtPriceReference: new BN(0),
+        volatilityAccumulator: new BN(0),
+        volatilityReference: new BN(0),
+        padding: [],
+      },
+    },
+  };
+  let result;
+  try {
+    result = swapQuoteExactIn(
+      freshPool as unknown as VirtualPool,
+      quoteConfig as unknown as PoolConfig,
+      false,
+      new BN(firstBuyLamports.toString()),
+      options.slippageBps ?? 0,
+      options.hasReferral ?? false,
+      new BN(0),
+      true,
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (/insufficient liquidity|completed/i.test(message)) {
+      return {
+        ok: false,
+        reason: 'EXCEEDS_CURVE',
+        message: `a first buy of ${firstBuyLamports} lamports does not fit in the curve before migration (threshold ${CLIENT_BOUNDS.migrationThresholdSol} SOL plus the fee)`,
+      };
+    }
+    return { ok: false, reason: 'FAILED', message: `first buy quote failed: ${message}` };
+  }
+  const tokensOut = BigInt(result.outputAmount.toString());
+  const minimumTokensOut = BigInt((result.minimumAmountOut ?? result.outputAmount).toString());
+  if (tokensOut <= 0n || minimumTokensOut <= 0n) {
+    return {
+      ok: false,
+      reason: 'TOO_SMALL',
+      message: 'the first buy is too small to receive any token',
+    };
+  }
+  return {
+    ok: true,
+    tokensOut,
+    minimumTokensOut,
+    feeLamports:
+      BigInt(result.tradingFee.toString()) +
+      BigInt(result.protocolFee.toString()) +
+      BigInt(result.referralFee.toString()),
+  };
 }
 
 // ---------------------------------------------------------------------------------------------
