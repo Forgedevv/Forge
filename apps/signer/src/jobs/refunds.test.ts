@@ -229,6 +229,15 @@ describe('refunds: eligibility (D4 / D18)', () => {
     expect(t.alerter.codes().filter((c) => c === 'refund_manual')).toHaveLength(6);
   });
 
+  it('jobs left for manual handling never starve newer refunds (paging, maxPerRun)', async () => {
+    const t = setup({ config: { cashbox, maxRefundLamports: 2n * SOL, maxPerRun: 1 } });
+    for (let i = 0; i < 120; i++) t.db.addPayment(t.db.addJob({ attempts: 3 }));
+    const { payer } = t.failedJob();
+    const report = await t.job().runOnce();
+    expect(report.outcomes.filter((o) => o.result === 'manual')).toHaveLength(120);
+    expect(t.chain.receivedBy(payer)).toBe(PRICE);
+  });
+
   it('refuses a payer that is not the launchpad owner (wrong payer)', async () => {
     const t = setup();
     const job = t.db.addJob();
@@ -874,7 +883,7 @@ describe('PostgREST refund store', () => {
       payments: [paymentRow({ lamports: '18446744073709551615' })],
     };
     const { store, requests } = fakeDb([{ body: [jobRow] }]);
-    const [c] = await store.listRefundCandidates(10);
+    const [c] = await store.listRefundCandidates(10, 0);
     expect(c!.job.ownerWallet).toBe(owner);
     expect(c!.payments[0]!.lamports).toBe(18446744073709551615n);
     const url = new URL(requests[0]!.url);
@@ -889,12 +898,12 @@ describe('PostgREST refund store', () => {
       { status: 503, body: {} },
       { status: 503, body: {} },
     ]);
-    const err = await store.listInFlightRefunds(5).catch((e: unknown) => e as Error);
+    const err = await store.listInFlightRefunds(5, 0).catch((e: unknown) => e as Error);
     expect(err).toBeInstanceOf(Error);
     expect((err as Error).message).toContain('HTTP 503');
     expect((err as Error).message).not.toContain(KEY);
     const bad = fakeDb([{ body: [{ id: 1 }] }]);
-    await expect(bad.store.listInFlightRefunds(5)).rejects.toThrow(/unexpected/);
+    await expect(bad.store.listInFlightRefunds(5, 0)).rejects.toThrow(/unexpected/);
   });
 
   it('refuses unsafe filter values', async () => {

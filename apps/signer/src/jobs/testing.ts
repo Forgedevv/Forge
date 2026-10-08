@@ -557,11 +557,11 @@ export class MemoryRefundDb implements RefundStore, CashboxStore {
     if (err) throw err;
   }
 
-  async listRefundCandidates(limit: number): Promise<RefundCandidate[]> {
+  async listRefundCandidates(limit: number, offset: number): Promise<RefundCandidate[]> {
     this.before('listRefundCandidates');
     return [...this.jobs.values()]
       .filter((j) => j.status === 'failed' && j.failedStage === 'build' && j.attempts >= 2)
-      .slice(0, limit)
+      .slice(offset, offset + limit)
       .map((job) => ({
         job: { ...job },
         payments: [...this.payments.values()]
@@ -570,11 +570,11 @@ export class MemoryRefundDb implements RefundStore, CashboxStore {
       }));
   }
 
-  async listInFlightRefunds(limit: number): Promise<InFlightRefund[]> {
+  async listInFlightRefunds(limit: number, offset: number): Promise<InFlightRefund[]> {
     this.before('listInFlightRefunds');
     return [...this.payments.values()]
       .filter((p) => p.status === 'confirmed' && p.refundSignature !== null)
-      .slice(0, limit)
+      .slice(offset, offset + limit)
       .map((p) => ({ payment: { ...p }, job: { ...this.jobs.get(p.jobId)! } }));
   }
 

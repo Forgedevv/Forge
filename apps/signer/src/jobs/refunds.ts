@@ -118,10 +118,13 @@ export interface InFlightRefund {
  * response is lost must be safe to repeat (implementations re-read on a 0-row update).
  */
 export interface RefundStore {
-  /** Jobs in `failed` / `build` with attempts >= the refund threshold, with their payments. */
-  listRefundCandidates(limit: number): Promise<RefundCandidate[]>;
-  /** Payments still `confirmed` with a `refund_signature` (refund in flight). */
-  listInFlightRefunds(limit: number): Promise<InFlightRefund[]>;
+  /**
+   * Jobs in `failed` / `build` with attempts >= the refund threshold, with their payments,
+   * oldest first (page `offset` .. `offset + limit`).
+   */
+  listRefundCandidates(limit: number, offset: number): Promise<RefundCandidate[]>;
+  /** Payments still `confirmed` with a `refund_signature` (refund in flight), oldest first. */
+  listInFlightRefunds(limit: number, offset: number): Promise<InFlightRefund[]>;
   getPayment(paymentId: string): Promise<RefundPayment | null>;
   /** CAS `refund_signature`: null -> S (payment confirmed, same tx_signature). True if S is recorded. */
   beginRefund(p: {
@@ -159,6 +162,18 @@ export const RefundJournalEntry = z.object({
 export type RefundJournalEntry = z.infer<typeof RefundJournalEntry>;
 
 export const REFUND_MEMO_PREFIX = 'forge:refund:';
+
+/** Rows read per database page, and the most rows one run looks at per list. */
+const PAGE_SIZE = 100;
+const MAX_LISTED = 5_000;
+/** Outcomes that cost on-chain work; `maxPerRun` bounds them. */
+const ON_CHAIN_RESULTS = new Set<RefundOutcome['result']>([
+  'refunded',
+  'in_flight',
+  'released',
+  'lost_race',
+  'error',
+]);
 export const refundMemo = (paymentId: string) => `${REFUND_MEMO_PREFIX}${paymentId}`;
 
 /** Kept on top of the refund for the transaction fee (one signature = 5 000 lamports today). */
@@ -851,16 +866,20 @@ export function createRefundsJob(deps: RefundsDeps): RefundsJob {
     }
     const outcomes: RefundOutcome[] = [];
 
-    // 1. Refunds in flight (recorded signature): settle them before anything else.
-    const inFlight = await store.listInFlightRefunds(100);
+    // 1. Refunds in flight (recorded signature): settle them all before anything else.
     const handled = new Set<string>();
-    for (const item of inFlight) {
-      handled.add(item.payment.id);
-      outcomes.push(
-        await guarded({ jobId: item.job.id, paymentId: item.payment.id }, () =>
-          resumeInFlight(item),
-        ),
-      );
+    for (let offset = 0; ; offset += PAGE_SIZE) {
+      const page = await store.listInFlightRefunds(PAGE_SIZE, offset);
+      for (const item of page) {
+        if (handled.has(item.payment.id)) continue;
+        handled.add(item.payment.id);
+        outcomes.push(
+          await guarded({ jobId: item.job.id, paymentId: item.payment.id }, () =>
+            resumeInFlight(item),
+          ),
+        );
+      }
+      if (page.length < PAGE_SIZE || offset + PAGE_SIZE >= MAX_LISTED) break;
     }
 
     // 2. Journal entries not covered above.
@@ -873,15 +892,22 @@ export function createRefundsJob(deps: RefundsDeps): RefundsJob {
       );
     }
 
-    // 3. New refunds.
+    // 3. New refunds, page by page (jobs left for manual handling never starve newer ones).
     let attempts = 0;
-    for (const candidate of await store.listRefundCandidates(100)) {
-      if (attempts >= maxPerRun) break;
-      const outcome = await guarded({ jobId: candidate.job.id }, () =>
-        processCandidate(candidate, cashboxRef),
-      );
-      if (outcome.result !== 'skipped') attempts++;
-      outcomes.push(outcome);
+    const seen = new Set<string>();
+    pages: for (let offset = 0; ; offset += PAGE_SIZE) {
+      const page = await store.listRefundCandidates(PAGE_SIZE, offset);
+      for (const candidate of page) {
+        if (attempts >= maxPerRun) break pages;
+        if (seen.has(candidate.job.id)) continue;
+        seen.add(candidate.job.id);
+        const outcome = await guarded({ jobId: candidate.job.id }, () =>
+          processCandidate(candidate, cashboxRef),
+        );
+        if (ON_CHAIN_RESULTS.has(outcome.result)) attempts++;
+        outcomes.push(outcome);
+      }
+      if (page.length < PAGE_SIZE || offset + PAGE_SIZE >= MAX_LISTED) break;
     }
     return { status: 'ran', outcomes };
   }
@@ -1038,14 +1064,15 @@ export function createPostgrestRefundStore(db: PostgrestClient): RefundStore {
   };
 
   return {
-    async listRefundCandidates(limit) {
+    async listRefundCandidates(limit, offset) {
       const rows = await db.select('jobs', {
         select: `${JOB_COLUMNS},launchpads(owner_wallet),payments(${PAYMENT_COLUMNS})`,
         status: 'eq.failed',
         failed_stage: 'eq.build',
         attempts: `gte.${PRICING.maxAttemptsBeforeRefund}`,
-        order: 'created_at.asc',
+        order: 'created_at.asc,id.asc',
         limit: String(limit),
+        offset: String(offset),
       });
       return parseRows(CandidateRowSchema, rows, 'refund candidate').map((r) => ({
         job: toJob(r),
@@ -1053,13 +1080,14 @@ export function createPostgrestRefundStore(db: PostgrestClient): RefundStore {
       }));
     },
 
-    async listInFlightRefunds(limit) {
+    async listInFlightRefunds(limit, offset) {
       const rows = await db.select('payments', {
         select: `${PAYMENT_COLUMNS},jobs(${JOB_COLUMNS},launchpads(owner_wallet))`,
         status: 'eq.confirmed',
         refund_signature: 'not.is.null',
-        order: 'created_at.asc',
+        order: 'created_at.asc,id.asc',
         limit: String(limit),
+        offset: String(offset),
       });
       return parseRows(InFlightRowSchema, rows, 'in-flight refund').map((r) => ({
         payment: toPayment(r),
