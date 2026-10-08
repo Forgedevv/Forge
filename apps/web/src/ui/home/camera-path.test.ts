@@ -23,7 +23,7 @@ describe('camera path', () => {
     }
   });
 
-  it('keeps the camera clear of the Muse and the Muse near its scenery', () => {
+  it('keeps the camera clear of the pilot and the pilot near its scenery', () => {
     for (const t of chapterTransforms()) {
       expect(t.camera.distanceTo(t.position)).toBeGreaterThan(2);
       expect(t.position.distanceTo(t.target)).toBeLessThan(1.5);
