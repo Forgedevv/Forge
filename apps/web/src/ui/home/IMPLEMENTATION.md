@@ -43,7 +43,6 @@ The implementation can be reviewed locally now. Pixel accuracy and motion equiva
 
 The retained upstream notice is in `THIRD_PARTY_NOTICES.md`. No third-party camera, scene, or character data is stored in the repository.
 
-
 ## Workshop integration and review refinements
 
 On 2026-10-07, the homepage baseline was committed locally before A2–A11 work. Subsequent revisions integrate the shared development session, shorten ignition to 0.85 seconds, lock wheel transitions to 1.8 seconds, and update the palette/buttons. The final road is thinner and remains behind the subject, avoiding the near-camera tube seen in the user's screenshot. The renderer now requests PCFShadowMap directly, resolving the deprecation warning forwarded by the preview server. These changes intentionally revise the earlier reference amplitudes and scrolling behavior.
@@ -56,12 +55,16 @@ On 2026-10-08 the pilot and its glow were toned down so the launchpad screens st
 
 ## Continuous scrolling
 
-On 2026-10-08 the fixed per-gesture wheel transition was replaced, because it made scrolling feel blocked: each gesture started a 1.8-second tween and every other event was ignored until it ended, and touch sprang back to the nearest chapter. `ChapterMotion` in `motion.ts` now keeps one continuous progress value from 0 to 5 that drives the camera path, scenery, atmosphere, and interface.
+On 2026-10-08 the fixed per-gesture wheel transition was replaced, because it made scrolling feel blocked: each gesture started a 1.8-second tween and every other event was ignored until it ended, and touch sprang back to the nearest chapter. `ChapterMotion` in `motion.ts` keeps one continuous progress value from 0 to 5 that drives the camera path, scenery, atmosphere, and interface. The same day, the owner found it passed too fast, so it was given a rhythm without bringing back any lock.
 
-- Wheel and trackpad: every event adds `deltaY * WHEEL_SENSITIVITY` (lines and pages normalized to pixels) to a target. No gesture detection, cooldown, or lock. The displayed value approaches the target exponentially with time constant `FOLLOW_TIME_CONSTANT`, independent of frame rate.
-- Touch: the finger moves the target directly (`TOUCH_CHAPTERS_PER_SCREEN` per viewport height) and the value follows with `TOUCH_FOLLOW_TIME_CONSTANT`. On release, the measured finger velocity coasts and decays with `TOUCH_INERTIA_TIME_CONSTANT`. There is no snap to a chapter.
-- Keyboard, dots, and buttons: tween to an exact chapter (`NAVIGATION_DURATION`, cubic easing). Any wheel or touch input takes over from the shown position at once.
-- Ends: the target is clamped to the journey, so the value eases into either end without overshoot, and the first reverse input moves away from the end without a dead zone.
-- The current chapter (dots, copy, announcement) is the nearest chapter to the progress and is reported only when it changes. Reduced motion keeps its immediate chapter jumps.
+- Raw progress: every wheel event adds `deltaY * WHEEL_SENSITIVITY` (lines and pages normalized to pixels, at most `WHEEL_MAX_STEP` per event) to a raw target; touch adds `TOUCH_CHAPTERS_PER_SCREEN` per viewport height. No gesture detection, cooldown, or lock, and no input is dropped.
+- Plateaus (`DWELL`): the scene shows `plateau(raw)`. Within `DWELL / 2` of each chapter the result is exactly that chapter; between plateaus it eases with smootherstep. The first mouse notch therefore does not move the scene, and about five notches carry it to the next chapter; a ~500 px trackpad swipe is about one chapter. The curve is symmetric, so reversing retraces it.
+- Speed cap: the displayed value follows with a speed- and acceleration-limited follower: it accelerates at `TRANSITION_ACCELERATION`, never exceeds `MAX_TRANSITION_SPEED` (a chapter takes at least 1.2 s), and brakes softly onto its stop, ending with a `FOLLOW_TIME_CONSTANT` approach (`TOUCH_FOLLOW_TIME_CONSTANT` while a finger is down). Fast scrolling only queues more distance, bounded to `MAX_QUEUE_AHEAD` chapters ahead of or behind the shown value.
+- Minimum dwell: the follower never crosses a chapter in one move. It stops on each chapter it reaches and holds there for `DWELL_SECONDS`; scroll received meanwhile stays in the raw target and plays after the hold.
+- Feel (simulated at 60 Hz): one chapter transition takes about 1.6 s. Under fast or continuous scrolling, each chapter stays still for about 1.1 s, so the journey advances one chapter every 2.7 s at most. Slow notch-by-notch scrolling stays under the user's control: the scene rests wherever the input leaves it, between chapters included.
+- Touch: the same plateaus, speed cap, and holds apply. On release, the measured finger velocity, capped at `TOUCH_MAX_VELOCITY`, coasts and decays with `TOUCH_INERTIA_TIME_CONSTANT`. There is no snap or spring-back to a chapter. A new touch catches the scene where it is shown.
+- Keyboard, dots, and buttons: tween to an exact chapter (`NAVIGATION_DURATION`, cubic easing), skipping any hold. Any wheel or touch input takes over from the shown position, keeping the tween's speed.
+- Ends: the raw target is clamped to the journey, so no backlog piles up past either end; reverse input leaves an end once it crosses the end's half plateau.
+- The current chapter (dots, copy, announcement) is the nearest chapter to the progress and is reported only when it changes. Reduced motion and the simple view keep their immediate chapter jumps; the intro is unchanged.
 
 All tuning values are named constants at the top of `motion.ts`.

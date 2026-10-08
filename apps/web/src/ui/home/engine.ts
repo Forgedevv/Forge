@@ -479,7 +479,7 @@ function buildExperience(
       }
       return;
     }
-    // Every wheel event moves the continuous progress; none is filtered or queued.
+    // Every wheel event adds to the continuous progress; none is filtered or dropped.
     if (motion.value > 4.95 && delta > 0 && time - boostStarted > 6) boostStarted = time;
     motion.wheel(delta);
   }
