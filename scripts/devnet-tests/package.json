@@ -17,7 +17,8 @@
     "test:all": "tsx src/all.ts",
     "summary": "tsx src/summary.ts",
     "core:config-pool": "tsx src/core-config-pool.ts",
-    "core:swap": "tsx src/core-swap.ts"
+    "core:swap": "tsx src/core-swap.ts",
+    "core:reads": "tsx src/core-reads.ts"
   },
   "dependencies": {
     "@forge/shared": "workspace:*",
