@@ -24,11 +24,13 @@ import {
   computeBudgetInstructions,
   confirmSignature,
   deserializeTransactionBase64,
+  encodeBase58,
   missingSigners,
   priorityFeeLamports,
   readNonce,
   requiredSigners,
   serializeTransactionBase64,
+  transactionSignature,
   transactionSize,
 } from './tx.js';
 
@@ -260,6 +262,30 @@ describe('base64 serialization', () => {
       error = e;
     }
     expect((error as TransactionEncodingError).code).toBe('INVALID_SIGNATURE');
+  });
+
+  it('encodes base58 like web3.js, leading zeros included', () => {
+    for (const bytes of [
+      Buffer.alloc(32, 0),
+      Buffer.alloc(32, 255),
+      Keypair.generate().publicKey.toBuffer(),
+    ]) {
+      expect(encodeBase58(bytes)).toBe(new PublicKey(bytes).toBase58());
+    }
+    expect(encodeBase58(Buffer.from([0, 0, 1]))).toBe('112');
+    expect(encodeBase58(Buffer.alloc(0))).toBe('');
+  });
+
+  it('returns the fee payer signature once signed', () => {
+    const payer = Keypair.generate();
+    const other = Keypair.generate();
+    const tx = sampleTx(payer.publicKey, other.publicKey);
+    tx.partialSign(other);
+    expect(transactionSignature(tx)).toBeNull();
+    tx.partialSign(payer);
+    const signature = transactionSignature(tx)!;
+    expect(signature).toMatch(/^[1-9A-HJ-NP-Za-km-z]{64,88}$/);
+    expect(signature).toBe(encodeBase58(tx.signature!));
   });
 
   it('computes the wire size without signing', () => {

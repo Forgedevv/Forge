@@ -243,7 +243,7 @@ export function buildLaunchpadCoinConfig(spec: LaunchpadSpec): LaunchpadConfigPa
 // Transaction
 // ---------------------------------------------------------------------------------------------
 
-/** Compute unit limit of the create-config transaction (36,174 CU measured on devnet). */
+/** Compute unit limit of the create-config transaction (36,524 CU measured on devnet). */
 export const CREATE_CONFIG_COMPUTE_UNITS = 100_000;
 
 export type CreateConfigErrorCode = 'CONFIG_EXISTS' | 'INVALID_ACCOUNTS';

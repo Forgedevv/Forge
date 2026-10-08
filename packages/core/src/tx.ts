@@ -342,6 +342,33 @@ export function missingSigners(transaction: Transaction): PublicKey[] {
   });
 }
 
+const BASE58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+
+/** Base58 encoding (Bitcoin alphabet), as used for Solana signatures and keys. */
+export function encodeBase58(bytes: Uint8Array): string {
+  let value = 0n;
+  for (const byte of bytes) value = (value << 8n) | BigInt(byte);
+  let out = '';
+  while (value > 0n) {
+    out = BASE58_ALPHABET[Number(value % 58n)]! + out;
+    value /= 58n;
+  }
+  for (const byte of bytes) {
+    if (byte !== 0) break;
+    out = '1' + out;
+  }
+  return out;
+}
+
+/**
+ * The transaction signature (base58 of the fee payer's signature), or null while the fee payer
+ * has not signed. Known before sending, so it can be recorded first (idempotent retries).
+ */
+export function transactionSignature(transaction: Transaction): string | null {
+  const signature = transaction.signature;
+  return signature ? encodeBase58(signature) : null;
+}
+
 /** Required signers of the compiled message, in message order (the fee payer first). */
 export function requiredSigners(transaction: Transaction): PublicKey[] {
   const message = transaction.compileMessage();

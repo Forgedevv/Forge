@@ -51,16 +51,17 @@ import {
 } from './tx.js';
 
 /*
- * The config fixture is a real devnet pool config (devnet test 3, config
- * BETHKRLQc6wRHsTG8Kd3SwbRu26zWrgme8NXWVUwXdWU): SOL quote, anti-sniper 9900 -> 100 bps linear,
- * enableFirstSwapWithMinFee, creator share 25%, creator and partner locked liquidity 50/50,
- * pool creation fee 0.001 SOL, fee claimer = the devnet `partner` wallet.
+ * The config fixture is the real launchpad coin config created on devnet by `buildCreateConfigTx`
+ * (scripts/devnet-tests/reports/core-config-pool.md, config
+ * GkTXTK179N4gBi64rk2pp1KbpWrjgMv6LENf8mQrqh8J): SOL quote, anti-sniper 9900 -> 100 bps linear in
+ * 10 x 6 s, enableFirstSwapWithMinFee, creator share 25%, creator / partner locked liquidity
+ * 25 / 75, pool creation fee 0.001 SOL, fee claimer = leftover receiver = the devnet `client`.
  */
 const CONFIG_FIXTURE_BASE64 =
-  'GmwOe3TmgSsGm4hX/quBhPtof2NGGMA12sQ53BrrO1WYoPAAAAAAAeyicKkZ/GSCr++mKCfiPzquMACSmLGyUCWywB' +
-  '0EfPdP7KJwqRn8ZIKv76YoJ+I/Oq4wAJKYsbJQJbLAHQR890+AMwI7AAAAADwAAAAAAAAAgFzXBQAAAAAKAAAAAAAA' +
+  'GmwOe3TmgSsGm4hX/quBhPtof2NGGMA12sQ53BrrO1WYoPAAAAAAASyEFwNSPwYU4BGg5qECMVofZ9/hgka2uj3lAj' +
+  'ZlDrPoLIQXA1I/BhTgEaDmoQIxWh9n3+GCRra6PeUCNmUOs+iAMwI7AAAAAAYAAAAAAAAAgFzXBQAAAAAKAAAAAAAA' +
   'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' +
-  'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAQYAAAAyADIAAAEZAQAAAAAAAAAAAAqW24GY1wIAAOQLVAIA' +
+  'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAQYBAABLABkAAAEZAQAAAAAAAAAAAAqW24GY1wIAAOQLVAIA' +
   'AACY+1gh5rUAAM5N8P/UaM8BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' +
   'AAAAAAAAAAgMakfo0DAACAxqR+jQMAAAAAAAABAABAQg8AAAAAAAAAAAAAAAAAAAAAAAAAAAA5cPuPNdpzAAAAAAAA' +
   'AAAAzk3w/9RozwEAAAAAAAAAAM9n+RX9pKdkafqYB7cBAACbV2lOqRpchLHE/v8AAAAA/XPZVLZwQ7OS1wIAAAAAAA' +
@@ -74,8 +75,8 @@ const CONFIG_FIXTURE_BASE64 =
   'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' +
   'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==';
 
-const OWNER = new PublicKey('Gvit1eRKU5pv2c1p1m1gk1yjk3RWsxsxqYVLs4qCxJNa');
-const CONFIG = new PublicKey('BETHKRLQc6wRHsTG8Kd3SwbRu26zWrgme8NXWVUwXdWU');
+const OWNER = new PublicKey('3zmm4YTrfwU76jBTHg3kQsu323zGLWP4pj9RLdzTSy75');
+const CONFIG = new PublicKey('GkTXTK179N4gBi64rk2pp1KbpWrjgMv6LENf8mQrqh8J');
 const BLOCKHASH = new PublicKey(Buffer.alloc(32, 7)).toBase58();
 const NONCE_VALUE = new PublicKey(Buffer.alloc(32, 9)).toBase58();
 
@@ -441,7 +442,15 @@ describe('buildLaunchCoinTx — first buy', () => {
     expect(summary.costs.firstBuyFeeLamports).toBe(solToLamports(0.01) / 100n);
   });
 
-  it('matches the devnet test 3 first buy exactly (0.05 SOL)', async () => {
+  it('matches the devnet launch exactly (0.01 SOL)', async () => {
+    const { params } = await setup({ firstBuyLamports: solToLamports(0.01) });
+    const { summary } = await buildLaunchCoinTx(params);
+    // Measured on devnet (scripts/devnet-tests/reports/core-config-pool.md).
+    expect(summary.expectedTokensOut).toBe(3_158_618_642_371n);
+    expect(summary.costs.firstBuyFeeLamports).toBe(100_000n);
+  });
+
+  it('matches the devnet test 3 first buy exactly (0.05 SOL, same curve)', async () => {
     const { params } = await setup({ firstBuyLamports: solToLamports(0.05), slippageBps: 0 });
     const { summary } = await buildLaunchCoinTx(params);
     // Measured on devnet (scripts/devnet-tests/reports/test3-first-buy.md).
@@ -647,6 +656,15 @@ describe('buildLaunchCoinTx — size', () => {
     });
     // 1,025 bytes measured on devnet + 40 bytes for setComputeUnitLimit.
     expect((await buildLaunchCoinTx(params)).summary.txBytes).toBe(1065);
+  });
+
+  it('matches the devnet launch transaction size (1166 bytes)', async () => {
+    const { params } = await setup({
+      name: 'Forge Core Devnet Coin',
+      symbol: 'FCORE',
+      metadataUri: 'https://example.com/forge/core-config-pool/metadata.json',
+    });
+    expect((await buildLaunchCoinTx(params)).summary.txBytes).toBe(1166);
   });
 
   it('fits a 32-byte name, a 10-character symbol and an R2 metadata URL', async () => {

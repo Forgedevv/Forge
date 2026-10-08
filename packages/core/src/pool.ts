@@ -59,7 +59,10 @@ import {
 // Constants
 // ---------------------------------------------------------------------------------------------
 
-/** Compute unit limit of the launch transaction (174,034 CU measured on devnet in test 3). */
+/**
+ * Compute unit limit of the launch transaction: 190,840 CU measured on devnet with the durable
+ * nonce (scripts/devnet-tests/reports/core-config-pool.md), 174,034 without it (test 3).
+ */
 export const LAUNCH_COIN_COMPUTE_UNITS = 300_000;
 
 /** Default slippage on the first buy. The quote is exact (fresh pool, minimum fee). */
