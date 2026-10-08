@@ -1,15 +1,19 @@
 import * as T from 'three';
-import { createMuseOrb } from '../muse/three/orb';
-import { MUSE_EMISSION } from './appearance';
+import { createMuseFigure } from '../muse/three/figure';
 import { jumpAt } from './motion';
 
-/** Radius of the homepage Muse, in model units before the chapter scale. */
-export const MUSE_RADIUS = 0.13;
+/** Radius of the homepage Muse's head, in model units before the chapter scale. */
+export const MUSE_RADIUS = 0.075;
+
+/** The figure model is about 1.72 units tall with a 0.36 head; this fits it to the journey. */
+const FIGURE_SCALE = MUSE_RADIUS / 0.36;
+/** Keeps the figure centred where the orb used to float, so the camera path still frames it. */
+const FIGURE_OFFSET = -0.95 * FIGURE_SCALE + 0.02;
 
 /**
- * The FORGE Muse for the homepage journey: the 3D Nebula orb, carried along the camera
- * path. Chapter weights add a jump on the drafting table, extra glow in the dark manifesto
- * and a faster orbit at liftoff. Its eyes follow the camera, offset by the pointer.
+ * The FORGE Muse for the homepage journey: the full-body figure, carried along the camera
+ * path. It waves hello at the start, jumps on the drafting table, and raises its arms and
+ * flies off at liftoff. Its eyes follow the camera, offset by the pointer.
  */
 export function createMuseCharacter(random: () => number = Math.random) {
   const root = new T.Group();
@@ -17,15 +21,10 @@ export function createMuseCharacter(random: () => number = Math.random) {
   const rig = new T.Group();
   root.add(turntable);
   turntable.add(rig);
-  const orb = createMuseOrb({
-    radius: MUSE_RADIUS,
-    sparks: 5,
-    motes: 22,
-    emission: MUSE_EMISSION,
-    random,
-  });
-  orb.root.position.y = 0.02;
-  rig.add(orb.root);
+  const figure = createMuseFigure({ random });
+  figure.root.scale.setScalar(FIGURE_SCALE);
+  figure.root.position.y = FIGURE_OFFSET;
+  rig.add(figure.root);
 
   const look = new T.Vector3(),
     right = new T.Vector3(),
@@ -34,6 +33,7 @@ export function createMuseCharacter(random: () => number = Math.random) {
   let bank = 0,
     launch = 0,
     wasAirborne = false,
+    waved = false,
     flightMood = false;
 
   function update(
@@ -47,16 +47,19 @@ export function createMuseCharacter(random: () => number = Math.random) {
     const dt = Math.min(0.1, Math.max(0, delta));
     const weight = (c: number) => Math.max(0, 1 - Math.abs(chapter - c));
     const table = weight(3),
-      dark = weight(4),
       flight = weight(5);
+    if (!waved && time > 0.8) {
+      waved = true;
+      figure.wave();
+    }
     const jump = jumpAt(chapterTime);
     const airborne = table > 0.5 && jump.height > 0.002;
-    if (airborne && !wasAirborne) orb.kick(0.35);
-    if (!airborne && wasAirborne) orb.kick(-0.8);
+    if (airborne && !wasAirborne) figure.head.kick(0.35);
+    if (!airborne && wasAirborne) figure.head.kick(-0.8);
     wasAirborne = airborne;
     if (flight > 0.5 !== flightMood) {
       flightMood = flight > 0.5;
-      orb.setMood(flightMood ? 'building' : 'idle');
+      figure.setAction(flightMood ? 'live' : 'idle');
     }
     // Bank gently into the liftoff path; integrated so long sessions do not accumulate.
     bank += (-flight * 0.18 - bank) * (1 - Math.exp(-dt * 2));
@@ -77,11 +80,7 @@ export function createMuseCharacter(random: () => number = Math.random) {
       look.addScaledVector(right, pointer.x * distance * 0.45);
       look.addScaledVector(up, pointer.y * distance * 0.3);
     }
-    orb.update(dt, {
-      look: camera ? look : null,
-      maxTurn: 0.85,
-      boost: dark,
-    });
+    figure.update(dt, { look: camera ? look : null });
   }
-  return { root, update, orb, dispose: orb.dispose };
+  return { root, update, orb: figure.head, figure, dispose: figure.dispose };
 }
