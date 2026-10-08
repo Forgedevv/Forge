@@ -6,9 +6,9 @@ import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
-import { BLOOM, LIGHTING, MUSE_HALO_OPACITY } from './appearance';
+import { BLOOM, LIGHTING, PILOT_HALO_OPACITY } from './appearance';
 import { INTRO_WALL_DISTANCE, chapterTransforms } from './camera-path';
-import { createMuseCharacter } from './muse-character';
+import { createCharacter } from './character';
 import { palette } from './content';
 import {
   INTRO_SECONDS,
@@ -141,7 +141,7 @@ function buildExperience(
     isPortrait(),
   );
   scenery.forEach((chapter) => scene.add(chapter.group));
-  const character = createMuseCharacter();
+  const character = createCharacter();
   scene.add(character.root);
   const composer = new EffectComposer(renderer);
   composer.addPass(new RenderPass(scene, camera));
@@ -168,7 +168,7 @@ function buildExperience(
       color: palette.light,
       size: 0.012,
       transparent: true,
-      opacity: MUSE_HALO_OPACITY,
+      opacity: PILOT_HALO_OPACITY,
       depthWrite: false,
     }),
   );
@@ -197,7 +197,7 @@ function buildExperience(
   const shardGeometry = new T.BoxGeometry(0.42, 0.39, 0.025);
   const shardMaterial = new T.MeshStandardMaterial({ color: palette.ink, roughness: 0.4 });
   const fragments: { mesh: T.Mesh; body: Body }[] = [];
-  // Assemble the wall across the first chapter's view, between the camera and the Muse.
+  // Assemble the wall across the first chapter's view, between the camera and the pilot.
   const wallCenter = transforms[0]!.target
     .clone()
     .sub(transforms[0]!.camera)
@@ -345,7 +345,7 @@ function buildExperience(
     appearance = paused
       ? value
       : T.MathUtils.lerp(appearanceFrom, selected, sigmoid(time - appearanceStarted));
-    character.update(time, appearance, smoothPointer, chapterTimes[3]!, dt, camera);
+    character.update(time, appearance, smoothPointer, chapterTimes[3]!, dt);
     key.position.copy(character.root.position).add(keyOffset);
     key.target.position.copy(character.root.position);
     pointerLight.position
@@ -635,7 +635,6 @@ function buildExperience(
       textures.forEach((texture) => texture.dispose());
       geometries.forEach((geometry) => geometry.dispose());
       scenery.forEach((chapter) => chapter.dispose?.());
-      character.dispose();
       environmentTarget.dispose();
       key.shadow.dispose();
       bloom.dispose();

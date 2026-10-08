@@ -4,9 +4,9 @@ Implemented on 2026-10-07 in the `agent/frontend` worktree. This replaces the or
 
 ## Included
 
-- The FORGE Muse, a 3D Nebula orb created in code (`muse-character.ts`, built on `../muse/three/orb.ts`), with the live 2D Muse in the simple view. No downloaded character, scene model, animation track, font, or reference bundle is used. It replaced the earlier articulated workshop pilot on 2026-10-08 (see "The Muse" below).
+- An original articulated workshop pilot, created from geometry in `character.ts`, with a matching original SVG illustration for the simple view. No downloaded character, scene model, animation track, font, or reference bundle is used.
 - Six scenes: ignition and floating hardware; glass and moving typography; eight launchpad displays with a planar reflection; a drafting grid with 26 instanced makers and jumping type; an orbital manifesto; a luminous flight path with accelerating wind.
-- An original FORGE camera journey in `camera-path.ts`: per-chapter camera position, roll and field of view, look-at target, character transform, and portrait field-of-view offset, all authored for this scene composition. The path starts low in front of the Muse, slides right for the glass chapter, drops to the launchpad wall, rises over it onto the drafting table, climbs into orbit, and banks away behind the Muse for liftoff. Camera movement and character orientation interpolate continuously across chapters.
+- An original FORGE camera journey in `camera-path.ts`: per-chapter camera position, roll and field of view, look-at target, character transform, and portrait field-of-view offset, all authored for this scene composition. The path starts low in front of the pilot, slides right for the glass chapter, drops to the launchpad wall, rises over it onto the drafting table, climbs into orbit, and banks away behind the pilot for liftoff. Camera movement and character orientation interpolate continuously across chapters.
 - Continuous scroll navigation (see "Continuous scrolling" below): wheel, trackpad, and touch move one continuous progress value that the scene follows smoothly; nothing locks or snaps. Keyboard, timeline dots, and arrow buttons tween to exact chapters and yield to new input.
 - A 0.85-second ignition sequence; a physics-based wall reveal; one-second material transitions; independent particle, FOV, and shake timing for the final boost; the 3.5-second jump cycle and 0.7-second word switch.
 - Newly authored character poses using the inspected loop durations and playback rates. The poses themselves are not the reference's authored skeletal animation.
@@ -51,7 +51,7 @@ The old palette contrast figures and test counts above describe the earlier comm
 
 ## Brightness pass
 
-On 2026-10-08 the former pilot and its glow were toned down so the launchpad screens stay readable behind it. All values live in `appearance.ts`: bloom strength 0.3 initial with per-chapter 0.12–0.2 (threshold 1.3, radius 0.42), a greyed-white shell `#d9dde3` with roughness 0.55 and metalness 0.08, key light 1.7 against a 1.05 fill, environment 0.6, exposure 0.82, emissive eyes 0.4, and cables at emissive 0.3 with a 0.75 color tint.
+On 2026-10-08 the pilot and its glow were toned down so the launchpad screens stay readable behind it. All values live in `appearance.ts`: bloom strength 0.3 initial with per-chapter 0.12–0.2 (threshold 1.3, radius 0.42), a greyed-white shell `#d9dde3` with roughness 0.55 and metalness 0.08, key light 1.7 against a 1.05 fill, environment 0.6, exposure 0.82, emissive eyes 0.4, and cables at emissive 0.3 with a 0.75 color tint. The simple view's illustrated pilot uses the same shell color through `--forge-pilot-shell`.
 
 ## Continuous scrolling
 
@@ -68,12 +68,3 @@ On 2026-10-08 the fixed per-gesture wheel transition was replaced, because it ma
 - The current chapter (dots, copy, announcement) is the nearest chapter to the progress and is reported only when it changes. Reduced motion and the simple view keep their immediate chapter jumps; the intro is unchanged.
 
 All tuning values are named constants at the top of `motion.ts`.
-
-## The Muse
-
-On 2026-10-08 the robot pilot was replaced by the Muse (direction A, Nebula), the FORGE mascot. The pilot geometry, its SVG illustration and its tests were removed. The camera path, chapters, scroll rhythm and the rest of the scene are unchanged; the path's character transforms now place the Muse.
-
-- 3D approach: a real Three.js object, not a billboard. A sphere with a custom shader (deep violet core, magenta fresnel rim, three slow inner swirl blobs, bounce light and a specular highlight), an additive glow sprite, two emissive eyes placed on the sphere, orbiting four-point spark sprites, drifting motes, breathing, a squash-and-stretch spring and random blinks. Its textures are computed pixel by pixel; there is no image file.
-- The eyes follow the camera, offset by the pointer, within 0.85 rad of the Muse's own heading. When a chapter shows the Muse from behind, its eyes stay on its far side.
-- Chapters: it hops with the jumping type on the drafting table, glows a little more in the dark manifesto and, at liftoff, speeds up its orbit and flies off down the path so the final copy stays clear.
-- Emission is tuned in `appearance.ts` (`MUSE_EMISSION`), so the rim and eyes reach the bloom threshold only slightly.
