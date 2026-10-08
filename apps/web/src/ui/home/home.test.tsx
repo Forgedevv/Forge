@@ -72,7 +72,20 @@ describe('FORGE experience controls', () => {
     expect(screen.getByRole('heading', { level: 2, name: /From a spark/ })).toBeInTheDocument();
   });
 
-  it('uses a one-second first-scroll transition', async () => {
+  it('announces the chapter the continuous scene progress reaches', async () => {
+    const { container } = render(<ForgeHome />);
+    await ready();
+    const live = container.querySelector('[aria-live="polite"]')!;
+    expect(live).toHaveTextContent(copy.chapterNames[0]!);
+    act(() => scene.chapter(3));
+    expect(live).toHaveTextContent(copy.chapterNames[3]!);
+    expect(screen.getByRole('button', { name: new RegExp(copy.chapterNames[3]!) })).toHaveAttribute(
+      'aria-current',
+      'step',
+    );
+  });
+
+  it('uses a one-second transition for the scroll hint button', async () => {
     render(<ForgeHome />);
     await ready();
     fireEvent.click(screen.getByRole('button', { name: copy.scroll }));

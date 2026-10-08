@@ -7,7 +7,7 @@ Implemented on 2026-10-07 in the `agent/frontend` worktree. This replaces the or
 - An original articulated workshop pilot, created from geometry in `character.ts`, with a matching original SVG illustration for the simple view. No downloaded character, scene model, animation track, font, or reference bundle is used.
 - Six scenes: ignition and floating hardware; glass and moving typography; eight launchpad displays with a planar reflection; a drafting grid with 26 instanced makers and jumping type; an orbital manifesto; a luminous flight path with accelerating wind.
 - An original FORGE camera journey in `camera-path.ts`: per-chapter camera position, roll and field of view, look-at target, character transform, and portrait field-of-view offset, all authored for this scene composition. The path starts low in front of the pilot, slides right for the glass chapter, drops to the launchpad wall, rises over it onto the drafting table, climbs into orbit, and banks away behind the pilot for liftoff. Camera movement and character orientation interpolate continuously across chapters.
-- Fixed-duration wheel navigation: one gesture advances one chapter over 1.8 seconds, regardless of wheel magnitude or tail length, following the user's revised direction. Timeline buttons retain their explicit target navigation. Junni's adapted touch spring uses an interpolated 60 Hz simulation; touch capture clears stale momentum.
+- Continuous scroll navigation (see "Continuous scrolling" below): wheel, trackpad, and touch move one continuous progress value that the scene follows smoothly; nothing locks or snaps. Keyboard, timeline dots, and arrow buttons tween to exact chapters and yield to new input.
 - A 0.85-second ignition sequence; a physics-based wall reveal; one-second material transitions; independent particle, FOV, and shake timing for the final boost; the 3.5-second jump cycle and 0.7-second word switch.
 - Newly authored character poses using the inspected loop durations and playback rates. The poses themselves are not the reference's authored skeletal animation.
 - Glass transmission, wire overlays, lighting, environment reflections, a reflective floor, bloom, vignette, chromatic separation during acceleration, particle fields, and a desktop pointer trail.
@@ -53,3 +53,15 @@ The old palette contrast figures and test counts above describe the earlier comm
 ## Brightness pass
 
 On 2026-10-08 the pilot and its glow were toned down so the launchpad screens stay readable behind it. All values live in `appearance.ts`: bloom strength 0.3 initial with per-chapter 0.12–0.2 (threshold 1.3, radius 0.42), a greyed-white shell `#d9dde3` with roughness 0.55 and metalness 0.08, key light 1.7 against a 1.05 fill, environment 0.6, exposure 0.82, emissive eyes 0.4, and cables at emissive 0.3 with a 0.75 color tint. The simple view's illustrated pilot uses the same shell color through `--forge-pilot-shell`.
+
+## Continuous scrolling
+
+On 2026-10-08 the fixed per-gesture wheel transition was replaced, because it made scrolling feel blocked: each gesture started a 1.8-second tween and every other event was ignored until it ended, and touch sprang back to the nearest chapter. `ChapterMotion` in `motion.ts` now keeps one continuous progress value from 0 to 5 that drives the camera path, scenery, atmosphere, and interface.
+
+- Wheel and trackpad: every event adds `deltaY * WHEEL_SENSITIVITY` (lines and pages normalized to pixels) to a target. No gesture detection, cooldown, or lock. The displayed value approaches the target exponentially with time constant `FOLLOW_TIME_CONSTANT`, independent of frame rate.
+- Touch: the finger moves the target directly (`TOUCH_CHAPTERS_PER_SCREEN` per viewport height) and the value follows with `TOUCH_FOLLOW_TIME_CONSTANT`. On release, the measured finger velocity coasts and decays with `TOUCH_INERTIA_TIME_CONSTANT`. There is no snap to a chapter.
+- Keyboard, dots, and buttons: tween to an exact chapter (`NAVIGATION_DURATION`, cubic easing). Any wheel or touch input takes over from the shown position at once.
+- Ends: the target is clamped to the journey, so the value eases into either end without overshoot, and the first reverse input moves away from the end without a dead zone.
+- The current chapter (dots, copy, announcement) is the nearest chapter to the progress and is reported only when it changes. Reduced motion keeps its immediate chapter jumps.
+
+All tuning values are named constants at the top of `motion.ts`.
