@@ -1,0 +1,41 @@
+.muse {
+  position: relative;
+  display: inline-block;
+  flex: none;
+  width: var(--muse-box);
+  height: var(--muse-box);
+  vertical-align: middle;
+}
+.muse > canvas {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: var(--muse-canvas);
+  height: var(--muse-canvas);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+.muse-sheet {
+  display: grid;
+  gap: 32px;
+  padding: 32px;
+}
+.muse-sheet-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 28px;
+  align-items: center;
+}
+.muse-sheet figure {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--fw-muted, #aca6c8);
+}
+.muse-interactive {
+  cursor: pointer;
+  touch-action: manipulation;
+}
