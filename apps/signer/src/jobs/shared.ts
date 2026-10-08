@@ -550,19 +550,21 @@ export function createFileJournal<T>(options: {
     return parsed.data;
   };
 
+  const get = async (key: string): Promise<T | undefined> => {
+    assertJournalKey(key);
+    await ensureDir();
+    let raw: string;
+    try {
+      raw = await fs.readFile(fileOf(key), 'utf8');
+    } catch (err) {
+      if ((err as { code?: string }).code === 'ENOENT') return undefined;
+      throw new JobError('JOURNAL_IO', describeError(err).code ?? 'read failed');
+    }
+    return parse(raw);
+  };
+
   return {
-    async get(key) {
-      assertJournalKey(key);
-      await ensureDir();
-      let raw: string;
-      try {
-        raw = await fs.readFile(fileOf(key), 'utf8');
-      } catch (err) {
-        if ((err as { code?: string }).code === 'ENOENT') return undefined;
-        throw new JobError('JOURNAL_IO', describeError(err).code ?? 'read failed');
-      }
-      return parse(raw);
-    },
+    get,
     async put(key, value) {
       assertJournalKey(key);
       await ensureDir();
@@ -607,7 +609,7 @@ export function createFileJournal<T>(options: {
         if (!name.startsWith(prefix) || !name.endsWith('.json')) continue;
         const key = name.slice(prefix.length, -'.json'.length);
         if (!JOURNAL_KEY_RE.test(key)) continue;
-        const value = await this.get(key);
+        const value = await get(key);
         if (value !== undefined) out.push({ key, value });
       }
       return out;
