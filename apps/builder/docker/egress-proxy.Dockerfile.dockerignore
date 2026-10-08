@@ -1,0 +1,3 @@
+# Only the proxy source is sent to the daemon.
+*
+!src/sandbox/egress-proxy.ts
