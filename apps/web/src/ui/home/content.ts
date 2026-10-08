@@ -113,7 +113,7 @@ export const homeContent = {
     steps: [
       {
         title: 'Describe it',
-        body: 'Tell the builder your name, style, token details, and fee settings.',
+        body: 'Tell your Muse your name, style, token details, and fee settings.',
       },
       {
         title: 'Watch it take shape',
@@ -201,7 +201,7 @@ export const palette = {
   accent: '#9b5cff',
   /** Soft lilac companion to the accent. */
   lilac: '#c4a8ff',
-  /** Magenta highlight, used sparingly: eyes, chest light, and a few accents. */
+  /** Magenta highlight, used sparingly: the Muse's rim and a few accents. */
   magenta: '#ff4fd8',
   /** Faint violet for background typography and grid lines. */
   faint: '#2e2654',

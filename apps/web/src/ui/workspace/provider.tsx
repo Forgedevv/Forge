@@ -7,6 +7,7 @@ import { createMockController, type MockController } from '../mocks/client';
 import { formatSol, formatUsd, shortAddress, explorerTxUrl } from './format';
 import { common } from './content/common';
 import { LoginPanel } from './session';
+import { Muse } from '../muse';
 import './workspace.css';
 
 const unavailable = async () => {
@@ -121,7 +122,8 @@ export function WorkspaceProvider({
       {login && <LoginDialog onClose={() => setLogin(false)} theme={theme} />}
       {message && (
         <div className="fw-toast" role="status" data-theme={theme}>
-          {message}
+          <Muse size={28} mood="success" gaze="none" interactive={false} />
+          <span>{message}</span>
         </div>
       )}
     </WorkspaceContext.Provider>

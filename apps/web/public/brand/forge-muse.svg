@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-labelledby="title">
+  <title id="title">The FORGE Muse</title>
+  <defs>
+    <radialGradient id="aura" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0.36" stop-color="#C556EC" stop-opacity="0.3"/>
+      <stop offset="0.56" stop-color="#9B5CFF" stop-opacity="0.12"/>
+      <stop offset="1" stop-color="#9B5CFF" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="body" cx="128" cy="128" r="65.3" fx="128" fy="128" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#4A2A80"/>
+      <stop offset="0.5" stop-color="#673CAD"/>
+      <stop offset="0.8" stop-color="#B459F5"/>
+      <stop offset="1" stop-color="#FF61DC"/>
+    </radialGradient>
+    <radialGradient id="rim" cx="128" cy="128" r="65.3" gradientUnits="userSpaceOnUse">
+      <stop offset="0.62" stop-color="#FF4FD8" stop-opacity="0"/>
+      <stop offset="0.86" stop-color="#FF4FD8" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="#FF95E8" stop-opacity="0.8"/>
+    </radialGradient>
+    <radialGradient id="bounce" cx="128" cy="185.6" r="60.8" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FF4FD8" stop-opacity="0.42"/>
+      <stop offset="1" stop-color="#FF4FD8" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="shine" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.5"/>
+      <stop offset="0.5" stop-color="#FFFFFF" stop-opacity="0.14"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="eyeGlow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#FFD9F6" stop-opacity="0.4"/>
+      <stop offset="1" stop-color="#FFD9F6" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="eye" cx="0.38" cy="0.35" r="0.7">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#F6E2FA"/>
+    </radialGradient>
+    <radialGradient id="sparkGlow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#FF7FE2" stop-opacity="0.5"/>
+      <stop offset="1" stop-color="#FF7FE2" stop-opacity="0"/>
+    </radialGradient>
+    <clipPath id="orb"><circle cx="128" cy="128" r="64"/></clipPath>
+  </defs>
+  <circle cx="128" cy="128" r="124.8" fill="url(#aura)"/>
+  <circle cx="222" cy="100" r="25.3" fill="url(#sparkGlow)" opacity="0.60"/>
+  <path d="M232.95 98.90Q223.70 101.39 223.10 110.95Q220.61 101.70 211.05 101.10Q220.30 98.61 220.90 89.05Q223.39 98.30 232.95 98.90Z" fill="#FFE1F7" opacity="0.60"/>
+  <circle cx="70" cy="64" r="11.5" fill="url(#sparkGlow)" opacity="0.36"/>
+  <path d="M75.00 64.00Q70.71 64.71 70.00 69.00Q69.29 64.71 65.00 64.00Q69.29 63.29 70.00 59.00Q70.71 63.29 75.00 64.00Z" fill="#FFE1F7" opacity="0.36"/>
+  <circle cx="128" cy="128" r="64" fill="url(#body)"/>
+  <g clip-path="url(#orb)">
+    <circle cx="167.7" cy="99.2" r="38.4" fill="#FF4FD8" opacity="0.1"/>
+    <circle cx="83.2" cy="150.4" r="38.4" fill="#9B5CFF" opacity="0.12"/>
+    <rect x="64" y="64" width="128" height="128" fill="url(#rim)"/>
+    <rect x="64" y="115.2" width="128" height="76.8" fill="url(#bounce)"/>
+    <ellipse cx="103.7" cy="98.6" rx="17.9" ry="11.1" transform="rotate(-34 103.7 98.6)" fill="url(#shine)"/>
+    <circle cx="108.2" cy="125.7" r="29.8" fill="url(#eyeGlow)"/>
+    <ellipse cx="108.2" cy="125.7" rx="6.1" ry="9.9" fill="url(#eye)"/>
+    <circle cx="147.8" cy="125.7" r="29.8" fill="url(#eyeGlow)"/>
+    <ellipse cx="147.8" cy="125.7" rx="6.1" ry="9.9" fill="url(#eye)"/>
+  </g>
+  <circle cx="30" cy="152" r="20.7" fill="url(#sparkGlow)" opacity="0.75"/>
+  <path d="M38.90 153.34Q31.07 153.45 28.66 160.90Q28.55 153.07 21.10 150.66Q28.93 150.55 31.34 143.10Q31.45 150.93 38.90 153.34Z" fill="#FFE1F7" opacity="0.75"/>
+  <circle cx="176" cy="206" r="16.1" fill="url(#sparkGlow)" opacity="0.90"/>
+  <path d="M182.86 207.39Q176.77 207.17 174.61 212.86Q174.83 206.77 169.14 204.61Q175.23 204.83 177.39 199.14Q177.17 205.23 182.86 207.39Z" fill="#FFE1F7" opacity="0.90"/>
+</svg>

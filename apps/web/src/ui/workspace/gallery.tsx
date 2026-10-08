@@ -20,6 +20,7 @@ import { galleryCopy as copy, galleryScenarios } from './content/gallery';
 import { common } from './content/common';
 import { chatCopy } from './content/chat';
 import { sessionCopy } from './content/session';
+import { MuseSheet } from '../muse/sheet';
 
 export function StateGallery({
   enabled,
@@ -154,6 +155,10 @@ function ScenarioContent({ scenario }: { scenario: string }) {
       );
     case 'dashboard':
       return <DashboardScreen claimPhase={phaseFor(state)} />;
+    case 'hero':
+      return <DashboardScreen heroFallback={state === 'fallback'} />;
+    case 'muse':
+      return <MuseSheet />;
     case 'detail':
       return <DetailScreen launchpadId="demo-pad" />;
     case 'information':

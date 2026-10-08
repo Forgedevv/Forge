@@ -17,6 +17,7 @@ import {
 } from './components';
 import { launchCopy as copy } from './content/launch';
 import { common } from './content/common';
+import { Muse } from '../muse';
 
 export function LaunchScreen({
   jobId,
@@ -119,6 +120,7 @@ export function LaunchScreen({
               </div>
             ) : phase === 'confirmed' ? (
               <>
+                <Muse className="fw-launch-muse" size={96} mood="success" />
                 <h2>{copy.confirmed}</h2>
                 <ActionLink href={`/jobs/${jobId}`}>{copy.track}</ActionLink>
               </>

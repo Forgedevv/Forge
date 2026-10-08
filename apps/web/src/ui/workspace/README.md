@@ -36,6 +36,12 @@ Mock chat is a scripted demonstration. Four messages fill the blueprint progress
 
 The required tracker, countdown, specification and claim-button component tests are in `components.test.tsx`. Further tests cover expired/free quotes, wrong wallets, rejected login, access checking, safe links, mock streaming, approval/signature checkpoints, retry timing and gallery isolation. Real browser layout and assistive-technology checks remain outstanding because no browser is connected.
 
+## The Muse
+
+The FORGE Muse (`../muse/`) appears across the workshop: the chat avatar (listening while you type, thinking while a reply streams), the job stage (building, waiting for approval, live, error), the launch confirmation, toasts, empty states and the login panel. Each launchpad card shows that launchpad's own Muse in its theme colors, read from `useLaunchpad(id).launchpad.spec.theme`, because `LaunchpadSummary` carries no theme; this costs one detail subscription per card.
+
+The dashboard opens with `muse-hero.tsx`: the full-body Muse in a small Three.js scene (`../muse/three/hero-scene.ts`, loaded on demand) with the user's launchpad Muses hovering around it. It points to the create button when there is no launchpad yet, crafts a floating spark while a job builds, and hops with a spark burst when a launchpad is live. It pauses offscreen and in hidden tabs, holds a static pose under reduced motion, and falls back to the 2D Muse without WebGL. The gallery's "A8 · Dashboard Muse" group shows each state, and "The Muse" shows every mood, size and theme.
+
 ## Open integration items
 
 - Agent 3's real client and wallet provider are absent. The mock wallet choices exercise a simulated connection; actual wallet selection belongs to that provider.

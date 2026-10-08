@@ -28,7 +28,7 @@ export function WorkspaceFrame({
         <main className="fw-main" key={retry}>
           {workspace.demo && <p className="fw-demo-banner">{common.demo}</p>}
           {!workspace.available && requireSession ? (
-            <Empty title={common.unavailable}>
+            <Empty title={common.unavailable} mood="sleeping">
               <p>{common.unavailableBody}</p>
               <ActionLink href="/">{common.home}</ActionLink>
             </Empty>

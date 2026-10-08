@@ -14,8 +14,6 @@
   /* Magenta, used sparingly for highlights and hovers. */
   --forge-accent-2: #ff4fd8;
   --forge-on-accent: #0b0a12;
-  --forge-pilot-shell: #e6e3f2;
-  --forge-pilot-outline: var(--forge-bg);
   --forge-glow: #9b5cff40;
   --forge-backdrop: #0b0a12cc;
   --scene-ink: var(--forge-text);
@@ -894,9 +892,10 @@
   line-height: 1.8;
   margin-bottom: 30px;
 }
-.forge-pilot {
-  width: 100%;
-  max-height: 520px;
+.forge-simple-muse {
+  display: grid;
+  place-items: center;
+  min-height: 360px;
 }
 .forge-simple-chapter {
   display: grid;
@@ -1290,8 +1289,8 @@
   .forge-simple h1 {
     font-size: 72px;
   }
-  .forge-pilot {
-    height: 340px;
+  .forge-simple-muse {
+    min-height: 300px;
     order: -1;
   }
   .forge-simple-chapter {

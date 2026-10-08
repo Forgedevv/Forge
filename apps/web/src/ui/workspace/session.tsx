@@ -6,6 +6,7 @@ import { useWebClient, useWorkspace } from './provider';
 import { Address, Button, Empty, ErrorNotice, readableError } from './components';
 import { sessionCopy as copy } from './content/session';
 import { common } from './content/common';
+import { Muse } from '../muse';
 
 export function LoginPanel({ initialMessage = '' }: { initialMessage?: string }) {
   const api = useWebClient();
@@ -28,9 +29,11 @@ export function LoginPanel({ initialMessage = '' }: { initialMessage?: string })
   return (
     <section className="fw-login">
       <p className="fw-eyebrow">{copy.eyebrow}</p>
-      <span className="fw-orbit" aria-hidden="true">
-        ✳
-      </span>
+      <Muse
+        className="fw-login-muse"
+        size={72}
+        mood={session ? 'success' : status === 'signing' ? 'waiting_approval' : 'idle'}
+      />
       <h1 id="wallet-title">
         {session ? copy.connected : status === 'signing' ? copy.signing : copy.title}
       </h1>

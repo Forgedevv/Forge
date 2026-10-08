@@ -136,6 +136,22 @@ export const galleryCopy = {
       ],
     },
     {
+      id: 'hero',
+      title: 'A8 · Dashboard Muse',
+      states: [
+        ['welcome', 'Nothing yet: points to create'],
+        ['building', 'Building: crafting a spark'],
+        ['live', 'Live: celebration and launchpad Muses'],
+        ['idle', 'Idle: resting launchpads'],
+        ['fallback', 'Without WebGL: 2D fallback'],
+      ],
+    },
+    {
+      id: 'muse',
+      title: 'The Muse',
+      states: [['moods', 'Moods, sizes and themes']],
+    },
+    {
       id: 'detail',
       title: 'A9 · Launchpad detail',
       states: [

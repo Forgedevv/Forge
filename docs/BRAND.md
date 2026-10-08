@@ -17,7 +17,7 @@ The logo is the F-Spark symbol (a violet bar, a magenta F arm and a white spark)
 | `forge-logo-light.svg` | Lockup on its own light card. Same, for light contexts. |
 | `forge-logo-on-violet.svg` | Lockup on a violet card. Banners and covers that are violet. |
 | `forge-logo-mono-white.svg` | Single-color white lockup. Violet, photographic or busy backgrounds, and one-color print. |
-| `forge-mascot.svg` | The pilot helmet mascot (see below). |
+| `forge-muse.svg` | A static pose of the Muse, the FORGE mascot (see below). In the app, use the live `<Muse />` component. |
 | `app/icon.svg` | The F-Spark symbol alone: favicon and small spaces. |
 | `app/apple-icon.png` | 512 px app icon. |
 | `app/opengraph-image.png`, `app/twitter-image.png` | 1200x630 social share image. |
@@ -47,7 +47,8 @@ Below these sizes, switch to the symbol or enlarge the logo.
 | Magenta | `#FF4FD8` | Secondary accent, highlights, hovers. Use sparingly. |
 | Violet text | `#B794FF` | Accent-colored text on dark (readable contrast) |
 | Cool white | `#F2F0FF` | Main text and wordmark on dark |
-| Pilot shell | `#E6E3F2` | Mascot helmet shell |
+| Muse core | `#4A2A80` | Deep violet center of the Muse (violet mixed with ink) |
+| Muse rim | `#FF4FD8` | Fresnel rim, orbiting sparks and glow of the Muse |
 
 Light theme counterparts: background `#F4F2FB`, text `#1A1530`, accent text `#6A2FD6`.
 
@@ -58,14 +59,18 @@ Light theme counterparts: background `#F4F2FB`, text `#1A1530`, accent text `#6A
 
 Both are loaded with `next/font/google` in `apps/web/app/layout.tsx` and exposed as `--font-unbounded` and `--font-space-grotesk`. Do not use Unbounded for paragraphs or small labels.
 
-## Mascot
+## Mascot: the Muse
 
-The pilot helmet (`forge-mascot.svg`) is the friendly face of FORGE.
+The Muse is the friendly face of FORGE: a living orb of light (direction A, "Nebula") with a deep violet core, a magenta rim, two glowing eyes and an orbit of four-point sparks taken from the F-Spark. It rides along every launch and its mood follows the journey: idle, listening while the user types, thinking while it drafts, building, waiting for approval, live (its eyes turn into sparks), error and sleeping. Click it and it squashes happily; click it five times quickly and it gets dizzy.
 
-- Use it for empty states, onboarding, error pages, stickers and social content.
-- Keep it clear of the logo: do not place it inside the lockup or replace the symbol with it.
-- Keep its colors (shell `#E6E3F2`, violet and magenta details). Show it on dark or light surfaces with enough contrast against the shell.
-- Give it the same clear space as the logo.
+- In the app, use the live component `<Muse />` from `apps/web/src/ui/muse` (Canvas 2D). On the homepage it is a 3D object; on the dashboard it appears full-body, with the user's launchpad Muses around it. Use `forge-muse.svg` only where nothing can be animated (documents, social posts, press).
+- Never stretch it, squash it by hand or skew it. Scale it proportionally. The only squash and stretch is its own animation.
+- Its eyes are always visible. Do not crop it, cover its face, or show it from behind on a static image.
+- Minimum size: 24 px. Below that, use the F-Spark symbol.
+- Every launchpad has its own Muse: a user's Muse takes its launchpad's theme colors (primary for the body, accent for the rim and sparks). The FORGE Muse always keeps the brand violet and magenta.
+- Keep it clear of the logo: do not place it inside the lockup or replace the symbol with it. Give it the same clear space as the logo.
+- Show it on dark surfaces where its glow can read. On light surfaces, give it a dark stage.
+- Respect reduced motion: the Muse then holds a gentle static pose.
 
 ## Don't
 

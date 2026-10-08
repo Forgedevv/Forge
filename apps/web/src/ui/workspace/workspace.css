@@ -435,18 +435,17 @@
   color: var(--fw-muted);
   margin: 0;
 }
-.fw-orbit {
-  display: block;
-  font:
-    88px/1 Georgia,
-    serif;
-  color: var(--fw-accent-text);
-  margin-bottom: 26px;
+.fw-empty-muse,
+.fw-login-muse {
+  margin-bottom: 8px;
 }
-.fw-orbit-moving {
-  animation: fw-orbit 16s linear infinite;
-  transform-origin: center;
-  width: max-content;
+.fw-job-muse {
+  display: block;
+  margin: 0 0 18px -12px;
+}
+.fw-launch-muse {
+  display: block;
+  margin: 18px 0 6px -10px;
 }
 .fw-loading {
   padding: 32px 0;
@@ -530,6 +529,11 @@
   color: var(--fw-accent-text);
   letter-spacing: 0.14em;
   margin-bottom: 14px;
+}
+.fw-message-assistant .fw-message-author {
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 .fw-message-user {
   background: var(--fw-raised);
@@ -841,14 +845,6 @@
   height: 330px;
   margin: 20px 0 14px;
 }
-.fw-success-symbol {
-  font:
-    96px/1 Georgia,
-    serif;
-  color: var(--fw-success);
-  display: block;
-  margin: 20px 0;
-}
 .fw-job-stage > .fw-button {
   margin-top: 20px;
 }
@@ -908,15 +904,64 @@
 .fw-pad-icon {
   width: 52px;
   height: 52px;
-  border: 1px solid var(--fw-border);
-  border-radius: 16px;
   display: grid;
   place-items: center;
-  font:
-    italic 30px Georgia,
-    serif;
-  color: var(--fw-accent-text);
-  background: var(--fw-raised);
+}
+.fw-muse-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  padding: 0;
+  overflow: hidden;
+  margin-bottom: 24px;
+}
+.fw-muse-hero-stage {
+  position: relative;
+  min-width: 0;
+  height: 360px;
+  cursor: pointer;
+  touch-action: manipulation;
+  background:
+    radial-gradient(55% 60% at 50% 72%, #3b237855, transparent 70%),
+    radial-gradient(40% 40% at 70% 30%, #ff4fd814, transparent 70%),
+    linear-gradient(180deg, #120d26, #0b0817);
+}
+.muse-hero-canvas {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.fw-muse-hero-fallback {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+}
+.fw-muse-hero-family {
+  display: flex;
+  gap: 18px;
+}
+.fw-muse-hero-copy {
+  padding: 36px 40px 36px 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 14px;
+}
+.fw-muse-hero-copy h2 {
+  font-size: 30px;
+  line-height: 1.15;
+}
+.fw-muse-hero-copy > p:not(.fw-eyebrow) {
+  color: var(--fw-muted);
+  max-width: 42ch;
+  margin: 0 0 8px;
 }
 .fw-pad-card h2 {
   font-size: 30px;
@@ -1101,6 +1146,9 @@
   font-size: 25px;
 }
 .fw-toast {
+  display: flex;
+  align-items: center;
+  gap: 12px;
   position: fixed;
   bottom: 24px;
   left: 50%;
@@ -1108,7 +1156,7 @@
   z-index: 100;
   background: var(--fw-raised);
   border: 1px solid var(--fw-border);
-  padding: 14px 22px;
+  padding: 8px 22px 8px 12px;
   max-width: calc(100vw - 32px);
   border-radius: 100px;
   box-shadow: 0 8px 30px var(--fw-shadow);
@@ -1231,6 +1279,15 @@
   }
 }
 @media (max-width: 800px) {
+  .fw-muse-hero {
+    grid-template-columns: 1fr;
+  }
+  .fw-muse-hero-stage {
+    height: 300px;
+  }
+  .fw-muse-hero-copy {
+    padding: 4px 24px 28px;
+  }
   .fw-header {
     padding: 18px 20px;
     gap: 14px;

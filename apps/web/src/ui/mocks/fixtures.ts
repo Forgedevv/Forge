@@ -107,10 +107,20 @@ export const eventMessages = {
 export function eventFor(job: Job, id: number): JobEvent {
   return { id, jobId: job.id, message: eventMessages[job.status], createdAt: job.updatedAt };
 }
+/** Theme colors of the sample launchpads, so each one shows its own Muse. */
+export const fixtureThemes: Record<string, { primaryColor: string; accentColor: string }> = {
+  'demo-sleeping': { primaryColor: '#3a6bff', accentColor: '#3ee6c1' },
+  'demo-disabled': { primaryColor: '#e2442f', accentColor: '#ffb938' },
+};
 export function detailFor(pad: LaunchpadSummary, jobs: Job[]): LaunchpadDetail {
   return {
     ...pad,
-    spec: { ...fullSpec, name: pad.name, slug: pad.slug },
+    spec: {
+      ...fullSpec,
+      name: pad.name,
+      slug: pad.slug,
+      theme: { ...fullSpec.theme, ...fixtureThemes[pad.id] },
+    },
     onchain: { launchpadConfig: null, launchpadCoinConfig: null, launchpadCoinMint: null },
     versions: [
       { jobId: 'demo-job', createdAt: mockDate, request: null, previewUrl: '/dev/preview' },

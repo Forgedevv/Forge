@@ -16,4 +16,26 @@ export const dashboardCopy = {
   sleep: 'This launchpad is sleeping. Reactivate it to welcome trading again.',
   disabled: 'This launchpad is disabled. Contact support for help.',
   claimSuccess: 'Fees claimed. Your balance has been refreshed.',
+  muse: 'Your Muse',
+  padMuse: (name: string) => `${name}'s Muse`,
+  hero: {
+    eyebrow: 'YOUR MUSE',
+    label: 'The FORGE Muse with your launchpad Muses',
+    welcome: {
+      title: 'Your first launchpad starts here.',
+      body: 'Turn your idea into a place for your community. Your Muse is ready when you are.',
+    },
+    building: {
+      title: 'Your Muse is crafting.',
+      body: 'A launchpad is taking shape. Follow every step on the job page.',
+    },
+    live: {
+      title: 'You are live.',
+      body: 'Every launchpad gets its own Muse, in its own colors. Here they are.',
+    },
+    idle: {
+      title: 'Your Muses are here.',
+      body: 'Every launchpad gets its own Muse, in its own colors.',
+    },
+  },
 } as const;

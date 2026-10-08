@@ -49,7 +49,9 @@ export function createMockController(scenario = 'journey') {
   let started = false;
   const initialStatus = scenario.startsWith('job:')
     ? (scenario.slice(4).split('-')[0] as JobStatus)
-    : 'spec_ready';
+    : scenario === 'hero:building'
+      ? 'building'
+      : 'spec_ready';
   const job: Job = {
     ...fixtureJob,
     status: initialStatus,
@@ -139,23 +141,27 @@ export function createMockController(scenario = 'journey') {
     jobs: scenario === 'global:not-found' ? {} : { 'demo-job': job },
     events: { 'demo-job': [eventFor(job, 1)] },
     pads:
-      scenario === 'dashboard:empty'
+      scenario === 'dashboard:empty' || scenario === 'hero:welcome'
         ? []
-        : scenario === 'dashboard:three'
-          ? fixturePads.map((p) => ({ ...p }))
-          : [
-              {
-                ...fixturePad,
-                claimablePartnerFeesLamports: [
-                  'dashboard:no-fees',
-                  'dashboard:claim-confirmed',
-                ].includes(scenario)
-                  ? '0'
-                  : fixturePad.claimablePartnerFeesLamports,
-                activeJobId: scenario === 'dashboard:active-job' ? 'demo-job' : null,
-                status: scenario === 'dashboard:draft' ? 'draft' : 'live',
-              },
-            ],
+        : scenario === 'hero:idle'
+          ? fixturePads.slice(1).map((p) => ({ ...p }))
+          : ['dashboard:three', 'hero:live', 'hero:fallback'].includes(scenario)
+            ? fixturePads.map((p) => ({ ...p }))
+            : [
+                {
+                  ...fixturePad,
+                  claimablePartnerFeesLamports: [
+                    'dashboard:no-fees',
+                    'dashboard:claim-confirmed',
+                  ].includes(scenario)
+                    ? '0'
+                    : fixturePad.claimablePartnerFeesLamports,
+                  activeJobId: ['dashboard:active-job', 'hero:building'].includes(scenario)
+                    ? 'demo-job'
+                    : null,
+                  status: scenario === 'dashboard:draft' ? 'draft' : 'live',
+                },
+              ],
     chats: {
       create: chat,
       modify:
