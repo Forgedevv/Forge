@@ -1,0 +1,144 @@
+import { useMemo } from 'react';
+import { siteConfig } from './config';
+import JupiterTrade from './JupiterTrade';
+import { formatBps } from './trade/amounts';
+import { PLATFORM_FEE_BPS } from './trade/constants';
+import { getRelayConnection } from './trade/connection';
+import { TradeForm } from './trade/TradeForm';
+import { useGraduated } from './trade/useGraduated';
+import { TradeError } from './trade/errors';
+import type { ConfirmOptions } from './trade/confirm';
+import { PublicKey } from '@solana/web3.js';
+
+export interface TradePanelProps {
+  /** Coin mint address (base58). */
+  mint: string;
+  /** Bonding curve pool address (base58). */
+  pool: string;
+  /** Ticker shown in labels. */
+  symbol?: string;
+  /** Token decimals (DBC coins use 6). */
+  tokenDecimals?: number;
+  className?: string;
+  /** Called with the signature once a trade is confirmed. */
+  onTradeConfirmed?: (signature: string) => void;
+  /** Tuning knobs, mostly for tests. */
+  quoteDebounceMs?: number;
+  quoteRefreshMs?: number;
+  confirmOptions?: ConfirmOptions;
+}
+
+const shell =
+  'w-full rounded-[var(--radius)] border border-[var(--color-border)] bg-[var(--color-surface)] p-4 text-[var(--color-text)]';
+
+/**
+ * The trade panel of a coin page.
+ *
+ * - `sleeping` / `disabled` sites: a disabled notice only. No RPC, no wallet, no Jupiter script.
+ * - On the bonding curve: buy/sell form with the full quote and fees shown before signing; swaps
+ *   are built by `@forge/core` (through `trade/core-adapter`).
+ * - Graduated: the Jupiter plugin with the FORGE integrator fee.
+ *
+ * Styling uses the theme CSS variables (`--color-*`, `--radius`) so the free zone can restyle it
+ * through the theme without touching this file.
+ */
+export function TradePanel(props: TradePanelProps) {
+  if (siteConfig.mode !== 'live') {
+    return (
+      <section
+        className={`${shell} ${props.className ?? ''}`}
+        data-forge="trade-panel"
+        data-mode={siteConfig.mode}
+      >
+        <button
+          type="button"
+          disabled
+          className="w-full cursor-not-allowed rounded-[var(--radius)] border border-[var(--color-border)] px-4 py-3 text-sm text-[var(--color-text-muted)] opacity-60"
+          data-testid="trade-disabled"
+        >
+          {siteConfig.mode === 'sleeping' ? 'Trading is paused' : 'Trading is unavailable'}
+        </button>
+        <p className="mt-2 text-xs text-[var(--color-text-muted)]">
+          {siteConfig.mode === 'sleeping'
+            ? 'This launchpad is sleeping.'
+            : 'This site is currently unavailable.'}
+        </p>
+      </section>
+    );
+  }
+  return <LiveTradePanel {...props} />;
+}
+
+function LiveTradePanel(props: TradePanelProps) {
+  const { mint, pool, symbol = 'TOKEN', tokenDecimals, className } = props;
+  const connection = useMemo(() => getRelayConnection(), []);
+  const poolKey = useMemo(() => {
+    try {
+      return new PublicKey(pool);
+    } catch {
+      return null;
+    }
+  }, [pool]);
+  const { state, retry, markGraduated } = useGraduated(connection, poolKey);
+
+  let body;
+  if (!connection || !poolKey) {
+    body = (
+      <p
+        role="alert"
+        className="text-sm text-[var(--color-text-muted)]"
+        data-testid="trade-not-configured"
+      >
+        {new TradeError('not_configured').message}
+      </p>
+    );
+  } else if (state.status === 'loading') {
+    body = (
+      <p className="text-sm text-[var(--color-text-muted)]" data-testid="trade-loading">
+        Loading trading data...
+      </p>
+    );
+  } else if (state.status === 'error') {
+    body = (
+      <div role="alert" className="flex flex-col gap-2 text-sm" data-testid="trade-route-error">
+        <p className="text-[var(--color-danger)]">{state.error.message}</p>
+        <button type="button" onClick={retry} className="self-start underline">
+          Retry
+        </button>
+      </div>
+    );
+  } else if (state.status === 'graduated') {
+    body = (
+      <div className="flex flex-col gap-3" data-testid="trade-jupiter">
+        <p className="text-sm text-[var(--color-text-muted)]">
+          This coin graduated. Swaps run through Jupiter and include a {formatBps(PLATFORM_FEE_BPS)}{' '}
+          FORGE platform fee.
+        </p>
+        <JupiterTrade mint={mint} />
+      </div>
+    );
+  } else {
+    body = (
+      <TradeForm
+        connection={connection}
+        mint={mint}
+        pool={pool}
+        symbol={symbol}
+        tokenDecimals={tokenDecimals}
+        onConfirmed={props.onTradeConfirmed}
+        onGraduated={markGraduated}
+        quoteDebounceMs={props.quoteDebounceMs}
+        quoteRefreshMs={props.quoteRefreshMs}
+        confirmOptions={props.confirmOptions}
+      />
+    );
+  }
+
+  return (
+    <section className={`${shell} ${className ?? ''}`} data-forge="trade-panel" data-mode="live">
+      {body}
+    </section>
+  );
+}
+
+export default TradePanel;
