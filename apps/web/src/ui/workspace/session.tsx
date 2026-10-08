@@ -3,10 +3,11 @@ import Link from 'next/link';
 
 import { useState, type ReactNode } from 'react';
 import { useWebClient, useWorkspace } from './provider';
-import { Address, Button, Empty, ErrorNotice, readableError } from './components';
+import { Address, Button, ErrorNotice, readableError } from './components';
 import { sessionCopy as copy } from './content/session';
 import { common } from './content/common';
 import { Muse } from '../muse';
+import { MuseHero } from './muse-hero';
 
 export function LoginPanel({ initialMessage = '' }: { initialMessage?: string }) {
   const api = useWebClient();
@@ -85,9 +86,8 @@ export function SessionGate({ children }: { children: ReactNode }) {
   return session ? (
     children
   ) : (
-    <Empty title={copy.title}>
-      <p>{copy.body}</p>
+    <MuseHero action="welcome" muses={[]} title={copy.title} body={copy.body}>
       <Button onClick={openLogin}>{common.connect}</Button>
-    </Empty>
+    </MuseHero>
   );
 }
