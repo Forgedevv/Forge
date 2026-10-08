@@ -18,6 +18,7 @@ import {
 import { safeUrl } from './safe-url';
 import { jobCopy as copy } from './content/job';
 import { common } from './content/common';
+import { Muse, museMoodForJob } from '../muse';
 
 export function JobScreen({
   jobId,
@@ -74,6 +75,11 @@ export function JobScreen({
       <JobStepTracker job={job} />
       <div className="fw-job-grid">
         <Card className="fw-job-stage">
+          <Muse
+            className="fw-job-muse"
+            size={job.status === 'preview_ready' ? 64 : 120}
+            mood={museMoodForJob(job.status)}
+          />
           {job.status === 'spec_ready' && (
             <>
               <h2>{copy.waiting}</h2>
@@ -82,9 +88,6 @@ export function JobScreen({
           )}
           {['paid', 'building'].includes(job.status) && (
             <>
-              <span className="fw-orbit fw-orbit-moving" aria-hidden="true">
-                ✳
-              </span>
               <h2>{copy.building}</h2>
               {job.attempts >= 2 && (
                 <p>
@@ -137,9 +140,6 @@ export function JobScreen({
           {['owner_signed', 'deploying'].includes(job.status) && <Loading label={copy.deploying} />}
           {job.status === 'live' && (
             <>
-              <span className="fw-success-symbol" aria-hidden="true">
-                ↗
-              </span>
               <h2>{launchpad?.name}</h2>
               {site ? (
                 <div className="fw-actions">

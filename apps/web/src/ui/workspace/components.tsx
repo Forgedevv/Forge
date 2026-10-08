@@ -19,6 +19,7 @@ import {
 import { useWebClient, useWorkspace } from './provider';
 import { common } from './content/common';
 import { jobCopy } from './content/job';
+import { Muse, type MuseMood } from '../muse';
 
 export function Button({
   variant = 'primary',
@@ -92,16 +93,16 @@ export function ErrorNotice({ message, onRetry }: { message: string; onRetry?: (
 }
 export function Empty({
   title = common.empty,
+  mood = 'idle',
   children,
 }: {
   title?: string;
+  mood?: MuseMood;
   children?: ReactNode;
 }) {
   return (
     <Card className="fw-empty">
-      <span className="fw-orbit" aria-hidden="true">
-        ✳
-      </span>
+      <Muse className="fw-empty-muse" size={96} mood={mood} />
       <h2>{title}</h2>
       {children}
     </Card>

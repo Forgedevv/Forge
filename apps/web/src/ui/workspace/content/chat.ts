@@ -1,6 +1,6 @@
 export const chatCopy = {
   user: 'YOU',
-  assistant: 'FORGE',
+  assistant: 'YOUR MUSE',
   network: 'The connection dropped. Please retry your message.',
   eyebrow: 'A4 / DESIGN STUDIO',
   title: 'Tell us what you see.',
@@ -13,7 +13,7 @@ export const chatCopy = {
   placeholder: 'Describe your launchpad…',
   modifyPlaceholder: 'What would you like to change?',
   send: 'Send message',
-  typing: 'The builder is typing…',
+  typing: 'Your Muse is thinking…',
   confirm: 'Confirm and go to payment',
   confirming: 'Confirming your blueprint…',
   edit: 'Ask for a change in the conversation before confirming.',

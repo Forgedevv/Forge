@@ -8,6 +8,7 @@ import { GatingScreen } from './gating';
 import { SpecSummary } from './spec-summary';
 import { chatCopy as copy } from './content/chat';
 import { common } from './content/common';
+import { Muse } from '../muse';
 
 export function NewScreen({ launchpadId }: { launchpadId?: string }) {
   const api = useWebClient();
@@ -44,6 +45,8 @@ export function ChatScreen({
   useEffect(() => {
     end.current?.scrollIntoView?.({ block: 'nearest', behavior: 'instant' });
   }, [chat.messages]);
+  const lastAssistant = chat.messages.map((m) => m.role).lastIndexOf('assistant');
+  const museMood = chat.streaming ? 'thinking' : text.trim() ? 'listening' : 'idle';
   const request = chat.messages
     .filter((message) => message.role === 'user')
     .map((message) => message.content)
@@ -80,6 +83,13 @@ export function ChatScreen({
             {chat.messages.map((message, i) => (
               <article key={i} className={`fw-message fw-message-${message.role}`}>
                 <span className="fw-message-author">
+                  {message.role === 'assistant' && (
+                    <Muse
+                      size={28}
+                      mood={i === lastAssistant ? museMood : 'idle'}
+                      gaze={i === lastAssistant ? 'cursor' : 'none'}
+                    />
+                  )}
                   {message.role === 'assistant' ? copy.assistant : copy.user}
                 </span>
                 <p>{message.content || (chat.streaming ? copy.typing : '')}</p>
