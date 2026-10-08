@@ -12,6 +12,7 @@ import { createCharacter } from './character';
 import { palette } from './content';
 import {
   INTRO_SECONDS,
+  NAVIGATION_DURATION,
   ChapterMotion,
   boostAt,
   boostCameraAt,
@@ -19,6 +20,7 @@ import {
   jumpAt,
   sigmoid,
   smooth,
+  wheelPixels,
 } from './motion';
 import { createScenery } from './scenery';
 
@@ -447,7 +449,7 @@ function buildExperience(
     finishIntro();
     draw();
   }
-  function goTo(chapter: number, duration = 2) {
+  function goTo(chapter: number, duration = NAVIGATION_DURATION) {
     if (!introDone) skipIntro();
     if (chapter > 5 && time - boostStarted > 6) boostStarted = time;
     motion.to(chapter, paused ? 0 : duration);
@@ -467,10 +469,8 @@ function buildExperience(
       skipIntro();
       return;
     }
-    const delta =
-      event.deltaY *
-      (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? element.clientHeight : 1);
-    if (delta === 0) return;
+    const delta = wheelPixels(event.deltaY, event.deltaMode, element.clientHeight);
+    if (!Number.isFinite(delta) || delta === 0) return;
     const now = performance.now();
     if (paused) {
       if (now - lastSimpleWheel > 300) {
@@ -479,9 +479,9 @@ function buildExperience(
       }
       return;
     }
-    // ChapterMotion owns tail filtering, including immediate direction reversals.
+    // Every wheel event moves the continuous progress; none is filtered or queued.
     if (motion.value > 4.95 && delta > 0 && time - boostStarted > 6) boostStarted = time;
-    motion.wheel(delta, now);
+    motion.wheel(delta);
   }
   function onPointerDown(event: PointerEvent) {
     if (
@@ -496,7 +496,7 @@ function buildExperience(
     touchY = event.clientY;
     touchDelta = 0;
     element.setPointerCapture(pointerId);
-    motion.grab();
+    motion.grab(event.timeStamp);
   }
   function onPointerMove(event: PointerEvent) {
     if (!interactive) return;
@@ -509,13 +509,18 @@ function buildExperience(
     if (pointerId !== event.pointerId) return;
     touchDelta = event.clientY - touchY;
     touchY = event.clientY;
-    motion.drag(touchDelta);
-    if (paused) draw();
+    motion.drag(touchDelta, Math.max(1, element.clientHeight), event.timeStamp);
+    if (paused) {
+      motion.settle();
+      draw();
+    }
   }
   function onPointerUp(event: PointerEvent) {
     if (event.pointerId !== pointerId) return;
-    const releasedDelta = event.type === 'pointercancel' ? 0 : touchDelta;
-    motion.release(releasedDelta);
+    const cancelled = event.type === 'pointercancel';
+    const releasedDelta = cancelled ? 0 : touchDelta;
+    // Release keeps the finger's momentum and coasts to rest; it never snaps to a chapter.
+    motion.release(cancelled || paused ? undefined : event.timeStamp);
     if (element.hasPointerCapture(event.pointerId)) element.releasePointerCapture(event.pointerId);
     pointerId = null;
     if (paused) {
@@ -540,7 +545,7 @@ function buildExperience(
       goTo(event.key === 'Home' ? 0 : 5);
     } else if (event.key in directions) {
       event.preventDefault();
-      goTo(motion.chapter + directions[event.key]!);
+      goTo(motion.destination + directions[event.key]!);
     }
   }
   function onVisibility() {
@@ -589,7 +594,7 @@ function buildExperience(
     setInteractive(value) {
       interactive = value;
       if (!value && pointerId !== null) {
-        motion.release(0);
+        motion.release();
         pointerId = null;
       }
     },
