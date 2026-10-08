@@ -317,8 +317,13 @@ export function ForgeHome({ flags: suppliedFlags }: { flags?: Flags }) {
     >
       <header className="forge-header">
         <a className="forge-brand" href="/" aria-label={copy.brand}>
-          <ForgeMark />
-          <span>{copy.brand}</span>
+          <img
+            className="forge-logo"
+            src="/brand/forge-logo-wordmark-light-text.svg"
+            alt={copy.brand}
+            width={156}
+            height={36}
+          />
         </a>
         <div className="forge-header-actions">
           {session && (
@@ -494,6 +499,13 @@ export function ForgeHome({ flags: suppliedFlags }: { flags?: Flags }) {
           </button>
           <a href="/faq">{copy.faq}</a>
           <a href="/terms">{copy.terms}</a>
+          <img
+            className="forge-footer-logo"
+            src="/brand/forge-logo-wordmark-light-text.svg"
+            alt={copy.brand}
+            width={72}
+            height={17}
+          />
           <span className="forge-copyright">{copy.copyright}</span>
         </div>
       </footer>

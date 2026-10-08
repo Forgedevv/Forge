@@ -40,7 +40,10 @@ export function WorkspaceFrame({
         </main>
       </ScreenBoundary>
       <footer className="fw-footer">
-        <Link href="/">{common.footerBrand}</Link>
+        <Link href="/" aria-label={common.footerBrand} className="fw-footer-brand">
+          <BrandLogo className="fw-logo-footer" width={84} height={19} />
+          <span aria-hidden="true">/ {common.workshop}</span>
+        </Link>
         <nav aria-label={common.information}>
           <Link href="/faq">{common.faq}</Link>
           <Link href="/terms">{common.terms}</Link>
@@ -49,6 +52,36 @@ export function WorkspaceFrame({
     </div>
   );
 }
+/** Both wordmarks are rendered; CSS shows the one that matches the active theme. */
+function BrandLogo({
+  className,
+  width,
+  height,
+}: {
+  className: string;
+  width: number;
+  height: number;
+}) {
+  return (
+    <>
+      <img
+        className={`${className} fw-logo-for-dark`}
+        src="/brand/forge-logo-wordmark-light-text.svg"
+        alt={common.brand}
+        width={width}
+        height={height}
+      />
+      <img
+        className={`${className} fw-logo-for-light`}
+        src="/brand/forge-logo-wordmark-dark-text.svg"
+        alt={common.brand}
+        width={width}
+        height={height}
+      />
+    </>
+  );
+}
+
 export function WorkspaceHeader() {
   const api = useWebClient();
   const { session, disconnect } = api.useSession();
@@ -57,8 +90,7 @@ export function WorkspaceHeader() {
   return (
     <header className="fw-header">
       <Link href="/" className="fw-brand" aria-label={common.home}>
-        <span aria-hidden="true">✳</span>
-        {common.brand}
+        <BrandLogo className="fw-logo" width={140} height={32} />
         <span className="fw-brand-note">/ {common.workshop}</span>
       </Link>
       <nav aria-label={common.navigation}>
