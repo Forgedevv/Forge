@@ -4,8 +4,9 @@ import Link from 'next/link';
 import { useState, type ReactNode } from 'react';
 import { useWebClient, useWorkspace } from './provider';
 import { common } from './content/common';
-import { ActionLink, Button, Empty, ScreenBoundary } from './components';
+import { ActionLink, Button, ScreenBoundary } from './components';
 import { SessionGate } from './session';
+import { MuseHero } from './muse-hero';
 
 export function WorkspaceFrame({
   children,
@@ -28,10 +29,14 @@ export function WorkspaceFrame({
         <main className="fw-main" key={retry}>
           {workspace.demo && <p className="fw-demo-banner">{common.demo}</p>}
           {!workspace.available && requireSession ? (
-            <Empty title={common.unavailable} mood="sleeping">
-              <p>{common.unavailableBody}</p>
+            <MuseHero
+              action="welcome"
+              muses={[]}
+              title={common.unavailable}
+              body={common.unavailableBody}
+            >
               <ActionLink href="/">{common.home}</ActionLink>
-            </Empty>
+            </MuseHero>
           ) : requireSession ? (
             <SessionGate>{children}</SessionGate>
           ) : (

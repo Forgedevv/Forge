@@ -34,12 +34,17 @@ export function MuseHero({
   action,
   muses,
   forceFallback = false,
+  title,
+  body,
   children,
 }: {
   action: HeroAction;
   muses: HeroMuse[];
   /** Development gallery: show the 2D fallback. */
   forceFallback?: boolean;
+  /** Overrides the copy of the action, for screens other than the dashboard. */
+  title?: string;
+  body?: ReactNode;
   children?: ReactNode;
 }) {
   const stage = useRef<HTMLDivElement>(null);
@@ -111,8 +116,8 @@ export function MuseHero({
       </div>
       <div className="fw-muse-hero-copy">
         <p className="fw-eyebrow">{copy.hero.eyebrow}</p>
-        <h2>{copy.hero[action].title}</h2>
-        <p>{copy.hero[action].body}</p>
+        <h2>{title ?? copy.hero[action].title}</h2>
+        <p>{body ?? copy.hero[action].body}</p>
         {children}
       </div>
     </section>
