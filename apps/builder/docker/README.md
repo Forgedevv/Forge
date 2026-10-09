@@ -111,7 +111,17 @@ or read-only (packages token).
   and after every Docker restart. It drops, at the kernel level, anything the proxy
   should never do (private ranges, metadata, host ports other than the gateway) and
   anything leaving a sandbox bridge. Set `FORGE_EXTRA_ALLOWED_CIDRS` if the host's DNS
-  resolver is on a private address.
+  resolver is on a private address. Its IPv4 deny list must stay identical to `V4_DENY`
+  in `src/sandbox/egress-proxy.ts` (a unit test compares them).
+- Startup self-check: right after applying the rules, `host-firewall.sh` creates a
+  throwaway `--internal` network (bridge named with the sandbox prefix, so the sandbox
+  rules apply) and runs the sandbox image on it (`FORGE_SANDBOX_IMAGE`, required). The
+  container must fail to resolve an external name through Docker's resolver, to query a
+  public DNS server directly, and to open a TCP connection to the internet. If any of
+  these succeeds, or the check cannot run, the script exits non-zero and the systemd unit
+  fails: do not start the builder worker until it passes (make the worker unit
+  `Requires=` the firewall unit). `FORGE_FIREWALL_SELF_CHECK=0` skips it (first install
+  only).
 - AI gateway: `host.docker.internal` is mapped to the Docker host (`host-gateway`, the
   `docker0` address, usually `172.17.0.1`) in the proxy container only. Make the gateway
   listen on that address (not `0.0.0.0`), port `FORGE_GATEWAY_PORT`.
