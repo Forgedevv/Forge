@@ -1,5 +1,4 @@
 /// <reference types="node" />
-import { TEMPLATE_ENV } from '@forge/shared';
 import { z } from 'zod';
 import { assertDeployableSlug, encodeBranch, repoNameForSlug } from './github.js';
 import {
@@ -19,10 +18,37 @@ import {
  * must be installed on the org). Deployments are created explicitly from a git ref, so the builder
  * controls when a preview exists; the same preview is later promoted to production without a rebuild
  * (docs/INTERFACES.md section 4: preview_ready -> deploying -> live).
+ *
+ * Git-triggered deployments are turned off on every project (`ensureProject`): otherwise a push of
+ * `forge/<jobId>` would build a second, uncontrolled preview, and the merge into `main` would ship
+ * to production on its own, bypassing the promotion step. Mechanism: the project deployment policy
+ * (`PATCH /v9/projects/{id}` with `deploymentPolicy.deploymentSources`) allows only the `rest-api`
+ * source in production and preview; per the Vercel API reference, `git` is "git provider webhook"
+ * and `rest-api` is "direct user/team-token REST upload". The policy is read back and verified; a
+ * project where it does not hold is refused. Not to be confused with
+ * `gitProviderOptions.createDeployments`, which only controls the GitHub "deployment" objects the
+ * Vercel bot posts, not whether Vercel builds on push. Defence in depth: the client repo should
+ * also carry `vercel.json` with `{ "git": { "deploymentEnabled": false } }` (documented Vercel
+ * setting that turns off automatic deployments for all branches).
  */
 
 const DEFAULT_API_URL = 'https://api.vercel.com';
 const FRAMEWORK = 'nextjs';
+
+/** The only deployment source allowed on client projects (see the module comment). */
+const ALLOWED_DEPLOYMENT_SOURCES: readonly string[] = ['rest-api'];
+const POLICY_TARGETS = ['production', 'preview'] as const;
+
+/** `deploymentPolicy` body that turns off git-triggered (and every non-API) deployment. */
+export const API_ONLY_DEPLOYMENT_POLICY = {
+  deploymentSources: [
+    {
+      enabled: true,
+      environments: POLICY_TARGETS.map((target) => ({ type: 'system', target })),
+      sources: [...ALLOWED_DEPLOYMENT_SOURCES],
+    },
+  ],
+};
 
 // ---------------------------------------------------------------------------------------------
 // Names
@@ -53,51 +79,181 @@ export function subdomainFor(slug: string, clientsDomain: string): string {
 // Environment variables of a client project
 // ---------------------------------------------------------------------------------------------
 
-/**
- * Variables a client project may receive: what the template needs (shared `TEMPLATE_ENV`) plus the
- * pool config key derived from the on-chain setup, the RPC relay origin, and the read-only token
- * Vercel needs to install `@forge/core` from the GitHub Packages registry.
+/*
+ * A client project runs code generated from user input and is served to the public: anything in
+ * its environment must be assumed readable by anyone (`NEXT_PUBLIC_*` is inlined in the browser
+ * bundle, and a server route of a generated site can echo any other variable). So a client project
+ * only ever receives public values:
+ *
+ * - `NEXT_PUBLIC_*` values the browser needs (cluster, RPC relay origin, Jupiter referral account,
+ *   public bucket URL, pool config keys);
+ * - the public on-chain FORGE addresses and the cluster, which `@forge/core` reads from
+ *   `process.env` on the server (addresses, not credentials);
+ * - the public R2 URL and the pool config key read by server routes.
+ *
+ * Never: `RPC_URL` (raw provider key), R2 write credentials, `JUPITER_API_KEY`,
+ * `GITHUB_PACKAGES_TOKEN`, or any other credential. RPC traffic goes through the FORGE relay and
+ * uploads must go through a FORGE-side presigned-URL endpoint.
+ *
+ * `TEMPLATE_ENV` (packages/shared) still lists RPC_URL, JUPITER_API_KEY and the R2 write keys:
+ * this module deliberately does not follow it.
  */
-export const PROJECT_ENV_ALLOWLIST: ReadonlySet<string> = new Set<string>([
-  ...TEMPLATE_ENV,
-  'POOL_CONFIG_KEY',
-  'NEXT_PUBLIC_POOL_CONFIG_KEY',
-  'NEXT_PUBLIC_FORGE_RPC_RELAY_URL',
-  'GITHUB_PACKAGES_TOKEN',
-]);
 
-/** Variables that are public by nature (addresses, cluster, `NEXT_PUBLIC_*`, bucket name). */
-const PLAIN_ENV: ReadonlySet<string> = new Set([
+/** Variables a client project may receive (all public). Anything else is refused by `setEnv`. */
+export const PROJECT_ENV_ALLOWLIST: ReadonlySet<string> = new Set<string>([
   'SOLANA_CLUSTER',
+  'NEXT_PUBLIC_SOLANA_CLUSTER',
   'FORGE_MULTISIG_VAULT',
   'FORGE_METEORA_REFERRAL_ACCOUNT',
   'FORGE_PLATFORM_FEE_WALLET',
   'FORGE_JUPITER_REFERRAL_ACCOUNT',
-  'R2_BUCKET',
+  'NEXT_PUBLIC_FORGE_JUPITER_REFERRAL_ACCOUNT',
+  'NEXT_PUBLIC_FORGE_RPC_RELAY_URL',
+  'R2_PUBLIC_URL',
+  'NEXT_PUBLIC_R2_PUBLIC_URL',
   'POOL_CONFIG_KEY',
+  'NEXT_PUBLIC_POOL_CONFIG_KEY',
 ]);
+
+/**
+ * Secrets that earlier code (and `TEMPLATE_ENV`) sent to client projects. Refused by `setEnv` with
+ * an explicit message; `pruneEnv` removes them (and anything else not allowlisted) from a project.
+ */
+export const PROJECT_ENV_FORBIDDEN: ReadonlySet<string> = new Set<string>([
+  'RPC_URL',
+  'JUPITER_API_KEY',
+  'R2_ACCESS_KEY_ID',
+  'R2_SECRET_ACCESS_KEY',
+  'R2_ACCOUNT_ID',
+  'R2_BUCKET',
+  'GITHUB_PACKAGES_TOKEN',
+  'NODE_AUTH_TOKEN',
+]);
+
+/** Variables a client project cannot work without (the pool config key is added per launchpad). */
+export const PROJECT_ENV_REQUIRED: readonly string[] = [
+  'SOLANA_CLUSTER',
+  'NEXT_PUBLIC_SOLANA_CLUSTER',
+  'FORGE_MULTISIG_VAULT',
+  'FORGE_METEORA_REFERRAL_ACCOUNT',
+  'FORGE_PLATFORM_FEE_WALLET',
+  'FORGE_JUPITER_REFERRAL_ACCOUNT',
+  'NEXT_PUBLIC_FORGE_JUPITER_REFERRAL_ACCOUNT',
+  'NEXT_PUBLIC_FORGE_RPC_RELAY_URL',
+  'R2_PUBLIC_URL',
+];
+
+/** Public `NEXT_PUBLIC_*` twins derived from a FORGE-side variable when not given explicitly. */
+const DERIVED_ENV: ReadonlyArray<readonly [string, string]> = [
+  ['NEXT_PUBLIC_SOLANA_CLUSTER', 'SOLANA_CLUSTER'],
+  ['NEXT_PUBLIC_FORGE_JUPITER_REFERRAL_ACCOUNT', 'FORGE_JUPITER_REFERRAL_ACCOUNT'],
+  ['NEXT_PUBLIC_R2_PUBLIC_URL', 'R2_PUBLIC_URL'],
+  ['NEXT_PUBLIC_POOL_CONFIG_KEY', 'POOL_CONFIG_KEY'],
+];
+
+const BASE58_ADDRESS = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+const ADDRESS_LIST = /^[1-9A-HJ-NP-Za-km-z]{32,44}(,[1-9A-HJ-NP-Za-km-z]{32,44}){0,19}$/;
+const CLUSTER = /^(devnet|mainnet-beta)$/;
+
+/**
+ * Public https URL without credentials, query or fragment. RPC providers carry their key in the
+ * query string (or the path), so any query is refused, as is a path that names a key or token.
+ */
+function isPublicUrl(value: string): boolean {
+  if (value.includes('?') || value.includes('#')) return false;
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return false;
+  }
+  return (
+    url.protocol === 'https:' &&
+    url.username === '' &&
+    url.password === '' &&
+    !/api[-_]?key|token|secret/i.test(url.pathname)
+  );
+}
+
+const VALUE_CHECKS: Readonly<Record<string, (value: string) => boolean>> = {
+  SOLANA_CLUSTER: (v) => CLUSTER.test(v),
+  NEXT_PUBLIC_SOLANA_CLUSTER: (v) => CLUSTER.test(v),
+  FORGE_MULTISIG_VAULT: (v) => BASE58_ADDRESS.test(v),
+  FORGE_METEORA_REFERRAL_ACCOUNT: (v) => BASE58_ADDRESS.test(v),
+  FORGE_PLATFORM_FEE_WALLET: (v) => BASE58_ADDRESS.test(v),
+  FORGE_JUPITER_REFERRAL_ACCOUNT: (v) => BASE58_ADDRESS.test(v),
+  NEXT_PUBLIC_FORGE_JUPITER_REFERRAL_ACCOUNT: (v) => BASE58_ADDRESS.test(v),
+  NEXT_PUBLIC_FORGE_RPC_RELAY_URL: isPublicUrl,
+  R2_PUBLIC_URL: isPublicUrl,
+  NEXT_PUBLIC_R2_PUBLIC_URL: isPublicUrl,
+  POOL_CONFIG_KEY: (v) => ADDRESS_LIST.test(v),
+  NEXT_PUBLIC_POOL_CONFIG_KEY: (v) => ADDRESS_LIST.test(v),
+};
 
 export type ProjectEnvType = 'plain' | 'sensitive';
 
+/** Every allowed variable is public, hence `plain`. Anything else is never sent. */
 export function envTypeFor(key: string): ProjectEnvType {
-  return PLAIN_ENV.has(key) || key.startsWith('NEXT_PUBLIC_') ? 'plain' : 'sensitive';
+  return PROJECT_ENV_ALLOWLIST.has(key) ? 'plain' : 'sensitive';
 }
 
 /**
- * Picks the allowed variables out of `source` (for example `process.env`). Missing ones are
- * reported rather than silently dropped, so a half-configured project is never deployed.
+ * Why a variable cannot go to a client project, or undefined when it can. The reason names the
+ * variable, never its value.
+ */
+export function projectEnvProblem(key: string, value: unknown): string | undefined {
+  if (PROJECT_ENV_FORBIDDEN.has(key)) {
+    return `${key} is a secret and must never reach a client project`;
+  }
+  if (!PROJECT_ENV_ALLOWLIST.has(key)) {
+    return `environment variable not allowed: ${key.slice(0, 60)}`;
+  }
+  if (typeof value !== 'string' || value === '') return `empty value for ${key}`;
+  const check = VALUE_CHECKS[key];
+  if (!check || !check(value)) return `invalid public value for ${key}`;
+  return undefined;
+}
+
+/**
+ * Picks the allowed variables out of `source` (for example `process.env`) and derives the public
+ * `NEXT_PUBLIC_*` twins when absent. Missing and invalid ones are reported rather than silently
+ * dropped, so a half-configured project is never deployed. Secrets present in `source` are
+ * ignored; a relay URL on the same host as `RPC_URL` (the raw provider) is reported as invalid.
  */
 export function pickProjectEnv(
   source: Record<string, string | undefined>,
-  required: readonly string[] = TEMPLATE_ENV,
-): { vars: Record<string, string>; missing: string[] } {
+  required: readonly string[] = PROJECT_ENV_REQUIRED,
+): { vars: Record<string, string>; missing: string[]; invalid: string[] } {
   const vars: Record<string, string> = {};
   for (const key of PROJECT_ENV_ALLOWLIST) {
     const v = source[key];
     if (typeof v === 'string' && v !== '') vars[key] = v;
   }
-  const missing = required.filter((k) => vars[k] === undefined);
-  return { vars, missing };
+  for (const [target, from] of DERIVED_ENV) {
+    const v = vars[from];
+    if (vars[target] === undefined && v !== undefined) vars[target] = v;
+  }
+  const invalid = new Set<string>();
+  for (const [key, value] of Object.entries(vars)) {
+    if (projectEnvProblem(key, value) !== undefined) invalid.add(key);
+  }
+  const relay = vars['NEXT_PUBLIC_FORGE_RPC_RELAY_URL'];
+  const rpc = source['RPC_URL'];
+  if (relay !== undefined && rpc && sameHost(relay, rpc)) {
+    // The relay must be a FORGE endpoint, never the provider itself.
+    invalid.add('NEXT_PUBLIC_FORGE_RPC_RELAY_URL');
+  }
+  for (const key of invalid) delete vars[key];
+  const missing = required.filter((k) => vars[k] === undefined && !invalid.has(k));
+  return { vars, missing, invalid: [...invalid].sort() };
+}
+
+function sameHost(a: string, b: string): boolean {
+  try {
+    return new URL(a).host.toLowerCase() === new URL(b).host.toLowerCase();
+  } catch {
+    return false;
+  }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -175,6 +331,11 @@ export interface VercelProject {
   /** Id of the deployment currently serving production, if any. */
   productionDeploymentId: string | undefined;
   paused: boolean;
+  /**
+   * True when the project deployment policy only lets the REST API deploy (no git webhook
+   * deployment) in both production and preview.
+   */
+  gitDeploymentsDisabled: boolean;
 }
 
 export type ReadyState =
@@ -230,14 +391,21 @@ export interface VercelClient {
   listTeams(): Promise<VercelTeam[]>;
   listProjects(limit?: number): Promise<Array<{ id: string; name: string }>>;
   getProject(nameOrId: string): Promise<VercelProject | null>;
-  /** Creates the project for a slug (linked to its repo) or reuses it; applies protection. */
+  /**
+   * Creates the project for a slug (linked to its repo) or reuses it; turns off git-triggered
+   * deployments (verified) and applies protection.
+   */
   ensureProject(input: {
     slug: string;
     protection?: DeploymentProtection;
   }): Promise<{ project: VercelProject; created: boolean }>;
   setProtection(projectId: string, protection: DeploymentProtection): Promise<void>;
-  /** Upserts environment variables (allowlist only). Idempotent. */
+  /** Upserts environment variables (public allowlist only, values checked). Idempotent. */
   setEnv(projectId: string, vars: Record<string, string>): Promise<{ count: number }>;
+  /** Deletes every variable of the project that is not allowlisted. Returns the removed names. */
+  pruneEnv(projectId: string): Promise<{ removed: string[] }>;
+  /** Restricts deployments to the REST API (no git webhook deployment) and verifies it. */
+  disableGitDeployments(projectId: string): Promise<VercelProject>;
   createDeployment(input: CreateDeploymentInput): Promise<VercelDeployment>;
   getDeployment(idOrUrl: string): Promise<VercelDeployment>;
   /** Polls until READY; throws `deployment_failed` on ERROR/CANCELED and `timeout` past the deadline. */
@@ -274,6 +442,19 @@ const ProjectSchema = z.object({
     .nullish(),
   targets: z.object({ production: z.object({ id: z.string().optional() }).nullish() }).nullish(),
   paused: z.boolean().optional(),
+  deploymentPolicy: z
+    .object({
+      deploymentSources: z
+        .array(
+          z.object({
+            enabled: z.boolean(),
+            environments: z.array(z.object({ type: z.string(), target: z.string().optional() })),
+            sources: z.array(z.string()),
+          }),
+        )
+        .nullish(),
+    })
+    .nullish(),
 });
 const DeploymentSchema = z.object({
   id: z.string(),
@@ -322,7 +503,30 @@ function toProject(p: z.infer<typeof ProjectSchema>): VercelProject {
     linkedRepo,
     productionDeploymentId: p.targets?.production?.id ?? undefined,
     paused: p.paused === true,
+    gitDeploymentsDisabled: apiOnlyPolicyHolds(p.deploymentPolicy?.deploymentSources ?? []),
   };
+}
+
+/**
+ * True when, for each of production and preview, an enabled rule covers it and every enabled rule
+ * covering it allows only the REST API source.
+ */
+function apiOnlyPolicyHolds(
+  rules: ReadonlyArray<{
+    enabled: boolean;
+    environments: ReadonlyArray<{ type: string; target?: string | undefined }>;
+    sources: readonly string[];
+  }>,
+): boolean {
+  return POLICY_TARGETS.every((target) => {
+    const covering = rules.filter(
+      (r) => r.enabled && r.environments.some((e) => e.type === 'system' && e.target === target),
+    );
+    return (
+      covering.length > 0 &&
+      covering.every((r) => r.sources.every((s) => ALLOWED_DEPLOYMENT_SOURCES.includes(s)))
+    );
+  });
 }
 
 function toDeployment(d: z.infer<typeof DeploymentSchema>): VercelDeployment {
@@ -499,8 +703,32 @@ export function createVercelClient(opts: VercelClientOptions): VercelClient {
         `project ${name} is linked to a different repository than ${repoFull}`,
       );
     }
+    // Before anything is pushed to the repo: no deployment may start from a git push.
+    if (!project.gitDeploymentsDisabled) project = await disableGitDeployments(project.id);
     await setProtection(project.id, protection);
     return { project, created };
+  }
+
+  async function disableGitDeployments(projectId: string): Promise<VercelProject> {
+    await call({
+      method: 'PATCH',
+      path: `/v9/projects/${seg(projectId, 'project')}`,
+      body: { deploymentPolicy: API_ONLY_DEPLOYMENT_POLICY },
+      idempotent: true,
+    });
+    // Read back: the stored policy is what counts, not the PATCH answer.
+    const after = await getProject(projectId);
+    if (!after) {
+      throw new ServiceError('vercel', 'not_found', 'project not found', { status: 404 });
+    }
+    if (!after.gitDeploymentsDisabled) {
+      throw new ServiceError(
+        'vercel',
+        'unexpected',
+        `git-triggered deployments could not be turned off on project ${after.name}`,
+      );
+    }
+    return after;
   }
 
   async function setEnv(
@@ -510,16 +738,8 @@ export function createVercelClient(opts: VercelClientOptions): VercelClient {
     const entries = Object.entries(vars);
     if (entries.length === 0) return { count: 0 };
     const body = entries.map(([key, value]) => {
-      if (!PROJECT_ENV_ALLOWLIST.has(key)) {
-        throw new ServiceError(
-          'vercel',
-          'invalid_input',
-          `environment variable not allowed: ${key.slice(0, 60)}`,
-        );
-      }
-      if (typeof value !== 'string' || value === '') {
-        throw new ServiceError('vercel', 'invalid_input', `empty value for ${key}`);
-      }
+      const problem = projectEnvProblem(key, value);
+      if (problem !== undefined) throw new ServiceError('vercel', 'invalid_input', problem);
       return { key, value, type: envTypeFor(key), target: ['production', 'preview'] };
     });
     const res = await call({
@@ -547,6 +767,27 @@ export function createVercelClient(opts: VercelClientOptions): VercelClient {
       );
     }
     return { count: body.length };
+  }
+
+  async function pruneEnv(projectId: string): Promise<{ removed: string[] }> {
+    const pid = seg(projectId, 'project');
+    const res = await call({ method: 'GET', path: `/v10/projects/${pid}/env` });
+    const parsed = parseBody(
+      z.object({ envs: z.array(z.object({ id: z.string(), key: z.string() })) }),
+      res,
+      'environment variables',
+    );
+    const removed = new Set<string>();
+    for (const e of parsed.envs) {
+      if (PROJECT_ENV_ALLOWLIST.has(e.key)) continue;
+      await call({
+        method: 'DELETE',
+        path: `/v9/projects/${pid}/env/${seg(e.id, 'environment variable')}`,
+        allowStatus: [404],
+      });
+      removed.add(e.key);
+    }
+    return { removed: [...removed].sort() };
   }
 
   // --- deployments ---------------------------------------------------------------------------
@@ -753,6 +994,8 @@ export function createVercelClient(opts: VercelClientOptions): VercelClient {
     ensureProject,
     setProtection,
     setEnv,
+    pruneEnv,
+    disableGitDeployments,
     createDeployment,
     getDeployment,
     waitForDeployment,

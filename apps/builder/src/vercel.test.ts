@@ -4,8 +4,13 @@ import { empty, json, stubFetch, type Route } from './http-mock.js';
 import {
   assertClientsDomain,
   createVercelClient,
+  API_ONLY_DEPLOYMENT_POLICY,
   envTypeFor,
   pickProjectEnv,
+  PROJECT_ENV_ALLOWLIST,
+  PROJECT_ENV_FORBIDDEN,
+  PROJECT_ENV_REQUIRED,
+  projectEnvProblem,
   projectNameForSlug,
   subdomainFor,
   vercelOptionsFromEnv,
@@ -16,6 +21,8 @@ const ORG = 'forge-org';
 const DOMAIN = 'forge-sites.app';
 const TOKEN = 'vcp_secrettoken0123456789';
 const TEAM = 'team_abcdefgh12345678';
+/** A syntactically valid base58 address (public, test only). */
+const ADDR = 'So11111111111111111111111111111111111111112';
 
 interface Harness {
   client: VercelClient;
@@ -71,7 +78,7 @@ describe('names, domain and env selection', () => {
     expect(() => assertClientsDomain('evil.com/x')).toThrow();
   });
 
-  it('classifies variables: public ones plain, secrets sensitive', () => {
+  it('classifies variables: every allowed one is public (plain)', () => {
     expect(envTypeFor('FORGE_MULTISIG_VAULT')).toBe('plain');
     expect(envTypeFor('SOLANA_CLUSTER')).toBe('plain');
     expect(envTypeFor('NEXT_PUBLIC_FORGE_RPC_RELAY_URL')).toBe('plain');
@@ -81,27 +88,85 @@ describe('names, domain and env selection', () => {
     expect(envTypeFor('GITHUB_PACKAGES_TOKEN')).toBe('sensitive');
   });
 
-  it('picks only allowlisted variables and reports missing required ones', () => {
-    const { vars, missing } = pickProjectEnv({
+  it('regression: no secret can ever be allowlisted for a client project', () => {
+    for (const key of [
+      'RPC_URL',
+      'JUPITER_API_KEY',
+      'R2_ACCESS_KEY_ID',
+      'R2_SECRET_ACCESS_KEY',
+      'R2_ACCOUNT_ID',
+      'R2_BUCKET',
+      'GITHUB_PACKAGES_TOKEN',
+      'NODE_AUTH_TOKEN',
+    ]) {
+      expect(PROJECT_ENV_ALLOWLIST.has(key)).toBe(false);
+      expect(PROJECT_ENV_FORBIDDEN.has(key)).toBe(true);
+    }
+    for (const key of PROJECT_ENV_ALLOWLIST) {
+      // Only the public pool config key may carry a credential-like word in its name.
+      if (/KEY|SECRET|TOKEN|PRIVATE|PASSWORD/.test(key)) expect(key).toMatch(/POOL_CONFIG_KEY$/);
+    }
+    for (const key of PROJECT_ENV_REQUIRED) expect(PROJECT_ENV_ALLOWLIST.has(key)).toBe(true);
+  });
+
+  it('picks only public variables, derives NEXT_PUBLIC twins and reports missing ones', () => {
+    const { vars, missing, invalid } = pickProjectEnv({
       SOLANA_CLUSTER: 'devnet',
-      RPC_URL: 'https://rpc.example',
-      JUPITER_API_KEY: 'k',
+      RPC_URL: 'https://devnet.helius-rpc.com/?api-key=must-not-leak',
+      JUPITER_API_KEY: 'must-not-leak',
+      R2_ACCESS_KEY_ID: 'must-not-leak',
+      R2_SECRET_ACCESS_KEY: 'must-not-leak',
+      GITHUB_PACKAGES_TOKEN: 'must-not-leak',
       SUPABASE_SERVICE_ROLE_KEY: 'must-not-leak',
       ANTHROPIC_API_KEY: 'must-not-leak',
       SIGNER_HMAC_SECRET: 'must-not-leak',
       GITHUB_APP_ID: '1',
-      FORGE_MULTISIG_VAULT: 'abc',
-      R2_BUCKET: '',
+      FORGE_MULTISIG_VAULT: ADDR,
+      FORGE_JUPITER_REFERRAL_ACCOUNT: ADDR,
+      NEXT_PUBLIC_FORGE_RPC_RELAY_URL: 'https://relay.forge.example/rpc',
+      R2_PUBLIC_URL: '',
     });
     expect(Object.keys(vars).sort()).toEqual([
+      'FORGE_JUPITER_REFERRAL_ACCOUNT',
       'FORGE_MULTISIG_VAULT',
-      'JUPITER_API_KEY',
-      'RPC_URL',
+      'NEXT_PUBLIC_FORGE_JUPITER_REFERRAL_ACCOUNT',
+      'NEXT_PUBLIC_FORGE_RPC_RELAY_URL',
+      'NEXT_PUBLIC_SOLANA_CLUSTER',
       'SOLANA_CLUSTER',
     ]);
-    expect(missing).toContain('R2_BUCKET');
+    expect(JSON.stringify(vars)).not.toContain('must-not-leak');
+    expect(vars['NEXT_PUBLIC_SOLANA_CLUSTER']).toBe('devnet');
+    expect(missing).toContain('R2_PUBLIC_URL');
     expect(missing).toContain('FORGE_PLATFORM_FEE_WALLET');
     expect(missing).not.toContain('RPC_URL');
+    expect(invalid).toEqual([]);
+  });
+
+  it('refuses a relay URL that is the raw RPC provider or carries a key', () => {
+    const base = { SOLANA_CLUSTER: 'devnet', FORGE_MULTISIG_VAULT: ADDR };
+    const sameHost = pickProjectEnv({
+      ...base,
+      RPC_URL: 'https://devnet.helius-rpc.com/?api-key=abc',
+      NEXT_PUBLIC_FORGE_RPC_RELAY_URL: 'https://devnet.helius-rpc.com/',
+    });
+    expect(sameHost.invalid).toEqual(['NEXT_PUBLIC_FORGE_RPC_RELAY_URL']);
+    expect(sameHost.vars['NEXT_PUBLIC_FORGE_RPC_RELAY_URL']).toBeUndefined();
+    expect(sameHost.missing).not.toContain('NEXT_PUBLIC_FORGE_RPC_RELAY_URL');
+    for (const url of [
+      'https://relay.example/?api-key=abc',
+      'https://user:pass@relay.example/',
+      'https://relay.example/v1/token/abc',
+      'http://relay.example/',
+      'not a url',
+    ]) {
+      expect(projectEnvProblem('NEXT_PUBLIC_FORGE_RPC_RELAY_URL', url)).toMatch(/invalid/);
+    }
+    expect(projectEnvProblem('NEXT_PUBLIC_FORGE_RPC_RELAY_URL', 'https://relay.example/rpc')).toBe(
+      undefined,
+    );
+    expect(projectEnvProblem('FORGE_MULTISIG_VAULT', 'not-an-address')).toMatch(/invalid/);
+    expect(projectEnvProblem('NEXT_PUBLIC_POOL_CONFIG_KEY', `${ADDR},${ADDR}`)).toBe(undefined);
+    expect(projectEnvProblem('SOLANA_CLUSTER', 'testnet')).toMatch(/invalid/);
   });
 });
 
@@ -192,6 +257,142 @@ describe('reads and scope', () => {
   });
 });
 
+/** Project read back after the deployment policy PATCH: git deployments off. */
+const readBack: Route = {
+  method: 'GET',
+  path: '/v9/projects/prj_123',
+  handler: () => json(projectJson({ deploymentPolicy: API_ONLY_DEPLOYMENT_POLICY })),
+};
+const protectionPatch = (stub: Harness['stub']) =>
+  stub
+    .find('PATCH', '/v9/projects/prj_123')
+    .find((c) => typeof c.body === 'object' && c.body !== null && 'ssoProtection' in c.body);
+const policyPatches = (stub: Harness['stub']) =>
+  stub
+    .find('PATCH', '/v9/projects/prj_123')
+    .filter((c) => typeof c.body === 'object' && c.body !== null && 'deploymentPolicy' in c.body);
+
+describe('ensureProject: git-triggered deployments', () => {
+  it('turns them off on a new project and verifies the stored policy before protection', async () => {
+    const { client, stub } = make([
+      {
+        method: 'GET',
+        path: '/v9/projects/lp-moonpad',
+        handler: () => json({ error: { code: 'not_found', message: 'x' } }, 404),
+      },
+      { method: 'POST', path: '/v10/projects', handler: () => json(projectJson()) },
+      { method: 'PATCH', path: '/v9/projects/prj_123', handler: () => json(projectJson()) },
+      readBack,
+    ]);
+    const out = await client.ensureProject({ slug: 'moonpad' });
+    expect(out.project.gitDeploymentsDisabled).toBe(true);
+    const patches = stub.find('PATCH', '/v9/projects/prj_123');
+    expect(patches[0]?.body).toEqual({
+      deploymentPolicy: {
+        deploymentSources: [
+          {
+            enabled: true,
+            environments: [
+              { type: 'system', target: 'production' },
+              { type: 'system', target: 'preview' },
+            ],
+            sources: ['rest-api'],
+          },
+        ],
+      },
+    });
+    // Verified by a read-back, then protection.
+    const order = stub.calls.map((c) => `${c.method} ${c.path}`);
+    expect(order.indexOf('GET /v9/projects/prj_123')).toBeGreaterThan(
+      order.indexOf('PATCH /v9/projects/prj_123'),
+    );
+    expect(patches[1]?.body).toEqual({ ssoProtection: null });
+  });
+
+  it('refuses the project when the policy does not hold after the update', async () => {
+    for (const stored of [
+      undefined,
+      { deploymentSources: [] },
+      {
+        deploymentSources: [
+          {
+            enabled: true,
+            environments: [{ type: 'system', target: 'production' }],
+            sources: ['rest-api'],
+          },
+        ],
+      },
+      {
+        deploymentSources: [
+          {
+            enabled: true,
+            environments: [
+              { type: 'system', target: 'production' },
+              { type: 'system', target: 'preview' },
+            ],
+            sources: ['rest-api', 'git'],
+          },
+        ],
+      },
+      {
+        deploymentSources: [
+          {
+            enabled: false,
+            environments: [
+              { type: 'system', target: 'production' },
+              { type: 'system', target: 'preview' },
+            ],
+            sources: ['rest-api'],
+          },
+        ],
+      },
+    ]) {
+      const { client, stub } = make([
+        { method: 'GET', path: '/v9/projects/lp-moonpad', handler: () => json(projectJson()) },
+        { method: 'PATCH', path: '/v9/projects/prj_123', handler: () => json(projectJson()) },
+        {
+          method: 'GET',
+          path: '/v9/projects/prj_123',
+          handler: () => json(projectJson(stored ? { deploymentPolicy: stored } : {})),
+        },
+      ]);
+      await expect(client.ensureProject({ slug: 'moonpad' })).rejects.toMatchObject({
+        kind: 'unexpected',
+        message: expect.stringContaining('git-triggered deployments') as unknown,
+      });
+      // Never reaches protection (the pipeline stops before anything is pushed).
+      expect(protectionPatch(stub)).toBeUndefined();
+    }
+  });
+
+  it('does not patch again when the stored policy already holds', async () => {
+    const { client, stub } = make([
+      {
+        method: 'GET',
+        path: '/v9/projects/lp-moonpad',
+        handler: () => json(projectJson({ deploymentPolicy: API_ONLY_DEPLOYMENT_POLICY })),
+      },
+      { method: 'PATCH', path: '/v9/projects/prj_123', handler: () => json(projectJson()) },
+    ]);
+    const out = await client.ensureProject({ slug: 'moonpad' });
+    expect(out.project.gitDeploymentsDisabled).toBe(true);
+    expect(policyPatches(stub)).toHaveLength(0);
+    expect(protectionPatch(stub)).toBeDefined();
+  });
+
+  it('keeps deployments explicit: createDeployment still posts a git source', async () => {
+    const { client, stub } = make([
+      { method: 'POST', path: '/v13/deployments', handler: () => json(deploymentJson('QUEUED')) },
+    ]);
+    await client.createDeployment({
+      project: { id: 'prj_123', name: 'lp-moonpad' },
+      repo: 'lp-moonpad',
+      ref: 'main',
+    });
+    expect(stub.find('POST', '/v13/deployments')).toHaveLength(1);
+  });
+});
+
 describe('ensureProject', () => {
   it('creates a project linked to the repo and opens previews to the client', async () => {
     const { client, stub } = make([
@@ -202,6 +403,7 @@ describe('ensureProject', () => {
       },
       { method: 'POST', path: '/v10/projects', handler: () => json(projectJson()) },
       { method: 'PATCH', path: '/v9/projects/prj_123', handler: () => json(projectJson()) },
+      readBack,
     ]);
     const out = await client.ensureProject({ slug: 'moonpad' });
     expect(out.created).toBe(true);
@@ -211,16 +413,17 @@ describe('ensureProject', () => {
       framework: 'nextjs',
       gitRepository: { type: 'github', repo: `${ORG}/lp-moonpad` },
     });
-    expect(stub.find('PATCH', '/v9/projects/prj_123')[0]?.body).toEqual({ ssoProtection: null });
+    expect(protectionPatch(stub)?.body).toEqual({ ssoProtection: null });
   });
 
   it('can restrict previews to Vercel Authentication scopes', async () => {
     const { client, stub } = make([
       { method: 'GET', path: '/v9/projects/lp-moonpad', handler: () => json(projectJson()) },
       { method: 'PATCH', path: '/v9/projects/prj_123', handler: () => json(projectJson()) },
+      readBack,
     ]);
     await client.ensureProject({ slug: 'moonpad', protection: 'all_except_custom_domains' });
-    expect(stub.find('PATCH', '/v9/projects/prj_123')[0]?.body).toEqual({
+    expect(protectionPatch(stub)?.body).toEqual({
       ssoProtection: { deploymentType: 'all_except_custom_domains' },
     });
   });
@@ -229,6 +432,7 @@ describe('ensureProject', () => {
     const { client, stub } = make([
       { method: 'GET', path: '/v9/projects/lp-moonpad', handler: () => json(projectJson()) },
       { method: 'PATCH', path: '/v9/projects/prj_123', handler: () => json(projectJson()) },
+      readBack,
     ]);
     const a = await client.ensureProject({ slug: 'moonpad' });
     const b = await client.ensureProject({ slug: 'moonpad' });
@@ -252,6 +456,7 @@ describe('ensureProject', () => {
         handler: () => json({ error: { code: 'conflict', message: 'exists' } }, 409),
       },
       { method: 'PATCH', path: '/v9/projects/prj_123', handler: () => json(projectJson()) },
+      readBack,
     ]);
     await expect(client.ensureProject({ slug: 'moonpad' })).resolves.toMatchObject({
       created: false,
@@ -267,6 +472,7 @@ describe('ensureProject', () => {
       },
       { method: 'POST', path: '/v9/projects/prj_123/link', handler: () => json(projectJson()) },
       { method: 'PATCH', path: '/v9/projects/prj_123', handler: () => json(projectJson()) },
+      readBack,
     ]);
     await client.ensureProject({ slug: 'moonpad' });
     expect(stub.find('POST', '/v9/projects/prj_123/link')[0]?.body).toEqual({
@@ -327,7 +533,7 @@ describe('setEnv', () => {
     const { client, stub } = make(route(() => json({ created: [], failed: [] })));
     const out = await client.setEnv('prj_123', {
       SOLANA_CLUSTER: 'devnet',
-      JUPITER_API_KEY: 'secret-value',
+      FORGE_MULTISIG_VAULT: ADDR,
       NEXT_PUBLIC_FORGE_RPC_RELAY_URL: 'https://relay.example',
     });
     expect(out.count).toBe(3);
@@ -336,9 +542,9 @@ describe('setEnv', () => {
     expect(call?.body).toEqual([
       { key: 'SOLANA_CLUSTER', value: 'devnet', type: 'plain', target: ['production', 'preview'] },
       {
-        key: 'JUPITER_API_KEY',
-        value: 'secret-value',
-        type: 'sensitive',
+        key: 'FORGE_MULTISIG_VAULT',
+        value: ADDR,
+        type: 'plain',
         target: ['production', 'preview'],
       },
       {
@@ -363,24 +569,87 @@ describe('setEnv', () => {
         kind: 'invalid_input',
       });
     }
-    await expect(client.setEnv('prj_123', { RPC_URL: '' })).rejects.toMatchObject({
+    await expect(client.setEnv('prj_123', { SOLANA_CLUSTER: '' })).rejects.toMatchObject({
       kind: 'invalid_input',
     });
     expect(stub.calls).toHaveLength(0);
   });
 
+  it('regression: refuses every secret by name, before any request, without echoing it', async () => {
+    const { client, stub } = make(route(() => json({})));
+    for (const key of [
+      'RPC_URL',
+      'JUPITER_API_KEY',
+      'R2_ACCESS_KEY_ID',
+      'R2_SECRET_ACCESS_KEY',
+      'R2_ACCOUNT_ID',
+      'GITHUB_PACKAGES_TOKEN',
+    ]) {
+      const err = (await client
+        .setEnv('prj_123', { SOLANA_CLUSTER: 'devnet', [key]: 'https://x.example/?api-key=abc' })
+        .catch((e: unknown) => e)) as Error;
+      expect(err).toMatchObject({ kind: 'invalid_input' });
+      expect(err.message).toContain(key);
+      expect(err.message).toContain('secret');
+      expect(err.message).not.toContain('api-key');
+    }
+    expect(stub.calls).toHaveLength(0);
+  });
+
+  it('refuses a public variable whose value looks like a credential', async () => {
+    const { client, stub } = make(route(() => json({})));
+    await expect(
+      client.setEnv('prj_123', {
+        NEXT_PUBLIC_FORGE_RPC_RELAY_URL: 'https://devnet.helius-rpc.com/?api-key=abc',
+      }),
+    ).rejects.toMatchObject({ kind: 'invalid_input' });
+    expect(stub.calls).toHaveLength(0);
+  });
+
   it('does nothing for an empty set and surfaces rejected variables without values', async () => {
     const { client, stub } = make(
-      route(() => json({ created: [], failed: [{ error: { key: 'RPC_URL', code: 'x' } }] })),
+      route(() =>
+        json({ created: [], failed: [{ error: { key: 'NEXT_PUBLIC_R2_PUBLIC_URL', code: 'x' } }] }),
+      ),
     );
     await expect(client.setEnv('prj_123', {})).resolves.toEqual({ count: 0 });
     expect(stub.calls).toHaveLength(0);
     const err = (await client
-      .setEnv('prj_123', { RPC_URL: 'https://secret-rpc.example/?api-key=abc' })
+      .setEnv('prj_123', { NEXT_PUBLIC_R2_PUBLIC_URL: 'https://cdn.example/bucket-path' })
       .catch((e: unknown) => e)) as Error;
     expect(err).toMatchObject({ kind: 'validation' });
-    expect(err.message).toContain('RPC_URL');
-    expect(err.message).not.toContain('api-key');
+    expect(err.message).toContain('NEXT_PUBLIC_R2_PUBLIC_URL');
+    expect(err.message).not.toContain('bucket-path');
+  });
+
+  it('pruneEnv removes every variable that is not allowlisted (secrets set by older code)', async () => {
+    const { client, stub } = make([
+      {
+        method: 'GET',
+        path: '/v10/projects/prj_123/env',
+        handler: () =>
+          json({
+            envs: [
+              { id: 'env_1', key: 'RPC_URL' },
+              { id: 'env_2', key: 'SOLANA_CLUSTER' },
+              { id: 'env_3', key: 'R2_SECRET_ACCESS_KEY' },
+              { id: 'env_4', key: 'GITHUB_PACKAGES_TOKEN' },
+              { id: 'env_5', key: 'NEXT_PUBLIC_FORGE_RPC_RELAY_URL' },
+              { id: 'env_6', key: 'RPC_URL' },
+            ],
+          }),
+      },
+      { method: 'DELETE', path: /^\/v9\/projects\/prj_123\/env\/env_\d$/, handler: () => json({}) },
+    ]);
+    await expect(client.pruneEnv('prj_123')).resolves.toEqual({
+      removed: ['GITHUB_PACKAGES_TOKEN', 'R2_SECRET_ACCESS_KEY', 'RPC_URL'],
+    });
+    expect(stub.find('DELETE', /env/).map((c) => c.path)).toEqual([
+      '/v9/projects/prj_123/env/env_1',
+      '/v9/projects/prj_123/env/env_3',
+      '/v9/projects/prj_123/env/env_4',
+      '/v9/projects/prj_123/env/env_6',
+    ]);
   });
 
   it('is replayable after a transient failure', async () => {
