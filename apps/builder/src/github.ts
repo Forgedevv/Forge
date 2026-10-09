@@ -14,9 +14,12 @@ import {
  * GitHub App client (REST over fetch, no Octokit).
  *
  * Auth: JWT (RS256) signed with the App private key -> installation access token. Tokens are cached
- * until shortly before they expire. Repository operations use a token scoped to the single client
- * repo with the minimum permission set (contents:write), as required by docs/SECURITY.md section 3;
- * only repo creation and branch protection use a wider token.
+ * until shortly before they expire. Every repository operation uses a token scoped to the single
+ * client repo with the minimum permission set for that call (docs/SECURITY.md section 3):
+ * metadata:read to read a repo, contents:read to compare or read files, contents:write to commit,
+ * merge or delete a branch, administration:write (alone) to protect the default branch. Only repo
+ * creation from the template uses the org-wide installation token. A configurable denylist (default:
+ * the FORGE monorepo, `Forge`) is checked before any call or token mint that names a repository.
  */
 
 const API_VERSION = '2022-11-28';
@@ -24,12 +27,25 @@ const DEFAULT_API_URL = 'https://api.github.com';
 const DEFAULT_TEMPLATE_REPO = 'launchpad-template';
 /** Prefix of every client repository, so a slug can never collide with an org repo like "forge". */
 export const REPO_PREFIX = 'lp-';
+/** Repositories the builder refuses to touch (case-insensitive): the FORGE monorepo. */
+export const DEFAULT_REPO_DENYLIST: readonly string[] = ['Forge'];
+/** Installation token permission sets, one per kind of call (least privilege). */
+const META_PERMS = { metadata: 'read' };
+const READ_PERMS = { contents: 'read' };
+const REPO_PERMS = { contents: 'write' };
+const ADMIN_PERMS = { administration: 'write' };
+
+interface TreeEntry {
+  mode: string;
+  sha: string;
+}
 const TOKEN_REFRESH_MARGIN_MS = 2 * 60_000;
 const MAX_FILES = 5000;
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
 const MAX_TOTAL_BYTES = 100 * 1024 * 1024;
 const BLOB_CONCURRENCY = 6;
-const COMPARE_PAGE_SIZE = 100;
+/** GitHub returns at most this many files for a whole comparison (REST docs, "Compare two commits"). */
+const GITHUB_COMPARE_FILE_CAP = 300;
 const COMPARE_MAX_FILES = 3000;
 
 // ---------------------------------------------------------------------------------------------
@@ -137,6 +153,11 @@ export interface GithubClientOptions {
   privateKey: string;
   org: string;
   templateRepo?: string;
+  /**
+   * Repositories the client must never operate on, added to `DEFAULT_REPO_DENYLIST` (the FORGE
+   * monorepo). Case-insensitive.
+   */
+  repoDenylist?: readonly string[];
   apiBaseUrl?: string;
   fetch?: typeof fetch;
   sleep?: (ms: number) => Promise<void>;
@@ -155,6 +176,11 @@ const EnvSchema = z.object({
   GITHUB_APP_PRIVATE_KEY_PATH: z.string().min(1).optional(),
   GITHUB_APP_PRIVATE_KEY: z.string().min(1).optional(),
   GITHUB_TEMPLATE_REPO: z.string().min(1).optional(),
+  /** Comma-separated repository names added to the denylist. */
+  GITHUB_REPO_DENYLIST: z
+    .string()
+    .regex(/^[A-Za-z0-9._-]+(\s*,\s*[A-Za-z0-9._-]+)*$/, 'invalid GITHUB_REPO_DENYLIST')
+    .optional(),
 });
 
 /**
@@ -164,7 +190,7 @@ const EnvSchema = z.object({
 export function githubOptionsFromEnv(
   env: Record<string, string | undefined>,
   readFile: (path: string) => string = (p) => readFileSync(p, 'utf8'),
-): Pick<GithubClientOptions, 'appId' | 'privateKey' | 'org' | 'templateRepo'> {
+): Pick<GithubClientOptions, 'appId' | 'privateKey' | 'org' | 'templateRepo' | 'repoDenylist'> {
   const parsed = EnvSchema.safeParse(env);
   if (!parsed.success) {
     const names = [...new Set(parsed.error.issues.map((i) => String(i.path[0])))].join(', ');
@@ -195,6 +221,9 @@ export function githubOptionsFromEnv(
     privateKey,
     org: e.GITHUB_ORG,
     ...(e.GITHUB_TEMPLATE_REPO ? { templateRepo: e.GITHUB_TEMPLATE_REPO } : {}),
+    ...(e.GITHUB_REPO_DENYLIST
+      ? { repoDenylist: e.GITHUB_REPO_DENYLIST.split(',').map((n) => n.trim()) }
+      : {}),
   };
 }
 
@@ -267,8 +296,16 @@ export interface CompareResult {
   behindBy: number;
   totalCommits: number;
   mergeBaseSha: string;
+  /** Commit the comparison was made against (the head ref resolved before comparing). */
   headSha: string;
   files: CompareFile[];
+  /**
+   * `compare`: the list from the compare API (with patches). `tree`: GitHub capped its list (300
+   * files), so the list was rebuilt from the merge base and head trees: complete, but renames show
+   * as removed + added and there are no patches or line counts. Consumers needing patches must
+   * read the files themselves in that case.
+   */
+  source: 'compare' | 'tree';
 }
 
 export interface RepoToken {
@@ -433,6 +470,22 @@ export function createGithubClient(opts: GithubClientOptions): GithubClient {
   ) {
     throw new ServiceError('github', 'invalid_input', 'invalid template repository name');
   }
+  const denylist = new Set(
+    [...DEFAULT_REPO_DENYLIST, ...(opts.repoDenylist ?? [])]
+      .map((n) => n.trim().toLowerCase())
+      .filter(Boolean),
+  );
+  /** Refuses any operation on a protected repository (the FORGE monorepo by default). */
+  const assertNotDenied = (name: string): void => {
+    if (denylist.has(name.trim().toLowerCase())) {
+      throw new ServiceError(
+        'github',
+        'invalid_input',
+        `repository ${name.slice(0, 100)} is protected: the builder never operates on it`,
+      );
+    }
+  };
+  assertNotDenied(templateRepo);
   const now = opts.now ?? Date.now;
   const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
 
@@ -479,6 +532,8 @@ export function createGithubClient(opts: GithubClientOptions): GithubClient {
     repositories: string[] | undefined,
     permissions: Record<string, string> | undefined,
   ): Promise<CachedToken> {
+    // Last line: never mint a token that names a denylisted repository.
+    for (const r of repositories ?? []) assertNotDenied(r);
     const id = await getInstallationId();
     const res = await http.request({
       method: 'POST',
@@ -520,14 +575,35 @@ export function createGithubClient(opts: GithubClientOptions): GithubClient {
     return p;
   }
 
-  const REPO_PERMS = { contents: 'write' };
-
   /** Authorization provider for calls scoped to one repo. */
   function repoAuth(repo: string, perms: Record<string, string> = REPO_PERMS) {
+    assertNotDenied(repo);
     return async (): Promise<string> => `Bearer ${(await installationToken([repo], perms)).token}`;
   }
-  /** Org-wide installation token (create repo from template). */
+  /** Org-wide installation token with every permission of the App: repo creation only. */
   const orgAuth = async (): Promise<string> => `Bearer ${(await installationToken()).token}`;
+
+  /**
+   * Metadata-only token for reading a repo. Scoped to that repo; GitHub refuses to mint a token
+   * for a repo that does not exist (or is not visible to the App), and only then an org-wide
+   * metadata-only token is used, which can read names and settings but write nothing.
+   */
+  function metadataAuth(repo: string) {
+    assertNotDenied(repo);
+    return async (): Promise<string> => {
+      try {
+        return `Bearer ${(await installationToken([repo], META_PERMS)).token}`;
+      } catch (err) {
+        if (
+          err instanceof ServiceError &&
+          (err.kind === 'validation' || err.kind === 'not_found')
+        ) {
+          return `Bearer ${(await installationToken(undefined, META_PERMS)).token}`;
+        }
+        throw err;
+      }
+    };
+  }
 
   /**
    * Runs `fn`; when GitHub says the cached installation token is no longer valid (revoked early),
@@ -547,6 +623,7 @@ export function createGithubClient(opts: GithubClientOptions): GithubClient {
 
   const base = (repo: string): string => {
     assertRepoName(repo);
+    assertNotDenied(repo);
     return `/repos/${encodeURIComponent(org)}/${encodeURIComponent(repo)}`;
   };
 
@@ -565,13 +642,12 @@ export function createGithubClient(opts: GithubClientOptions): GithubClient {
 
   async function getRepo(repo: string): Promise<RepoInfo | null> {
     const path = base(repo);
-    // Org-wide token: a repo-scoped token cannot be minted for a repo that does not exist yet.
-    return withFreshTokenRetry(() => fetchRepo(path, orgAuth));
+    return withFreshTokenRetry(() => fetchRepo(path, metadataAuth(repo)));
   }
 
   async function getTemplateRepo(): Promise<RepoInfo> {
     const path = `/repos/${encodeURIComponent(org)}/${encodeURIComponent(templateRepo)}`;
-    const repo = await withFreshTokenRetry(() => fetchRepo(path, orgAuth));
+    const repo = await withFreshTokenRetry(() => fetchRepo(path, metadataAuth(templateRepo)));
     if (!repo) {
       throw new ServiceError(
         'github',
@@ -589,7 +665,7 @@ export function createGithubClient(opts: GithubClientOptions): GithubClient {
       const res = await http.request({
         method: 'GET',
         path,
-        authorization: repoAuth(repo),
+        authorization: repoAuth(repo, READ_PERMS),
         allowStatus: [404],
       });
       if (res.status === 404) return null;
@@ -695,7 +771,7 @@ export function createGithubClient(opts: GithubClientOptions): GithubClient {
         http.request({
           method: 'PUT',
           path,
-          authorization: repoAuth(repo, { administration: 'write' }),
+          authorization: repoAuth(repo, ADMIN_PERMS),
           // Minimal rule set: nobody can force-push or delete the default branch. No review gate,
           // because the builder itself merges after its own checks.
           body: {
@@ -961,53 +1037,127 @@ export function createGithubClient(opts: GithubClientOptions): GithubClient {
 
   // --- read, compare, merge ------------------------------------------------------------------
 
+  /** Commit sha of a branch or sha. */
+  async function resolveCommit(repo: string, ref: string): Promise<string> {
+    if (/^[0-9a-f]{40}$/.test(ref)) return ref;
+    const sha = await getBranchHead(repo, ref);
+    if (sha === null) {
+      throw new ServiceError('github', 'not_found', `branch ${ref} not found`, { status: 404 });
+    }
+    return sha;
+  }
+
+  /** Non-directory entries of a commit's full tree. Refuses a truncated tree. */
+  async function flatTree(repo: string, commitSha: string): Promise<Map<string, TreeEntry>> {
+    const root = base(repo);
+    const auth = repoAuth(repo, READ_PERMS);
+    const commit = parseBody(
+      CommitSchema,
+      await withFreshTokenRetry(() =>
+        http.request({
+          method: 'GET',
+          path: `${root}/git/commits/${commitSha}`,
+          authorization: auth,
+        }),
+      ),
+      'commit',
+    );
+    const tree = parseBody(
+      TreeSchema,
+      await withFreshTokenRetry(() =>
+        http.request({
+          method: 'GET',
+          path: `${root}/git/trees/${commit.tree.sha}`,
+          query: { recursive: '1' },
+          authorization: auth,
+        }),
+      ),
+      'tree',
+    );
+    if (tree.truncated) {
+      throw new ServiceError('github', 'unexpected', 'repository tree too large to compare');
+    }
+    const out = new Map<string, TreeEntry>();
+    for (const e of tree.tree) if (e.type !== 'tree') out.set(e.path, { mode: e.mode, sha: e.sha });
+    return out;
+  }
+
+  /** Complete file-level diff of two commits from their trees (no patches, no line counts). */
+  async function diffTrees(repo: string, baseSha: string, headSha: string): Promise<CompareFile[]> {
+    const [a, b] = await Promise.all([flatTree(repo, baseSha), flatTree(repo, headSha)]);
+    const files: CompareFile[] = [];
+    for (const path of [...new Set([...a.keys(), ...b.keys()])].sort()) {
+      const before = a.get(path);
+      const after = b.get(path);
+      if (before && after && before.sha === after.sha && before.mode === after.mode) continue;
+      const status: CompareFileStatus = !before ? 'added' : !after ? 'removed' : 'modified';
+      files.push({
+        path,
+        status,
+        previousPath: undefined,
+        additions: 0,
+        deletions: 0,
+        patch: undefined,
+        sha: (after ?? before)?.sha ?? '',
+      });
+      if (files.length > COMPARE_MAX_FILES) {
+        throw new ServiceError('github', 'unexpected', 'comparison touches too many files');
+      }
+    }
+    return files;
+  }
+
   async function compareCommits(
     repo: string,
     baseRef: string,
     headRef: string,
   ): Promise<CompareResult> {
     const root = base(repo);
-    const spec = `${encodeBranchOrSha(baseRef)}...${encodeBranchOrSha(headRef)}`;
-    const files: CompareFile[] = [];
-    let first: z.infer<typeof CompareSchema> | undefined;
-    for (let page = 1; ; page++) {
-      const res = await withFreshTokenRetry(() =>
-        http.request({
-          method: 'GET',
-          path: `${root}/compare/${spec}`,
-          query: { per_page: COMPARE_PAGE_SIZE, page },
-          authorization: repoAuth(repo),
-        }),
-      );
-      const body = parseBody(CompareSchema, res, 'comparison');
-      first ??= body;
-      for (const f of body.files ?? []) {
-        files.push({
-          path: f.filename,
-          status: (VALID_COMPARE_STATUS.has(f.status) ? f.status : 'changed') as CompareFileStatus,
-          previousPath: f.previous_filename,
-          additions: f.additions,
-          deletions: f.deletions,
-          patch: f.patch,
-          sha: f.sha,
-        });
-      }
-      if ((body.files?.length ?? 0) < COMPARE_PAGE_SIZE) break;
-      if (files.length >= COMPARE_MAX_FILES) {
-        throw new ServiceError('github', 'unexpected', 'comparison touches too many files');
-      }
+    encodeBranchOrSha(baseRef);
+    encodeBranchOrSha(headRef);
+    // Pin the head first: the compare answer has no head field and its commit list is paginated
+    // (the last commit of a page is not the head), so the head is never read from it.
+    const headSha = await resolveCommit(repo, headRef);
+    const spec = `${encodeBranchOrSha(baseRef)}...${headSha}`;
+    // GitHub lists the changed files on the first page only, capped at 300 for the whole
+    // comparison; one commit per page keeps the answer small.
+    const res = await withFreshTokenRetry(() =>
+      http.request({
+        method: 'GET',
+        path: `${root}/compare/${spec}`,
+        query: { per_page: 1, page: 1 },
+        authorization: repoAuth(repo, READ_PERMS),
+      }),
+    );
+    const c = parseBody(CompareSchema, res, 'comparison');
+    const listed = c.files ?? [];
+    let files: CompareFile[];
+    let source: CompareResult['source'];
+    if (listed.length >= GITHUB_COMPARE_FILE_CAP) {
+      // The list may be truncated: rebuild the complete list from the two trees.
+      files = await diffTrees(repo, c.merge_base_commit.sha, headSha);
+      source = 'tree';
+    } else {
+      files = listed.map((f) => ({
+        path: f.filename,
+        status: (VALID_COMPARE_STATUS.has(f.status) ? f.status : 'changed') as CompareFileStatus,
+        previousPath: f.previous_filename,
+        additions: f.additions,
+        deletions: f.deletions,
+        patch: f.patch,
+        sha: f.sha,
+      }));
+      source = 'compare';
     }
-    // `first` is set: the loop body ran at least once.
-    const c = first as z.infer<typeof CompareSchema>;
-    const commits = c.commits ?? [];
     return {
       status: c.status,
       aheadBy: c.ahead_by,
       behindBy: c.behind_by,
       totalCommits: c.total_commits,
       mergeBaseSha: c.merge_base_commit.sha,
-      headSha: commits[commits.length - 1]?.sha ?? c.merge_base_commit.sha,
+      headSha,
       files,
+      source,
     };
   }
 
@@ -1019,7 +1169,7 @@ export function createGithubClient(opts: GithubClientOptions): GithubClient {
         method: 'GET',
         path: `${base(repo)}/contents/${encodedPath}`,
         query: { ref },
-        authorization: repoAuth(repo),
+        authorization: repoAuth(repo, READ_PERMS),
         allowStatus: [404],
       }),
     );
