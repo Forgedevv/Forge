@@ -15,9 +15,20 @@ const HexColor = z.string().regex(/^#[0-9a-fA-F]{6}$/, {
 const HttpUrl = z.url({ protocol: /^https?$/, error: 'Must be an http(s) URL' });
 
 /** Launchpad slug: becomes `<slug>.<clients-domain>`. */
-export const Slug = z.string().regex(/^[a-z0-9-]{3,32}$/, {
-  error: 'Slug must be 3 to 32 characters: lowercase letters, digits and dashes',
+export const Slug = z.string().regex(/^(?=.{3,32}$)[a-z0-9](?:[a-z0-9]|-(?!-))*[a-z0-9]$/, {
+  error:
+    'Slug must be 3 to 32 characters: lowercase letters, digits and single dashes, not at the start or end',
 });
+
+/** Metaplex limits on-chain names to 32 UTF-8 bytes, not 32 characters. */
+function utf8Bytes(value: string): number {
+  let bytes = 0;
+  for (const char of value) {
+    const code = char.codePointAt(0) ?? 0;
+    bytes += code < 0x80 ? 1 : code < 0x800 ? 2 : code < 0x10000 ? 3 : 4;
+  }
+  return bytes;
+}
 
 const { tradingFeeBps, coinCreatorSharePct, poolCreationFeeSol } = CLIENT_BOUNDS;
 
@@ -59,14 +70,18 @@ export const LaunchpadSpec = z.object({
     designNotes: z.string().max(2000),
   }),
   launchpadCoin: z.object({
-    name: z.string().min(1).max(32),
+    name: z
+      .string()
+      .min(1)
+      .refine((value) => utf8Bytes(value) <= 32, { error: 'Coin name must be at most 32 bytes' }),
     symbol: z.string().regex(/^[A-Z0-9]{2,10}$/, {
       error: 'Symbol must be 2 to 10 uppercase letters or digits',
     }),
     description: z.string().max(500),
     imageUrl: HttpUrl,
     /** Paid by the client. */
-    firstBuySol: z.number().min(0).max(100),
+    // The 10 SOL migration threshold means a first buy above ~10 SOL cannot fit in the curve.
+    firstBuySol: z.number().min(0).max(10),
   }),
 });
 /** Parsed spec (defaults applied). */

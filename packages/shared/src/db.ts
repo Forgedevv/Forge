@@ -21,7 +21,14 @@ export const ChatRole = z.enum(['user', 'assistant', 'system']);
 export type ChatRole = z.infer<typeof ChatRole>;
 
 /** Kill switches. */
-export const FlagKey = z.enum(['deploys_paused', 'buyback_paused', 'signups_paused']);
+export const FlagKey = z.enum([
+  'deploys_paused',
+  'buyback_paused',
+  'signups_paused',
+  'claims_paused',
+  'cashbox_sweep_paused',
+  'refunds_paused',
+]);
 export type FlagKey = z.infer<typeof FlagKey>;
 
 /** ISO 8601 timestamp as returned by PostgREST for `timestamptz`. */

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { Slug, SolanaAddress } from './spec.js';
+import { Slug, SolanaAddress, isValidPoolCreationFeeSol } from './spec.js';
 
 export const SolanaCluster = z.enum(['devnet', 'mainnet-beta']);
 export type SolanaCluster = z.infer<typeof SolanaCluster>;
@@ -28,6 +28,8 @@ export const ForgeSiteConfig = z.object({
       launchpadCoinConfig: SolanaAddress,
       launchpadCoinMint: SolanaAddress,
       ownerWallet: SolanaAddress,
+      /** Coin creation fee charged by this launchpad, shown to coin creators before signing. */
+      poolCreationFeeSol: z.number().refine(isValidPoolCreationFeeSol).optional(),
     })
     .optional(),
   theme: z.object({
