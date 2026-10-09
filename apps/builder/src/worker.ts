@@ -63,6 +63,15 @@ export interface JobOutcome {
  * - `deploying`: merge, production deploy. Return `{}`.
  * Throw to fail the step; the message is redacted and stored in `jobs.error`.
  * Must be idempotent (a job can be processed twice after a crash) and honour `ctx.signal`.
+ *
+ * Abort contract: once `ctx.signal` is aborted (timeout, lost lock, shutdown) the worker has
+ * already recorded the job's outcome, or someone else owns the job. Anything the handler does
+ * afterwards is unaccounted for. So a handler MUST check the signal (`ctx.signal.throwIfAborted()`)
+ * right before every external side effect: GitHub push or merge, Vercel deployment or promotion,
+ * signer call, R2 write, database write. It should also pass the signal to `fetch` and to child
+ * processes. The worker keeps the concurrency slot of an aborted job until its handler settles (up
+ * to `abandonedSettleMs`, then alerts), and never runs the same job again while that handler is
+ * still pending.
  */
 export interface JobHandler {
   handle(job: JobRow, ctx: JobContext): Promise<JobOutcome>;
@@ -94,6 +103,12 @@ export interface WorkerOptions {
   shutdownGraceMs?: number;
   /** On stop(): time given to aborted jobs to settle. Default 10 s. */
   shutdownForceMs?: number;
+  /**
+   * After a timeout or a lost lock: how long the slot stays reserved for a handler that ignores
+   * its abort signal. Past it the slot is freed and a high alert is sent; the job itself stays
+   * blocked for this worker until the handler settles. Default 10 minutes.
+   */
+  abandonedSettleMs?: number;
   /** Backoff after DB errors: base and cap. Default 1 s / 60 s. */
   backoffBaseMs?: number;
   backoffMaxMs?: number;
@@ -115,6 +130,7 @@ const DEFAULT_WORKER_ENV = {
   flagCacheMs: 30_000,
   shutdownGraceMs: 30_000,
   shutdownForceMs: 10_000,
+  abandonedSettleMs: 10 * 60_000,
   backoffBaseMs: 1_000,
   backoffMaxMs: 60_000,
   maxBuildAttempts: 2,
@@ -169,6 +185,8 @@ export class Worker {
   private readonly alerter: Pick<Alerter, 'alert'> | undefined;
 
   private readonly running = new Map<string, Running>();
+  /** Jobs whose aborted handler is still pending after its slot was given back. */
+  private readonly unsettled = new Set<string>();
   private stopping = false;
   private loopPromise: Promise<void> | undefined;
   private wakeUp: (() => void) | undefined;
@@ -195,6 +213,7 @@ export class Worker {
       maxJobMs: opts.maxJobMs ?? staleMinutes * 2 * 60_000,
       shutdownGraceMs: opts.shutdownGraceMs ?? DEFAULT_WORKER_ENV.shutdownGraceMs,
       shutdownForceMs: opts.shutdownForceMs ?? DEFAULT_WORKER_ENV.shutdownForceMs,
+      abandonedSettleMs: opts.abandonedSettleMs ?? DEFAULT_WORKER_ENV.abandonedSettleMs,
       backoffBaseMs: opts.backoffBaseMs ?? DEFAULT_WORKER_ENV.backoffBaseMs,
       backoffMaxMs: opts.backoffMaxMs ?? DEFAULT_WORKER_ENV.backoffMaxMs,
       maxBuildAttempts: opts.maxBuildAttempts ?? DEFAULT_WORKER_ENV.maxBuildAttempts,
@@ -211,9 +230,14 @@ export class Worker {
     }
   }
 
-  /** Number of jobs currently running. */
+  /** Number of slots in use (running jobs, and aborted jobs whose handler has not settled yet). */
   get activeJobs(): number {
     return this.running.size;
+  }
+
+  /** Aborted jobs whose handler is still pending past `abandonedSettleMs` (slot already freed). */
+  get abandonedJobs(): number {
+    return this.unsettled.size;
   }
 
   /** Starts the polling loop. Idempotent. */
@@ -291,6 +315,11 @@ export class Worker {
         break;
       }
       if (!job) break;
+      if (this.running.has(job.id) || this.unsettled.has(job.id)) {
+        // A previous run of this job is still executing here (aborted, handler not settled).
+        await this.handBack(job);
+        break;
+      }
       if (!this.launch(job, kind)) break;
       claimed += 1;
     }
@@ -502,22 +531,118 @@ export class Worker {
       event: (message) => this.event(job.id, message),
     };
     const handling = Promise.resolve().then(() => this.handler.handle(job, ctx));
-    // A handler that settles after the race was lost must not become an unhandled rejection.
-    handling.catch(() => undefined);
+    // Settles (never rejects) when the handler does, whatever won the race below.
+    let handlerSettled = false;
+    const settled = handling.then(
+      () => {
+        handlerSettled = true;
+      },
+      () => {
+        handlerSettled = true;
+      },
+    );
 
-    let patch: JobPatch;
-    let outcome: JobOutcome;
     try {
-      outcome = await Promise.race([handling, aborted]);
-      patch = validateOutcome(active, outcome);
-    } catch (err) {
-      await this.handleFailure(job, active, err, controller.signal);
-      return;
+      let patch: JobPatch;
+      let outcome: JobOutcome;
+      try {
+        outcome = await Promise.race([handling, aborted]);
+        patch = validateOutcome(active, outcome);
+      } catch (err) {
+        await this.handleFailure(job, active, err, controller.signal);
+        return;
+      } finally {
+        clearInterval(heartbeat);
+        clearTimeout(timeout);
+      }
+      await this.complete(job, active, patch, outcome.message);
     } finally {
-      clearInterval(heartbeat);
-      clearTimeout(timeout);
+      // The outcome is recorded; an aborted handler may still be running. Keep the slot.
+      if (controller.signal.aborted && !handlerSettled) {
+        await this.awaitAbandoned(job, active, settled, abortReason(controller.signal));
+      }
     }
-    await this.complete(job, active, patch, outcome.message);
+  }
+
+  /**
+   * Holds the concurrency slot until an aborted handler settles, at most `abandonedSettleMs`.
+   * Past that the slot is freed with a high alert, and the job stays blocked for this worker
+   * (`unsettled`) until the handler finally settles.
+   */
+  private async awaitAbandoned(
+    job: JobRow,
+    active: ActiveJobStatus,
+    settled: Promise<void>,
+    reason: AbortReason,
+  ): Promise<void> {
+    const base = { jobId: job.id, status: active, reason };
+    this.logger.warn(base, 'job aborted, waiting for its handler to stop');
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const capped = new Promise<'cap'>((resolve) => {
+      timer = setTimeout(() => resolve('cap'), this.o.abandonedSettleMs);
+      // Must not keep a stopping process alive on its own.
+      timer.unref?.();
+    });
+    const first = await Promise.race([settled.then(() => 'settled' as const), capped]);
+    clearTimeout(timer);
+    if (first === 'settled') {
+      this.logger.info(base, 'aborted handler settled');
+      return;
+    }
+    this.unsettled.add(job.id);
+    this.logger.error(
+      { ...base, waitedMs: this.o.abandonedSettleMs },
+      'aborted handler still running, freeing its slot',
+    );
+    void this.safeAlert(
+      'high',
+      `job_handler_unsettled:${job.id}`,
+      'A job handler ignored its abort signal and is still running: possible side effects after the job was closed',
+      { jobId: job.id, status: active, reason, waitedMs: this.o.abandonedSettleMs },
+    );
+    void settled.then(() => {
+      this.unsettled.delete(job.id);
+      this.logger.warn(base, 'abandoned handler finally settled');
+      this.wake();
+    });
+  }
+
+  /**
+   * A claim returned a job whose previous run is still executing in this worker: give it back
+   * without running it. A build goes back to the queue (attempt not consumed); a post-approval
+   * step is failed for manual handling (D18). Never throws: on a DB error the lock ages and stale
+   * recovery decides.
+   */
+  private async handBack(job: JobRow): Promise<void> {
+    const base = { jobId: job.id, status: job.status };
+    this.logger.warn(
+      base,
+      'claimed a job whose previous run is still executing here, handing back',
+    );
+    try {
+      if (job.status === 'building') {
+        const row = await this.persist(() =>
+          this.db.releaseBuild(job.id, this.workerId, job.attempts),
+        );
+        if (!row) this.logger.warn(base, 'lock lost before the build could be handed back');
+        return;
+      }
+      if (isActiveJobStatus(job.status)) {
+        await this.fail(
+          job,
+          job.status,
+          'a previous run of this step was still executing: manual handling required',
+        );
+      }
+    } catch (err) {
+      this.logger.error({ ...base, error: sanitizeError(err) }, 'could not hand the job back');
+      void this.safeAlert(
+        'high',
+        `job_state_unrecorded:${job.id}`,
+        'Job state could not be recorded',
+        base,
+      );
+    }
   }
 
   private async complete(
