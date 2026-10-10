@@ -39,6 +39,7 @@ import {
 import {
   FEES,
   MAX_ANTI_SNIPER_DURATION_SECONDS,
+  MAX_FIRST_BUY_SOL,
   MIGRATION_THRESHOLD_LAMPORTS,
   MIN_LOCKED_LIQUIDITY_BPS,
   SOL_QUOTE_MINT,
@@ -315,22 +316,24 @@ describe('first buy on the launchpad coin config', () => {
     expect(quoteFirstBuyOnConfig(coinConfig, 0n)).toMatchObject({ ok: false, reason: 'TOO_SMALL' });
   });
 
-  it('makes the coin config refuse a spec whose first buy cannot be launched', () => {
+  it('refuses a spec whose first buy is above the 10 SOL spec bound', () => {
     const coin = makeSpec().launchpadCoin;
     const spec = makeSpec({ launchpadCoin: { ...coin, firstBuySol: 50 } });
-    let error: unknown;
-    try {
-      buildLaunchpadCoinConfig(spec);
-    } catch (e) {
-      error = e;
+    for (const build of [buildLaunchpadCoinConfig, buildLaunchpadConfig]) {
+      let error: unknown;
+      try {
+        build(spec);
+      } catch (e) {
+        error = e;
+      }
+      expect(error).toBeInstanceOf(ValidationError);
+      expect((error as ValidationError).violations).toEqual([
+        expect.objectContaining({ field: 'launchpadCoin.firstBuySol', code: 'SPEC_INVALID' }),
+      ]);
     }
-    expect(error).toBeInstanceOf(ValidationError);
-    expect((error as ValidationError).violations).toEqual([
-      expect.objectContaining({ field: 'launchpadCoin.firstBuySol', code: 'SPEC_INVALID' }),
-    ]);
-    // The launchpad config does not depend on the launchpad coin's first buy.
-    expect(() => buildLaunchpadConfig(spec)).not.toThrow();
-    // No first buy is fine.
+    // The largest first buy the spec allows fits in the curve; no first buy is fine too.
+    const max = makeSpec({ launchpadCoin: { ...coin, firstBuySol: MAX_FIRST_BUY_SOL } });
+    expect(() => buildLaunchpadCoinConfig(max)).not.toThrow();
     const none = makeSpec({ launchpadCoin: { ...coin, firstBuySol: 0 } });
     expect(() => buildLaunchpadCoinConfig(none)).not.toThrow();
   });

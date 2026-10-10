@@ -12,7 +12,9 @@
  *
  * Replay: a valid signature stays valid forever. `verifyPayment` reports the signature and its
  * slot; callers MUST record the signature as used (unique `payments.tx_signature`) before marking
- * anything as paid, and check `blockTime` against the quote expiry.
+ * anything as paid. The amount must be exact (decision). Pass the quote window
+ * (`notBefore` / `expiresAt`) so a payment that landed outside it is `invalid`; when the block
+ * time is not known yet the result stays `pending`.
  */
 import {
   PublicKey,
@@ -59,6 +61,7 @@ export type PaymentErrorCode =
   | 'invalid_amount'
   | 'payer_is_cashbox'
   | 'cashbox_not_rent_exempt'
+  | 'invalid_window'
   | 'wrong_cluster';
 
 /** Thrown on invalid input or configuration (never for a payment that is merely pending). */
@@ -191,13 +194,20 @@ export type PaymentRejectReason =
   | 'payer_mismatch'
   | 'amount_mismatch'
   | 'memo_missing'
-  | 'memo_mismatch';
+  | 'memo_mismatch'
+  | 'payment_too_early'
+  | 'payment_expired';
+
+/** Why a payment is not decided yet. */
+export type PaymentPendingReason =
+  'not_found' | 'below_commitment' | 'transaction_not_served' | 'block_time_unknown';
 
 export type PaymentVerification =
   | {
       /** Not visible at the required commitment yet (or unknown): poll again later. */
       status: 'pending';
       signature: string;
+      reason: PaymentPendingReason;
     }
   | {
       status: 'invalid';
@@ -225,8 +235,16 @@ export type PaymentVerification =
 
 export interface ExpectedPayment {
   payer: PublicKey;
+  /** Exact amount (a different amount is `amount_mismatch`). */
   lamports: bigint;
   jobId: string;
+  /**
+   * Optional window the transaction's block time must fall in (inclusive bounds). Outside it:
+   * `invalid` (`payment_too_early` / `payment_expired`); block time unknown: `pending`.
+   * Block times are approximate (seconds, validator clock): add any tolerance to the bounds.
+   */
+  notBefore?: Date;
+  expiresAt?: Date;
 }
 
 export interface VerifyPaymentOptions {
@@ -270,6 +288,22 @@ function resolveCluster(options: VerifyPaymentOptions): PaymentCluster {
 
 const COMMITMENT_RANK: Record<string, number> = { processed: 0, confirmed: 1, finalized: 2 };
 
+/** Throws `invalid_window` unless the window bounds are valid dates, in order. */
+function assertWindow(expected: Pick<ExpectedPayment, 'notBefore' | 'expiresAt'>): void {
+  const { notBefore, expiresAt } = expected;
+  for (const [name, value] of [
+    ['notBefore', notBefore],
+    ['expiresAt', expiresAt],
+  ] as const) {
+    if (value !== undefined && (!(value instanceof Date) || Number.isNaN(value.getTime()))) {
+      throw new PaymentError('invalid_window', `${name} must be a valid Date`);
+    }
+  }
+  if (notBefore && expiresAt && notBefore.getTime() > expiresAt.getTime()) {
+    throw new PaymentError('invalid_window', 'notBefore must not be after expiresAt');
+  }
+}
+
 /**
  * Verifies the payment `signature` against `expected`:
  * - the RPC is on the expected cluster (otherwise throws `PaymentError('wrong_cluster')`);
@@ -277,7 +311,9 @@ const COMMITMENT_RANK: Record<string, number> = { processed: 0, confirmed: 1, fi
  * - `expected.payer` signed it;
  * - it holds exactly one top-level System transfer to the cashbox, from the payer, of exactly
  *   `expected.lamports`, and the cashbox balance grew by at least that much;
- * - it holds exactly one top-level memo, equal to `paymentMemo(expected.jobId)`.
+ * - it holds exactly one top-level memo, equal to `paymentMemo(expected.jobId)`;
+ * - with `notBefore` / `expiresAt`: its block time is inside the window (`pending` while the
+ *   block time is unknown, after a `getBlockTime` fallback).
  * Other instructions (compute budget, wallet guards) are tolerated.
  */
 export async function verifyPayment(
@@ -288,6 +324,7 @@ export async function verifyPayment(
 ): Promise<PaymentVerification> {
   const cashbox = resolveCashbox(options.env);
   assertLamports(expected.lamports);
+  assertWindow(expected);
   const memo = paymentMemo(expected.jobId);
   const commitment: Finality = options.commitment ?? 'confirmed';
   await assertCluster(connection, resolveCluster(options), options.retry);
@@ -302,24 +339,34 @@ export async function verifyPayment(
       options.retry,
     )
   ).value[0];
-  if (!status) return { status: 'pending', signature };
+  if (!status) return { status: 'pending', signature, reason: 'not_found' };
   const reached = COMMITMENT_RANK[status.confirmationStatus ?? 'processed'] ?? 0;
-  if (reached < (COMMITMENT_RANK[commitment] ?? 1)) return { status: 'pending', signature };
+  if (reached < (COMMITMENT_RANK[commitment] ?? 1)) {
+    return { status: 'pending', signature, reason: 'below_commitment' };
+  }
   if (status.err) {
     return invalid(signature, 'transaction_failed', JSON.stringify(status.err), status.slot);
   }
 
-  const tx = await retryRpc(
+  let tx = await retryRpc(
     () => connection.getTransaction(signature, { commitment, maxSupportedTransactionVersion: 0 }),
     options.retry,
   );
-  if (!tx) return { status: 'pending', signature };
+  if (!tx) return { status: 'pending', signature, reason: 'transaction_not_served' };
+  const hasWindow = expected.notBefore !== undefined || expected.expiresAt !== undefined;
+  if (hasWindow && (tx.blockTime === null || tx.blockTime === undefined)) {
+    const slot = tx.slot;
+    const blockTime = await retryRpc(() => connection.getBlockTime(slot), options.retry);
+    if (blockTime !== null) tx = { ...tx, blockTime };
+  }
   return checkPaymentTransaction(tx, signature, {
     cashbox,
     payer: expected.payer,
     lamports: expected.lamports,
     memo,
     confirmationStatus: status.confirmationStatus === 'finalized' ? 'finalized' : commitment,
+    ...(expected.notBefore ? { notBefore: expected.notBefore } : {}),
+    ...(expected.expiresAt ? { expiresAt: expected.expiresAt } : {}),
   });
 }
 
@@ -338,6 +385,9 @@ export interface PaymentCheck {
   lamports: bigint;
   memo: string;
   confirmationStatus: Finality;
+  /** Optional block time window (inclusive), see `ExpectedPayment`. */
+  notBefore?: Date;
+  expiresAt?: Date;
 }
 
 /** Reads a little-endian u64 from `data` at `offset`. */
@@ -454,6 +504,30 @@ export function checkPaymentTransaction(
   }
   if (memos.length > 1 || memos[0] !== check.memo) {
     return invalid(signature, 'memo_mismatch', `Memo does not match ${check.memo}`, slot);
+  }
+
+  if (check.notBefore || check.expiresAt) {
+    const blockTime = tx.blockTime;
+    if (blockTime === null || blockTime === undefined) {
+      return { status: 'pending', signature, reason: 'block_time_unknown' };
+    }
+    const landedAtMs = blockTime * 1000;
+    if (check.notBefore && landedAtMs < check.notBefore.getTime()) {
+      return invalid(
+        signature,
+        'payment_too_early',
+        `Landed at ${new Date(landedAtMs).toISOString()}, before ${check.notBefore.toISOString()}`,
+        slot,
+      );
+    }
+    if (check.expiresAt && landedAtMs > check.expiresAt.getTime()) {
+      return invalid(
+        signature,
+        'payment_expired',
+        `Landed at ${new Date(landedAtMs).toISOString()}, after ${check.expiresAt.toISOString()}`,
+        slot,
+      );
+    }
   }
 
   return {

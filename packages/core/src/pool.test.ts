@@ -6,6 +6,7 @@ import {
 } from '@meteora-ag/dynamic-bonding-curve-sdk';
 import {
   ACCOUNT_SIZE,
+  ASSOCIATED_TOKEN_PROGRAM_ID,
   AccountLayout,
   MINT_SIZE,
   NATIVE_MINT,
@@ -21,10 +22,12 @@ import {
   SystemInstruction,
   SystemProgram,
   type AccountInfo,
+  type TransactionInstruction,
 } from '@solana/web3.js';
 import BN from 'bn.js';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { OwnerTransactionSummary } from '@forge/shared';
+import { ForgeAddressError } from './addresses.js';
 import { MIGRATION_THRESHOLD_LAMPORTS, SOL_QUOTE_MINT, solToLamports } from './constants.js';
 import {
   DEFAULT_FIRST_BUY_SLIPPAGE_BPS,
@@ -33,10 +36,12 @@ import {
   MAX_FIRST_BUY_LAMPORTS,
   METADATA_ACCOUNT_SIZE,
   METAPLEX_CREATE_METADATA_FEE_LAMPORTS,
+  REFERRAL_TX_BYTES,
   assertFirstBuyLamports,
   assertLaunchCoinConfig,
   assertLaunchMetadata,
   buildLaunchCoinTx,
+  defaultLaunchReferral,
   toOwnerTransactionSummary,
   type BuildLaunchCoinTxParams,
   type LaunchCoinErrorCode,
@@ -228,6 +233,8 @@ async function setup(
     metadataUri: 'https://example.com/moon.json',
     firstBuyLamports: solToLamports(0.01),
     durableNonce: { nonceAccount, authority: creator },
+    // No FORGE referral unless a test sets it (never read from the developer's environment).
+    env: {},
     ...overrides,
   };
   return { creator, mint: mint, nonceAuthority: creator, nonceAccount, connection, params };
@@ -377,14 +384,25 @@ describe('buildLaunchCoinTx — signers and signing flow', () => {
     expect(message.isAccountWritable(index)).toBe(false);
   });
 
-  it('makes the creator the rent payer on request', async () => {
-    const { params } = await setup({ rentPayer: 'creator' });
+  it('makes the creator the rent payer on request, on a config without creation fee', async () => {
+    const { params } = await setup(
+      { rentPayer: 'creator' },
+      { config: { poolCreationFee: new BN(0) } },
+    );
     const { transaction, summary } = await buildLaunchCoinTx(params);
     const message = transaction.compileMessage();
     const index = message.accountKeys.findIndex((k) => k.equals(params.creator));
     expect(message.isAccountWritable(index)).toBe(true);
     expect(summary.rentPayer.equals(params.creator)).toBe(true);
     expect(summary.costs.creatorTotalLamports).toBeGreaterThan(0n);
+    expect(summary.costs.poolCreationFeeLamports).toBe(0n);
+  });
+
+  it('refuses the creator as rent payer when the config charges a pool creation fee', async () => {
+    // The fixture charges 0.001 SOL: the FORGE creator wallet would pay the client's own fee.
+    const { params } = await setup({ rentPayer: 'creator' });
+    const error = await expectLaunchError(buildLaunchCoinTx(params), 'RENT_PAYER_REFUSED');
+    expect(error.message).toContain('1000000 lamports');
   });
 
   it('survives partial signing, base64 round trip and the owner signing last', async () => {
@@ -488,9 +506,13 @@ describe('buildLaunchCoinTx — first buy', () => {
     expect(summary.costs.ownerTokenAccountRentLamports).toBe(0n);
   });
 
-  it('refuses a first buy larger than the curve', async () => {
+  it('refuses a first buy above the 10 SOL spec bound and accepts 10 SOL', async () => {
     const { params } = await setup({ firstBuyLamports: solToLamports(50) });
-    await expectLaunchError(buildLaunchCoinTx(params), 'FIRST_BUY_EXCEEDS_CURVE');
+    await expectLaunchError(buildLaunchCoinTx(params), 'INVALID_INPUT');
+    expect(MAX_FIRST_BUY_LAMPORTS).toBe(solToLamports(10));
+    const max = await setup({ firstBuyLamports: MAX_FIRST_BUY_LAMPORTS });
+    const { summary } = await buildLaunchCoinTx(max.params);
+    expect(summary.costs.firstBuyLamports).toBe(MAX_FIRST_BUY_LAMPORTS);
   });
 
   it.each([-1n, MAX_FIRST_BUY_LAMPORTS + 1n])('refuses first buy %s', async (lamports) => {
@@ -638,6 +660,181 @@ describe('buildLaunchCoinTx — referral', () => {
   });
 });
 
+describe('buildLaunchCoinTx — owner WSOL account', () => {
+  const ownerWsol = getAssociatedTokenAddressSync(NATIVE_MINT, OWNER, true);
+  const wsolCreations = (instructions: TransactionInstruction[]) =>
+    instructions.filter(
+      (ix) =>
+        ix.programId.equals(ASSOCIATED_TOKEN_PROGRAM_ID) && ix.keys[1]!.pubkey.equals(ownerWsol),
+    );
+
+  it('creates it idempotently even when it exists at build time (closed before signing)', async () => {
+    const { params, connection } = await setup();
+    connection.accounts.set(
+      ownerWsol.toBase58(),
+      account(TOKEN_PROGRAM_ID, wsolTokenAccountData(OWNER)),
+    );
+    const { transaction } = await buildLaunchCoinTx(params);
+    const creations = wsolCreations(transaction.instructions);
+    expect(creations).toHaveLength(1);
+    const [create] = creations;
+    expect([...create!.data]).toEqual([1]); // CreateIdempotent
+    expect(create!.keys[0]!.pubkey.equals(OWNER)).toBe(true); // funded by the owner
+    expect(create!.keys[2]!.pubkey.equals(OWNER)).toBe(true);
+    expect(create!.keys[3]!.pubkey.equals(NATIVE_MINT)).toBe(true);
+    // Before the SOL wrap and the swap that use it.
+    const wrap = transaction.instructions.findIndex(
+      (ix) =>
+        ix.programId.equals(SystemProgram.programId) &&
+        SystemInstruction.decodeInstructionType(ix) === 'Transfer' &&
+        ix.keys[1]!.pubkey.equals(ownerWsol),
+    );
+    expect(wrap).toBeGreaterThan(0);
+    expect(transaction.instructions.indexOf(create!)).toBeLessThan(wrap);
+  });
+
+  it('keeps the single SDK creation when the account is missing, at the same size', async () => {
+    const missing = await setup();
+    const withMissing = await buildLaunchCoinTx(missing.params);
+    expect(wsolCreations(withMissing.transaction.instructions)).toHaveLength(1);
+    expect([...wsolCreations(withMissing.transaction.instructions)[0]!.data]).toEqual([1]);
+
+    const existing = await setup();
+    existing.connection.accounts.set(
+      ownerWsol.toBase58(),
+      account(TOKEN_PROGRAM_ID, wsolTokenAccountData(OWNER)),
+    );
+    const withExisting = await buildLaunchCoinTx(existing.params);
+    expect(withExisting.summary.txBytes).toBe(withMissing.summary.txBytes);
+  });
+
+  it('adds no WSOL account without a first buy', async () => {
+    const { params } = await setup({ firstBuyLamports: 0n });
+    const { transaction } = await buildLaunchCoinTx(params);
+    expect(wsolCreations(transaction.instructions)).toHaveLength(0);
+  });
+});
+
+describe('buildLaunchCoinTx — default FORGE referral', () => {
+  const R2_URI = `https://pub-${'0'.repeat(32)}.r2.dev/metadata/${'u'.repeat(36)}.json`;
+
+  async function withForgeReferral(overrides: Partial<BuildLaunchCoinTxParams> = {}) {
+    const referral = Keypair.generate().publicKey;
+    const s = await setup({
+      env: { FORGE_METEORA_REFERRAL_ACCOUNT: referral.toBase58() },
+      ...overrides,
+    });
+    s.connection.accounts.set(
+      referral.toBase58(),
+      account(TOKEN_PROGRAM_ID, wsolTokenAccountData(Keypair.generate().publicKey)),
+    );
+    return { ...s, referral };
+  }
+
+  const swapOf = (instructions: TransactionInstruction[]) =>
+    instructions.filter((ix) => ix.programId.equals(DYNAMIC_BONDING_CURVE_PROGRAM_ID))[1]!;
+
+  it('puts the FORGE referral on the first buy when it is configured', async () => {
+    const { params, referral } = await withForgeReferral();
+    const { summary, transaction } = await buildLaunchCoinTx(params);
+    expect(summary.referralSource).toBe('forge');
+    expect(summary.referralOmittedForSize).toBe(false);
+    expect(summary.referralTokenAccount!.equals(referral)).toBe(true);
+    expect(swapOf(transaction.instructions).keys.some((k) => k.pubkey.equals(referral))).toBe(true);
+    // Standard launch (1,120 bytes) + one account key.
+    expect(summary.txBytes).toBe(1120 + REFERRAL_TX_BYTES);
+  });
+
+  it('keeps it on the devnet launch shape (1,198 bytes)', async () => {
+    const { params } = await withForgeReferral({
+      name: 'Forge Core Devnet Coin',
+      symbol: 'FCORE',
+      metadataUri: 'https://example.com/forge/core-config-pool/metadata.json',
+    });
+    const { summary } = await buildLaunchCoinTx(params);
+    expect(summary.referralSource).toBe('forge');
+    expect(summary.txBytes).toBe(1166 + REFERRAL_TX_BYTES);
+  });
+
+  it('leaves it out when the transaction would be too large, and says so', async () => {
+    const { params, referral } = await withForgeReferral({
+      name: 'N'.repeat(32),
+      symbol: 'S'.repeat(10),
+      metadataUri: R2_URI,
+    });
+    const { summary, transaction } = await buildLaunchCoinTx(params);
+    expect(summary.referralOmittedForSize).toBe(true);
+    expect(summary.referralSource).toBe('none');
+    expect(summary.referralTokenAccount).toBeNull();
+    expect(summary.txBytes).toBe(1228);
+    expect(transaction.compileMessage().accountKeys.some((k) => k.equals(referral))).toBe(false);
+  });
+
+  it('fits up to 116 bytes of metadata (32-byte name, 10-character symbol, 74-byte URI)', async () => {
+    const uri = (bytes: number) => `https://example.com/${'a'.repeat(bytes - 25)}.json`;
+    expect(uri(74)).toHaveLength(74);
+    const kept = await withForgeReferral({
+      name: 'N'.repeat(32),
+      symbol: 'S'.repeat(10),
+      metadataUri: uri(74),
+    });
+    const fits = await buildLaunchCoinTx(kept.params);
+    expect(fits.summary.referralSource).toBe('forge');
+    expect(fits.summary.txBytes).toBe(MAX_TRANSACTION_BYTES);
+
+    const dropped = await withForgeReferral({
+      name: 'N'.repeat(32),
+      symbol: 'S'.repeat(10),
+      metadataUri: uri(75),
+    });
+    const tooLarge = await buildLaunchCoinTx(dropped.params);
+    expect(tooLarge.summary.referralOmittedForSize).toBe(true);
+    expect(tooLarge.summary.txBytes).toBe(MAX_TRANSACTION_BYTES + 1 - REFERRAL_TX_BYTES);
+  });
+
+  it('never drops an explicit referral: TX_TOO_LARGE instead', async () => {
+    const { params, referral } = await withForgeReferral({
+      name: 'N'.repeat(32),
+      symbol: 'S'.repeat(10),
+      metadataUri: R2_URI,
+    });
+    const error = await expectLaunchError(
+      buildLaunchCoinTx({ ...params, referralTokenAccount: referral }),
+      'TX_TOO_LARGE',
+    );
+    expect(error.message).toContain(`${1228 + REFERRAL_TX_BYTES} bytes`);
+  });
+
+  it('is disabled by an explicit null and unused without a first buy', async () => {
+    const { params } = await withForgeReferral();
+    const none = await buildLaunchCoinTx({ ...params, referralTokenAccount: null });
+    expect(none.summary.referralSource).toBe('none');
+    expect(none.summary.referralTokenAccount).toBeNull();
+    expect(none.summary.txBytes).toBe(1120);
+
+    const noBuy = await buildLaunchCoinTx({ ...params, firstBuyLamports: 0n });
+    expect(noBuy.summary.referralSource).toBe('none');
+  });
+
+  it('is not used when FORGE_METEORA_REFERRAL_ACCOUNT is not set', async () => {
+    const { params } = await setup({ env: {} });
+    const { summary } = await buildLaunchCoinTx(params);
+    expect(summary.referralSource).toBe('none');
+    expect(defaultLaunchReferral({})).toBeNull();
+    expect(defaultLaunchReferral({ FORGE_METEORA_REFERRAL_ACCOUNT: '' })).toBeNull();
+  });
+
+  it('fails loudly on an invalid or unusable FORGE referral', async () => {
+    const bad = await setup({ env: { FORGE_METEORA_REFERRAL_ACCOUNT: 'not-a-key' } });
+    await expect(buildLaunchCoinTx(bad.params)).rejects.toBeInstanceOf(ForgeAddressError);
+
+    const missing = await setup({
+      env: { FORGE_METEORA_REFERRAL_ACCOUNT: Keypair.generate().publicKey.toBase58() },
+    });
+    await expectLaunchError(buildLaunchCoinTx(missing.params), 'REFERRAL_INVALID');
+  });
+});
+
 describe('buildLaunchCoinTx — size', () => {
   const R2_URI = `https://pub-${'0'.repeat(32)}.r2.dev/metadata/${'u'.repeat(36)}.json`;
 
@@ -724,7 +921,10 @@ describe('buildLaunchCoinTx — costs', () => {
   });
 
   it('moves the pool costs to the creator when it pays the rent', async () => {
-    const { params } = await setup({ rentPayer: 'creator' });
+    const { params } = await setup(
+      { rentPayer: 'creator' },
+      { config: { poolCreationFee: new BN(0) } },
+    );
     const { costs } = (await buildLaunchCoinTx(params)).summary;
     expect(costs.creatorTotalLamports).toBe(
       costs.poolAccountsRentLamports + costs.metaplexFeeLamports + costs.poolCreationFeeLamports,
@@ -734,7 +934,9 @@ describe('buildLaunchCoinTx — costs', () => {
     );
   });
 
-  it('skips the temporary WSOL rent when the owner already has a WSOL account', async () => {
+  it('keeps the temporary WSOL rent when the owner already has a WSOL account', async () => {
+    // The account can be closed between build and signature: it is created again in the
+    // transaction, so its rent must stay available.
     const { params, connection } = await setup();
     const wsol = getAssociatedTokenAddressSync(NATIVE_MINT, OWNER, true);
     connection.accounts.set(
@@ -742,7 +944,7 @@ describe('buildLaunchCoinTx — costs', () => {
       account(TOKEN_PROGRAM_ID, wsolTokenAccountData(OWNER)),
     );
     const { costs } = (await buildLaunchCoinTx(params)).summary;
-    expect(costs.ownerTemporaryLamports).toBe(0n);
+    expect(costs.ownerTemporaryLamports).toBe(BigInt(rent(ACCOUNT_SIZE)));
   });
 
   it('estimates the network fee when the cluster does not answer', async () => {

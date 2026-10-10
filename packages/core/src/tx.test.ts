@@ -121,6 +121,65 @@ describe('confirmSignature', () => {
     expect(s.calls).toHaveLength(1);
   });
 
+  it('keeps polling a failure seen only at processed (the block can be dropped)', async () => {
+    const err = { InstructionError: [2, { Custom: 1 }] };
+    const s = statusConnection([status('processed', err as never), null, status('confirmed')]);
+    const result = await confirmSignature(s.connection, SIGNATURE, {
+      deadlineMs: 60_000,
+      now: s.now,
+      sleep: s.sleep,
+    });
+    expect(result.confirmationStatus).toBe('confirmed');
+    expect(s.calls).toHaveLength(3);
+  });
+
+  it('throws on a failure only once it reaches the requested commitment', async () => {
+    const err = { InstructionError: [0, 'InvalidAccountData'] };
+    const s = statusConnection([
+      status('confirmed', err as never),
+      status('confirmed', err as never),
+      status('finalized', err as never),
+    ]);
+    const error = await confirmSignature(s.connection, SIGNATURE, {
+      deadlineMs: 60_000,
+      commitment: 'finalized',
+      now: s.now,
+      sleep: s.sleep,
+    }).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(TransactionFailedError);
+    expect(s.calls).toHaveLength(3);
+  });
+
+  it('times out on a failure that never reaches the commitment, and reports it', async () => {
+    const err = { InstructionError: [1, { Custom: 6000 }] };
+    const s = statusConnection([status('processed', err as never)]);
+    const error = await confirmSignature(s.connection, SIGNATURE, {
+      deadlineMs: 4000,
+      now: s.now,
+      sleep: s.sleep,
+    }).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ConfirmationTimeoutError);
+    expect((error as ConfirmationTimeoutError).lastSeenStatus).toEqual({
+      confirmationStatus: 'processed',
+      err,
+      slot: 42,
+    });
+    expect((error as Error).message).toContain('failed at that level');
+  });
+
+  it('does not report as expired a transaction the cluster has seen', async () => {
+    // Not visible yet when the height passes, but the history lookup finds it processed: it is
+    // confirmed on the next poll instead of being reported as expired.
+    const s = statusConnection([null, null, status('processed'), status('confirmed')], [100, 151]);
+    const result = await confirmSignature(s.connection, SIGNATURE, {
+      deadlineMs: 60_000,
+      lastValidBlockHeight: 150,
+      now: s.now,
+      sleep: s.sleep,
+    });
+    expect(result.confirmationStatus).toBe('confirmed');
+  });
+
   it('retries network errors with backoff and confirms', async () => {
     const s = statusConnection([new Error('fetch failed'), new Error('429'), status('confirmed')]);
     const result = await confirmSignature(s.connection, SIGNATURE, {
