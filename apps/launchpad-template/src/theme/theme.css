@@ -7,22 +7,237 @@
 :root {
   --color-bg: rgb(var(--background));
   --color-surface: rgb(var(--neutral-925));
+  --color-surface-raised: rgb(var(--neutral-900));
   --color-text: rgb(var(--foreground));
   --color-text-muted: rgb(var(--neutral-400));
   --color-border: rgb(var(--neutral-850));
   --color-success: rgb(var(--emerald));
   --color-danger: rgb(var(--rose));
-  --radius: 0.5rem;
-  --font-heading: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --color-primary: rgb(var(--primary));
+  --color-accent: rgb(var(--accent));
+  --radius: 0.25rem;
+  --radius-card: calc(var(--radius) * 1.5);
+  --content-width: 84rem;
+  --page-gutter: clamp(1rem, 4vw, 3.5rem);
+  --section-space: clamp(2rem, 4vw, 3.5rem);
+  --font-heading: 'Iowan Old Style', 'Palatino Linotype', Georgia, serif;
   --font-body: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --mint-metal: color-mix(in srgb, var(--color-primary) 30%, var(--color-text-muted));
+  --mint-highlight: color-mix(in srgb, var(--color-accent) 18%, var(--color-text));
+  --mint-shadow: color-mix(in srgb, var(--color-primary) 15%, var(--color-bg));
+  --mint-width: clamp(18rem, 39vw, 34rem);
+  --market-height: clamp(25rem, 61vh, 42rem);
+  --token-row-height: 6.2rem;
+  --header-height: 4.5rem;
+  --token-rail-width: 23rem;
+  --token-chart-height: clamp(20rem, 47vh, 32rem);
+  --token-table-height: 26rem;
+}
+
+html {
+  scroll-behavior: smooth;
+  color-scheme: dark;
+}
+
+html:not(.dark) {
+  color-scheme: light;
 }
 
 body {
   font-family: var(--font-body);
+  background: var(--color-bg);
+  color: var(--color-text);
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
 }
 
 h1,
 h2,
 h3 {
   font-family: var(--font-heading);
+}
+
+a,
+button {
+  -webkit-tap-highlight-color: transparent;
+}
+
+:where(a, button, input, select, textarea):focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 3px;
+}
+
+::selection {
+  color: var(--color-text);
+  background: color-mix(in srgb, var(--color-primary) 32%, transparent);
+}
+
+.launchpad-header {
+  border-color: var(--color-border);
+  background: color-mix(in srgb, var(--color-bg) 88%, transparent);
+  box-shadow: 0 1px 0 color-mix(in srgb, var(--color-text) 4%, transparent);
+}
+
+.launchpad-header-inner {
+  width: min(100%, var(--content-width));
+  margin-inline: auto;
+  padding-inline: var(--page-gutter);
+}
+
+.launchpad-header a:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 3px;
+}
+
+.launchpad-header .launchpad-header-create {
+  border-color: var(--color-border);
+  border-radius: var(--radius);
+  color: var(--color-text);
+  transition: border-color 180ms ease, background-color 180ms ease, transform 180ms ease;
+}
+
+.launchpad-header .launchpad-header-create:hover {
+  border-color: var(--color-primary);
+  background: color-mix(in srgb, var(--color-primary) 12%, var(--color-surface));
+  transform: translateY(-1px);
+}
+
+.launchpad-header .rounded-full {
+  border-color: var(--color-border);
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--color-text);
+  box-shadow: none;
+  transition: border-color 180ms ease, background-color 180ms ease;
+}
+
+.launchpad-header .rounded-full:hover {
+  border-color: var(--color-primary);
+  background: color-mix(in srgb, var(--color-text) 6%, transparent);
+}
+
+.launchpad-brand-mark {
+  border-radius: var(--radius);
+  color: var(--color-primary);
+  background: color-mix(in srgb, var(--color-primary) 14%, var(--color-surface));
+}
+
+.launchpad-tagline {
+  max-width: 34ch;
+  color: var(--color-text-muted);
+}
+
+.launchpad-nav-link {
+  border-radius: var(--radius);
+  color: var(--color-text-muted);
+  transition: color 160ms ease, background-color 160ms ease;
+}
+
+.launchpad-nav-link:hover {
+  color: var(--color-text);
+  background: color-mix(in srgb, var(--color-text) 6%, transparent);
+}
+
+.launchpad-footer {
+  width: min(100%, var(--content-width));
+  margin-inline: auto;
+  padding: 1.5rem var(--page-gutter) 2rem;
+  border-top: 1px solid var(--color-border);
+  color: var(--color-text-muted);
+  font-size: 0.875rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  *, *::before, *::after { scroll-behavior: auto !important; transition-duration: 0.01ms !important; }
+}
+
+/* Editorial mint: a short identity banner above the working market. */
+.launchpad-header-inner { min-height: var(--header-height); }
+.launchpad-body { padding-bottom: var(--section-space); }
+.launchpad-home { gap: var(--section-space); }
+.launchpad-hero {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, .9fr);
+  align-items: center;
+  min-height: clamp(21rem, 43vh, 30rem);
+  padding: clamp(2.2rem, 4vw, 4rem) var(--page-gutter);
+  overflow: hidden;
+  isolation: isolate;
+  border-bottom: 1px solid var(--color-border);
+  background: linear-gradient(120deg, var(--color-bg), color-mix(in srgb, var(--color-primary) 5%, var(--color-bg)));
+}
+.launchpad-hero-copy { position: relative; z-index: 2; }
+.launchpad-eyebrow { margin: 0 0 1.3rem; color: var(--color-text-muted); font: 500 .65rem/1.4 var(--font-body); letter-spacing: .15em; }
+.launchpad-hero h1 { max-width: 10ch; margin: 0; font: 400 clamp(3.8rem, 8vw, 8rem)/.92 var(--font-heading); letter-spacing: -.065em; text-wrap: balance; overflow-wrap: anywhere; }
+.launchpad-title-period { color: var(--color-primary); }
+.launchpad-hero-tagline { max-width: 31ch; margin: 1.25rem 0 0; color: var(--color-text-muted); font: 400 clamp(.9rem, 1.2vw, 1rem)/1.55 var(--font-body); }
+.launchpad-hero-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 1.75rem; margin-top: 1.8rem; }
+.launchpad-hero-create { display: inline-flex; align-items: center; justify-content: space-between; gap: 2rem; min-height: 2.9rem; padding: .7rem 1.1rem; border-radius: var(--radius); background: var(--color-text); color: var(--color-bg); font: 500 .8rem/1.2 var(--font-body); transition: transform 180ms, background 180ms; }
+.launchpad-hero-create:hover { background: var(--mint-highlight); transform: translateY(-2px); }
+.launchpad-hero-link { display: inline-flex; align-items: center; gap: .8rem; min-height: 2.75rem; border-bottom: 1px solid var(--color-border); background: transparent; color: var(--color-text); font: 400 .8rem/1.4 var(--font-body); transition: gap 180ms; }
+.launchpad-hero-link:hover { gap: 1.1rem; border-color: var(--color-primary); }
+.launchpad-mint { display: block; width: var(--mint-width); max-width: 120%; justify-self: center; overflow: visible; }
+.launchpad-mint-letter { font: 400 115px var(--font-heading); }
+.launchpad-mint-front { transform-origin: 231px 222px; animation: launchpad-mint-front 8s ease-in-out infinite; }
+.launchpad-mint-back { transform-origin: 351px 210px; animation: launchpad-mint-back 10s ease-in-out infinite; }
+.launchpad-market { padding-inline: var(--page-gutter); scroll-margin-top: calc(var(--header-height) + 1rem); }
+.launchpad-market-heading { display: flex; align-items: baseline; gap: 1rem; margin-bottom: 1.2rem; }
+.launchpad-market-heading .launchpad-eyebrow { display: none; }
+.launchpad-market-heading h2 { margin: 0; font: 400 clamp(1.8rem, 3vw, 2.5rem)/1 var(--font-heading); letter-spacing: -.055em; }
+.launchpad-market-network { margin-left: auto; display: flex; align-items: center; gap: .5rem; color: var(--color-text-muted); font: 400 .7rem/1 var(--font-body); }
+.launchpad-market-network i { width: .3rem; aspect-ratio: 1; border-radius: 50%; background: var(--color-text-muted); }
+.launchpad-market > div { border: 1px solid var(--color-border); border-radius: var(--radius-card); overflow: hidden; }
+.launchpad-market-column { height: var(--market-height); background: var(--color-bg); }
+.launchpad-column-heading { min-height: 3.75rem; padding: 1rem 1.2rem; border-color: var(--color-border); }
+.launchpad-column-heading h2 { font: 500 .8rem/1.4 var(--font-body); color: var(--color-text); }
+.launchpad-column-number { color: var(--color-text-muted); font: 400 .62rem/1 var(--font-body); opacity: .7; }
+.launchpad-token-row { min-height: var(--token-row-height); padding: 1rem .8rem; border-color: var(--color-border); transition: background 150ms; }
+.launchpad-token-row:hover { background: var(--color-surface); }
+.launchpad-token-row > a:focus-visible { outline-offset: -3px; }
+.launchpad-market-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: .55rem; min-height: 21rem; padding: 2rem 1.2rem; text-align: center; }
+.launchpad-empty-mark { width: 3.1rem; height: 3.1rem; display: grid; place-items: center; margin-bottom: .7rem; border: 1px solid var(--color-border); border-radius: 50%; color: var(--color-text-muted); font: 400 1.4rem/1 var(--font-body); }
+.launchpad-market-empty p { color: var(--color-text); font: 400 1.4rem/1.2 var(--font-heading); letter-spacing: -.03em; }
+.launchpad-market-empty > span:not(.launchpad-empty-mark) { max-width: 23ch; color: var(--color-text-muted); font: 400 .75rem/1.6 var(--font-body); }
+.launchpad-market-empty .launchpad-hero-link { margin-top: .4rem; font-size: .7rem; }
+.launchpad-mobile-tabs { top: var(--header-height); }
+.launchpad-mobile-tabs button { border-radius: var(--radius); font-size: .7rem; }
+.launchpad-about, .launchpad-create { padding: var(--section-space) var(--page-gutter); }
+.launchpad-about h1, .launchpad-create-heading h1 { max-width: 12ch; margin: 0 0 2rem; font: 400 clamp(3rem, 7vw, 6.5rem)/.94 var(--font-heading); letter-spacing: -.065em; }
+.launchpad-about-copy { max-width: 42rem; padding-top: 1.5rem; border-top: 1px solid var(--color-border); color: var(--color-text-muted); font: 400 clamp(1rem, 1.5vw, 1.15rem)/1.8 var(--font-body); white-space: pre-line; }
+.launchpad-create-heading { border-bottom: 1px solid var(--color-border); padding-bottom: 2rem; }
+.launchpad-create-heading > p:last-child { color: var(--color-text-muted); }
+.launchpad-create-panel { max-width: 54rem; margin: var(--section-space) auto 0; padding: clamp(1.2rem, 4vw, 3rem); border: 1px solid var(--color-border); border-radius: var(--radius-card); background: var(--color-surface); }
+.launchpad-token-page { width: 100%; padding: clamp(1.3rem, 3vw, 2.5rem) var(--page-gutter) var(--section-space); }
+.launchpad-token-back { display: inline-flex; align-items: center; gap: .7rem; min-height: 2.75rem; color: var(--color-text-muted); font: 400 .75rem/1 var(--font-body); }
+.launchpad-token-back:hover { color: var(--color-text); }
+.launchpad-token-heading { display: flex; padding: 1.3rem 0; margin-bottom: 1.3rem; border-bottom: 1px solid var(--color-border); }
+.launchpad-token-grid { display: grid; grid-template-columns: minmax(0, 1fr) var(--token-rail-width); align-items: start; gap: 1.3rem; }
+.launchpad-token-main { display: flex; flex-direction: column; min-width: 0; overflow: hidden; border: 1px solid var(--color-border); border-radius: var(--radius-card); }
+.launchpad-token-stats { grid-area: stats; padding: .6rem; border-bottom: 1px solid var(--color-border); }
+.launchpad-token-chart { grid-area: chart; height: var(--token-chart-height); min-width: 0; background: var(--color-bg); }
+.launchpad-token-tables { grid-area: tables; height: var(--token-table-height); min-height: 0; }
+.launchpad-token-trade { grid-area: auto; display: flex; flex-direction: column; gap: 1.3rem; position: sticky; top: calc(var(--header-height) + 1.3rem); min-width: 0; }
+.launchpad-token-trade > * { border-color: var(--color-border); border-radius: var(--radius-card); }
+@media (max-width: 1000px) {
+  .launchpad-token-grid { grid-template-columns: minmax(0, 1fr); grid-template-areas: 'stats' 'chart' 'trade' 'tables'; }
+  .launchpad-token-main { display: contents; }
+  .launchpad-token-trade { grid-area: trade; position: static; }
+  .launchpad-token-stats, .launchpad-token-chart, .launchpad-token-tables { border: 1px solid var(--color-border); border-radius: var(--radius-card); overflow: hidden; }
+}
+@keyframes launchpad-mint-front { 50% { transform: translateY(-11px) rotate(3deg); } }
+@keyframes launchpad-mint-back { 50% { transform: translateY(9px) rotate(-4deg); } }
+@media (max-width: 700px) {
+  :root { --header-height: 4rem; --mint-width: 18rem; --token-row-height: 6.3rem; }
+  .launchpad-hero { grid-template-columns: 1fr; min-height: auto; padding-block: 2.2rem 1.5rem; }
+  .launchpad-hero h1 { max-width: 9ch; font-size: clamp(3.6rem, 16vw, 5.5rem); }
+  .launchpad-hero-actions { margin-top: 1.3rem; }
+  .launchpad-mint { max-width: 90%; height: 12rem; margin-top: 1rem; }
+  .launchpad-market-heading h2 { font-size: 2rem; }
+  .launchpad-market-column { height: auto; min-height: 25rem; }
+  .launchpad-market > div { overflow: visible; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .launchpad-mint-front, .launchpad-mint-back { animation: none; }
 }
