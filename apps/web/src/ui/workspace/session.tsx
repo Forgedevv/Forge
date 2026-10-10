@@ -15,12 +15,14 @@ export function LoginPanel({ initialMessage = '' }: { initialMessage?: string })
   const { session, status, connect } = api.useSession();
   const [message, setMessage] = useState(initialMessage);
   const [busy, setBusy] = useState(false);
+  const [connectionStarted, setConnectionStarted] = useState(false);
   const login = async () => {
     if (busy) return;
     setBusy(true);
     setMessage('');
     try {
       await connect();
+      if (!demo) setConnectionStarted(true);
     } catch (error) {
       setMessage(readableError(error));
     } finally {
@@ -65,8 +67,13 @@ export function LoginPanel({ initialMessage = '' }: { initialMessage?: string })
             </div>
           ) : (
             <Button disabled={!available || busy || status === 'signing'} onClick={login}>
-              {copy.choose}
+              {connectionStarted ? copy.resume : copy.choose}
             </Button>
+          )}
+          {!demo && connectionStarted && status === 'idle' && !message && (
+            <p className="fw-caption" role="status">
+              {copy.delegated}
+            </p>
           )}
           {!available && <p className="fw-notice">{common.unavailableBody}</p>}
           {message && (

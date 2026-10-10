@@ -183,3 +183,23 @@ Agent 3 (`src/client/`), agent 2 (`src/forge/` components and `SiteConfig`). Mea
 
 **Requests / notes**
 - No new dependency or backend request. The preview remains local on port 3000. No financial logic, global setting, Git configuration, push, or deployment was changed.
+
+### 2026-10-10 - Connect the real web client
+
+**Done**
+- Replaced the old unavailable adapter in the application provider with the delivered backend-owned `realClient` and `ForgeClientProvider`. The homepage and A2-A11 now share the real session, flags, data hooks and existing client actions outside development previews.
+- Loaded the live wallet stack separately from mock previews. Production ignores both the public mock flag and supplied preview controllers; development mock screens mount no live wallet provider or API hooks.
+- Added a wallet-login continuation step because opening the selector does not create an authenticated session. Kept protected screens locked until the real session exists and made failed access checks show a retryable unavailable state.
+- Replaced the native top-layer login dialog with an accessible overlay below the wallet picker. Added keyboard wrapping, Escape dismissal, focus restoration and focus handoff to the adapter's body portal, so the picker is not blocked by an inert native-modal background.
+- Added eleven integration tests using the real hooks with simulated HTTP and wallet adapters. They cover login/logout, authentication errors, access-check failure/retry, flags, production mock rejection, development isolation and dialog focus behavior, including the connected view. No private key, real signature or chain transaction was used.
+- Web typecheck, lint, build and all 215 tests pass. `git diff --check` passes. Production HTTP inspection confirms session gates on workshop routes and not-found/noindex results with no mock content on all three development routes, even with a mock flag supplied to the server process. These streamed not-found responses carry HTTP 200; no literal 404-status claim is made.
+- Documented actual route availability and client limitations in `apps/web/src/ui/workspace/INTEGRATION.md`. Kept the established design and palette.
+
+**Not done / uncertain**
+- Backend route/service assembly and integration of `w3/integration` remain pending. Chat/spec/payment routes exist there but not on this branch; flags, gating, RPC, owner-transaction, approval, modification, reactivation and claim routes are still absent. Real database policies and the complete devnet flow have not been verified here.
+- Current flag hooks retain an open default on failed reads. Job/list/detail hooks have no shared error channel and may wait indefinitely or disguise failed reads as an empty list. These backend-owned behaviors cannot be resolved by fabricating frontend results. Earlier claim-history, acquisition/display metadata, rejected-login and chat-error requests remain open.
+- No rendered-browser or physical-wallet test was possible; browser inventory is empty. Existing jsdom canvas and unset `metadataBase` warnings remain. The client template was unchanged.
+
+**Requests / notes**
+- Appended the route/contract handoff request signed `Agent 6 — Frontend` in `docs/CHANGE_REQUESTS.md`; earlier missing-client requests are resolved only in their client-delivery portion.
+- Changes remain inside the frontend zone and are committed locally on `agent/frontend` with the verified `Forgedevv` identity. No dependency, backend/API/database implementation, financial logic, environment file, persistent environment setting, Git configuration, remote, push or deployment was changed.

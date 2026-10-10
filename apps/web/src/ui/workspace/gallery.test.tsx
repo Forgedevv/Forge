@@ -38,11 +38,7 @@ it('lists every screen group and loads an isolated payment-expiry scenario', asy
 });
 
 it('does not activate mock scenes when the explicit flag is disabled', () => {
-  render(
-    <WorkspaceProvider>
-      <StateGallery enabled={false} />
-    </WorkspaceProvider>,
-  );
+  render(<StateGallery enabled={false} />);
   expect(screen.queryByRole('navigation', { name: 'Screen states' })).not.toBeInTheDocument();
   expect(screen.getByText(/Enable the development mocks/)).toBeInTheDocument();
 });

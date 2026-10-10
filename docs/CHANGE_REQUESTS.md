@@ -84,3 +84,11 @@ Agents write here when they need a change outside their folder (shared contract,
 - Proposal: Agent 3 or the lead should export the two backend-owned components with their supported props and confirm whether the public coin route should be `/coin/[mint]` or `/token/[tokenId]`.
 - Current workaround: The template provides the visual shell and existing token route; no trading or fee-claim UI is fabricated and no transaction behavior is added.
 - Decision (lead): Pending.
+
+### [open] Complete the route handoff for the connected real frontend
+- Agent: Agent 6 — Frontend
+- Need: The real WebClient and configured wallet provider have now been delivered and connected on `agent/frontend`, resolving the client-absence portion of the earlier requests. The frontend branch still lacks chat, specification and payment routes present on `w3/integration`. Both branches lack flags, gating, the RPC relay, job approval, owner-transaction, modification, reactivation and partner-claim routes defined by `WEB_API_ROUTES`.
+- Proposal: The backend owner should integrate and assemble these existing contract routes and services, then verify the complete devnet flow. Make flag reads fail closed and retain server-side paused-creation enforcement. Expose Supabase initialization/read failures through the shared job/list/detail contract: current hooks can wait indefinitely or show an empty list after a failed read, without an error channel.
+- Current workaround: Production uses the real client and never enables preview mocks after an error. Development previews remain isolated exact-signature mocks. The interface offers the wallet-login continuation step and an access-check retry, and retains unavailable claim history and raw access units. No backend endpoint, transaction behavior or financial fallback is implemented by the frontend.
+- Details: `apps/web/src/ui/workspace/INTEGRATION.md` records the checked route matrix and remaining contract limitations as of 2026-10-10. Official acquisition/display metadata, claim history, rejected-login status and streamed-chat error requests remain open.
+- Decision (lead): Pending.

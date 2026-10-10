@@ -52,6 +52,10 @@
 .fw {
   min-height: 100svh;
 }
+.fw-client-loading {
+  display: grid;
+  place-items: center;
+}
 .fw * {
   box-sizing: border-box;
 }
@@ -1172,7 +1176,21 @@
   display: flex;
   gap: 26px;
 }
+:root:has(.fw-login-layer) {
+  overflow: hidden;
+}
+.fw-login-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  background: var(--fw-backdrop);
+  backdrop-filter: blur(8px);
+}
 .fw-login-dialog {
+  position: relative;
+  background: var(--fw-bg);
   margin: auto;
   min-height: auto;
   width: min(530px, calc(100vw - 32px));
@@ -1181,10 +1199,6 @@
   border-radius: 28px;
   padding: 42px;
   overflow-y: auto;
-}
-.fw-login-dialog::backdrop {
-  background: var(--fw-backdrop);
-  backdrop-filter: blur(8px);
 }
 .fw-dialog-close {
   position: absolute;
