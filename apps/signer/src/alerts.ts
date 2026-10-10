@@ -7,6 +7,11 @@
  * - a dedup key per alert (default: the code), so "low balance" on two different wallets are
  *   two different alerts while the same one is sent at most once per window;
  * - one dedup window per level (immediate alerts are repeated sooner than normal ones);
+ * - an alert counts as sent (for dedup) only once Telegram accepted it: a failed send is never
+ *   deduplicated away;
+ * - one-shot alerts (immediate ones, and any alert sent with `oneShot: true`, e.g. an outflow the
+ *   watcher will not detect again) that fail or are rate-limited go to a bounded retry queue,
+ *   retried with backoff before each new alert and by `flushPending()`;
  * - a global cap per window: past it, alerts are only logged and the count of suppressed alerts
  *   is appended to the next message sent. Immediate alerts are exempt from the cap;
  * - secrets never leave the process: sensitive detail keys are dropped, and the message, the
@@ -29,6 +34,11 @@ export interface AlertLogger {
 export interface AlertOptions {
   /** Alerts with the same dedup key are sent at most once per window. Default: the code. */
   dedupKey?: string;
+  /**
+   * The event will not be raised again (a detection whose cursor moved on): a failed or
+   * rate-limited send is queued and retried until delivered. Default: true for `immediate`.
+   */
+  oneShot?: boolean;
 }
 
 export interface Alerter {
@@ -39,6 +49,8 @@ export interface Alerter {
     details?: Record<string, unknown>,
     options?: AlertOptions,
   ): Promise<void>;
+  /** Retries the queued one-shot alerts that are due. Never throws. */
+  flushPending?(): Promise<void>;
 }
 
 export interface AlerterOptions {
@@ -54,7 +66,16 @@ export interface AlerterOptions {
   now?: () => number;
   /** Per-request timeout for the Telegram call. */
   timeoutMs?: number;
+  /** Most one-shot alerts kept for retry (oldest non-immediate dropped first). */
+  maxPending?: number;
+  /** First retry delay of a queued alert, doubled per failure up to `maxRetryDelayMs`. */
+  retryBaseMs?: number;
+  maxRetryDelayMs?: number;
 }
+
+export const DEFAULT_MAX_PENDING = 200;
+export const DEFAULT_RETRY_BASE_MS = 30_000;
+export const DEFAULT_MAX_RETRY_DELAY_MS = 15 * 60_000;
 
 export const DEFAULT_MIN_INTERVAL_MS: Record<AlertLevel, number> = {
   immediate: 5 * 60_000,
@@ -115,7 +136,24 @@ export function sanitizeDetails(
   return out;
 }
 
-export function createAlerter(opts: AlerterOptions): Alerter {
+/** A one-shot alert waiting for a successful send. Holds already sanitized text only. */
+interface PendingAlert {
+  key: string;
+  level: AlertLevel;
+  code: string;
+  /** Sanitized, ready-to-send message lines (without the suppressed-count line). */
+  lines: string[];
+  attempts: number;
+  nextAt: number;
+}
+
+export interface QueueingAlerter extends Alerter {
+  flushPending(): Promise<void>;
+  /** Number of one-shot alerts waiting for a successful send. */
+  pendingCount(): number;
+}
+
+export function createAlerter(opts: AlerterOptions): QueueingAlerter {
   const { botToken, chatId, logger } = opts;
   const doFetch = opts.fetch ?? globalThis.fetch;
   const now = opts.now ?? Date.now;
@@ -123,18 +161,111 @@ export function createAlerter(opts: AlerterOptions): Alerter {
   const intervals = { ...DEFAULT_MIN_INTERVAL_MS, ...opts.minIntervalMs };
   const maxPerWindow = opts.maxPerWindow ?? DEFAULT_MAX_PER_WINDOW;
   const windowMs = opts.windowMs ?? DEFAULT_WINDOW_MS;
+  const maxPending = Math.max(1, opts.maxPending ?? DEFAULT_MAX_PENDING);
+  const retryBaseMs = opts.retryBaseMs ?? DEFAULT_RETRY_BASE_MS;
+  const maxRetryDelayMs = opts.maxRetryDelayMs ?? DEFAULT_MAX_RETRY_DELAY_MS;
   const configured = Boolean(botToken) && Boolean(chatId);
 
   const lastSent = new Map<string, number>();
+  const pending = new Map<string, PendingAlert>();
   let windowStart = 0;
   let sentInWindow = 0;
   let suppressed = 0;
+  let flushing: Promise<void> | null = null;
+
+  const safeLog = (fields: object, msg: string): void => {
+    try {
+      logger.error(fields, msg);
+    } catch {
+      /* logging must never throw */
+    }
+  };
+
+  /** One Telegram call. True only when Telegram accepted the message. Never throws. */
+  const post = async (level: AlertLevel, code: string, text: string): Promise<boolean> => {
+    try {
+      const res = await doFetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          chat_id: chatId,
+          text: text.slice(0, MAX_MESSAGE_LENGTH),
+          disable_web_page_preview: true,
+          disable_notification: level === 'normal',
+        }),
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      if (!res.ok) {
+        safeLog({ code, status: res.status }, 'telegram alert failed');
+        return false;
+      }
+      return true;
+    } catch (err) {
+      // Log only the error name: network errors can embed the request URL (which has the token).
+      safeLog({ code, errorName: err instanceof Error ? err.name : 'unknown' }, 'telegram alert failed');
+      return false;
+    }
+  };
+
+  const enqueue = (entry: Omit<PendingAlert, 'attempts' | 'nextAt'>, t: number): void => {
+    const previous = pending.get(entry.key);
+    pending.set(entry.key, {
+      ...entry,
+      attempts: previous ? previous.attempts + 1 : 1,
+      nextAt: t + Math.min(retryBaseMs * 2 ** (previous?.attempts ?? 0), maxRetryDelayMs),
+    });
+    while (pending.size > maxPending) {
+      // Drop the oldest non-immediate entry first; immediate ones only when nothing else is left.
+      let victim: string | undefined;
+      for (const [k, v] of pending) {
+        if (v.level !== 'immediate') {
+          victim = k;
+          break;
+        }
+      }
+      victim ??= pending.keys().next().value;
+      if (victim === undefined) break;
+      const dropped = pending.get(victim);
+      pending.delete(victim);
+      safeLog({ code: dropped?.code ?? 'unknown' }, 'alert retry queue full: oldest alert dropped');
+    }
+  };
+
+  const flushDue = async (): Promise<void> => {
+    if (!configured || pending.size === 0) return;
+    const t = now();
+    for (const entry of [...pending.values()]) {
+      if (entry.nextAt > t) continue;
+      const lines = [...entry.lines, `(retried after ${entry.attempts} failed attempt(s))`];
+      if (await post(entry.level, entry.code, lines.join('\n'))) {
+        pending.delete(entry.key);
+        lastSent.set(entry.key, now());
+      } else {
+        enqueue(entry, now());
+      }
+    }
+  };
+
+  /** Runs one flush at a time (concurrent alerts must not send a queued entry twice). */
+  const flushPending = async (): Promise<void> => {
+    if (flushing) return flushing;
+    flushing = flushDue()
+      .catch(() => undefined)
+      .finally(() => {
+        flushing = null;
+      });
+    return flushing;
+  };
 
   return {
+    flushPending,
+    pendingCount: () => pending.size,
     async alert(level, code, message, details, options) {
       try {
+        await flushPending();
         const t = now();
         const key = `${level}:${options?.dedupKey ?? code}`;
+        const oneShot = options?.oneShot ?? level === 'immediate';
         const prev = lastSent.get(key);
         if (prev !== undefined && t - prev < intervals[level]) {
           logger.info({ code }, 'alert deduplicated');
@@ -152,49 +283,49 @@ export function createAlerter(opts: AlerterOptions): Alerter {
             if (t - at >= intervals.normal) lastSent.delete(k);
           }
         }
-        // A capped alert is not marked as sent, so it can still go out once the window rolls over.
-        if (!capped) lastSent.set(key, t);
 
         const safe = sanitizeDetails(details);
         const safeMessage = scrubSecrets(message);
         logger.warn({ alert: { level, code, message: safeMessage, details: safe } }, 'alert');
-        if (capped) {
-          suppressed += 1;
-          logger.warn({ code }, 'alert rate limited');
+        if (!configured) {
+          // Log-only mode: the log line above is the delivery; dedup the logs.
+          lastSent.set(key, t);
           return;
         }
-        if (!configured) return;
 
         // Plain text (no parse_mode): nothing to escape.
         const lines = [`${PREFIX[level]} ${code}`, safeMessage];
         for (const [k, v] of Object.entries(safe)) lines.push(`${k}: ${v}`);
-        if (suppressed > 0) lines.push(`(${suppressed} other alerts suppressed by the rate limit)`);
-        const text = lines.join('\n').slice(0, MAX_MESSAGE_LENGTH);
 
+        if (capped) {
+          // Not marked as sent: it can still go out once the window rolls over.
+          suppressed += 1;
+          logger.warn({ code }, 'alert rate limited');
+          if (oneShot) enqueue({ key, level, code, lines }, t);
+          return;
+        }
+
+        const carried = suppressed;
+        const text = [
+          ...lines,
+          ...(carried > 0 ? [`(${carried} other alerts suppressed by the rate limit)`] : []),
+        ].join('\n');
         sentInWindow += 1;
         suppressed = 0;
-        const res = await doFetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            chat_id: chatId,
-            text,
-            disable_web_page_preview: true,
-            disable_notification: level === 'normal',
-          }),
-          signal: AbortSignal.timeout(timeoutMs),
-        });
-        if (!res.ok) logger.error({ code, status: res.status }, 'telegram alert failed');
-      } catch (err) {
-        // Log only the error name: network errors can embed the request URL (which has the token).
-        try {
-          logger.error(
-            { code, errorName: err instanceof Error ? err.name : 'unknown' },
-            'telegram alert failed',
-          );
-        } catch {
-          /* logging must never throw */
+        if (await post(level, code, text)) {
+          lastSent.set(key, t);
+          pending.delete(key);
+          return;
         }
+        // Failed: not marked as sent (the next identical alert goes out), counts restored.
+        sentInWindow -= 1;
+        suppressed += carried;
+        if (oneShot) enqueue({ key, level, code, lines }, t);
+      } catch (err) {
+        safeLog(
+          { code, errorName: err instanceof Error ? err.name : 'unknown' },
+          'telegram alert failed',
+        );
       }
     },
   };
@@ -205,7 +336,7 @@ export function createAlerterFromEnv(
   logger: AlertLogger,
   env: Readonly<Record<string, string | undefined>> = process.env,
   overrides: Partial<AlerterOptions> = {},
-): Alerter {
+): QueueingAlerter {
   return createAlerter({
     botToken: env.TELEGRAM_BOT_TOKEN || undefined,
     chatId: env.TELEGRAM_CHAT_ID || undefined,

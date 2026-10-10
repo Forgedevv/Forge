@@ -24,7 +24,12 @@
  *    was recorded (`FALLBACK_EXPIRY_BLOCKS`).
  * 3. Journal entries whose payment no longer points to S are reconciled too: a landed S that the
  *    database lost is repaired and alerted, never paid twice.
- * Kill switches: env `paused`, flag `refunds_paused` (fail closed when the flags cannot be read).
+ * Kill switches: env `paused`, flag `refunds_paused` (fail closed when the flags cannot be read or
+ * the row is missing), read at the start of the run AND again right before each new refund is
+ * signed, so turning the switch on stops a run in progress.
+ * Manual handling: a job that cannot be refunded automatically (anomaly, included modification
+ * with nothing to pay back, refused verification...) is alerted ONCE per reason and remembered in
+ * the `manualMarks` journal, instead of being re-alerted on every run.
  */
 import { PublicKey } from '@solana/web3.js';
 import { z } from 'zod';
@@ -43,6 +48,7 @@ import {
   FALLBACK_EXPIRY_BLOCKS,
   JOB_FLAGS,
   JobError,
+  alertAbnormalPause,
   assertSolTransferTx,
   awaitSettlement,
   broadcast,
@@ -70,6 +76,7 @@ import {
   type Journal,
   type KeystoreLike,
   type Mutex,
+  type PauseReason,
   type PostgrestClient,
   type RetryOptions,
   type Settlement,
@@ -161,6 +168,16 @@ export const RefundJournalEntry = z.object({
 });
 export type RefundJournalEntry = z.infer<typeof RefundJournalEntry>;
 
+/** A job sent to manual handling, remembered so it is alerted once (key: the job id). */
+export const RefundManualMark = z.object({
+  v: z.literal(1),
+  jobId: z.string(),
+  paymentId: z.string().nullable(),
+  reason: z.string(),
+  at: z.string(),
+});
+export type RefundManualMark = z.infer<typeof RefundManualMark>;
+
 export const REFUND_MEMO_PREFIX = 'forge:refund:';
 
 /** Rows read per database page, and the most rows one run looks at per list. */
@@ -234,11 +251,13 @@ export function decideRefund(candidate: RefundCandidate, opts: DecideOptions): R
       : { action: 'manual', reason: 'refunded_without_signature', paymentId: payment.id };
   }
   if (payment.refundSignature !== null) return { action: 'skip', reason: 'in_flight' };
+  // An included modification (0 lamports, no transaction): nothing to pay back. Checked before
+  // the signature, which such a payment never has.
+  if (payment.lamports <= 0n)
+    return { action: 'manual', reason: 'zero_amount', paymentId: payment.id };
   if (!payment.txSignature) {
     return { action: 'manual', reason: 'missing_payment_signature', paymentId: payment.id };
   }
-  if (payment.lamports <= 0n)
-    return { action: 'manual', reason: 'zero_amount', paymentId: payment.id };
   if (payment.lamports > opts.maxRefundLamports) {
     return { action: 'manual', reason: 'above_refund_cap', paymentId: payment.id };
   }
@@ -271,6 +290,8 @@ export interface RefundsDeps {
   core: Pick<SignerCore, 'verifyPayment' | 'buildSolTransferTx'>;
   keystore: KeystoreLike;
   journal: Journal<RefundJournalEntry>;
+  /** Jobs already alerted for manual handling (alert once per job and reason). */
+  manualMarks: Journal<RefundManualMark>;
   flags: FlagsReader;
   alerter: JobAlerter;
   logger: JobLogger;
@@ -278,10 +299,10 @@ export interface RefundsDeps {
   retry?: RetryOptions;
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
-  /** Shared with the cashbox job so they never spend from the cashbox at the same time. */
-  walletLock?: Mutex;
-  /** Called with each refund signature right before it is (re)broadcast by this process. */
-  onBeforeSend?: BeforeSendHook;
+  /** Shared with the cashbox job so they never spend from the cashbox at the same time. Required. */
+  walletLock: Mutex;
+  /** Called with each refund signature right before it is (re)broadcast by this process. Required. */
+  onBeforeSend: BeforeSendHook;
 }
 
 export type RefundOutcome =
@@ -313,6 +334,12 @@ export function createRefundsJob(deps: RefundsDeps): RefundsJob {
   const settleTiming = { ...DEFAULT_SETTLE, ...config.settle };
   const maxPerRun = config.maxPerRun ?? 10;
   let running = false;
+  /** Set when the kill switch is found on during a run: no further refund is started. */
+  let stopReason: PauseReason | null = null;
+  if (!deps.walletLock || typeof deps.walletLock.runExclusive !== 'function') {
+    throw new JobError('CONFIG', 'walletLock is required (shared with the cashbox job)');
+  }
+  if (!deps.manualMarks) throw new JobError('CONFIG', 'manualMarks journal is required');
 
   const iso = () => new Date(now()).toISOString();
   const alert = (
@@ -377,6 +404,9 @@ export function createRefundsJob(deps: RefundsDeps): RefundsJob {
       log.warn({ jobId, err: describeError(err) }, 'refund job event not recorded');
     }
     await journal.delete(payment.id);
+    await deps.manualMarks.delete(jobId).catch((err: unknown) => {
+      log.warn({ jobId, err: describeError(err) }, 'manual mark not cleared');
+    });
     log.info(
       { jobId, paymentId: payment.id, signature, lamports: payment.lamports.toString() },
       'refund recorded',
@@ -636,19 +666,47 @@ export function createRefundsJob(deps: RefundsDeps): RefundsJob {
     }
   }
 
+  /**
+   * Alerts once per (job, reason): the mark is written after the alert, so a crash in between
+   * repeats the alert rather than losing it. An unreadable mark alerts again (never silent).
+   */
   async function alertManual(
     jobId: string,
     paymentId: string | undefined,
     reason: string,
     extra: Record<string, unknown> = {},
   ) {
+    let mark: RefundManualMark | undefined;
+    try {
+      mark = await deps.manualMarks.get(jobId);
+    } catch (err) {
+      log.warn({ jobId, err: describeError(err) }, 'manual mark unreadable');
+    }
+    if (mark?.reason === reason) {
+      log.debug({ jobId, reason }, 'manual handling already alerted');
+      return;
+    }
+    const zero = reason === 'zero_amount';
     await alert(
-      'high',
+      zero ? 'normal' : 'high',
       'refund_manual',
-      'A build-failed job cannot be refunded automatically: manual handling needed',
+      zero
+        ? 'A build-failed job used an included modification (nothing was paid): restore the included modification by hand if needed'
+        : 'A build-failed job cannot be refunded automatically: manual handling needed',
       { jobId, paymentId: paymentId ?? 'none', reason, ...extra },
       `refund_manual:${jobId}:${reason}`,
     );
+    try {
+      await deps.manualMarks.put(jobId, {
+        v: 1,
+        jobId,
+        paymentId: paymentId ?? null,
+        reason,
+        at: iso(),
+      });
+    } catch (err) {
+      log.warn({ jobId, err: describeError(err) }, 'manual mark not recorded');
+    }
   }
 
   async function attemptRefund(
@@ -740,6 +798,14 @@ export function createRefundsJob(deps: RefundsDeps): RefundsJob {
     }
     const recipientBalance = await withRetry(() => rpc.getBalance(payer, 'confirmed'), retry);
     if (recipientBalance + amount < rentExempt) return manual('recipient_not_rent_exempt');
+
+    // The kill switch may have been turned on since the run started: re-read it before signing.
+    const pause = await checkPaused(deps.flags, JOB_FLAGS.refunds, config.paused, log);
+    if (pause.paused) {
+      stopReason = pause.reason;
+      await alertAbnormalPause(alerter, log, 'refunds', JOB_FLAGS.refunds, pause.reason);
+      return { result: 'skipped', jobId: job.id, paymentId: payment.id, reason: 'paused' };
+    }
 
     // Build, check, sign. The signature is known before anything is recorded or sent.
     const memo = refundMemo(payment.id);
@@ -895,10 +961,11 @@ export function createRefundsJob(deps: RefundsDeps): RefundsJob {
     // 3. New refunds, page by page (jobs left for manual handling never starve newer ones).
     let attempts = 0;
     const seen = new Set<string>();
+    stopReason = null;
     pages: for (let offset = 0; ; offset += PAGE_SIZE) {
       const page = await store.listRefundCandidates(PAGE_SIZE, offset);
       for (const candidate of page) {
-        if (attempts >= maxPerRun) break pages;
+        if (attempts >= maxPerRun || stopReason !== null) break pages;
         if (seen.has(candidate.job.id)) continue;
         seen.add(candidate.job.id);
         const outcome = await guarded({ jobId: candidate.job.id }, () =>
@@ -909,6 +976,7 @@ export function createRefundsJob(deps: RefundsDeps): RefundsJob {
       }
       if (page.length < PAGE_SIZE || offset + PAGE_SIZE >= MAX_LISTED) break;
     }
+    if (stopReason !== null) return { status: 'paused', reason: stopReason, outcomes };
     return { status: 'ran', outcomes };
   }
 
@@ -920,12 +988,11 @@ export function createRefundsJob(deps: RefundsDeps): RefundsJob {
         const pause = await checkPaused(deps.flags, JOB_FLAGS.refunds, config.paused, log);
         if (pause.paused) {
           log.info({ reason: pause.reason }, 'refunds paused');
+          await alertAbnormalPause(alerter, log, 'refunds', JOB_FLAGS.refunds, pause.reason);
           return { status: 'paused', reason: pause.reason, outcomes: [] };
         }
         try {
-          return deps.walletLock
-            ? await deps.walletLock.runExclusive(runUnlocked)
-            : await runUnlocked();
+          return await deps.walletLock.runExclusive(runUnlocked);
         } catch (err) {
           const summary = describeError(err);
           log.error({ err: summary }, 'refunds run failed');

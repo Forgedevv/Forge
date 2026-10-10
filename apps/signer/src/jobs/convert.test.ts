@@ -17,6 +17,7 @@ import {
   createRpcBalanceSource,
   createRpcSwapSender,
   ledgerKey,
+  ledgerOf,
   parseConvertConfig,
   resolveConvertMode,
   runConvertOnce,
@@ -38,6 +39,12 @@ const OWNER = Keypair.generate().publicKey.toBase58();
 const MINT_A = Keypair.generate().publicKey.toBase58();
 const MINT_B = Keypair.generate().publicKey.toBase58();
 const NOW = Date.UTC(2026, 9, 9, 12, 0, 0);
+const EXPECTATION = {
+  inputMint: MINT_A,
+  inAmount: 1000n,
+  minOutLamports: 1n,
+  forbiddenMints: [],
+};
 
 const config: ConvertConfig = parseConvertConfig({});
 
@@ -328,7 +335,7 @@ describe('runConvertOnce: dry-run', () => {
       cluster: 'devnet',
     });
     await runConvertOnce(deps);
-    expect(await deps.ledger.get(ledgerKey(OWNER, MINT_A, runWindowKey(NOW)))).toBeUndefined();
+    expect(await ledgerOf(deps).get(ledgerKey(OWNER, MINT_A, runWindowKey(NOW)))).toBeUndefined();
   });
 });
 
@@ -350,8 +357,9 @@ describe('runConvertOnce: live', () => {
       owner: OWNER,
       swapTransaction: 'dHg=',
       lastValidBlockHeight: 100,
+      expected: expect.objectContaining({ inputMint: MINT_A, inAmount: 1000n }),
     });
-    expect((await deps.ledger.get(ledgerKey(OWNER, MINT_A, runWindowKey(NOW))))?.status).toBe(
+    expect((await ledgerOf(deps).get(ledgerKey(OWNER, MINT_A, runWindowKey(NOW))))?.status).toBe(
       'confirmed',
     );
     expect(alerts.mock.calls.map((c) => c[1])).toEqual(['CONVERT_DONE']);
@@ -389,7 +397,7 @@ describe('runConvertOnce: live', () => {
     h.send.mockRejectedValueOnce(new Error('socket hang up'));
     const r = await runConvertOnce(h.deps);
     expect(r.items[0]?.outcome).toMatchObject({ status: 'failed' });
-    expect((await h.deps.ledger.get(ledgerKey(OWNER, MINT_A, runWindowKey(NOW))))?.status).toBe(
+    expect((await ledgerOf(h.deps).get(ledgerKey(OWNER, MINT_A, runWindowKey(NOW))))?.status).toBe(
       'submitted',
     );
     const again = await runConvertOnce(h.deps);
@@ -406,7 +414,7 @@ describe('runConvertOnce: live', () => {
     });
     const r = await runConvertOnce(h.deps);
     expect(r.items[0]?.outcome).toMatchObject({ status: 'failed', signature: 'SIGF' });
-    expect((await h.deps.ledger.get(ledgerKey(OWNER, MINT_A, runWindowKey(NOW))))?.status).toBe(
+    expect((await ledgerOf(h.deps).get(ledgerKey(OWNER, MINT_A, runWindowKey(NOW))))?.status).toBe(
       'failed',
     );
     expect(h.alerts.mock.calls.map((c) => c[1])).toEqual(['CONVERT_FAILED']);
@@ -562,24 +570,30 @@ describe('verifySwapTransaction', () => {
   const owner = Keypair.generate();
   it('accepts a Jupiter transaction paid and signed by the owner only', () => {
     expect(
-      verifySwapTransaction(buildTx(owner, JUPITER_PROGRAM_ID), owner.publicKey.toBase58()),
-    ).toBeNull();
+      verifySwapTransaction(buildTx(owner, JUPITER_PROGRAM_ID), {
+        owner: owner.publicKey.toBase58(), lookupTables: [], expected: EXPECTATION, maxPriorityFeeLamports: 1_000_000n,
+      }),
+    ).toEqual({ ok: true, feeBoundLamports: 5000n });
   });
 
   it('rejects another fee payer, extra signers and a missing Jupiter program', () => {
     const other = Keypair.generate();
     expect(
-      verifySwapTransaction(buildTx(other, JUPITER_PROGRAM_ID), owner.publicKey.toBase58()),
-    ).toBe('fee_payer_mismatch');
+      verifySwapTransaction(buildTx(other, JUPITER_PROGRAM_ID), {
+        owner: owner.publicKey.toBase58(), lookupTables: [], expected: EXPECTATION, maxPriorityFeeLamports: 1_000_000n,
+      }),
+    ).toEqual({ ok: false, reason: 'fee_payer_mismatch' });
     expect(
-      verifySwapTransaction(buildTx(owner, JUPITER_PROGRAM_ID, other), owner.publicKey.toBase58()),
-    ).toBe('extra_signers');
+      verifySwapTransaction(buildTx(owner, JUPITER_PROGRAM_ID, other), {
+        owner: owner.publicKey.toBase58(), lookupTables: [], expected: EXPECTATION, maxPriorityFeeLamports: 1_000_000n,
+      }),
+    ).toEqual({ ok: false, reason: 'extra_signers' });
     expect(
       verifySwapTransaction(
         buildTx(owner, SystemProgram.programId.toBase58()),
-        owner.publicKey.toBase58(),
+        { owner: owner.publicKey.toBase58(), lookupTables: [], expected: EXPECTATION, maxPriorityFeeLamports: 1_000_000n },
       ),
-    ).toBe('jupiter_program_missing');
+    ).toEqual({ ok: false, reason: 'system_instruction_not_allowed' });
   });
 });
 
@@ -592,11 +606,41 @@ describe('createRpcSwapSender', () => {
     extra: { blockHeight?: number } = {},
   ) {
     let t = 0;
-    const sign = vi.fn(async () => {});
+    const sign = vi.fn(async (_owner: string, tx: VersionedTransaction) => {
+      tx.sign([owner]);
+    });
+    const ownerKey = owner.publicKey;
+    const ownerAccount = {
+      data: Buffer.alloc(0),
+      executable: false,
+      lamports: 100_000_000,
+      owner: SystemProgram.programId,
+      rentEpoch: 0,
+    };
     const connection = {
       sendRawTransaction: vi.fn(async () => 'SIGNATURE'),
-      getSignatureStatuses: vi.fn(async () => ({ value: [statuses.shift() ?? null] })),
+      getSignatureStatuses: vi.fn(async () => ({ context: { slot: 10 }, value: [statuses.shift() ?? null] })),
       getBlockHeight: vi.fn(async () => extra.blockHeight ?? 0),
+      getSlot: vi.fn(async () => 10),
+      getTransaction: vi.fn(async () => null),
+      getAddressLookupTable: vi.fn(async () => ({ context: { slot: 10 }, value: null })),
+      getTokenAccountsByOwner: vi.fn(async () => ({ context: { slot: 10 }, value: [] })),
+      getMultipleAccountsInfoAndContext: vi.fn(async (keys: PublicKey[]) => ({
+        context: { slot: 10 },
+        value: keys.map((key) => key.equals(ownerKey) ? ownerAccount : null),
+      })),
+      simulateTransaction: vi.fn(async (_tx: VersionedTransaction, config: { accounts: { addresses: string[] } }) => ({
+        context: { slot: 10 },
+        value: {
+          err: null,
+          accounts: config.accounts.addresses.map((address) => address === ownerKey.toBase58()
+            ? { owner: SystemProgram.programId.toBase58(), lamports: ownerAccount.lamports, data: ['', 'base64'] }
+            : null),
+          logs: [],
+          unitsConsumed: 1,
+          returnData: null,
+        },
+      })),
     };
     const s = createRpcSwapSender({
       connection: connection as never,
@@ -617,8 +661,8 @@ describe('createRpcSwapSender', () => {
       { err: null, confirmationStatus: 'processed' },
       { err: null, confirmationStatus: 'confirmed' },
     ]);
-    const r = await s.send({ owner: owner.publicKey.toBase58(), swapTransaction: base64 });
-    expect(r).toEqual({ status: 'confirmed', signature: 'SIGNATURE' });
+    const r = await s.send({ owner: owner.publicKey.toBase58(), swapTransaction: base64, expected: EXPECTATION });
+    expect(r).toMatchObject({ status: 'confirmed' });
     expect(sign).toHaveBeenCalledTimes(1);
     expect(connection.sendRawTransaction).toHaveBeenCalledTimes(1);
   });
@@ -627,31 +671,31 @@ describe('createRpcSwapSender', () => {
     const { s } = sender([
       { err: { InstructionError: [0, 'Custom'] }, confirmationStatus: 'confirmed' },
     ]);
-    const r = await s.send({ owner: owner.publicKey.toBase58(), swapTransaction: base64 });
+    const r = await s.send({ owner: owner.publicKey.toBase58(), swapTransaction: base64, expected: EXPECTATION });
     expect(r.status).toBe('failed');
   });
 
   it('reports unknown after the deadline', async () => {
     const { s } = sender([]);
-    const r = await s.send({ owner: owner.publicKey.toBase58(), swapTransaction: base64 });
-    expect(r).toEqual({ status: 'unknown', signature: 'SIGNATURE' });
+    const r = await s.send({ owner: owner.publicKey.toBase58(), swapTransaction: base64, expected: EXPECTATION });
+    expect(r).toMatchObject({ status: 'unknown' });
   });
 
   it('reports failed once the blockhash window has passed', async () => {
-    const { s } = sender([], { blockHeight: 200 });
+    const { s } = sender([], { blockHeight: 300 });
     const r = await s.send({
       owner: owner.publicKey.toBase58(),
       swapTransaction: base64,
       lastValidBlockHeight: 100,
+      expected: EXPECTATION,
     });
     expect(r).toMatchObject({ status: 'failed', error: 'blockhash expired' });
   });
 
   it('refuses to sign a transaction that fails verification', async () => {
     const { s, sign, connection } = sender([]);
-    await expect(
-      s.send({ owner: Keypair.generate().publicKey.toBase58(), swapTransaction: base64 }),
-    ).rejects.toThrow(/fee_payer_mismatch/);
+    expect(await s.send({ owner: Keypair.generate().publicKey.toBase58(), swapTransaction: base64, expected: EXPECTATION }))
+      .toEqual({ status: 'refused', reason: 'fee_payer_mismatch' });
     expect(sign).not.toHaveBeenCalled();
     expect(connection.sendRawTransaction).not.toHaveBeenCalled();
   });

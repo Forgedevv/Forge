@@ -186,13 +186,16 @@ describe('settlement', () => {
         log.push('height');
         return finalizedHeight;
       },
+      getSlot: async () => 10,
       getSignatureState: async () => {
         log.push('status');
-        return state;
+        return { state, contextSlot: 10 };
       },
+      hasFinalizedTransaction: async () => false,
       sendRawTransaction: async () => 'sig',
       getBalance: async () => 0n,
       getMinimumBalanceForRentExemption: async () => 0n,
+      getRecentSignatures: async () => [],
     };
   }
 
@@ -206,7 +209,7 @@ describe('settlement', () => {
     expect((await checkSettlement(rpcWith(null, 100, []), 's', 100, retryFast)).kind).toBe(
       'pending',
     );
-    expect((await checkSettlement(rpcWith(null, 101, []), 's', 100, retryFast)).kind).toBe(
+    expect((await checkSettlement(rpcWith(null, 251, []), 's', 100, retryFast)).kind).toBe(
       'expired',
     );
     const landed: SignatureState = { slot: 1, confirmationStatus: 'confirmed', err: null };
@@ -264,10 +267,13 @@ describe('settlement', () => {
     return {
       getLatestBlockhash: () => chain.getLatestBlockhash(),
       getBlockHeight: (c) => chain.getBlockHeight(c),
+      getSlot: async () => chain.height,
       getSignatureState: (s) => chain.getSignatureState(s),
+      hasFinalizedTransaction: async (s) => chain.hasFinalizedTransaction(s),
       sendRawTransaction: (r) => chain.sendRawTransaction(r),
       getBalance: (a, c) => chain.getBalance(a, c),
       getMinimumBalanceForRentExemption: (n) => chain.getMinimumBalanceForRentExemption(n),
+      getRecentSignatures: async () => [],
     };
   }
 
