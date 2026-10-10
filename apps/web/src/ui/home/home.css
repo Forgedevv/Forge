@@ -1,27 +1,27 @@
 .forge-home,
 .forge-document {
-  /* FORGE neon palette. Keep in sync with `palette` in content.ts (the 3D scene). */
-  --forge-bg: #0b0a12;
-  --forge-surface: #161426;
-  --forge-raised: #201c36;
-  --forge-text: #f2f0ff;
-  --forge-muted: #aca6c8;
-  --forge-line: #3a3360;
+  /* Keep in sync with the 3D palette in content.ts. */
+  --forge-bg: #202426;
+  --forge-surface: #292f32;
+  --forge-raised: #343d40;
+  --forge-text: #eae6dc;
+  --forge-muted: #b0b8b9;
+  --forge-line: #566267;
   /* Accent fills, borders, and the focus ring. */
-  --forge-accent: #9b5cff;
+  --forge-accent: #b78970;
   /* Accent-colored text, lighter than the fill for AA contrast on raised surfaces. */
-  --forge-accent-text: #b794ff;
-  /* Magenta, used sparingly for highlights and hovers. */
-  --forge-accent-2: #ff4fd8;
-  --forge-on-accent: #0b0a12;
-  --forge-pilot-shell: #d0cedb;
+  --forge-accent-text: #d5b29b;
+  /* Paper-colored secondary accent. */
+  --forge-accent-2: #c9c19a;
+  --forge-on-accent: #202426;
+  --forge-pilot-shell: #e4e1d5;
   --forge-pilot-outline: var(--forge-bg);
-  --forge-glow: #9b5cff40;
-  --forge-backdrop: #0b0a12cc;
+  --forge-glow: #b7897028;
+  --forge-backdrop: #141a1ddc;
   --scene-ink: var(--forge-text);
   --forge-mono: 'Courier New', monospace;
   --forge-sans: var(--font-space-grotesk), Arial, Helvetica, sans-serif;
-  --forge-display: var(--font-unbounded), var(--forge-sans);
+  --forge-display: Georgia, 'Times New Roman', serif;
   --forge-serif: Georgia, 'Times New Roman', serif;
   font-family: var(--forge-sans);
   color: var(--forge-text);
@@ -191,6 +191,7 @@
   inset: 0;
   z-index: 2;
   pointer-events: none;
+  opacity: var(--chapter-copy-opacity, 1);
 }
 .forge-scene-eyebrow {
   position: absolute;
@@ -244,16 +245,16 @@
 }
 .forge-title-5 {
   left: 50%;
-  top: 19%;
+  top: 21%;
   bottom: auto;
   transform: translateX(-50%);
   text-align: center;
   width: 90%;
-  max-width: 1100px;
+  max-width: 850px;
   animation: forge-final-reveal 1s 1s both;
 }
 .forge-title-5 h2 {
-  font-size: clamp(80px, 9.9vw, 160px);
+  font-size: clamp(70px, 8.6vw, 136px);
   line-height: 0.87;
   font-weight: 400;
 }
@@ -266,14 +267,16 @@
   display: inline-flex;
   gap: 32px;
   align-items: center;
-  padding: 12px 0;
-  background: transparent;
-  color: inherit;
-  border: 0;
-  border-bottom: 1px solid currentColor;
+  min-height: 54px;
+  padding: 13px 21px;
+  background: var(--forge-text);
+  color: var(--forge-bg);
+  border: 1px solid var(--forge-text);
   pointer-events: auto;
-  font-size: 13px !important;
+  font-size: 14px !important;
+  transition: background 180ms, transform 180ms;
 }
+.forge-final-action:hover { background: var(--forge-accent-text); transform: translateY(-2px); }
 .forge-final-action:hover .forge-arrow {
   transform: translate(3px, -3px);
 }
@@ -306,6 +309,7 @@
   line-height: 1.5;
   animation: forge-caption 1s both;
   pointer-events: none;
+  opacity: var(--chapter-copy-opacity, 1);
 }
 [data-chapter='0'] .forge-subtitle {
   bottom: 128px;
@@ -1042,7 +1046,7 @@
   }
   to {
     clip-path: inset(0);
-    opacity: 1;
+    opacity: var(--chapter-copy-opacity, 1);
   }
 }
 @keyframes forge-spin {

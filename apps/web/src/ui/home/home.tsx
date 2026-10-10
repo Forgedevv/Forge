@@ -237,6 +237,8 @@ export function ForgeHome({ flags: suppliedFlags }: { flags?: Flags }) {
           onProgress: (value, progress) => {
             root.current?.style.setProperty('--journey-progress', String(value / 5));
             root.current?.style.setProperty('--intro-progress', String(progress));
+            const proximity = 1 - Math.abs(value - Math.round(value)) * 2;
+            root.current?.style.setProperty('--chapter-copy-opacity', String(proximity * proximity * (3 - 2 * proximity)));
           },
           onIntroDone: () => {
             if (!cancelled) setIntro(false);
@@ -319,7 +321,7 @@ export function ForgeHome({ flags: suppliedFlags }: { flags?: Flags }) {
         <a className="forge-brand" href="/" aria-label={copy.brand}>
           <img
             className="forge-logo"
-            src="/brand/forge-logo-wordmark-light-text.svg"
+            src="/brand/forge-logo-mono-white.svg"
             alt={copy.brand}
             width={156}
             height={36}
@@ -501,7 +503,7 @@ export function ForgeHome({ flags: suppliedFlags }: { flags?: Flags }) {
           <a href="/terms">{copy.terms}</a>
           <img
             className="forge-footer-logo"
-            src="/brand/forge-logo-wordmark-light-text.svg"
+            src="/brand/forge-logo-mono-white.svg"
             alt={copy.brand}
             width={72}
             height={17}

@@ -1,7 +1,13 @@
 'use client';
 import Link from 'next/link';
-import { useCallback, useEffect, useState, type ReactNode } from 'react';
-import type { LaunchpadStatus, LaunchpadSummary, TxPhase } from '@forge/shared';
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import {
+  JOB_STATUS_LABELS,
+  type Job,
+  type LaunchpadStatus,
+  type LaunchpadSummary,
+  type TxPhase,
+} from '@forge/shared';
 import { useWebClient, useWorkspace } from './provider';
 import {
   ActionLink,
@@ -19,6 +25,7 @@ import { common } from './content/common';
 import { safeUrl } from './safe-url';
 import { Muse, museColorsFor, museMoodForJob, type MuseMood } from '../muse';
 import { MuseHero, type HeroAction } from './muse-hero';
+import { LaunchpadArt } from './launchpad-art';
 
 type PadColors = { primary: string | null; accent: string | null };
 
@@ -33,6 +40,10 @@ export function DashboardScreen({
   const { launchpads, loading, refresh } = api.useLaunchpads();
   const { signupsPaused } = api.useFlags();
   const [colors, setColors] = useState<Record<string, PadColors>>({});
+  const [filter, setFilter] = useState<
+    'all' | 'live' | 'building' | 'draft' | 'sleeping' | 'disabled'
+  >('all');
+  const [query, setQuery] = useState('');
   const onColors = useCallback((id: string, value: PadColors) => {
     setColors((previous) =>
       previous[id]?.primary === value.primary && previous[id]?.accent === value.accent
@@ -53,6 +64,23 @@ export function DashboardScreen({
         ? 'live'
         : 'idle';
   const create = !signupsPaused && <ActionLink href="/new">{common.create}</ActionLink>;
+  const visibleLaunchpads = useMemo(
+    () =>
+      launchpads.filter((pad) => {
+        const matchesFilter =
+          filter === 'all' ||
+          (filter === 'building' ? Boolean(pad.activeJobId) : pad.status === filter);
+        const search = query.trim().toLocaleLowerCase();
+        return (
+          matchesFilter &&
+          (!search ||
+            `${pad.name} ${pad.slug} ${pad.coin.name} ${pad.coin.symbol}`
+              .toLocaleLowerCase()
+              .includes(search))
+        );
+      }),
+    [filter, launchpads, query],
+  );
   const hero = (action: HeroAction) => (
     <MuseHero action={action} muses={muses} forceFallback={heroFallback}>
       {action === 'welcome' && create}
@@ -64,9 +92,7 @@ export function DashboardScreen({
   return (
     <>
       <div className="fw-title-row">
-        <Heading eyebrow={copy.eyebrow} title={copy.title}>
-          {copy.subtitle}
-        </Heading>
+        <Heading eyebrow={copy.eyebrow} title={copy.title} />
         {!signupsPaused && launchpads.length > 0 && (
           <ActionLink href="/new">{common.create}</ActionLink>
         )}
@@ -81,21 +107,111 @@ export function DashboardScreen({
             hero(baseAction)
           )}
           {launchpads.length > 0 && (
-            <div className="fw-pad-grid">
-              {launchpads.map((pad) => (
-                <LaunchpadCard
-                  key={pad.id}
-                  pad={pad}
-                  refresh={refresh}
-                  claimPhase={claimPhase}
-                  onColors={onColors}
-                />
-              ))}
-            </div>
+            <>
+              <section className="fw-workshop-pulse" aria-label={copy.overview}>
+                <div className="fw-pulse-heading">
+                  <div>
+                    <p className="fw-eyebrow">{copy.overviewEyebrow}</p>
+                    <h2>{copy.overview}</h2>
+                  </div>
+                  <span>{copy.acrossLaunchpads(launchpads.length)}</span>
+                </div>
+                <div className="fw-pulse-grid">
+                  <PulseMetric label={copy.totalLaunchpads} value={launchpads.length} />
+                  <PulseMetric
+                    label={copy.liveLaunchpads}
+                    value={launchpads.filter((pad) => pad.status === 'live').length}
+                  />
+                  <PulseMetric
+                    label={copy.coins}
+                    value={launchpads.reduce((sum, pad) => sum + pad.coinsCount, 0)}
+                  />
+                  <PulseMetric
+                    label={copy.activeBuilds}
+                    value={launchpads.filter((pad) => pad.activeJobId).length}
+                  />
+                </div>
+              </section>
+              <section className="fw-pad-section" aria-label={copy.padSection}>
+                <div className="fw-pad-toolbar">
+                  <div>
+                    <p className="fw-eyebrow">{copy.collectionEyebrow}</p>
+                    <h2>{copy.padSection}</h2>
+                  </div>
+                  <label className="fw-pad-search">
+                    <span aria-hidden="true">⌕</span>
+                    <span className="fw-sr-only">{copy.searchLabel}</span>
+                    <input
+                      value={query}
+                      onChange={(event) => setQuery(event.target.value)}
+                      placeholder={copy.searchPlaceholder}
+                      type="search"
+                    />
+                  </label>
+                </div>
+                <div className="fw-pad-filters" role="group" aria-label={copy.filterLabel}>
+                  {(['all', 'live', 'building', 'draft', 'sleeping', 'disabled'] as const).map(
+                    (key) => (
+                      <button
+                        key={key}
+                        type="button"
+                        className={filter === key ? 'is-active' : ''}
+                        aria-pressed={filter === key}
+                        onClick={() => setFilter(key)}
+                      >
+                        {copy.filters[key]}
+                        <span aria-hidden="true">
+                          {key === 'all'
+                            ? launchpads.length
+                            : key === 'building'
+                              ? launchpads.filter((pad) => pad.activeJobId).length
+                              : launchpads.filter((pad) => pad.status === key).length}
+                        </span>
+                      </button>
+                    ),
+                  )}
+                </div>
+                {visibleLaunchpads.length ? (
+                  <div className="fw-pad-grid">
+                    {visibleLaunchpads.map((pad) => (
+                      <LaunchpadCard
+                        key={pad.id}
+                        pad={pad}
+                        refresh={refresh}
+                        claimPhase={claimPhase}
+                        onColors={onColors}
+                      />
+                    ))}
+                  </div>
+                ) : (
+                  <div className="fw-filter-empty">
+                    <p>{copy.noMatches}</p>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setFilter('all');
+                        setQuery('');
+                      }}
+                    >
+                      {copy.clearFilters}
+                    </button>
+                  </div>
+                )}
+              </section>
+            </>
           )}
         </>
       )}
     </>
+  );
+}
+
+function PulseMetric({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="fw-pulse-metric">
+      <span>{label}</span>
+      <strong>{value.toLocaleString()}</strong>
+    </div>
   );
 }
 
@@ -134,7 +250,6 @@ function LaunchpadCard({
 }) {
   const api = useWebClient(),
     { toast } = useWorkspace();
-  // The launchpad's own Muse takes its theme colors.
   const { launchpad } = api.useLaunchpad(pad.id);
   const { primary, accent } = museColorsFor(launchpad?.spec);
   useEffect(() => {
@@ -143,42 +258,51 @@ function LaunchpadCard({
   const [busy, setBusy] = useState(false),
     [error, setError] = useState('');
   const url = safeUrl(pad.siteUrl);
+  const latestJob = launchpad?.jobs.reduce<Job | undefined>(
+    (latest, job) =>
+      !latest || Date.parse(job.updatedAt) > Date.parse(latest.updatedAt) ? job : latest,
+    undefined,
+  );
   return (
     <Card className="fw-pad-card">
-      <div className="fw-pad-top">
-        <span className="fw-pad-icon">
-          <Muse
-            size={44}
-            primary={primary}
-            accent={accent}
-            mood={pad.activeJobId ? 'building' : PAD_MOOD[pad.status]}
-            label={copy.padMuse(pad.name)}
-          />
-        </span>
+      <Link className="fw-pad-cover-link" href={`/launchpads/${pad.id}`} aria-label={copy.openPad(pad.name)}>
+        <LaunchpadArt name={pad.name} slug={pad.slug} primary={primary} accent={accent} />
         <span className={`fw-badge fw-badge-${pad.status}`}>{copy.status[pad.status]}</span>
-      </div>
-      <h2>{pad.name}</h2>
-      <p className="fw-pad-subtitle">
-        {pad.coin.name} <span>{pad.coin.symbol}</span>
-      </p>
-      {url && (
-        <Link className="fw-site-url" href={url} target="_blank" rel="noreferrer">
-          {pad.slug}.forgepads.xyz ↗
-        </Link>
-      )}
-      <div className="fw-pad-metrics">
-        <div>
-          <span>{copy.coins}</span>
-          <strong>{pad.coinsCount}</strong>
+        <span className="fw-pad-cover-arrow" aria-hidden="true">↗</span>
+      </Link>
+      <div className="fw-pad-main">
+        <div className="fw-pad-titleline">
+          <span className="fw-pad-icon">
+            <Muse
+              size={36}
+              primary={primary}
+              accent={accent}
+              mood={pad.activeJobId ? 'building' : PAD_MOOD[pad.status]}
+              label={copy.padMuse(pad.name)}
+            />
+          </span>
+          <div className="fw-pad-name">
+            <h2>{pad.name}</h2>
+            <p className="fw-pad-subtitle">{pad.coin.name} <span>{pad.coin.symbol}</span></p>
+            {url && (
+              <Link className="fw-site-url" href={url} target="_blank" rel="noreferrer">
+                {pad.slug}.forgepads.xyz <span aria-hidden="true">↗</span>
+              </Link>
+            )}
+          </div>
         </div>
-        <div>
-          <span>{copy.changes}</span>
-          <strong>{pad.includedModificationsLeft}</strong>
+      </div>
+      <div className="fw-pad-side">
+        <div className="fw-pad-metrics" aria-label={copy.padStats}>
+          <div><span>{copy.coins}</span><strong>{pad.coinsCount.toString().padStart(2, '0')}</strong></div>
+          <div><span>{copy.changes}</span><strong>{pad.includedModificationsLeft.toString().padStart(2, '0')}</strong></div>
         </div>
       </div>
-      <div className="fw-fees">
-        <p>{copy.fees}</p>
-        <Amount lamports={pad.claimablePartnerFeesLamports} />
+      <div className="fw-pad-revenue">
+        <div>
+          <p>{copy.fees}</p>
+          <Amount lamports={pad.claimablePartnerFeesLamports} />
+        </div>
         <ClaimButton
           launchpadId={pad.id}
           lamports={pad.claimablePartnerFeesLamports}
@@ -189,8 +313,22 @@ function LaunchpadCard({
           }}
         />
       </div>
+      {latestJob && (
+          <div className="fw-pad-activity">
+            <span className="fw-activity-dot" aria-hidden="true" />
+            <div>
+              <span>{copy.latestActivity}</span>
+              <strong>{JOB_STATUS_LABELS[latestJob.status]}</strong>
+            </div>
+            <time dateTime={latestJob.updatedAt}>
+              {new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' }).format(
+                new Date(latestJob.updatedAt),
+              )}
+            </time>
+          </div>
+      )}
       {pad.status === 'sleeping' && (
-        <div className="fw-notice">
+        <div className="fw-notice fw-pad-notice">
           <p>{copy.sleep}</p>
           <Button
             variant="secondary"
@@ -212,19 +350,19 @@ function LaunchpadCard({
           </Button>
         </div>
       )}
-      {pad.status === 'disabled' && <p className="fw-notice">{copy.disabled}</p>}
+      {pad.status === 'disabled' && <p className="fw-notice fw-pad-notice">{copy.disabled}</p>}
       {pad.activeJobId && (
         <Link className="fw-current-job" href={`/jobs/${pad.activeJobId}`}>
           {copy.job} ↗
         </Link>
       )}
-      <div className="fw-card-links">
+      <div className="fw-card-links fw-pad-actions">
         <Link href={`/launchpads/${pad.id}`}>{copy.view} ↗</Link>
         {pad.status !== 'disabled' && (
-          <Link href={`/launchpads/${pad.id}/modify`}>{copy.modify} ↗</Link>
+          <Link href={`/launchpads/${pad.id}/modify`}>{copy.modify}</Link>
         )}
       </div>
-      {error && <ErrorNotice message={error} />}
+      {error && <ErrorNotice message={readableError(error)} />}
     </Card>
   );
 }

@@ -54,9 +54,9 @@ const MOOD: Record<
   { glow: number; orbit: number; tint: string | null; tintAmt: number; star: number }
 > = {
   idle: { glow: 1, orbit: 0.55, tint: null, tintAmt: 0, star: 0 },
-  building: { glow: 1.25, orbit: 3.2, tint: '#FF5FCF', tintAmt: 0.14, star: 0 },
-  waiting_approval: { glow: 1.1, orbit: 0.8, tint: '#FF8BE0', tintAmt: 0.12, star: 0 },
-  success: { glow: 1.45, orbit: 1.8, tint: '#FFC4F2', tintAmt: 0.18, star: 1 },
+  building: { glow: 1.08, orbit: 3.2, tint: '#C99B7E', tintAmt: 0.14, star: 0 },
+  waiting_approval: { glow: 1.05, orbit: 0.8, tint: '#D0CDBD', tintAmt: 0.12, star: 0 },
+  success: { glow: 1.16, orbit: 1.8, tint: '#EAE6DC', tintAmt: 0.18, star: 1 },
 };
 
 const coreVertex = /* glsl */ `
@@ -85,7 +85,7 @@ void main() {
   vec3 v = normalize(vView);
   float facing = clamp(dot(n, v), 0.0, 1.0);
   float fres = 1.0 - facing;
-  vec3 ink = vec3(0.009, 0.004, 0.032);
+  vec3 ink = vec3(0.012, 0.017, 0.021);
   vec3 core = mix(uPrimary, ink, 0.66);
   vec3 col = mix(core, mix(uPrimary, ink, 0.3), smoothstep(0.15, 0.8, fres));
   col = mix(col, mix(uPrimary, uAccent, 0.3), smoothstep(0.55, 0.95, fres));

@@ -1,6 +1,6 @@
 export const homeContent = {
   brand: 'FORGE',
-  title: 'FORGE — Ideas in. Worlds out.',
+  title: 'FORGE — Build your corner.',
   description:
     'Describe your idea. Build your own Solana launchpad with FORGE. Your world, your community, your rules.',
   navigation: 'Explore the FORGE journey',
@@ -39,45 +39,39 @@ export const homeContent = {
   chapters: [
     {
       eyebrow: '01 / THE SPARK',
-      title: 'Ideas in.\nWorlds out.',
-      subtitle: 'A launchpad that starts with you.',
-      description:
-        'Turn an idea into your own Solana launchpad. Describe it. Shape it. Make it real.',
+      title: 'Your own corner\nof the chain.',
+      subtitle: 'A home for your community.',
+      description: 'A Solana launchpad built around your community.',
     },
     {
       eyebrow: '02 / YOUR WORLD',
-      title: 'Make it\nunmistakably yours.',
-      subtitle: 'Your name. Your colors. Your corner of the internet.',
-      description:
-        'Give your launchpad a name, a look, and a reason to exist. FORGE builds around your vision.',
+      title: 'Give it a look\nthat feels like you.',
+      subtitle: 'Name. Color. Character.',
+      description: 'Your identity runs through every page.',
     },
     {
       eyebrow: '03 / THE WORKSHOP',
-      title: 'From a spark\nto a working world.',
-      subtitle: 'Describe. Build. Preview. Launch.',
-      description:
-        'Follow the build, explore your preview, and approve it before your launchpad goes live.',
+      title: 'From idea\nto launchpad.',
+      subtitle: 'Build. Preview. Launch.',
+      description: 'See the site before it goes live.',
     },
     {
       eyebrow: '04 / BUILT TOGETHER',
-      title: 'Small spark.\nBig possibilities.',
-      subtitle: 'Bring your people. Give them a place to build.',
-      description:
-        'A home for your community to create and trade coins, with the trading infrastructure connected for you.',
+      title: 'Bring your\npeople together.',
+      subtitle: 'A shared place to create and trade.',
+      description: 'Your community owns the culture.',
     },
     {
       eyebrow: '05 / YOUR RULES',
-      title: 'Make something\nworth gathering around.',
-      subtitle: 'A world with your name on it.',
-      description:
-        'Choose your identity and fee settings. Claim your partner fees from your dashboard. Keep shaping the experience.',
+      title: 'Set the rules\nfor your world.',
+      subtitle: 'Your site. Your settings.',
+      description: 'Manage the launch from your dashboard.',
     },
     {
       eyebrow: '06 / LIFTOFF',
-      title: 'Ready for\nliftoff?',
-      subtitle: 'Your next world starts with one idea.',
-      description:
-        'Launchpad creation is $33 in SOL, with two changes included. Preview and approve your site before launch.',
+      title: 'Make it live.',
+      subtitle: 'Start with one idea.',
+      description: 'One launchpad. Two changes included.',
     },
   ],
   scenery: {
@@ -187,28 +181,17 @@ export const homeContent = {
   },
 } as const;
 
-/** FORGE neon palette for the 3D scene. Keep in sync with the tokens in home.css. */
+/** Graphite, paper, brushed metal and copper. Shared with the workshop scene. */
 export const palette = {
-  /** Violet black: visor, shards, and the darkest scene surfaces. */
-  ink: '#0b0a12',
-  /** Night surface: dark launchpad screens. */
-  night: '#161426',
-  /** Dim violet for structural pieces that must read against the dark backdrop. */
-  plum: '#2a2347',
-  /** Cool white: light screens, glass, dust, and the light color. */
-  light: '#f2f0ff',
-  /** Electric violet: the main accent, trims, cables, and the liftoff road. */
-  accent: '#9b5cff',
-  /** Soft lilac companion to the accent. */
-  lilac: '#c4a8ff',
-  /** Magenta highlight, used sparingly: eyes, chest light, and a few accents. */
-  magenta: '#ff4fd8',
-  /** Faint violet for background typography and grid lines. */
-  faint: '#2e2654',
-  /** Mid violet for wireframes and the grid center line. */
-  wire: '#5b3fa8',
-  /** Per-chapter backdrop colors, from ignition to liftoff. */
-  backgrounds: ['#161426', '#1b1733', '#0b0a12', '#14112a', '#0b0a12', '#100d1e'],
-  /** Tint of the workshop floor reflection. */
-  floor: 0x524682,
+  ink: '#202426',
+  night: '#292f32',
+  plum: '#424e53',
+  light: '#eae6dc',
+  accent: '#b78970',
+  lilac: '#d0cdbd',
+  magenta: '#c99b7e',
+  faint: '#384247',
+  wire: '#8c9da1',
+  backgrounds: ['#292f32', '#333e42', '#202426', '#2b3337', '#252c30', '#222a2e'],
+  floor: 0x475459,
 };

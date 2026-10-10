@@ -29,7 +29,7 @@ export const Ease = {
 const HEX = /^#?([0-9a-f]{3}|[0-9a-f]{6})$/i;
 
 /** Parses `#rgb` or `#rrggbb`; returns `fallback` for anything else. */
-export function hexRGB(hex: string, fallback: RGB = [155, 92, 255]): RGB {
+export function hexRGB(hex: string, fallback: RGB = [140, 157, 161]): RGB {
   const match = HEX.exec(hex.trim());
   if (!match) return [...fallback];
   let h = match[1]!;

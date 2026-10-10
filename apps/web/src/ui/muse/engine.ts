@@ -28,9 +28,9 @@ import {
   type SmoothPose,
 } from './moods';
 
-/** FORGE's own Muse colors: electric violet and magenta. */
-export const FORGE_PRIMARY = '#9B5CFF';
-export const FORGE_ACCENT = '#FF4FD8';
+/** FORGE's own Muse colors: brushed metal and copper. */
+export const FORGE_PRIMARY = '#8C9DA1';
+export const FORGE_ACCENT = '#B78970';
 
 export interface MuseOptions {
   /** Small instance (avatars, cards): fewer details, bigger features. */
@@ -190,7 +190,7 @@ export class Muse {
 
   setColors(primary: string | RGB, accent: string | RGB, instant = false) {
     this.base1 = typeof primary === 'string' ? hexRGB(primary) : [...primary];
-    this.base2 = typeof accent === 'string' ? hexRGB(accent, [255, 79, 216]) : [...accent];
+    this.base2 = typeof accent === 'string' ? hexRGB(accent, [183, 137, 112]) : [...accent];
     if (instant || this.reduced) {
       this.c1 = this.target(this.base1, 1);
       this.c2 = this.target(this.base2, 0.75);
