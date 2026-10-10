@@ -1,6 +1,7 @@
 // @vitest-environment node
+import { Connection, Keypair, PublicKey } from '@solana/web3.js';
 import { describe, expect, it, vi } from 'vitest';
-import { createGatingCheck, GatingError } from '../gating';
+import { createGatingCheck, GatingError, type BalanceReader } from '../gating';
 import { buildModelMessages } from '../history';
 import { clientIp, MemoryRateLimiter } from '../rate-limit';
 import { loadChatConfig, ChatConfigError, costUsd } from '../config';
@@ -39,11 +40,35 @@ describe('MemoryRateLimiter', () => {
 });
 
 describe('clientIp', () => {
-  it('prefers the first forwarded address, then x-real-ip, then unknown', () => {
-    const req = (h: Record<string, string>) => new Request('https://x.test', { headers: h });
-    expect(clientIp(req({ 'x-forwarded-for': '1.2.3.4, 5.6.7.8' }))).toBe('1.2.3.4');
-    expect(clientIp(req({ 'x-real-ip': '9.9.9.9' }))).toBe('9.9.9.9');
+  const req = (h: Record<string, string>) => new Request('https://x.test', { headers: h });
+
+  it('prefers x-vercel-forwarded-for, then x-real-ip, then the LAST x-forwarded-for entry', () => {
+    expect(
+      clientIp(
+        req({
+          'x-vercel-forwarded-for': '2001:db8::1',
+          'x-real-ip': '9.9.9.9',
+          'x-forwarded-for': '1.2.3.4',
+        }),
+      ),
+    ).toBe('2001:db8::1');
+    expect(clientIp(req({ 'x-real-ip': '9.9.9.9', 'x-forwarded-for': '1.2.3.4' }))).toBe('9.9.9.9');
+    expect(clientIp(req({ 'x-forwarded-for': '1.2.3.4, 5.6.7.8' }))).toBe('5.6.7.8');
     expect(clientIp(req({}))).toBe('unknown');
+  });
+
+  it('cannot be steered by a client-supplied first x-forwarded-for entry', () => {
+    const a = clientIp(req({ 'x-forwarded-for': '6.6.6.1, 203.0.113.9' }));
+    const b = clientIp(req({ 'x-forwarded-for': '6.6.6.2, 203.0.113.9' }));
+    expect(a).toBe('203.0.113.9');
+    expect(b).toBe(a);
+  });
+
+  it('ignores values that are not IP addresses', () => {
+    expect(clientIp(req({ 'x-real-ip': 'evil<script>' }))).toBe('unknown');
+    expect(clientIp(req({ 'x-real-ip': 'x'.repeat(100), 'x-forwarded-for': '7.7.7.7' }))).toBe(
+      '7.7.7.7',
+    );
   });
 });
 
@@ -103,57 +128,77 @@ describe('loadChatConfig', () => {
 });
 
 describe('createGatingCheck', () => {
-  const rpc = (amounts: string[]) =>
-    vi.fn(() =>
-      Promise.resolve(
-        Response.json({
-          jsonrpc: '2.0',
-          id: 1,
-          result: {
-            value: amounts.map((amount) => ({
-              account: { data: { parsed: { info: { tokenAmount: { amount } } } } },
-            })),
-          },
-        }),
-      ),
+  const MINT = Keypair.generate().publicKey;
+  const balanceOf = (raw: bigint) =>
+    vi.fn<BalanceReader>(() =>
+      Promise.resolve({
+        enabled: true,
+        mint: MINT,
+        tokenAccount: PublicKey.unique(),
+        tokenProgram: PublicKey.unique(),
+        balance: raw,
+        decimals: 6,
+      }),
     );
 
   it('is disabled without FORGE_MINT', async () => {
-    const fetchImpl = vi.fn();
-    const check = createGatingCheck({}, fetchImpl as never);
+    const read = balanceOf(0n);
+    const check = createGatingCheck({}, read);
     expect(await check(WALLET)).toEqual({ enabled: false, ok: true });
-    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(read).not.toHaveBeenCalled();
   });
 
   const env = {
-    FORGE_MINT: 'ES4otaE7FckJGJEKwpk3noaCZBt4FQZhuhWqUDdhuBEF',
+    FORGE_MINT: MINT.toBase58(),
     FORGE_GATING_AMOUNT: '1000',
     RPC_URL: 'https://rpc.devnet.example',
   };
 
-  it('sums token accounts against the required amount and caches the balance', async () => {
+  it('compares the core balance with the required amount and caches it', async () => {
     let now = 0;
-    const fetchImpl = rpc(['400', '600']);
-    const check = createGatingCheck(env, fetchImpl as never, () => now);
+    const read = balanceOf(1000n);
+    const check = createGatingCheck(env, read, () => now);
     expect(await check(WALLET)).toEqual({ enabled: true, ok: true });
     await check(WALLET);
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(read.mock.calls[0]?.[0]).toEqual(new PublicKey(WALLET));
     now += 31_000;
     await check(WALLET);
-    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(read).toHaveBeenCalledTimes(2);
   });
 
   it('refuses a short balance', async () => {
-    const check = createGatingCheck(env, rpc(['999']) as never);
+    const check = createGatingCheck(env, balanceOf(999n));
     expect(await check(WALLET)).toEqual({ enabled: true, ok: false });
   });
 
-  it('fails closed when the RPC fails', async () => {
-    const fetchImpl = vi.fn(() => Promise.resolve(new Response('x', { status: 500 })));
-    await expect(createGatingCheck(env, fetchImpl as never)(WALLET)).rejects.toBeInstanceOf(
-      GatingError,
+  it('fails closed when the RPC fails, without echoing the error', async () => {
+    const read = vi.fn(() => Promise.reject(new Error('https://rpc/?api-key=SECRET down')));
+    const error = await createGatingCheck(env, read)(WALLET).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(GatingError);
+    expect((error as Error).message).not.toContain('SECRET');
+  });
+
+  it('reads the balance through getForgeBalance of @forge/core by default', async () => {
+    // The core asks for the mint and both possible token accounts in one call.
+    const getMultipleAccountsInfo = vi.fn(() => Promise.resolve([null, null, null]));
+    vi.spyOn(Connection.prototype, 'getMultipleAccountsInfo').mockImplementation(
+      getMultipleAccountsInfo as never,
     );
-    const err = vi.fn(() => Promise.resolve(Response.json({ error: { code: -1 } })));
-    await expect(createGatingCheck(env, err as never)(WALLET)).rejects.toBeInstanceOf(GatingError);
+    try {
+      // Unknown mint: a configuration error, reported as a gating failure (fail closed).
+      await expect(createGatingCheck(env)(WALLET)).rejects.toThrow('FORGE_MINT: mint_not_found');
+      expect(getMultipleAccountsInfo).toHaveBeenCalledTimes(1);
+      const [keys] = getMultipleAccountsInfo.mock.calls[0] as unknown as [PublicKey[]];
+      expect(keys[0]?.equals(MINT)).toBe(true);
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
+  it('fails closed on an invalid FORGE_MINT', async () => {
+    await expect(createGatingCheck({ ...env, FORGE_MINT: 'nope' })(WALLET)).rejects.toThrow(
+      'FORGE_MINT is invalid',
+    );
   });
 });

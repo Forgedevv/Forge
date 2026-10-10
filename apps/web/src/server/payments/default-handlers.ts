@@ -26,8 +26,11 @@ export function getPaymentsHandlers(): PaymentsHandlers {
     // Retries are done by the adapter (bounded, with backoff).
     disableRetryOnRateLimit: true,
   });
-  // TODO(merge): the gateway calls core-adapter.ts, to be replaced with @forge/core at merge.
-  const gateway = createCorePaymentGateway({ connection, cluster: config.cluster });
+  const gateway = createCorePaymentGateway({
+    connection,
+    cluster: config.cluster,
+    cashbox: config.cashbox,
+  });
   const prices = new JupiterPriceSource({ apiKey: config.jupiterApiKey });
   const service = createPaymentsService({ store, gateway, prices, logger: consoleLogger });
   handlers = createPaymentsHandlers({

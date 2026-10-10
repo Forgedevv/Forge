@@ -9,8 +9,8 @@ import { draftKey } from './spec-draft';
  * wallet>` filter (directly, or through an inner join on `conversations`). Clients can only
  * read their own rows through RLS (supabase/migrations/0002_rls.sql); all writes are server-side.
  *
- * Spec snapshots and token usage are stored as `system` rows of `chat_messages` with a
- * `forge:` prefix (the schema has no dedicated columns). They are never sent to the model.
+ * The current draft and the accumulated model cost of a conversation live in
+ * `conversations.spec` and `conversations.cost_usd` (supabase/migrations/0005_wave3.sql).
  */
 
 export class StoreError extends Error {
@@ -31,7 +31,7 @@ export interface HistoryMessage {
 }
 
 export interface ConversationState {
-  /** Last stored spec snapshot, or null if none. */
+  /** Stored draft of the conversation, or null if none. */
   draft: LaunchpadSpecDraft | null;
   /** Model spend of the conversation so far. */
   costUsd: number;
@@ -41,20 +41,16 @@ export interface ConversationState {
 }
 
 export interface NewMessage {
-  role: 'user' | 'assistant' | 'system';
+  role: 'user' | 'assistant';
   content: string;
-}
-
-export interface UsageRecord {
-  inputTokens: number;
-  outputTokens: number;
-  costUsd: number;
 }
 
 export type ConfirmOutcome =
   | { status: 'created' | 'existing'; launchpadId: string; jobId: string }
   | { status: 'conversation_not_found' }
   | { status: 'slug_taken' }
+  | { status: 'too_many_drafts' }
+  | { status: 'draft_released' }
   | { status: 'conflict' };
 
 export interface ChatStore {
@@ -65,6 +61,16 @@ export interface ChatStore {
   getLaunchpadSpec(launchpadId: string, wallet: string): Promise<LaunchpadSpecDraft | null>;
   loadState(conversationId: string, wallet: string): Promise<ConversationState>;
   appendMessages(conversationId: string, rows: NewMessage[]): Promise<void>;
+  /** Stores the current draft of a conversation owned by `wallet`. */
+  saveDraft(conversationId: string, wallet: string, draft: LaunchpadSpecDraft): Promise<void>;
+  /** Adds `deltaUsd` to the conversation cost atomically; returns the new total. */
+  addCost(conversationId: string, wallet: string, deltaUsd: number): Promise<number>;
+  /**
+   * Model spend of `wallet` over the window: the total cost of every conversation of the wallet
+   * that received a message since `since` (conservative: earlier spend of those conversations is
+   * counted too).
+   */
+  walletSpendSince(wallet: string, since: Date): Promise<number>;
   getFlag(key: 'signups_paused'): Promise<boolean>;
   /** Creates the launchpad (draft) and its `create_launchpad` job, idempotently. */
   confirmSpec(input: {
@@ -74,33 +80,91 @@ export interface ChatStore {
   }): Promise<ConfirmOutcome>;
 }
 
-export const SPEC_ROW_PREFIX = 'forge:spec:';
-export const USAGE_ROW_PREFIX = 'forge:usage:';
+/**
+ * Slug reservation policy (anti-squatting):
+ * - a wallet holds at most `maxUnpaidDrafts` unpaid drafts younger than `reservationMs`;
+ * - an unpaid draft older than `reservationMs` keeps its slug only until somebody else confirms
+ *   a launchpad with that slug. It is then released: renamed to `released-<id>` and disabled, so
+ *   it can no longer be quoted or paid (payments/service.ts). It is never deleted (its job and
+ *   conversation keep referencing it).
+ * "Unpaid" = every job of the launchpad is still `spec_ready` and no payment is confirmed or
+ * carries a signature. A quote that is open, or expired less than `quoteGraceMs` ago, also keeps
+ * the slug (the client may still be confirming a payment it sent in time).
+ */
+export const DRAFT_POLICY = {
+  maxUnpaidDrafts: 3,
+  reservationMs: 24 * 60 * 60_000,
+  quoteGraceMs: 60 * 60_000,
+} as const;
+
+/** While a concurrent confirmation of the same conversation finishes its claim. */
+const CLAIM_POLL = { attempts: 5, delayMs: 100 } as const;
+const CAS_ATTEMPTS = 8;
 const HISTORY_ROWS = 60;
+const SPEND_ROWS = 1000;
+const UNIQUE_VIOLATION = '23505';
 
-const UsageRow = z.object({ costUsd: z.number().nonnegative() });
 const DraftRow = z.record(z.string(), z.unknown());
-
-export function specRow(draft: LaunchpadSpecDraft): NewMessage {
-  return { role: 'system', content: SPEC_ROW_PREFIX + JSON.stringify(draft) };
-}
-
-export function usageRow(usage: UsageRecord): NewMessage {
-  return { role: 'system', content: USAGE_ROW_PREFIX + JSON.stringify(usage) };
-}
+const DbNumeric = z.union([z.number(), z.string().regex(/^-?\d+(\.\d+)?(e-?\d+)?$/i)]);
 
 const IdRow = z.object({ id: z.string() });
 const ConversationRow = z.object({ id: z.string(), launchpad_id: z.string().nullable() });
+const StateRow = z.object({ spec: z.unknown().nullable(), cost_usd: DbNumeric });
+const CostRow = z.object({ cost_usd: DbNumeric });
 const MessageRow = z.object({ role: z.string(), content: z.string() });
 const LaunchpadRow = z.object({ id: z.string(), spec: z.unknown() });
+const LaunchpadStatusRow = z.object({
+  id: z.string(),
+  spec: z.unknown(),
+  status: z.string(),
+});
+const HolderRow = z.object({ id: z.string(), status: z.string(), created_at: z.string() });
+const JobRow = z.object({ id: z.string(), launchpad_id: z.string(), status: z.string() });
+const PaymentRow = z.object({
+  job_id: z.string(),
+  status: z.string(),
+  tx_signature: z.string().nullable(),
+  quote_expires_at: z.string(),
+});
 
 function fail(what: string, error: { message?: string; code?: string } | null): never {
   // Only the operation and the PostgREST code are kept: messages may echo row data.
   throw new StoreError(`${what} failed${error?.code ? ` (${error.code})` : ''}`);
 }
 
+function parseDraft(value: unknown): LaunchpadSpecDraft | null {
+  const parsed = DraftRow.safeParse(value);
+  return parsed.success ? (parsed.data as LaunchpadSpecDraft) : null;
+}
+
+/** USD amounts are kept in integer micro-dollars (numeric(12, 6) in the database). */
+const MICROS = 1_000_000;
+
+function toMicros(value: number | string): number {
+  return Math.round(Number(value) * MICROS);
+}
+
+export interface SupabaseChatStoreOptions {
+  now?: () => number;
+  sleep?: (ms: number) => Promise<void>;
+}
+
+interface DraftState {
+  paid: boolean;
+  openQuote: boolean;
+}
+
 export class SupabaseChatStore implements ChatStore {
-  constructor(private readonly sb: SupabaseClient) {}
+  private readonly now: () => number;
+  private readonly sleep: (ms: number) => Promise<void>;
+
+  constructor(
+    private readonly sb: SupabaseClient,
+    options: SupabaseChatStoreOptions = {},
+  ) {
+    this.now = options.now ?? Date.now;
+    this.sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+  }
 
   async ensureUser(wallet: string): Promise<void> {
     const { error } = await this.sb
@@ -142,12 +206,11 @@ export class SupabaseChatStore implements ChatStore {
       .maybeSingle();
     if (error) fail('launchpad select', error);
     if (!data) return null;
-    const parsed = DraftRow.safeParse(LaunchpadRow.parse(data).spec);
-    return parsed.success ? (parsed.data as LaunchpadSpecDraft) : null;
+    return parseDraft(LaunchpadRow.parse(data).spec);
   }
 
   async loadState(conversationId: string, wallet: string): Promise<ConversationState> {
-    const scoped = (columns: string, opts?: { count: 'exact'; head: true }) => {
+    const messages = (columns: string, opts?: { count: 'exact'; head: true }) => {
       const select = `${columns}, conversations!inner(owner_wallet)`;
       const base = opts
         ? this.sb.from('chat_messages').select(select, opts)
@@ -155,44 +218,38 @@ export class SupabaseChatStore implements ChatStore {
       return base.eq('conversation_id', conversationId).eq('conversations.owner_wallet', wallet);
     };
 
-    const [history, system, count] = await Promise.all([
-      scoped('role, content')
+    const [conversation, history, count] = await Promise.all([
+      this.sb
+        .from('conversations')
+        .select('spec, cost_usd')
+        .eq('id', conversationId)
+        .eq('owner_wallet', wallet)
+        .maybeSingle(),
+      messages('role, content')
         .in('role', ['user', 'assistant'])
         .order('id', { ascending: false })
         .limit(HISTORY_ROWS),
-      scoped('role, content').eq('role', 'system').order('id', { ascending: true }),
-      scoped('id', { count: 'exact', head: true }).eq('role', 'user'),
+      messages('id', { count: 'exact', head: true }).eq('role', 'user'),
     ]);
+    if (conversation.error) fail('state select', conversation.error);
     if (history.error) fail('history select', history.error);
-    if (system.error) fail('state select', system.error);
     if (count.error) fail('message count', count.error);
 
-    const messages: HistoryMessage[] = [];
+    const rows: HistoryMessage[] = [];
     for (const raw of (history.data ?? []).slice().reverse()) {
       const row = MessageRow.parse(raw);
       if (row.role === 'user' || row.role === 'assistant') {
-        messages.push({ role: row.role, content: row.content });
+        rows.push({ role: row.role, content: row.content });
       }
     }
 
-    let draft: LaunchpadSpecDraft | null = null;
-    let costUsd = 0;
-    for (const raw of system.data ?? []) {
-      const { content } = MessageRow.parse(raw);
-      try {
-        if (content.startsWith(SPEC_ROW_PREFIX)) {
-          const parsed = DraftRow.safeParse(JSON.parse(content.slice(SPEC_ROW_PREFIX.length)));
-          if (parsed.success) draft = parsed.data as LaunchpadSpecDraft;
-        } else if (content.startsWith(USAGE_ROW_PREFIX)) {
-          const parsed = UsageRow.safeParse(JSON.parse(content.slice(USAGE_ROW_PREFIX.length)));
-          if (parsed.success) costUsd += parsed.data.costUsd;
-        }
-      } catch {
-        // A malformed bookkeeping row is ignored.
-      }
-    }
-
-    return { draft, costUsd, userMessageCount: count.count ?? 0, history: messages };
+    const state = conversation.data ? StateRow.parse(conversation.data) : null;
+    return {
+      draft: state ? parseDraft(state.spec) : null,
+      costUsd: state ? toMicros(state.cost_usd) / MICROS : 0,
+      userMessageCount: count.count ?? 0,
+      history: rows,
+    };
   }
 
   async appendMessages(conversationId: string, rows: NewMessage[]): Promise<void> {
@@ -203,6 +260,68 @@ export class SupabaseChatStore implements ChatStore {
         rows.map((r) => ({ conversation_id: conversationId, role: r.role, content: r.content })),
       );
     if (error) fail('messages insert', error);
+  }
+
+  async saveDraft(
+    conversationId: string,
+    wallet: string,
+    draft: LaunchpadSpecDraft,
+  ): Promise<void> {
+    const { error } = await this.sb
+      .from('conversations')
+      .update({ spec: draft })
+      .eq('id', conversationId)
+      .eq('owner_wallet', wallet);
+    if (error) fail('draft update', error);
+  }
+
+  /**
+   * Compare-and-set on `cost_usd` (PostgREST cannot express `cost_usd = cost_usd + x`): a
+   * concurrent writer makes the update match no row, and the increment is retried on the fresh
+   * value. The delta is rounded UP to the micro-dollar, so spend is never under-counted.
+   */
+  async addCost(conversationId: string, wallet: string, deltaUsd: number): Promise<number> {
+    const delta = Math.ceil(deltaUsd * MICROS - 1e-6);
+    for (let attempt = 0; attempt < CAS_ATTEMPTS; attempt++) {
+      const read = await this.sb
+        .from('conversations')
+        .select('cost_usd')
+        .eq('id', conversationId)
+        .eq('owner_wallet', wallet)
+        .maybeSingle();
+      if (read.error) fail('cost select', read.error);
+      if (!read.data) throw new StoreError('cost select failed (no conversation)');
+      const current = CostRow.parse(read.data).cost_usd;
+      const next = toMicros(current) + Math.max(0, delta);
+      if (next === toMicros(current)) return next / MICROS;
+      const write = await this.sb
+        .from('conversations')
+        .update({ cost_usd: (next / MICROS).toFixed(6) })
+        .eq('id', conversationId)
+        .eq('owner_wallet', wallet)
+        .eq('cost_usd', current)
+        .select('id');
+      if (write.error) fail('cost update', write.error);
+      if ((write.data ?? []).length === 1) return next / MICROS;
+    }
+    throw new StoreError('cost update failed (contention)');
+  }
+
+  async walletSpendSince(wallet: string, since: Date): Promise<number> {
+    const { data, error } = await this.sb
+      .from('conversations')
+      .select('id, cost_usd, chat_messages!inner(id)')
+      .eq('owner_wallet', wallet)
+      .gte('chat_messages.created_at', since.toISOString())
+      .limit(1, { referencedTable: 'chat_messages' })
+      .limit(SPEND_ROWS);
+    if (error) fail('spend select', error);
+    const rows = data ?? [];
+    // More active conversations than we read: treat the cap as reached (fail closed).
+    if (rows.length >= SPEND_ROWS) return Number.POSITIVE_INFINITY;
+    let micros = 0;
+    for (const raw of rows) micros += toMicros(CostRow.parse(raw).cost_usd);
+    return micros / MICROS;
   }
 
   async getFlag(key: 'signups_paused'): Promise<boolean> {
@@ -223,25 +342,24 @@ export class SupabaseChatStore implements ChatStore {
     const { wallet, conversationId, spec } = input;
     const conversation = await this.getConversation(conversationId, wallet);
     if (!conversation) return { status: 'conversation_not_found' };
-
     if (conversation.launchpadId !== null) {
-      // Already confirmed (or a modification conversation): idempotent only for the same spec.
-      const existing = await this.getLaunchpadSpec(conversation.launchpadId, wallet);
-      if (!existing || draftKey(existing) !== draftKey(spec as LaunchpadSpecDraft)) {
-        return { status: 'conflict' };
-      }
-      const jobId = await this.ensureCreateJob(conversation.launchpadId);
-      return { status: 'existing', launchpadId: conversation.launchpadId, jobId };
+      return this.confirmExisting(conversation.launchpadId, wallet, spec);
     }
 
     await this.ensureUser(wallet);
+    if ((await this.countReservedDrafts(wallet)) >= DRAFT_POLICY.maxUnpaidDrafts) {
+      return { status: 'too_many_drafts' };
+    }
+
     const launchpadId = crypto.randomUUID();
-    const insert = await this.sb
-      .from('launchpads')
-      .insert({ id: launchpadId, owner_wallet: wallet, slug: spec.slug, spec, status: 'draft' });
-    if (insert.error) {
-      if (insert.error.code === '23505') return { status: 'slug_taken' };
-      fail('launchpad insert', insert.error);
+    let inserted = await this.insertLaunchpad(launchpadId, wallet, spec);
+    if (!inserted) {
+      // A double confirmation of this same conversation holds the slug: answer like it.
+      const attached = await this.waitForClaim(conversationId, wallet);
+      if (attached !== null) return this.confirmExisting(attached, wallet, spec);
+      if (!(await this.releaseExpiredSlug(spec.slug))) return { status: 'slug_taken' };
+      inserted = await this.insertLaunchpad(launchpadId, wallet, spec);
+      if (!inserted) return { status: 'slug_taken' };
     }
 
     // Claim the conversation atomically: only one confirmation can attach a launchpad.
@@ -255,6 +373,8 @@ export class SupabaseChatStore implements ChatStore {
     if (claim.error || (claim.data ?? []).length === 0) {
       await this.sb.from('launchpads').delete().eq('id', launchpadId).eq('owner_wallet', wallet);
       if (claim.error) fail('conversation update', claim.error);
+      const winner = await this.getConversation(conversationId, wallet);
+      if (winner?.launchpadId) return this.confirmExisting(winner.launchpadId, wallet, spec);
       return { status: 'conflict' };
     }
 
@@ -262,25 +382,182 @@ export class SupabaseChatStore implements ChatStore {
     return { status: 'created', launchpadId, jobId };
   }
 
-  private async ensureCreateJob(launchpadId: string): Promise<string> {
-    const found = await this.sb
-      .from('jobs')
-      .select('id')
-      .eq('launchpad_id', launchpadId)
-      .eq('type', 'create_launchpad')
-      .order('created_at', { ascending: true })
-      .limit(1);
-    if (found.error) fail('job select', found.error);
-    const first = found.data?.[0];
-    if (first) return IdRow.parse(first).id;
+  /** Already confirmed (or a modification conversation): idempotent only for the same spec. */
+  private async confirmExisting(
+    launchpadId: string,
+    wallet: string,
+    spec: LaunchpadSpec,
+  ): Promise<ConfirmOutcome> {
+    const { data, error } = await this.sb
+      .from('launchpads')
+      .select('id, spec, status')
+      .eq('id', launchpadId)
+      .eq('owner_wallet', wallet)
+      .maybeSingle();
+    if (error) fail('launchpad select', error);
+    if (!data) return { status: 'conflict' };
+    const row = LaunchpadStatusRow.parse(data);
+    const existing = parseDraft(row.spec);
+    if (!existing || draftKey(existing) !== draftKey(spec as LaunchpadSpecDraft)) {
+      return { status: 'conflict' };
+    }
+    if (row.status === 'disabled') return { status: 'draft_released' };
+    const jobId = await this.ensureCreateJob(launchpadId);
+    return { status: 'existing', launchpadId, jobId };
+  }
 
+  /** false on a slug conflict (unique violation). */
+  private async insertLaunchpad(id: string, wallet: string, spec: LaunchpadSpec): Promise<boolean> {
+    const { error } = await this.sb
+      .from('launchpads')
+      .insert({ id, owner_wallet: wallet, slug: spec.slug, spec, status: 'draft' });
+    if (!error) return true;
+    if (error.code === UNIQUE_VIOLATION) return false;
+    fail('launchpad insert', error);
+  }
+
+  private async waitForClaim(conversationId: string, wallet: string): Promise<string | null> {
+    for (let attempt = 0; attempt < CLAIM_POLL.attempts; attempt++) {
+      const conversation = await this.getConversation(conversationId, wallet);
+      if (conversation?.launchpadId) return conversation.launchpadId;
+      if (attempt < CLAIM_POLL.attempts - 1) await this.sleep(CLAIM_POLL.delayMs);
+    }
+    return null;
+  }
+
+  /** Paid / open-quote state of each launchpad (jobs and payments read in two queries). */
+  private async draftStates(launchpadIds: string[]): Promise<Map<string, DraftState>> {
+    const states = new Map<string, DraftState>();
+    for (const id of launchpadIds) states.set(id, { paid: false, openQuote: false });
+    if (launchpadIds.length === 0) return states;
+
+    const jobs = await this.sb
+      .from('jobs')
+      .select('id, launchpad_id, status')
+      .in('launchpad_id', launchpadIds);
+    if (jobs.error) fail('jobs select', jobs.error);
+    const launchpadOfJob = new Map<string, string>();
+    for (const raw of jobs.data ?? []) {
+      const job = JobRow.parse(raw);
+      launchpadOfJob.set(job.id, job.launchpad_id);
+      const state = states.get(job.launchpad_id);
+      if (state && job.status !== 'spec_ready') state.paid = true;
+    }
+    if (launchpadOfJob.size === 0) return states;
+
+    const payments = await this.sb
+      .from('payments')
+      .select('job_id, status, tx_signature, quote_expires_at')
+      .in('job_id', [...launchpadOfJob.keys()]);
+    if (payments.error) fail('payments select', payments.error);
+    const graceStart = this.now() - DRAFT_POLICY.quoteGraceMs;
+    for (const raw of payments.data ?? []) {
+      const payment = PaymentRow.parse(raw);
+      const state = states.get(launchpadOfJob.get(payment.job_id) ?? '');
+      if (!state) continue;
+      if (payment.status === 'confirmed' || payment.tx_signature !== null) state.paid = true;
+      if (payment.status === 'quoted' && Date.parse(payment.quote_expires_at) > graceStart) {
+        state.openQuote = true;
+      }
+    }
+    return states;
+  }
+
+  /** Unpaid drafts of `wallet` still inside their reservation window. */
+  private async countReservedDrafts(wallet: string): Promise<number> {
+    const since = new Date(this.now() - DRAFT_POLICY.reservationMs).toISOString();
+    const { data, error } = await this.sb
+      .from('launchpads')
+      .select('id')
+      .eq('owner_wallet', wallet)
+      .eq('status', 'draft')
+      .gte('created_at', since);
+    if (error) fail('drafts select', error);
+    const ids = (data ?? []).map((raw) => IdRow.parse(raw).id);
+    const states = await this.draftStates(ids);
+    let unpaid = 0;
+    for (const state of states.values()) if (!state.paid) unpaid++;
+    return unpaid;
+  }
+
+  /**
+   * Frees `slug` when it is held by an expired unpaid draft (DRAFT_POLICY). Write first, then
+   * re-check the payments: a quote created concurrently writes its row before re-reading the
+   * launchpad (payments/service.ts), so one side always sees the other. Seeing a fresh quote here
+   * puts the draft back.
+   */
+  private async releaseExpiredSlug(slug: string): Promise<boolean> {
+    const { data, error } = await this.sb
+      .from('launchpads')
+      .select('id, status, created_at')
+      .eq('slug', slug)
+      .maybeSingle();
+    if (error) fail('slug select', error);
+    if (!data) return true; // Freed meanwhile: the caller simply retries the insert.
+    const holder = HolderRow.parse(data);
+    const expired = Date.parse(holder.created_at) <= this.now() - DRAFT_POLICY.reservationMs;
+    if (holder.status !== 'draft' || !expired) return false;
+    const before = (await this.draftStates([holder.id])).get(holder.id);
+    if (!before || before.paid || before.openQuote) return false;
+
+    const releasedSlug = `released-${holder.id}`;
+    const release = await this.sb
+      .from('launchpads')
+      .update({ slug: releasedSlug, status: 'disabled' })
+      .eq('id', holder.id)
+      .eq('status', 'draft')
+      .eq('slug', slug)
+      .select('id');
+    if (release.error) fail('slug release', release.error);
+    if ((release.data ?? []).length === 0) return false;
+
+    const after = (await this.draftStates([holder.id])).get(holder.id);
+    if (after && !after.paid && !after.openQuote) {
+      console.info(`[spec] released the slug of expired draft ${holder.id}`);
+      return true;
+    }
+    const revert = await this.sb
+      .from('launchpads')
+      .update({ slug, status: 'draft' })
+      .eq('id', holder.id)
+      .eq('slug', releasedSlug)
+      .select('id');
+    if (revert.error || (revert.data ?? []).length === 0) {
+      console.error(`[spec] could not restore draft ${holder.id} after a racing quote`);
+    }
+    return false;
+  }
+
+  /**
+   * One `create_launchpad` job per launchpad, guaranteed by the unique partial index
+   * `jobs_one_create_per_launchpad_idx`: a concurrent insert fails with 23505 and the winner's
+   * row is read back.
+   */
+  private async ensureCreateJob(launchpadId: string): Promise<string> {
+    const existing = await this.findCreateJob(launchpadId);
+    if (existing) return existing;
     const created = await this.sb
       .from('jobs')
       .insert({ launchpad_id: launchpadId, type: 'create_launchpad', status: 'spec_ready' })
       .select('id')
       .single();
-    if (created.error) fail('job insert', created.error);
-    return IdRow.parse(created.data).id;
+    if (!created.error) return IdRow.parse(created.data).id;
+    if (created.error.code !== UNIQUE_VIOLATION) fail('job insert', created.error);
+    const winner = await this.findCreateJob(launchpadId);
+    if (!winner) throw new StoreError('job insert failed (conflict without a row)');
+    return winner;
+  }
+
+  private async findCreateJob(launchpadId: string): Promise<string | null> {
+    const found = await this.sb
+      .from('jobs')
+      .select('id')
+      .eq('launchpad_id', launchpadId)
+      .eq('type', 'create_launchpad')
+      .limit(1);
+    if (found.error) fail('job select', found.error);
+    const first = found.data?.[0];
+    return first ? IdRow.parse(first).id : null;
   }
 }
 

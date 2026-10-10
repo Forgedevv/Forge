@@ -1,7 +1,8 @@
-import type { Connection } from '@solana/web3.js';
+import type { Connection, PublicKey } from '@solana/web3.js';
 import {
   assertCluster,
   buildPaymentTx,
+  ForgeAddressError,
   PaymentError as CorePaymentError,
   verifyPayment,
   type AddressEnv,
@@ -15,8 +16,12 @@ import { ClusterMismatchError, PaymentConfigError, RpcUnavailableError } from '.
 
 /*
  * The payment routes' view of the chain: the core functions bound to one connection, cluster and
- * environment, with errors translated so that no RPC error message (which may echo the endpoint
- * and its API key) ever travels further.
+ * cashbox, with errors translated so that no RPC error message (which may echo the endpoint and
+ * its API key) ever travels further.
+ *
+ * The cashbox is the address parsed once by the route configuration (config.ts). The core reads
+ * addresses from an environment object, so the gateway hands it an environment holding exactly
+ * that parsed address: building and verifying can never use two different cashboxes.
  */
 
 export interface BuiltPayment {
@@ -33,8 +38,8 @@ export interface PaymentGateway {
 export interface CorePaymentGatewayOptions {
   connection: Connection;
   cluster: PaymentCluster;
-  /** Where FORGE_CASHBOX_WALLET is read from (defaults to process.env). */
-  env?: AddressEnv;
+  /** The parsed FORGE_CASHBOX_WALLET of the route configuration. */
+  cashbox: PublicKey;
   retry?: RetryOptions;
 }
 
@@ -47,7 +52,7 @@ export function translateCoreError(error: unknown): Error {
     }
     return error;
   }
-  if (error instanceof Error && error.name === 'ForgeAddressError') {
+  if (error instanceof ForgeAddressError) {
     // Lists variable names only.
     return new PaymentConfigError(error.message);
   }
@@ -57,10 +62,11 @@ export function translateCoreError(error: unknown): Error {
 
 export function createCorePaymentGateway(options: CorePaymentGatewayOptions): PaymentGateway {
   const { connection, cluster } = options;
-  const common = {
-    ...(options.env ? { env: options.env } : {}),
-    ...(options.retry ? { retry: options.retry } : {}),
+  const env: AddressEnv = {
+    FORGE_CASHBOX_WALLET: options.cashbox.toBase58(),
+    SOLANA_CLUSTER: cluster,
   };
+  const common = { env, ...(options.retry ? { retry: options.retry } : {}) };
   return {
     async buildPayment(params) {
       try {

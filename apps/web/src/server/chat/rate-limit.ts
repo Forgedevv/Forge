@@ -77,13 +77,4 @@ export function getDefaultRateLimiter(): RateLimiter {
   return limiter;
 }
 
-/**
- * Client IP behind the hosting proxy. The platform overwrites these headers, so the first value
- * is the real client address. Falls back to "unknown" (one shared bucket).
- */
-export function clientIp(request: Request): string {
-  const direct = request.headers.get('x-real-ip');
-  const forwarded = request.headers.get('x-forwarded-for');
-  const value = (forwarded?.split(',')[0] ?? direct ?? '').trim();
-  return value === '' ? 'unknown' : value.slice(0, 64);
-}
+export { clientIp } from './client-ip';

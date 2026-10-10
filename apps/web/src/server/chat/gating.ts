@@ -1,7 +1,18 @@
+import {
+  ForgeAddressError,
+  GatingError as CoreGatingError,
+  getForgeBalance,
+  passesForgeGate,
+  type AddressEnv,
+  type ForgeBalance,
+} from '@forge/core';
+import { Connection, PublicKey } from '@solana/web3.js';
+
 /*
  * Token gate for the design chat (docs/PRODUCT.md: hold FORGE_GATING_AMOUNT of FORGE_MINT,
- * rechecked on each use). Disabled while FORGE_MINT is not set. Read-only: one JSON-RPC call
- * (`getTokenAccountsByOwner`) through the server RPC URL. The balance is cached briefly.
+ * rechecked on each use). Disabled while FORGE_MINT is not set. The balance is read with
+ * `getForgeBalance` of @forge/core (the wallet's associated token account, classic SPL Token or
+ * Token-2022) through the server RPC URL, and cached briefly. Fails closed on any error.
  */
 
 export interface GatingResult {
@@ -18,25 +29,28 @@ export class GatingError extends Error {
   }
 }
 
+/** Reads the $FORGE balance of `wallet` (seam for tests). */
+export type BalanceReader = (wallet: PublicKey, env: AddressEnv) => Promise<ForgeBalance>;
+
 const CACHE_TTL_MS = 30_000;
-const RPC_TIMEOUT_MS = 8_000;
 const RAW_AMOUNT = /^\d{1,30}$/;
 
-interface TokenAccountsResponse {
-  result?: {
-    value?: {
-      account?: { data?: { parsed?: { info?: { tokenAmount?: { amount?: unknown } } } } };
-    }[];
+function defaultReader(env: AddressEnv): BalanceReader {
+  let connection: Connection | null = null;
+  return (wallet) => {
+    const rpcUrl = env.RPC_URL;
+    if (rpcUrl === undefined || rpcUrl === '') throw new GatingError('RPC_URL is not configured');
+    connection ??= new Connection(rpcUrl, { commitment: 'confirmed' });
+    return getForgeBalance(connection, wallet, { env });
   };
-  error?: unknown;
 }
 
 export function createGatingCheck(
-  env: Readonly<Record<string, string | undefined>> = process.env,
-  fetchImpl: typeof fetch = fetch,
+  env: AddressEnv = process.env,
+  readBalance: BalanceReader = defaultReader(env),
   now: () => number = Date.now,
 ): GatingCheck {
-  const cache = new Map<string, { at: number; balance: bigint }>();
+  const cache = new Map<string, { at: number; balance: ForgeBalance }>();
 
   return async (wallet) => {
     const mint = env.FORGE_MINT;
@@ -50,40 +64,21 @@ export function createGatingCheck(
     if (required === 0n) return { enabled: true, ok: true };
 
     const hit = cache.get(wallet);
-    if (hit && now() - hit.at < CACHE_TTL_MS) return { enabled: true, ok: hit.balance >= required };
+    if (hit && now() - hit.at < CACHE_TTL_MS) {
+      return { enabled: true, ok: passesForgeGate(hit.balance, required) };
+    }
 
-    const rpcUrl = env.RPC_URL;
-    if (rpcUrl === undefined || rpcUrl === '') throw new GatingError('RPC_URL is not configured');
-
-    let json: TokenAccountsResponse;
+    let balance: ForgeBalance;
     try {
-      const res = await fetchImpl(rpcUrl, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          jsonrpc: '2.0',
-          id: 1,
-          method: 'getTokenAccountsByOwner',
-          params: [wallet, { mint }, { encoding: 'jsonParsed', commitment: 'confirmed' }],
-        }),
-        signal: AbortSignal.timeout(RPC_TIMEOUT_MS),
-      });
-      if (!res.ok) throw new GatingError('RPC request failed');
-      json = (await res.json()) as TokenAccountsResponse;
+      balance = await readBalance(new PublicKey(wallet), env);
     } catch (error) {
       if (error instanceof GatingError) throw error;
+      // Names only: RPC errors may echo the endpoint (and its API key).
+      if (error instanceof ForgeAddressError) throw new GatingError('FORGE_MINT is invalid');
+      if (error instanceof CoreGatingError) throw new GatingError(`FORGE_MINT: ${error.code}`);
       throw new GatingError('RPC request failed');
     }
-    if (json.error !== undefined || !Array.isArray(json.result?.value)) {
-      throw new GatingError('Unexpected RPC response');
-    }
-
-    let balance = 0n;
-    for (const entry of json.result.value) {
-      const amount = entry.account?.data?.parsed?.info?.tokenAmount?.amount;
-      if (typeof amount === 'string' && RAW_AMOUNT.test(amount)) balance += BigInt(amount);
-    }
     cache.set(wallet, { at: now(), balance });
-    return { enabled: true, ok: balance >= required };
+    return { enabled: true, ok: passesForgeGate(balance, required) };
   };
 }

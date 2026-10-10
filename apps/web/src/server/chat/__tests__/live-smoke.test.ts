@@ -41,7 +41,8 @@ describe.skipIf(!live)('live design chat smoke (real Anthropic API)', () => {
       draft: initialDraft(WALLET),
       storedDraft: null,
       messages: [{ role: 'user', content: message }],
-      priorCostUsd: 0,
+      budgetUsd: 1,
+      deadlineAt: Date.now() + 50_000,
       signal: new AbortController().signal,
     })) {
       events.push(ev);

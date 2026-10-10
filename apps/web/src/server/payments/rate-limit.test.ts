@@ -25,9 +25,15 @@ describe('MemoryRateLimiter', () => {
 describe('clientIp', () => {
   const req = (headers: Record<string, string>) => new Request('http://x/', { headers });
 
-  it('uses the first forwarded address, then x-real-ip', () => {
-    expect(clientIp(req({ 'x-forwarded-for': '203.0.113.1, 10.0.0.1' }))).toBe('203.0.113.1');
-    expect(clientIp(req({ 'x-real-ip': '198.51.100.2' }))).toBe('198.51.100.2');
+  it('prefers the platform headers, then the last forwarded entry (added by the proxy)', () => {
+    expect(
+      clientIp(req({ 'x-vercel-forwarded-for': '198.51.100.7', 'x-forwarded-for': '1.1.1.1' })),
+    ).toBe('198.51.100.7');
+    expect(clientIp(req({ 'x-real-ip': '198.51.100.2', 'x-forwarded-for': '1.1.1.1' }))).toBe(
+      '198.51.100.2',
+    );
+    // The client controls the start of x-forwarded-for: a spoofed first entry is ignored.
+    expect(clientIp(req({ 'x-forwarded-for': '203.0.113.1, 10.0.0.1' }))).toBe('10.0.0.1');
     expect(clientIp(req({}))).toBe('unknown');
   });
 });

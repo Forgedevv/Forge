@@ -15,6 +15,7 @@ import {
   buildPaymentTx,
   checkPaymentTransaction,
   CLUSTER_GENESIS_HASH,
+  ForgeAddressError,
   MAX_PAYMENT_LAMPORTS,
   MEMO_V1_PROGRAM_ID,
   PaymentError,
@@ -332,7 +333,7 @@ describe('gateway', () => {
     const gateway = createCorePaymentGateway({
       connection,
       cluster: 'devnet',
-      env: ENV,
+      cashbox: CASHBOX,
       retry: NO_RETRY,
     });
     const built = await gateway.buildPayment({ payer: PAYER, lamports: LAMPORTS, jobId: JOB });
@@ -341,12 +342,39 @@ describe('gateway', () => {
     expect(tx.message.staticAccountKeys[0]!.equals(PAYER)).toBe(true);
   });
 
+  it('builds and verifies with the configured cashbox, never another value of process.env', async () => {
+    const previous = process.env.FORGE_CASHBOX_WALLET;
+    process.env.FORGE_CASHBOX_WALLET = OTHER.toBase58();
+    try {
+      const { connection, rpc } = fakeConnection();
+      const gateway = createCorePaymentGateway({
+        connection,
+        cluster: 'devnet',
+        cashbox: CASHBOX,
+        retry: NO_RETRY,
+      });
+      const built = await gateway.buildPayment({ payer: PAYER, lamports: LAMPORTS, jobId: JOB });
+      const tx = VersionedTransaction.deserialize(Buffer.from(built.transaction, 'base64'));
+      const [transfer] = tx.message.compiledInstructions;
+      const to = tx.message.staticAccountKeys[transfer!.accountKeyIndexes[1]!]!;
+      expect(to.equals(CASHBOX)).toBe(true);
+      expect(rpc.getBalance).toHaveBeenCalledWith(CASHBOX, 'confirmed');
+      // The landed transaction pays CASHBOX: verification must check that same address.
+      await expect(
+        gateway.verify(randomSignature(), { payer: PAYER, lamports: LAMPORTS, jobId: JOB }),
+      ).resolves.toMatchObject({ status: 'confirmed' });
+    } finally {
+      if (previous === undefined) delete process.env.FORGE_CASHBOX_WALLET;
+      else process.env.FORGE_CASHBOX_WALLET = previous;
+    }
+  });
+
   it('never builds a transaction for another cluster', async () => {
     const { connection, rpc } = fakeConnection({ genesis: CLUSTER_GENESIS_HASH['mainnet-beta'] });
     const gateway = createCorePaymentGateway({
       connection,
       cluster: 'devnet',
-      env: ENV,
+      cashbox: CASHBOX,
       retry: NO_RETRY,
     });
     await expect(
@@ -362,7 +390,7 @@ describe('gateway', () => {
     const gateway = createCorePaymentGateway({
       connection,
       cluster: 'devnet',
-      env: ENV,
+      cashbox: CASHBOX,
       retry: NO_RETRY,
     });
     const error = await gateway
@@ -383,9 +411,7 @@ describe('gateway', () => {
     expect(translateCoreError(new PaymentError('cashbox_not_rent_exempt', 'x'))).toBeInstanceOf(
       PaymentConfigError,
     );
-    const addressError = Object.assign(new Error('FORGE address configuration error (x)'), {
-      name: 'ForgeAddressError',
-    });
+    const addressError = new ForgeAddressError(['FORGE_CASHBOX_WALLET'], []);
     expect(translateCoreError(addressError)).toBeInstanceOf(PaymentConfigError);
     expect(translateCoreError(new PaymentError('invalid_amount', 'x'))).toBeInstanceOf(
       PaymentError,

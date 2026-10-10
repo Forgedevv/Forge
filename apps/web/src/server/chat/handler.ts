@@ -23,6 +23,7 @@ export interface ChatDeps {
   gating: GatingCheck;
   loadConfig: () => ChatConfig;
   streamerFor: (config: ChatConfig) => ModelStreamer;
+  now?: () => number;
 }
 
 let defaultGating: GatingCheck | null = null;
@@ -66,10 +67,15 @@ function limited(retryAfterSeconds: number, message: string): Response {
   return apiError(429, 'RATE_LIMITED', message, { 'Retry-After': String(retryAfterSeconds) });
 }
 
+const DAY_MS = 24 * 60 * 60_000;
+
 export async function handleChat(
   request: Request,
   deps: ChatDeps = defaultChatDeps(),
 ): Promise<Response> {
+  const now = deps.now ?? Date.now;
+  // Everything below, pre-turn work included, must fit in limits.requestBudgetMs.
+  const receivedAt = now();
   let release: (() => void) | null = null;
   try {
     let forbidden: Response | null;
@@ -137,11 +143,7 @@ export async function handleChat(
         'You are sending messages too quickly. Please wait a moment.',
       );
     }
-    const byDay = await limiter.consume(
-      `chat:wallet-day:${wallet}`,
-      limits.walletPerDay,
-      24 * 60 * 60_000,
-    );
+    const byDay = await limiter.consume(`chat:wallet-day:${wallet}`, limits.walletPerDay, DAY_MS);
     if (!byDay.allowed) {
       return limited(
         byDay.retryAfterSeconds,
@@ -210,6 +212,24 @@ export async function handleChat(
       release();
       return limited(60, 'This conversation reached its usage limit. Please start a new one.');
     }
+    // Daily spend of the wallet, from the database (holds across server instances).
+    const daySpend = await store.walletSpendSince(wallet, new Date(now() - DAY_MS));
+    if (daySpend >= limits.walletDailyCostCapUsd) {
+      release();
+      return limited(
+        60 * 60,
+        'You reached the daily usage limit of the design assistant. Please come back tomorrow.',
+      );
+    }
+    const budgetUsd = Math.min(
+      limits.conversationCostCapUsd - state.costUsd,
+      limits.walletDailyCostCapUsd - daySpend,
+    );
+    const deadlineAt = receivedAt + limits.requestBudgetMs;
+    if (deadlineAt - now() < limits.minTurnMs) {
+      release();
+      return apiError(503, 'SERVER_ERROR', 'The design chat is busy. Please try again.');
+    }
 
     let base = state.draft;
     if (base === null && launchpadId !== null)
@@ -247,16 +267,21 @@ export async function handleChat(
         draft,
         storedDraft: state.draft,
         messages,
-        priorCostUsd: state.costUsd,
+        budgetUsd,
+        deadlineAt,
         signal: abort.signal,
+        now,
       });
     })();
     void isNew;
 
+    // Set by cancel(): nothing may be enqueued afterwards (the controller is closed).
+    let cancelled = false;
     const stream = new ReadableStream<Uint8Array>({
       async pull(controller) {
         try {
           const next = await events.next();
+          if (cancelled) return;
           if (next.done) {
             controller.enqueue(encodeSse({ type: 'done' }));
             controller.close();
@@ -265,6 +290,7 @@ export async function handleChat(
           }
           controller.enqueue(encodeSse(next.value));
         } catch {
+          if (cancelled) return;
           console.error('[chat] stream failed');
           controller.enqueue(
             encodeSse({
@@ -279,6 +305,7 @@ export async function handleChat(
         }
       },
       async cancel() {
+        cancelled = true;
         abort.abort();
         try {
           await events.return(undefined);
