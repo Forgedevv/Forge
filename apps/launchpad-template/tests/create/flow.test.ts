@@ -1,11 +1,12 @@
 // @vitest-environment jsdom
 import '../helpers/dom-setup';
-import { Keypair, type VersionedTransaction } from '@solana/web3.js';
+import { Keypair, PublicKey, type VersionedTransaction } from '@solana/web3.js';
+import { TOKEN_PROGRAM_ID } from '@solana/spl-token';
 import { describe, expect, it, vi } from 'vitest';
 import type { LaunchApi } from '@/forge/create/api';
 import type { ChainClient } from '@/forge/create/chain';
 import { TxError, executeLaunch, prepareLaunch, type LaunchDeps } from '@/forge/create/flow';
-import { buildFixtureLaunch } from '@/forge/create/test-fixtures';
+import { buildFixtureLaunch, FIXTURE_LAUNCHPAD_CONFIG } from '@/forge/create/test-fixtures';
 import type { ValidatedCoin } from '@/forge/create/validation';
 
 const walletKp = Keypair.generate();
@@ -20,6 +21,7 @@ const image = new Blob([new Uint8Array([1, 2, 3])], { type: 'image/png' });
 function setup(options: { balance?: bigint | Error; fee?: bigint } = {}) {
   const { response } = buildFixtureLaunch({
     wallet: walletKp.publicKey,
+    launchpadConfig: FIXTURE_LAUNCHPAD_CONFIG,
     name: coin.name,
     symbol: coin.symbol,
     firstBuyLamports: coin.firstBuyLamports,
@@ -30,6 +32,31 @@ function setup(options: { balance?: bigint | Error; fee?: bigint } = {}) {
     getBalanceLamports: vi.fn().mockImplementation(async () => {
       if (options.balance instanceof Error) throw options.balance;
       return options.balance ?? BigInt(10000000000);
+    }),
+    getAccounts: vi.fn().mockImplementation(async () => {
+      if (options.balance instanceof Error) throw options.balance;
+      return [
+        { lamports: options.balance ?? BigInt(10000000000), owner: PublicKey.default.toBase58(), data: new Uint8Array() },
+        null,
+      ];
+    }),
+    simulateTransaction: vi.fn().mockImplementation(async (_tx: string, addresses: string[]) => {
+      const balance = options.balance instanceof Error ? BigInt(10000000000) : options.balance ?? BigInt(10000000000);
+      const summary = response.summary;
+      const total = BigInt(summary.poolCreationFeeLamports) + BigInt(summary.firstBuyLamports) +
+        BigInt(summary.estimatedNetworkFeeLamports) + BigInt(summary.accountRentLamports) + BigInt(summary.metadataFeeLamports);
+      const token = Buffer.alloc(165);
+      new PublicKey(response.mint).toBuffer().copy(token, 0);
+      walletKp.publicKey.toBuffer().copy(token, 32);
+      token.writeBigUInt64LE(BigInt(summary.firstBuyMinimumTokensOut), 64);
+      return {
+        err: null,
+        logs: [],
+        accounts: [
+          { lamports: balance - total, owner: PublicKey.default.toBase58(), data: new Uint8Array() },
+          addresses[1] ? { lamports: BigInt(2039280), owner: TOKEN_PROGRAM_ID.toBase58(), data: token } : null,
+        ],
+      };
     }),
     sendRawTransaction: vi.fn().mockResolvedValue('SIG'),
     getSignatureStatus: vi.fn().mockResolvedValue({ confirmationStatus: 'confirmed', err: null }),
@@ -43,6 +70,8 @@ function setup(options: { balance?: bigint | Error; fee?: bigint } = {}) {
     chain,
     signTransaction: signTransaction as unknown as LaunchDeps['signTransaction'],
     wallet: walletKp.publicKey.toBase58(),
+    launchpadConfig: FIXTURE_LAUNCHPAD_CONFIG.toBase58(),
+    signMessage: async () => new Uint8Array(64),
     poolCreationFeeLamports: BigInt(10000000),
     confirm: { sleep: async () => {}, intervalMs: 1 },
   };
@@ -73,11 +102,9 @@ describe('prepareLaunch', () => {
     expect((await prepareLaunch(coin, image, deps)).insufficientBalance).toBe(true);
   });
 
-  it('does not block when the balance cannot be read', async () => {
+  it('fails closed when the transaction state cannot be read', async () => {
     const { deps } = setup({ balance: new Error('relay down') });
-    const review = await prepareLaunch(coin, image, deps);
-    expect(review.balanceLamports).toBeNull();
-    expect(review.insufficientBalance).toBe(false);
+    await expect(prepareLaunch(coin, image, deps)).rejects.toMatchObject({ code: 'verification_failed' });
   });
 
   it('reports a server failure as prepare_failed', async () => {

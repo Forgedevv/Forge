@@ -4,6 +4,7 @@ import { Keypair, type VersionedTransaction } from '@solana/web3.js';
 import { fireEvent, render, screen, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createMockClaimsCore, mockCoin } from '@/forge/claims/mock-core';
+import { FIXTURE_LAUNCHPAD_CONFIG } from '@/forge/create/test-fixtures';
 import type { CreatorCoin } from '@/forge/claims/core-adapter';
 
 const walletKp = Keypair.generate();
@@ -45,6 +46,7 @@ function renderClaims(s: ReturnType<typeof setup>, props: Record<string, unknown
       core={s.core}
       chain={s.chain}
       confirmOptions={{ sleep: async () => {}, intervalMs: 1 }}
+      launchpadConfigs={[FIXTURE_LAUNCHPAD_CONFIG.toBase58()]}
       {...props}
     />,
   );

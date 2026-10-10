@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
 import { useUnifiedWalletContext, useWallet } from '@jup-ag/wallet-adapter';
 import type { SiteMode } from '@forge/shared';
-import { cluster, poolCreationFeeSol, rpcRelayUrl, siteConfig } from './config';
+import { cluster, onchainConfig, poolCreationFeeSol, rpcRelayEndpoint, siteConfig } from './config';
 import { ModeBanner } from './ModeBanner';
 import { capabilitiesFor, currentMode } from './mode-guard';
 import { createHttpLaunchApi, type LaunchApi } from './create/api';
@@ -14,8 +14,11 @@ import {
   waitForLaunch,
   type LaunchReview,
   type LaunchResult,
+  type SignMessage,
   type SignTransaction,
 } from './create/flow';
+import { formatUnits } from './trade/amounts';
+import { DEFAULT_TOKEN_DECIMALS } from './trade/constants';
 import {
   DESCRIPTION_MAX,
   FIRST_BUY_MAX_SOL,
@@ -30,10 +33,11 @@ import {
 /**
  * LOCKED ZONE. Coin creation form for this launchpad.
  *
- * Sequence: form -> prepare (image + transaction built by the server, verified here) -> REVIEW
- * (full cost summary: creation fee, first buy, network fee, account rent, total) -> the user signs
- * -> send through the RPC relay -> poll for confirmation -> success. Nothing is signed before the
- * review is displayed.
+ * Sequence: form -> the wallet signs the upload authorization -> prepare (image + transaction
+ * built by the server; every instruction decoded and the transaction simulated here) -> REVIEW
+ * (full cost summary: creation fee, first buy, metadata fee, network fee, account rent, total)
+ * -> the user signs -> send through the RPC relay -> poll for confirmation -> success. No
+ * transaction is signed before the review is displayed.
  */
 
 const inputClassName =
@@ -53,6 +57,8 @@ export interface CreateCoinProps {
   chain?: ChainClient;
   /** Overrides the creation fee from forge.config.json, in SOL (tests). */
   poolCreationFeeSol?: number;
+  /** Overrides `forge.config.json#onchain.launchpadConfig` (tests). */
+  launchpadConfig?: string;
   confirmOptions?: ConfirmOptions;
 }
 
@@ -83,17 +89,21 @@ export function CreateCoin(props: CreateCoinProps) {
 export default CreateCoin;
 
 function CreateCoinForm(props: CreateCoinProps) {
-  const { publicKey, signTransaction } = useWallet();
+  const { publicKey, signTransaction, signMessage } = useWallet();
   const { setShowModal } = useUnifiedWalletContext();
   const wallet = useMemo(() => publicKey?.toBase58(), [publicKey]);
 
   const api = useMemo(() => props.api ?? createHttpLaunchApi(), [props.api]);
   const chain = useMemo(
-    () => props.chain ?? (rpcRelayUrl ? createRpcChainClient({ url: rpcRelayUrl }) : null),
+    () =>
+      props.chain ?? (rpcRelayEndpoint ? createRpcChainClient({ url: rpcRelayEndpoint }) : null),
     [props.chain],
   );
   const feeSol = props.poolCreationFeeSol ?? poolCreationFeeSol;
   const feeLamports = feeSol === undefined ? undefined : solNumberToLamports(feeSol);
+  const launchpadConfig = props.launchpadConfig ?? onchainConfig?.launchpadConfig;
+  // Without the config address and the creation fee, nothing the server prepares can be checked.
+  const configured = launchpadConfig !== undefined && feeLamports !== undefined;
 
   const [name, setName] = useState('');
   const [symbol, setSymbol] = useState('');
@@ -125,10 +135,21 @@ function CreateCoinForm(props: CreateCoinProps) {
       chain,
       wallet,
       signTransaction: signTransaction as SignTransaction,
+      signMessage: signMessage as SignMessage | undefined,
+      launchpadConfig,
       poolCreationFeeLamports: feeLamports,
       confirm: props.confirmOptions,
     };
-  }, [api, chain, wallet, signTransaction, feeLamports, props.confirmOptions]);
+  }, [
+    api,
+    chain,
+    wallet,
+    signTransaction,
+    signMessage,
+    launchpadConfig,
+    feeLamports,
+    props.confirmOptions,
+  ]);
 
   const reset = () => {
     setName('');
@@ -431,6 +452,10 @@ function CreateCoinForm(props: CreateCoinProps) {
           <p role="alert" className="text-sm text-rose">
             Coin creation is not configured on this site (RPC relay missing).
           </p>
+        ) : !configured ? (
+          <p role="alert" className="text-sm text-rose">
+            Coin creation is not configured on this site yet.
+          </p>
         ) : (
           <button type="submit" className={primaryButtonClassName} disabled={preparing}>
             {preparing ? 'Preparing...' : 'Review launch'}
@@ -478,7 +503,8 @@ function Review(props: {
     <div className={cardClassName} data-forge="create-coin-review">
       <h2 className="mb-1 text-xl font-bold md:text-2xl">Review your launch</h2>
       <p className="mb-4 text-sm text-neutral-400">
-        Check every line. Your wallet will ask you to sign once; nothing is charged before that.
+        Check every line. The transaction was decoded and simulated in your browser and matches this
+        summary. Your wallet will ask you to sign once; nothing is charged before that.
       </p>
 
       <dl className="space-y-2 text-sm">
@@ -488,10 +514,17 @@ function Review(props: {
           value={`${formatSol(summary.poolCreationFeeLamports)} SOL`}
         />
         <Row label="First buy" value={`${formatSol(summary.firstBuyLamports)} SOL`} />
+        {summary.firstBuyLamports > BigInt(0) && (
+          <Row
+            label="You receive at least"
+            value={`${formatUnits(summary.firstBuyMinimumTokensOut, DEFAULT_TOKEN_DECIMALS)} ${summary.coinSymbol}`}
+          />
+        )}
         <Row
-          label="Network fee (estimate)"
-          value={`${formatSol(summary.estimatedNetworkFeeLamports)} SOL`}
+          label="Metadata fee (Metaplex)"
+          value={`${formatSol(summary.metadataFeeLamports)} SOL`}
         />
+        <Row label="Network fee" value={`${formatSol(summary.estimatedNetworkFeeLamports)} SOL`} />
         <Row
           label="Deposit for new accounts"
           value={`${formatSol(summary.accountRentLamports)} SOL`}

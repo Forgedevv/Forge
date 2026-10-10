@@ -1,15 +1,16 @@
 // @vitest-environment jsdom
 import '../helpers/dom-setup';
-import { Keypair, type VersionedTransaction } from '@solana/web3.js';
+import { Keypair, PublicKey, type VersionedTransaction } from '@solana/web3.js';
+import { TOKEN_PROGRAM_ID } from '@solana/spl-token';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { LaunchApi, PrepareLaunchResponse } from '@/forge/create/api';
 import type { ChainClient } from '@/forge/create/chain';
-import { buildFixtureLaunch } from '@/forge/create/test-fixtures';
+import { buildFixtureLaunch, FIXTURE_LAUNCHPAD_CONFIG } from '@/forge/create/test-fixtures';
 
 const walletKp = Keypair.generate();
 const wallet = vi.hoisted(() => ({
-  current: { publicKey: null as unknown, signTransaction: undefined as unknown },
+  current: { publicKey: null as unknown, signTransaction: undefined as unknown, signMessage: undefined as unknown },
   setShowModal: vi.fn(),
   useWalletCalls: 0,
 }));
@@ -28,6 +29,8 @@ interface Harness {
   api: LaunchApi & { prepare: ReturnType<typeof vi.fn> };
   chain: ChainClient & {
     getBalanceLamports: ReturnType<typeof vi.fn>;
+    getAccounts: ReturnType<typeof vi.fn>;
+    simulateTransaction: ReturnType<typeof vi.fn>;
     sendRawTransaction: ReturnType<typeof vi.fn>;
     getSignatureStatus: ReturnType<typeof vi.fn>;
   };
@@ -40,6 +43,7 @@ function harness(
 ): Harness {
   const { response } = buildFixtureLaunch({
     wallet: walletKp.publicKey,
+    launchpadConfig: FIXTURE_LAUNCHPAD_CONFIG,
     name: 'Moon Coin',
     symbol: 'MOON',
     firstBuyLamports: BigInt(500000000),
@@ -51,6 +55,23 @@ function harness(
   const api = { prepare: vi.fn().mockResolvedValue(merged) };
   const chain = {
     getBalanceLamports: vi.fn().mockResolvedValue(options.balance ?? BigInt(10000000000)),
+    getAccounts: vi.fn().mockImplementation(async () => [
+      { lamports: options.balance ?? BigInt(10000000000), owner: PublicKey.default.toBase58(), data: new Uint8Array() },
+      null,
+    ]),
+    simulateTransaction: vi.fn().mockImplementation(async () => {
+      const summary = merged.summary;
+      const total = BigInt(summary.poolCreationFeeLamports) + BigInt(summary.firstBuyLamports) +
+        BigInt(summary.estimatedNetworkFeeLamports) + BigInt(summary.accountRentLamports) + BigInt(summary.metadataFeeLamports);
+      const token = Buffer.alloc(165);
+      new PublicKey(merged.mint).toBuffer().copy(token, 0);
+      walletKp.publicKey.toBuffer().copy(token, 32);
+      token.writeBigUInt64LE(BigInt(summary.firstBuyMinimumTokensOut), 64);
+      return { err: null, logs: [], accounts: [
+        { lamports: BigInt(10000000000) - total, owner: PublicKey.default.toBase58(), data: new Uint8Array() },
+        { lamports: BigInt(2039280), owner: TOKEN_PROGRAM_ID.toBase58(), data: token },
+      ] };
+    }),
     sendRawTransaction: vi.fn().mockResolvedValue('5igSignature'),
     getSignatureStatus: vi.fn().mockResolvedValue({ confirmationStatus: 'confirmed', err: null }),
   };
@@ -58,7 +79,8 @@ function harness(
     tx.sign([walletKp]);
     return tx;
   });
-  wallet.current = { publicKey: walletKp.publicKey, signTransaction: sign };
+  const signMessage = vi.fn(async () => new Uint8Array(64));
+  wallet.current = { publicKey: walletKp.publicKey, signTransaction: sign, signMessage };
   return { api, chain, sign, response: merged };
 }
 
@@ -69,6 +91,7 @@ function renderCreate(h: Harness, props: Record<string, unknown> = {}) {
       api={h.api}
       chain={h.chain}
       poolCreationFeeSol={0.01}
+      launchpadConfig={FIXTURE_LAUNCHPAD_CONFIG.toBase58()}
       confirmOptions={{ sleep: async () => {}, intervalMs: 1 }}
       {...props}
     />,
@@ -93,7 +116,7 @@ beforeEach(() => {
 describe('CreateCoin form', () => {
   it('asks to connect a wallet when none is connected', () => {
     const h = harness();
-    wallet.current = { publicKey: null, signTransaction: undefined };
+    wallet.current = { publicKey: null, signTransaction: undefined, signMessage: undefined };
     renderCreate(h);
     fireEvent.click(screen.getByRole('button', { name: 'Connect wallet' }));
     expect(wallet.setShowModal).toHaveBeenCalledWith(true);

@@ -3,14 +3,15 @@ import { z } from 'zod';
 /**
  * LOCKED ZONE. Client side of the coin preparation API (`POST /api/upload`).
  *
- * The server stores the image and metadata (R2), generates the mint, builds the launch
- * transaction (`createPoolWithFirstBuy` when there is a first buy), signs it with the mint (and
- * with the pool creator when that is not the user, using a durable nonce so it does not expire
- * while the user reads the summary), and returns it with a machine-readable summary. The user is
- * the fee payer and the buyer and signs last. The browser never receives a secret key.
+ * The request carries a message signed by the wallet (`auth.ts`). The server checks it, generates
+ * the mint, builds the launch transaction on this launchpad's config (`createPoolWithFirstBuy` when
+ * there is a first buy; the user is pool creator, fee payer and buyer), signs it with the mint only,
+ * stores the image and metadata (R2, write-once keys named after the mint) and returns the
+ * transaction with a machine-readable summary. The user signs last. The browser never receives a
+ * secret key.
  *
- * The browser does NOT trust the summary: `verify.ts` checks it against the form and decodes the
- * transaction before anything is shown as "ready to sign".
+ * The browser does NOT trust the summary: `verify.ts` checks it against the form, decodes every
+ * instruction of the transaction and simulates it before anything is shown as "ready to sign".
  */
 
 const Lamports = z.string().regex(/^\d{1,20}$/, 'lamports must be a decimal string');
@@ -24,20 +25,34 @@ export const LaunchSummaryWire = z.object({
   /** Coin creation fee paid to the launchpad owner (0 when the launchpad charges none). */
   poolCreationFeeLamports: Lamports,
   firstBuyLamports: Lamports,
-  /** Signature fees and priority fee. */
+  /** Coins the first buy is quoted to deliver, and the minimum the swap accepts (raw units). */
+  firstBuyExpectedTokensOut: Lamports,
+  firstBuyMinimumTokensOut: Lamports,
+  /** Signature fees and priority fee. Recomputed from the transaction by the browser. */
   estimatedNetworkFeeLamports: Lamports,
   /** Rent-exempt deposit of the new on-chain accounts, read from the cluster by the server. */
   accountRentLamports: Lamports,
+  /** Metaplex token metadata creation fee (a program fee, not a deposit). */
+  metadataFeeLamports: Lamports,
 });
 
 export const PrepareLaunchResponse = z.object({
   success: z.literal(true).optional(),
-  /** Base64 transaction, partially signed (mint, and creator if not the user). */
+  /** Base64 transaction, signed by the mint only. */
   poolTx: z.string().min(1),
   mint: SolanaAddress,
   summary: LaunchSummaryWire,
 });
 export type PrepareLaunchResponse = z.infer<typeof PrepareLaunchResponse>;
+
+export interface PrepareLaunchAuth {
+  /** 32 hex characters, single use. */
+  nonce: string;
+  /** ISO 8601 UTC time the message was signed. */
+  issuedAt: string;
+  /** Base64 ed25519 signature of `buildLaunchAuthMessage(...)` by `userWallet`. */
+  signature: string;
+}
 
 export interface PrepareLaunchRequest {
   tokenName: string;
@@ -48,6 +63,7 @@ export interface PrepareLaunchRequest {
   userWallet: string;
   /** Decimal string of lamports. "0" means no first buy. */
   firstBuyLamports: string;
+  auth: PrepareLaunchAuth;
 }
 
 export interface LaunchApi {

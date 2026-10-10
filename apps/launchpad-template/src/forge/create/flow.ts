@@ -1,5 +1,6 @@
 import type { VersionedTransaction } from '@solana/web3.js';
 import { LaunchApiError, readFileAsDataUrl, type LaunchApi } from './api';
+import { buildLaunchAuthMessage, randomNonce, sha256Hex } from './auth';
 import { bytesToBase64 } from './base64';
 import {
   confirmSignature,
@@ -7,13 +8,21 @@ import {
   type ChainClient,
   type ConfirmOptions,
 } from './chain';
-import { VerificationError, isSigned, verifyPreparedLaunch, type VerifiedLaunch } from './verify';
+import { sameBytes } from '../tx/decode';
+import {
+  VerificationError,
+  isSigned,
+  verifyLaunchSimulation,
+  verifyPreparedLaunch,
+  type VerifiedLaunch,
+} from './verify';
 import type { ValidatedCoin } from './validation';
 
 /**
  * LOCKED ZONE. The coin creation sequence, free of any UI:
  *
- *   prepareLaunch  (upload + build on the server, then verify)   -> review (summary shown)
+ *   prepareLaunch  (wallet signs the upload request, server builds, browser decodes every
+ *                   instruction and simulates)                   -> review (summary shown)
  *   executeLaunch  (user signs, send, poll for confirmation)     -> success
  *
  * Signing is never attempted before `prepareLaunch` returned a verified review that the UI showed.
@@ -48,22 +57,35 @@ export class TxError extends Error {
 }
 
 export type SignTransaction = <T extends VersionedTransaction>(tx: T) => Promise<T>;
+/** Wallet message signing (ed25519 over the raw bytes). */
+export type SignMessage = (message: Uint8Array) => Promise<Uint8Array>;
 
 export interface LaunchDeps {
   api: LaunchApi;
   chain: ChainClient;
   signTransaction: SignTransaction;
+  /** Signs the upload authorization. Absent when the wallet cannot sign messages. */
+  signMessage?: SignMessage;
   /** Connected wallet, base58. */
   wallet: string;
-  /** Creation fee of this launchpad, when present in forge.config.json. */
+  /** `forge.config.json#onchain.launchpadConfig`. Creation is refused without it. */
+  launchpadConfig?: string;
+  /** `forge.config.json#onchain.poolCreationFeeSol` in lamports. Creation is refused without it. */
   poolCreationFeeLamports?: bigint;
+  /** FORGE Meteora referral token account the first buy may carry (optional). */
+  referralTokenAccount?: string | null;
+  /** Site host bound into the signed message (default: `window.location.host`). */
+  host?: string;
+  /** Clock and nonce (tests). */
+  now?: () => Date;
+  nonce?: () => string;
   confirm?: ConfirmOptions;
 }
 
 export interface LaunchReview extends VerifiedLaunch {
-  /** Wallet balance read before the review; null when the relay could not be reached. */
+  /** Wallet balance read before the review. */
   balanceLamports: bigint | null;
-  /** True when the balance is known and below the total to pay. */
+  /** True when the balance is below the total to pay (the transaction was then not simulated). */
   insufficientBalance: boolean;
 }
 
@@ -72,11 +94,51 @@ export async function prepareLaunch(
   image: Blob,
   deps: LaunchDeps,
 ): Promise<LaunchReview> {
+  if (!deps.launchpadConfig || deps.poolCreationFeeLamports === undefined) {
+    // Without the on-chain configuration nothing the server returns could be checked.
+    throw new TxError('prepare_failed', 'prepare', 'Coin creation is not configured on this site yet.');
+  }
+  if (!deps.signMessage) {
+    throw new TxError(
+      'prepare_failed',
+      'prepare',
+      'Your wallet cannot sign messages, which is needed to authorize the coin upload.',
+    );
+  }
+
   let tokenLogo: string;
+  let imageHash: string;
+  let descriptionHash: string;
   try {
     tokenLogo = await readFileAsDataUrl(image);
+    imageHash = await sha256Hex(new Uint8Array(await image.arrayBuffer()));
+    descriptionHash = await sha256Hex(new TextEncoder().encode(coin.description));
   } catch (error) {
     throw new TxError('prepare_failed', 'prepare', messageOf(error));
+  }
+
+  // The wallet authorizes this exact upload (bound to the image, the coin and a single-use nonce).
+  const nonce = (deps.nonce ?? randomNonce)();
+  const issuedAt = (deps.now?.() ?? new Date()).toISOString();
+  const message = buildLaunchAuthMessage({
+    host: deps.host ?? (typeof window === 'undefined' ? '' : window.location.host),
+    wallet: deps.wallet,
+    name: coin.name,
+    symbol: coin.symbol,
+    firstBuyLamports: coin.firstBuyLamports.toString(),
+    imageSha256: imageHash,
+    descriptionSha256: descriptionHash,
+    nonce,
+    issuedAt,
+  });
+  let signature: Uint8Array;
+  try {
+    signature = await deps.signMessage(new TextEncoder().encode(message));
+  } catch (error) {
+    if (isUserRejection(error)) {
+      throw new TxError('user_rejected', 'prepare', 'You declined the signature request.');
+    }
+    throw new TxError('prepare_failed', 'prepare', `Signing failed: ${messageOf(error)}`);
   }
 
   let response;
@@ -88,11 +150,12 @@ export async function prepareLaunch(
       tokenLogo,
       userWallet: deps.wallet,
       firstBuyLamports: coin.firstBuyLamports.toString(),
+      auth: { nonce, issuedAt, signature: bytesToBase64(signature) },
     });
   } catch (error) {
-    const message =
+    const text =
       error instanceof LaunchApiError ? error.message : 'Could not prepare the coin. Try again.';
-    throw new TxError('prepare_failed', 'prepare', message);
+    throw new TxError('prepare_failed', 'prepare', text);
   }
 
   let verified: VerifiedLaunch;
@@ -102,7 +165,9 @@ export async function prepareLaunch(
       name: coin.name,
       symbol: coin.symbol,
       firstBuyLamports: coin.firstBuyLamports,
+      launchpadConfig: deps.launchpadConfig,
       poolCreationFeeLamports: deps.poolCreationFeeLamports,
+      referralTokenAccount: deps.referralTokenAccount ?? null,
     });
   } catch (error) {
     if (error instanceof VerificationError) {
@@ -111,19 +176,51 @@ export async function prepareLaunch(
     throw error;
   }
 
-  let balanceLamports: bigint | null = null;
+  // Read the wallet before simulating. Without these reads the transaction cannot be checked
+  // against the network, so nothing can be signed (fail closed).
+  let pre;
   try {
-    balanceLamports = await deps.chain.getBalanceLamports(deps.wallet);
+    pre = await deps.chain.getAccounts([deps.wallet, verified.accounts.userWrappedSolAccount]);
   } catch {
-    // The balance check is a convenience: the wallet and the cluster remain the authority.
+    throw new TxError(
+      'verification_failed',
+      'verify',
+      'Could not check the transaction against the network. Try again in a moment.',
+    );
+  }
+  const balanceLamports = pre[0]?.lamports ?? BigInt(0);
+  if (balanceLamports < verified.summary.totalLamports) {
+    // Not enough SOL: the simulation would fail. The review says so and signing stays disabled.
+    return { ...verified, balanceLamports, insufficientBalance: true };
   }
 
-  return {
-    ...verified,
-    balanceLamports,
-    insufficientBalance:
-      balanceLamports !== null && balanceLamports < verified.summary.totalLamports,
-  };
+  let simulation;
+  try {
+    simulation = await deps.chain.simulateTransaction(bytesToBase64(verified.tx.serialize()), [
+      deps.wallet,
+      verified.accounts.userCoinAccount,
+    ]);
+  } catch {
+    throw new TxError(
+      'verification_failed',
+      'verify',
+      'Could not simulate the transaction. Try again in a moment.',
+    );
+  }
+  try {
+    verifyLaunchSimulation(verified, {
+      preWalletLamports: balanceLamports,
+      preWrappedSolLamports: pre[1]?.lamports ?? BigInt(0),
+      simulation,
+    });
+  } catch (error) {
+    if (error instanceof VerificationError) {
+      throw new TxError('verification_failed', 'verify', error.message);
+    }
+    throw error;
+  }
+
+  return { ...verified, balanceLamports, insufficientBalance: false };
 }
 
 export type LaunchPhase = 'signing' | 'sending' | 'confirming';
@@ -148,6 +245,11 @@ export interface SubmitDeps {
   confirm?: ConfirmOptions;
 }
 
+export interface SubmitOptions {
+  /** The message that was verified and shown: the wallet must sign exactly this. */
+  expectedMessage?: Uint8Array;
+}
+
 /**
  * Shared by the launch and the fee claim: the wallet signs, every required signature is checked,
  * the transaction is sent once through the relay, then polled until confirmed. Resolves with the
@@ -157,7 +259,9 @@ export async function signSendConfirm(
   tx: VersionedTransaction,
   deps: SubmitDeps,
   onPhase?: (phase: LaunchPhase, signature?: string) => void,
+  options: SubmitOptions = {},
 ): Promise<string> {
+  const expectedMessage = options.expectedMessage ?? Uint8Array.from(tx.message.serialize());
   onPhase?.('signing');
   let signed: VersionedTransaction;
   try {
@@ -167,6 +271,15 @@ export async function signSendConfirm(
       throw new TxError('user_rejected', 'sign', 'You declined the signature request.');
     }
     throw new TxError('sign_failed', 'sign', `Signing failed: ${messageOf(error)}`);
+  }
+
+  // The wallet must have signed the very message that was verified and shown.
+  if (!sameBytes(Uint8Array.from(signed.message.serialize()), expectedMessage)) {
+    throw new TxError(
+      'sign_failed',
+      'sign',
+      'The wallet returned a different transaction than the one you reviewed. Nothing was sent.',
+    );
   }
 
   // Every required signature must be present before sending (wallet and any pre-signed signer).
@@ -207,7 +320,9 @@ export async function executeLaunch(
       'Your wallet does not hold enough SOL for this launch.',
     );
   }
-  const signature = await signSendConfirm(review.tx, deps, onPhase);
+  const signature = await signSendConfirm(review.tx, deps, onPhase, {
+    expectedMessage: review.messageBytes,
+  });
   return { signature, mint: review.mint };
 }
 

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useUnifiedWalletContext, useWallet } from '@jup-ag/wallet-adapter';
 import type { SiteMode } from '@forge/shared';
-import { cluster, rpcRelayUrl } from './config';
+import { cluster, forgeConfig, rpcRelayUrl } from './config';
 import { ModeBanner } from './ModeBanner';
 import { capabilitiesFor, currentMode } from './mode-guard';
 import { formatSol } from './create/amounts';
@@ -36,6 +36,8 @@ export interface ClaimCreatorFeesProps {
   core?: ClaimsCore;
   chain?: ChainClient;
   confirmOptions?: ConfirmOptions;
+  /** Configs of this launchpad; useful for composed sites and isolated UI tests. */
+  launchpadConfigs?: readonly string[];
 }
 
 type ClaimPhase = 'preparing' | 'review' | 'signing' | 'sending' | 'confirming' | 'unconfirmed';
@@ -80,10 +82,11 @@ function ClaimCreatorFeesList(props: ClaimCreatorFeesProps) {
       core,
       chain,
       wallet,
+      launchpadConfigs: props.launchpadConfigs ?? (forgeConfig.onchain ? [forgeConfig.onchain.launchpadConfig] : []),
       signTransaction: signTransaction as SignTransaction,
       confirm: props.confirmOptions,
     };
-  }, [core, chain, wallet, signTransaction, props.confirmOptions]);
+  }, [core, chain, wallet, signTransaction, props.confirmOptions, props.launchpadConfigs]);
 
   const load = useCallback(async () => {
     if (!wallet) return;
