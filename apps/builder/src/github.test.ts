@@ -33,6 +33,10 @@ interface Entry {
   mode: string;
   sha: string;
 }
+interface MintBody {
+  repositories?: string[];
+  permissions?: Record<string, string>;
+}
 interface FakeRepo {
   private: boolean;
   defaultBranch: string;
@@ -49,6 +53,8 @@ class FakeGithub {
   tokenCounter = 0;
   tokenTtlMs = 3_600_000;
   tokens: string[] = [];
+  /** Successful token mints, in order. */
+  mints: Array<{ token: string; body: MintBody }> = [];
   /** Statuses to answer on the next ref update (simulate a concurrent push). */
   failNextRefPatch = false;
   generateStatus: 200 | 404 | 422 = 200;
@@ -129,9 +135,21 @@ class FakeGithub {
       {
         method: 'POST',
         path: '/app/installations/42/access_tokens',
-        handler: () => {
+        handler: (call) => {
+          // Like GitHub: a token cannot name a repository that does not exist.
+          const wanted = (call.body as { repositories?: string[] } | undefined)?.repositories;
+          if (wanted?.some((r) => r !== 'launchpad-template' && !this.repos.has(r))) {
+            return json(
+              {
+                message:
+                  'There is at least one repository that does not exist or is not accessible to the parent installation.',
+              },
+              422,
+            );
+          }
           const token = `ghs_fake${String(++this.tokenCounter).padStart(8, '0')}abcdefghijklmnop`;
           this.tokens.push(token);
+          this.mints.push({ token, body: call.body as MintBody });
           return json(
             { token, expires_at: new Date(this.nowMs + this.tokenTtlMs).toISOString() },
             201,
@@ -467,7 +485,7 @@ describe('installation tokens', () => {
     const mint = gh.stub.find('POST', '/app/installations/42/access_tokens')[0];
     expect(mint?.body).toEqual({
       repositories: ['lp-moonpad'],
-      permissions: { contents: 'write' },
+      permissions: { contents: 'read' },
     });
     const ref = gh.stub.find('GET', /\/git\/ref\//)[0];
     expect(ref?.headers['authorization']).toBe(`Bearer ${gh.tokens[0]}`);
@@ -901,7 +919,19 @@ describe('commitFiles', () => {
 describe('compare, read, merge, delete', () => {
   const sha = (c: string) => c.repeat(40);
 
-  it('compares commits across pages and normalizes the files', async () => {
+  const compareBody = (files: unknown[], over: Record<string, unknown> = {}) => ({
+    status: 'ahead',
+    ahead_by: 2,
+    behind_by: 0,
+    total_commits: 2,
+    merge_base_commit: { sha: sha('b') },
+    // Paginated commit list: the last one of the page is NOT the head.
+    commits: [{ sha: sha('c') }],
+    files,
+    ...over,
+  });
+
+  it('pins the head sha first and reads the files from a single compare call', async () => {
     const file = (n: number) => ({
       filename: `f${n}.ts`,
       status: n === 0 ? 'renamed' : 'modified',
@@ -911,33 +941,24 @@ describe('compare, read, merge, delete', () => {
       patch: '@@ -1 +1 @@',
       sha: sha('a'),
     });
+    const head = sha('d');
     const gh = new FakeGithub([
       {
         method: 'GET',
-        path: `/repos/${ORG}/lp-moonpad/compare/main...forge/job1`,
-        handler: (call) => {
-          const page = Number(call.query.get('page'));
-          const files = page === 1 ? Array.from({ length: 100 }, (_, i) => file(i)) : [file(100)];
-          return json({
-            status: 'ahead',
-            ahead_by: 2,
-            behind_by: 0,
-            total_commits: 2,
-            merge_base_commit: { sha: sha('b') },
-            commits: [{ sha: sha('c') }, { sha: sha('d') }],
-            files,
-          });
-        },
+        path: /^\/repos\/forge-org\/lp-moonpad\/compare\//,
+        handler: () => json(compareBody(Array.from({ length: 101 }, (_, i) => file(i)))),
       },
     ]);
-    gh.addRepo('lp-moonpad');
+    const repo = gh.addRepo('lp-moonpad');
+    repo.refs.set('heads/forge/job1', head);
     const out = await makeClient(gh).compareCommits('lp-moonpad', 'main', 'forge/job1');
     expect(out).toMatchObject({
       status: 'ahead',
       aheadBy: 2,
       behindBy: 0,
       mergeBaseSha: sha('b'),
-      headSha: sha('d'),
+      headSha: head,
+      source: 'compare',
     });
     expect(out.files).toHaveLength(101);
     expect(out.files[0]).toMatchObject({
@@ -945,10 +966,14 @@ describe('compare, read, merge, delete', () => {
       status: 'renamed',
       previousPath: 'old.ts',
     });
-    expect(gh.stub.find('GET', /compare/)).toHaveLength(2);
+    const calls = gh.stub.find('GET', /compare/);
+    expect(calls).toHaveLength(1);
+    // Compared against the pinned sha, not the moving branch name.
+    expect(calls[0]?.path).toBe(`/repos/${ORG}/lp-moonpad/compare/main...${head}`);
+    expect(calls[0]?.query.get('page')).toBe('1');
   });
 
-  it('compares by sha too', async () => {
+  it('compares by sha too and reports the requested head, not the merge base', async () => {
     const gh = new FakeGithub([
       {
         method: 'GET',
@@ -966,7 +991,87 @@ describe('compare, read, merge, delete', () => {
     ]);
     gh.addRepo('lp-moonpad');
     const out = await makeClient(gh).compareCommits('lp-moonpad', sha('a'), sha('b'));
-    expect(out).toMatchObject({ status: 'identical', files: [], headSha: sha('a') });
+    expect(out).toMatchObject({ status: 'identical', files: [], headSha: sha('b') });
+  });
+
+  it('refuses an unknown head branch', async () => {
+    const gh = new FakeGithub();
+    gh.addRepo('lp-moonpad');
+    await expect(
+      makeClient(gh).compareCommits('lp-moonpad', 'main', 'forge/nope'),
+    ).rejects.toMatchObject({ kind: 'not_found' });
+    expect(gh.stub.find('GET', /compare/)).toHaveLength(0);
+  });
+
+  it('at the 300-file cap, rebuilds the complete list from the two trees', async () => {
+    let mergeBase = '';
+    const gh = new FakeGithub([
+      {
+        method: 'GET',
+        path: /^\/repos\/forge-org\/lp-moonpad\/compare\//,
+        handler: () =>
+          json(
+            compareBody(
+              Array.from({ length: 300 }, (_, i) => ({ filename: `f${i}`, status: 'added' })),
+              { merge_base_commit: { sha: mergeBase } },
+            ),
+          ),
+      },
+    ]);
+    const repo = gh.addRepo('lp-moonpad');
+    mergeBase = repo.refs.get('heads/main') ?? '';
+    const client = makeClient(gh);
+    const files = Array.from({ length: 320 }, (_, i) => ({
+      path: `gen/f${i}.ts`,
+      content: `${i}`,
+    }));
+    const commit = await client.commitFiles({
+      repo: 'lp-moonpad',
+      branch: 'forge/job1',
+      message: 'Many files',
+      files: [{ path: 'README.md', content: 'hi' }, ...files],
+      deletePaths: ['src/old.ts'],
+    });
+    const out = await client.compareCommits('lp-moonpad', 'main', 'forge/job1');
+    expect(out.source).toBe('tree');
+    expect(out.headSha).toBe(commit.commitSha);
+    // 320 added + 1 removed; the unchanged README is not listed.
+    expect(out.files).toHaveLength(321);
+    expect(out.files.find((f) => f.path === 'src/old.ts')).toMatchObject({ status: 'removed' });
+    expect(out.files.find((f) => f.path === 'gen/f319.ts')).toMatchObject({
+      status: 'added',
+      patch: undefined,
+    });
+    expect(out.files.some((f) => f.path === 'README.md')).toBe(false);
+  });
+
+  it('refuses when the tree used for the fallback is truncated', async () => {
+    const gh = new FakeGithub([
+      {
+        method: 'GET',
+        path: /^\/repos\/forge-org\/lp-moonpad\/compare\//,
+        handler: () =>
+          json(
+            compareBody(
+              Array.from({ length: 300 }, (_, i) => ({ filename: `f${i}`, status: 'added' })),
+            ),
+          ),
+      },
+      {
+        method: 'GET',
+        path: /^\/repos\/forge-org\/lp-moonpad\/git\/commits\/[0-9a-f]{40}$/,
+        handler: () => json({ sha: sha('e'), tree: { sha: sha('f') } }),
+      },
+      {
+        method: 'GET',
+        path: /^\/repos\/forge-org\/lp-moonpad\/git\/trees\/[0-9a-f]{40}$/,
+        handler: () => json({ sha: sha('f'), truncated: true, tree: [] }),
+      },
+    ]);
+    gh.addRepo('lp-moonpad');
+    await expect(
+      makeClient(gh).compareCommits('lp-moonpad', sha('a'), sha('d')),
+    ).rejects.toMatchObject({ kind: 'unexpected', message: expect.stringContaining('too large') });
   });
 
   it('reads a file, or null when absent', async () => {
@@ -1108,6 +1213,109 @@ describe('protectDefaultBranch', () => {
       applied: false,
       reason: 'permission',
     });
+  });
+});
+
+describe('least-privilege tokens', () => {
+  /** Mint body of the token that authorized a call. */
+  const mintFor = (gh: FakeGithub, call: { headers: Record<string, string> } | undefined) =>
+    gh.mints.find((m) => `Bearer ${m.token}` === call?.headers['authorization'])?.body;
+
+  it('getRepo reads an existing repo with a repo-scoped metadata-only token', async () => {
+    const gh = new FakeGithub();
+    gh.addRepo('lp-moonpad');
+    await expect(makeClient(gh).getRepo('lp-moonpad')).resolves.toMatchObject({
+      name: 'lp-moonpad',
+    });
+    const get = gh.stub.find('GET', `/repos/${ORG}/lp-moonpad`)[0];
+    expect(mintFor(gh, get)).toEqual({
+      repositories: ['lp-moonpad'],
+      permissions: { metadata: 'read' },
+    });
+  });
+
+  it('getRepo checks a missing repo with an org-wide metadata-only token, never a full one', async () => {
+    const gh = new FakeGithub();
+    await expect(makeClient(gh).getRepo('lp-nope')).resolves.toBeNull();
+    const get = gh.stub.find('GET', `/repos/${ORG}/lp-nope`)[0];
+    expect(mintFor(gh, get)).toEqual({ permissions: { metadata: 'read' } });
+    expect(gh.mints.every((m) => m.body.permissions !== undefined)).toBe(true);
+  });
+
+  it('commitFiles and protectDefaultBranch only use tokens scoped to the client repo', async () => {
+    const gh = new FakeGithub();
+    gh.addRepo('lp-moonpad');
+    const client = makeClient(gh);
+    await client.commitFiles({
+      repo: 'lp-moonpad',
+      branch: 'forge/job1',
+      message: 'Design',
+      files: [{ path: 'src/a.ts', content: 'a' }],
+    });
+    await client.protectDefaultBranch('lp-moonpad');
+    expect(gh.mints.length).toBeGreaterThan(0);
+    for (const m of gh.mints) {
+      expect(m.body.repositories).toEqual(['lp-moonpad']);
+      expect(Object.keys(m.body.permissions ?? {})).toHaveLength(1);
+    }
+    // Protection alone gets administration; writes contents:write; the repo lookup metadata only.
+    for (const call of gh.stub.calls.filter((c) => c.path.startsWith(`/repos/${ORG}/`))) {
+      const perms = mintFor(gh, call)?.permissions;
+      if (call.method === 'PUT') expect(perms).toEqual({ administration: 'write' });
+      else if (call.method === 'POST' || call.method === 'PATCH') {
+        expect(perms).toEqual({ contents: 'write' });
+      } else expect(perms?.['administration']).toBeUndefined();
+    }
+    for (const call of gh.stub.find('GET', `/repos/${ORG}/lp-moonpad`)) {
+      expect(mintFor(gh, call)?.permissions).toEqual({ metadata: 'read' });
+    }
+    expect(gh.stub.find('GET', `/repos/${ORG}/lp-moonpad`).length).toBeGreaterThan(0);
+  });
+});
+
+describe('repository denylist', () => {
+  it('refuses the FORGE monorepo as template, whatever the case', () => {
+    for (const templateRepo of ['Forge', 'forge', 'FORGE']) {
+      const gh = new FakeGithub();
+      expect(() => makeClient(gh, { templateRepo })).toThrow(/protected/);
+    }
+  });
+
+  it('refuses extra denylisted repos before any request or token mint', async () => {
+    const gh = new FakeGithub();
+    gh.addRepo('lp-secret');
+    const client = makeClient(gh, { repoDenylist: ['lp-secret'] });
+    await expect(client.getRepo('lp-secret')).rejects.toMatchObject({ kind: 'invalid_input' });
+    await expect(client.createRepoToken('LP-SECRET'.toLowerCase())).rejects.toMatchObject({
+      kind: 'invalid_input',
+    });
+    await expect(
+      client.commitFiles({
+        repo: 'lp-secret',
+        branch: 'main',
+        message: 'x',
+        files: [{ path: 'a', content: 'a' }],
+      }),
+    ).rejects.toMatchObject({ kind: 'invalid_input' });
+    await expect(client.protectDefaultBranch('lp-secret')).rejects.toMatchObject({
+      kind: 'invalid_input',
+    });
+    expect(gh.stub.calls).toHaveLength(0);
+    // The default entry cannot be removed by configuration.
+    expect(() => makeClient(gh, { repoDenylist: [], templateRepo: 'Forge' })).toThrow(/protected/);
+  });
+
+  it('reads extra entries from GITHUB_REPO_DENYLIST', () => {
+    const env = {
+      GITHUB_APP_ID: '12345',
+      GITHUB_ORG: ORG,
+      GITHUB_APP_PRIVATE_KEY: privateKey,
+      GITHUB_REPO_DENYLIST: 'lp-secret, other-repo',
+    };
+    expect(githubOptionsFromEnv(env).repoDenylist).toEqual(['lp-secret', 'other-repo']);
+    expect(() => githubOptionsFromEnv({ ...env, GITHUB_REPO_DENYLIST: 'a/b' })).toThrow(
+      /GITHUB_REPO_DENYLIST/,
+    );
   });
 });
 

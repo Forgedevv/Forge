@@ -359,6 +359,7 @@ describe('stale locks and crashed jobs', () => {
     const { worker, alerter } = makeWorker(db, hangingHandler(), {
       maxJobMs: 20,
       heartbeatIntervalMs: 5,
+      abandonedSettleMs: 30,
     });
     await worker.tick();
     await worker.idle();
@@ -413,6 +414,139 @@ describe('stale locks and crashed jobs', () => {
     await worker.idle();
     expect(sawAbort).toBe(true);
     expect(db.get('j1')).toMatchObject({ status: 'failed', error: 'stale lock: elsewhere' });
+  });
+});
+
+describe('aborted handlers that keep running', () => {
+  /** A handler that ignores its abort signal and settles only when told to. */
+  function stubbornHandler() {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const handler = handlerOf(async (job) => {
+      await gate;
+      if (job.status === 'onchain_setup') return { patch: { owner_tx: 'AQAB' } };
+      return { patch: { preview_url: 'https://p.example.com' } };
+    });
+    return { handler, release: () => release() };
+  }
+
+  it('timeout: keeps the slot until the handler settles and never re-runs the job meanwhile', async () => {
+    const db = new FakeJobsDb();
+    db.addJob({ id: 'j1' });
+    const { handler, release } = stubbornHandler();
+    const { worker } = makeWorker(db, handler, {
+      concurrency: 2,
+      maxJobMs: 20,
+      heartbeatIntervalMs: 5,
+      abandonedSettleMs: 10_000,
+    });
+    await worker.tick();
+    await realSleep(60);
+    // The failure is recorded (build attempts left: re-pickable by SQL)...
+    expect(db.get('j1')).toMatchObject({ status: 'failed', failed_stage: 'build', attempts: 1 });
+    // ...but the slot is still taken by the running handler.
+    expect(worker.activeJobs).toBe(1);
+
+    // The claim returns the same job: it is handed back, not run a second time.
+    expect(await worker.tick()).toBe(0);
+    expect(handler.handle).toHaveBeenCalledTimes(1);
+    expect(db.get('j1')).toMatchObject({ status: 'paid', attempts: 1, locked_by: null });
+    expect(db.calls).toContain('releaseBuild');
+
+    // The handler settles late: its result is dropped (the job is no longer ours) and the slot frees.
+    release();
+    await worker.idle();
+    expect(worker.activeJobs).toBe(0);
+    expect(db.get('j1').status).toBe('paid');
+
+    // Now the job runs again normally.
+    expect(await worker.tick()).toBe(1);
+    await worker.idle();
+    expect(handler.handle).toHaveBeenCalledTimes(2);
+  });
+
+  it('cap: frees the slot with a high alert, the job stays blocked until the handler settles', async () => {
+    const db = new FakeJobsDb();
+    db.addJob({ id: 'j1' });
+    const { handler, release } = stubbornHandler();
+    const { worker, alerter } = makeWorker(db, handler, {
+      maxJobMs: 20,
+      heartbeatIntervalMs: 5,
+      abandonedSettleMs: 30,
+    });
+    await worker.tick();
+    await worker.idle();
+    expect(worker.activeJobs).toBe(0);
+    expect(worker.abandonedJobs).toBe(1);
+    expect(alerter.alert).toHaveBeenCalledWith(
+      'high',
+      'job_handler_unsettled:j1',
+      expect.any(String),
+      expect.objectContaining({ jobId: 'j1', reason: 'timeout' }),
+    );
+
+    // Slot free, but the same job is still refused here.
+    expect(await worker.tick()).toBe(0);
+    expect(handler.handle).toHaveBeenCalledTimes(1);
+    expect(db.get('j1')).toMatchObject({ status: 'paid', locked_by: null });
+
+    release();
+    await realSleep(5);
+    expect(worker.abandonedJobs).toBe(0);
+    expect(await worker.tick()).toBe(1);
+    await worker.idle();
+    expect(handler.handle).toHaveBeenCalledTimes(2);
+  });
+
+  it('lock lost: the slot is held until the ignoring handler settles', async () => {
+    const db = new FakeJobsDb();
+    db.addJob({ id: 'j1' });
+    const { handler, release } = stubbornHandler();
+    const { worker } = makeWorker(db, handler, {
+      heartbeatIntervalMs: 5,
+      abandonedSettleMs: 10_000,
+    });
+    await worker.tick();
+    const job = db.get('j1');
+    job.status = 'failed';
+    job.failed_stage = 'build';
+    job.locked_by = null;
+    job.locked_at = null;
+    job.error = 'stale lock: elsewhere';
+    await realSleep(40);
+    expect(worker.activeJobs).toBe(1);
+    release();
+    await worker.idle();
+    expect(worker.activeJobs).toBe(0);
+    expect(db.get('j1')).toMatchObject({ status: 'failed', error: 'stale lock: elsewhere' });
+  });
+
+  it('D18: a money step claimed again while its old handler runs is failed, not run twice', async () => {
+    const db = new FakeJobsDb();
+    db.addJob({ id: 'j1', status: 'approved', type: 'create_launchpad' });
+    const { handler, release } = stubbornHandler();
+    const { worker, alerter } = makeWorker(db, handler, {
+      concurrency: 2,
+      maxJobMs: 20,
+      heartbeatIntervalMs: 5,
+      abandonedSettleMs: 10_000,
+    });
+    await worker.tick();
+    await realSleep(60);
+    expect(db.get('j1')).toMatchObject({ status: 'failed', failed_stage: 'onchain' });
+    // The team resets the job by hand while the old handler is still running.
+    const job = db.get('j1');
+    job.status = 'approved';
+    job.failed_stage = null;
+    alerter.alert.mockClear();
+    expect(await worker.tick()).toBe(0);
+    expect(handler.handle).toHaveBeenCalledTimes(1);
+    expect(db.get('j1')).toMatchObject({ status: 'failed', failed_stage: 'onchain' });
+    expect(db.get('j1').error).toContain('previous run');
+    expect(alerter.alert).toHaveBeenCalled();
+    expect(db.calls).not.toContain('releaseBuild');
+    release();
+    await worker.idle();
   });
 });
 
@@ -609,6 +743,7 @@ describe('graceful shutdown', () => {
     const { worker, alerter } = makeWorker(db, hangingHandler(), {
       sleep: realSleep,
       shutdownGraceMs: 10,
+      abandonedSettleMs: 30,
     });
     await worker.tick();
     await worker.stop();
