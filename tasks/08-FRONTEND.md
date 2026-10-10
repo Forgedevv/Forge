@@ -113,3 +113,25 @@ Agent 3 (`src/client/`), agent 2 (`src/forge/` components and `SiteConfig`). Mea
 
 **Requests / notes**
 - No new dependency or backend change. No additional request is needed; the earlier obsolete-test request remains open. No Git configuration change, commit, push, or deployment.
+
+### 2026-10-10 — Graphite workshop and editorial client template
+
+**Done**
+- Reworked the homepage scenery with an engraved metallic portal, individually composed example-site displays, a matte drafting floor, and distant liftoff gates. Removed the foreground ribbon behind the final action and the additional full-scene reflection render.
+- Unified the homepage, workspace, and default Muse finishes around graphite, ivory, brushed metal, and muted copper, following the user's request for softer colors. Kept supplied monochrome logo assets. Reduced the dashboard figure's rim emission and added an engraved drafting dial.
+- Synchronized chapter-copy opacity with journey progress so text fades out before the chapter changes and returns as the next scene arrives. Existing capped transition speed, acceleration, and chapter dwell remain intact.
+- Rebuilt the dashboard as a responsive portfolio with theme-driven identity covers, concise labels, search/status filters, current job activity, and separate site/detail/edit actions. Fee amounts still come directly from the WebClient. Covers are identity artwork, not screenshots of deployed sites.
+- Added `/dev/workshop` for a direct three-launchpad design preview. Both it and `/dev/states` remain unavailable in production; previews use exact-signature development mocks and no real wallet or funds.
+- Rebuilt the client template's home composition around its configured name and tagline, locally authored animated engraved medallions, three compact market columns, clearer empty/error states, accessible token links, and theme-driven header/footer/create/about layouts. Documented the new theme variables and respected reduced motion.
+- Reframed the existing token page with a chart/table column and a sticky trade rail. Mobile places trading between the chart and transaction list. Its existing data subscriptions, chart, and Jupiter trading components are unchanged.
+- Web typecheck, lint, build, and 192 tests pass, including search/filter recovery and disabled-site actions. Template typecheck, lint, build, and five tests pass. `git diff --check` passes.
+- Local HTTP checks return 200 with expected markup for the homepage, workshop preview, state gallery, template homepage, About, and Create pages. Development servers are available on ports 3000 and 3001.
+
+**Not done / uncertain**
+- Visual equivalence to Loanmeme, real GPU frame rate, and actual pointer/touch behavior are not certified. Browser inventory is empty and opening the in-app browser returns `Browser is not available: iab`; no visual-browser test or external animation-service export was performed.
+- Production WebClient integration and the missing template `TradePanel`, `ClaimCreatorFees`, launchpad-coin display data, and route decision remain the backend-owned requests recorded in `docs/CHANGE_REQUESTS.md`. The redesign does not fabricate these functions.
+- Previous report entries describing an empty template, missing A2–A11 mocks, or obsolete failing homepage tests are historical. This branch now has those operational screen mocks and the state gallery; production integration is still pending.
+
+**Requests / notes**
+- No new dependency, transaction construction, amount calculation, API/database change, Git configuration change, remote change, or deployment. The mock flag is supplied only to the local web development process; no environment file or persistent environment setting was changed.
+- Git author and committer identity were verified with read-only `git var`: `Forgedevv <ali.ben_yezza@proton.me>`.
