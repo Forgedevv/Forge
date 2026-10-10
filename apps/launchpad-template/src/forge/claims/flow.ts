@@ -1,6 +1,7 @@
 import type { VersionedTransaction } from '@solana/web3.js';
 import { signSendConfirm, TxError, type LaunchPhase, type SubmitDeps } from '../create/flow';
-import { CLAIM_PROGRAMS, VerificationError, checkTransactionShape } from '../create/verify';
+import { VerificationError } from '../create/verify';
+import { verifyCreatorClaimTx } from './verify';
 import type { ChainClient } from '../create/chain';
 import type { ClaimsCore, CreatorCoin } from './core-adapter';
 
@@ -18,6 +19,8 @@ export interface ClaimDeps extends SubmitDeps {
   core: ClaimsCore;
   /** Connected wallet, base58: pool creator, fee payer and receiver. */
   wallet: string;
+  /** Only pools derived from these configured launchpad addresses may be claimed here. */
+  launchpadConfigs: readonly string[];
 }
 
 export interface ClaimReview {
@@ -70,7 +73,7 @@ export async function prepareClaim(coin: CreatorCoin, deps: ClaimDeps): Promise<
   }
 
   try {
-    checkTransactionShape(tx, { wallet: deps.wallet, allowedPrograms: CLAIM_PROGRAMS });
+    verifyCreatorClaimTx(tx, { wallet: deps.wallet, coin, launchpadConfigs: deps.launchpadConfigs });
   } catch (error) {
     if (error instanceof VerificationError) {
       throw new TxError('verification_failed', 'verify', error.message);

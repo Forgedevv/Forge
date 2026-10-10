@@ -1,7 +1,9 @@
+import { base64ToBytes } from './base64';
+
 /**
- * LOCKED ZONE. Minimal chain access for the browser: send a signed transaction, read a balance
- * and poll signature statuses, all through the FORGE RPC relay (the browser never talks to the
- * RPC provider directly). No websocket subscription: confirmation is by polling
+ * LOCKED ZONE. Minimal chain access for the browser: read balances and accounts, simulate, send a
+ * signed transaction and poll signature statuses, all through the FORGE RPC relay (the browser
+ * never talks to the RPC provider directly). No websocket subscription: confirmation is by polling
  * `getSignatureStatuses` with a deadline.
  */
 
@@ -13,8 +15,30 @@ export interface SignatureStatus {
   err: unknown;
 }
 
+/** An account as read from the cluster or as left by a simulation. */
+export interface ChainAccount {
+  lamports: bigint;
+  owner: string;
+  data: Uint8Array;
+}
+
+export interface SimulationResult {
+  /** Non-null when the transaction would fail. */
+  err: unknown;
+  logs: string[];
+  /** State of the requested accounts after the simulated execution (null: does not exist). */
+  accounts: (ChainAccount | null)[];
+}
+
 export interface ChainClient {
   getBalanceLamports(address: string): Promise<bigint>;
+  /** Reads several accounts at the same slot (null for an account that does not exist). */
+  getAccounts(addresses: string[]): Promise<(ChainAccount | null)[]>;
+  /**
+   * Simulates a transaction (base64) without signature verification and returns the state of
+   * `accounts` after execution. Never sends anything.
+   */
+  simulateTransaction(base64: string, accounts: string[]): Promise<SimulationResult>;
   /** Sends a fully signed transaction (base64). Returns the signature. */
   sendRawTransaction(base64: string): Promise<string>;
   /** Null when the cluster does not know the signature (yet). */
@@ -46,6 +70,22 @@ export interface RpcClientOptions {
 }
 
 const defaultSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+interface RpcAccount {
+  lamports: number;
+  owner: string;
+  data: [string, string] | string;
+}
+
+function toChainAccount(raw: RpcAccount | null | undefined): ChainAccount | null {
+  if (!raw) return null;
+  const data = Array.isArray(raw.data) ? raw.data[0] : raw.data;
+  return {
+    lamports: BigInt(raw.lamports),
+    owner: raw.owner,
+    data: typeof data === 'string' ? base64ToBytes(data) : new Uint8Array(),
+  };
+}
 
 export function createRpcChainClient(options: RpcClientOptions): ChainClient {
   const doFetch: FetchLike = options.fetch ?? ((input, init) => fetch(input, init));
@@ -97,6 +137,41 @@ export function createRpcChainClient(options: RpcClientOptions): ChainClient {
         { commitment: 'confirmed' },
       ]);
       return BigInt(result.value);
+    },
+    async getAccounts(addresses) {
+      const result = await call<{ value: (RpcAccount | null)[] }>('getMultipleAccounts', [
+        addresses,
+        { encoding: 'base64', commitment: 'confirmed' },
+      ]);
+      if (!Array.isArray(result?.value) || result.value.length !== addresses.length) {
+        throw new RpcError('Unexpected getMultipleAccounts answer');
+      }
+      return result.value.map(toChainAccount);
+    },
+    async simulateTransaction(base64, accounts) {
+      const result = await call<{
+        value: { err: unknown; logs?: string[] | null; accounts?: (RpcAccount | null)[] | null };
+      }>('simulateTransaction', [
+        base64,
+        {
+          encoding: 'base64',
+          sigVerify: false,
+          replaceRecentBlockhash: false,
+          commitment: 'confirmed',
+          accounts: { encoding: 'base64', addresses: accounts },
+        },
+      ]);
+      const value = result?.value;
+      if (!value) throw new RpcError('Unexpected simulateTransaction answer');
+      const post = value.accounts ?? [];
+      if (value.err === null && post.length !== accounts.length) {
+        throw new RpcError('The simulation did not return the requested accounts');
+      }
+      return {
+        err: value.err ?? null,
+        logs: value.logs ?? [],
+        accounts: accounts.map((_, i) => toChainAccount(post[i])),
+      };
     },
     async sendRawTransaction(base64) {
       // Retrying a send is safe: the signed transaction (and its signature) is identical.

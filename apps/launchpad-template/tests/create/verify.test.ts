@@ -1,6 +1,6 @@
 import { Keypair } from '@solana/web3.js';
 import { describe, expect, it } from 'vitest';
-import { buildFixtureLaunch, buildFixtureTx, txToBase64 } from '@/forge/create/test-fixtures';
+import { buildFixtureLaunch, buildFixtureTx, FIXTURE_LAUNCHPAD_CONFIG, txToBase64 } from '@/forge/create/test-fixtures';
 import { VerificationError, verifyPreparedLaunch } from '@/forge/create/verify';
 
 const wallet = Keypair.generate().publicKey;
@@ -11,6 +11,7 @@ function launch(overrides: Partial<Parameters<typeof buildFixtureLaunch>[0]> = {
     name: 'Moon Coin',
     symbol: 'MOON',
     firstBuyLamports: BigInt(500000000),
+    launchpadConfig: FIXTURE_LAUNCHPAD_CONFIG,
     ...overrides,
   });
 }
@@ -20,6 +21,8 @@ const expected = {
   name: 'Moon Coin',
   symbol: 'MOON',
   firstBuyLamports: BigInt(500000000),
+  launchpadConfig: FIXTURE_LAUNCHPAD_CONFIG.toBase58(),
+  poolCreationFeeLamports: BigInt(10000000),
 };
 
 describe('verifyPreparedLaunch', () => {
@@ -110,7 +113,7 @@ describe('verifyPreparedLaunch', () => {
         { ...response, mint: Keypair.generate().publicKey.toBase58() },
         expected,
       ),
-    ).toThrow(/mint/);
+    ).toThrow(/signature alone/);
   });
 
   it('refuses garbage instead of a transaction', () => {
