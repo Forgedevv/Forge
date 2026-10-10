@@ -135,3 +135,23 @@ Agent 3 (`src/client/`), agent 2 (`src/forge/` components and `SiteConfig`). Mea
 **Requests / notes**
 - No new dependency, transaction construction, amount calculation, API/database change, Git configuration change, remote change, or deployment. The mock flag is supplied only to the local web development process; no environment file or persistent environment setting was changed.
 - Git author and committer identity were verified with read-only `git var`: `Forgedevv <ali.ben_yezza@proton.me>`.
+
+### 2026-10-10 — Restore FORGE identity and refine reference details
+
+**Done**
+- Restored the preceding violet/magenta identity across the dashboard, workspace controls, Muse, and immersive homepage after the owner rejected the graphite/copper direction. Dark and light workspace tokens match the preceding identity. Restored the dashboard's typography, rounded controls, and colored logo while retaining gallery search, status filters, covers, and operational screens.
+- Inspected Loanmeme's current public HTML, stylesheet, runtime, and chapter-camera JSON metadata. Recorded measured behavior and remaining differences in `apps/web/src/ui/home/REFERENCE_REVIEW.md`. Inspection downloads remain outside the repository; no downloaded bundle or reference artwork is embedded.
+- Removed the added metallic portal. Added individual floating FORGE letters with spring return, crosses, slashes, and dotted fields. The glass chapter now has a continuous repeated-text marquee and a title that rotates with journey progress.
+- Applied the measured camera sequence with continuous interpolation: opening dolly, dark descent, distant narrow-lens workshop, orbit, and diagonal flight. Adapted character facing and workshop height to the local pilot, verified its boots meet the grid, and capped portrait FOV.
+- Added the pointer-origin circle fill, rotating gradient ring, one-second caption decoding with measured hold/fade timing, one-time grouped manifesto strips, per-letter final-word color motion, underlined final action, explicit timeline-dot states, and a continuous tapered cursor trail. Removed redundant visible corner headings and enlarged mobile captions.
+- Preserved the earlier short intro, capped scroll speed, chapter dwell, reduced glow, reduced shake, accessible navigation, hidden-tab suspension, pause controls, and cleanup behavior.
+- Web typecheck, lint, build, and 204 tests pass, including the cursor tube's exterior face winding. `git diff --check` passes. HTTP checks return 200 with expected markup for the homepage, `/dev/workshop`, and `/dev/states`. The local web preview remains on port 3000 with development mocks enabled only for that process.
+
+**Not done / uncertain**
+- Exact visual and motion equivalence, real pointer/touch comparison, 375 px rendered layout, and GPU frame rate remain unverified: browser inventory is empty and opening the in-app browser fails. No After Effects or Higgsfield export was performed.
+- FORGE's character, poses, artwork, glass/outline materials, postprocessing, matte floor, and flight geometry remain locally authored. Camera measurements and matching schedules do not establish identical pixels or limb trajectories.
+- Production client integration and the backend-owned template requests remain as recorded in `docs/CHANGE_REQUESTS.md`. The template was not changed in this correction; its prior checks are historical, not rerun for unchanged code.
+
+**Requests / notes**
+- No new dependency, backend/API/database change, transaction construction, amount calculation, environment-file edit, global setting, Git configuration change, remote change, push, or deployment.
+- Changes are committed locally on `agent/frontend` with the verified `Forgedevv` identity. No new dependency or backend request is needed for this pass.
