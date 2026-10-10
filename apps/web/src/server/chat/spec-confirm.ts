@@ -6,13 +6,14 @@ import { apiError, readBoundedJson } from './http';
 import { clientIp } from './rate-limit';
 import { fieldErrorsMessage } from './spec-messages';
 import { validateConfirmedSpec } from './spec-draft';
-import { StoreError } from './store';
+import { DRAFT_POLICY, StoreError } from './store';
 
 /*
  * POST /api/spec/confirm `{ conversationId, spec }` -> `{ launchpadId, jobId }`.
  * Re-validates the spec (schema, bounds, extra rules), requires spec.ownerWallet to be the
  * session wallet and creates the draft launchpad plus its `create_launchpad` job in `spec_ready`.
  * Idempotent per conversation: confirming the same spec again returns the same ids.
+ * Slug reservation (anti-squatting): see DRAFT_POLICY in store.ts.
  */
 
 const CONFIRM_PER_WINDOW = 20;
@@ -117,6 +118,18 @@ export async function handleSpecConfirm(
           409,
           'CONFLICT',
           'That subdomain is already taken. Pick another one in the chat.',
+        );
+      case 'too_many_drafts':
+        return apiError(
+          409,
+          'CONFLICT',
+          `You already have ${DRAFT_POLICY.maxUnpaidDrafts} unpaid launchpad drafts. Pay for one of them, or try again once one is a day old.`,
+        );
+      case 'draft_released':
+        return apiError(
+          409,
+          'CONFLICT',
+          'This draft expired unpaid and its subdomain was released. Please start a new conversation.',
         );
       case 'conflict':
         return apiError(

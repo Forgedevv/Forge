@@ -65,14 +65,5 @@ export const PAYMENT_RATE_LIMITS = {
   confirmIp: { limit: 60, windowMs: 60_000 },
 } as const satisfies Record<string, RateLimitRule>;
 
-/**
- * Client IP for rate limiting: first `x-forwarded-for` entry (set by Vercel), then `x-real-ip`.
- * Only used as a counter key, never trusted for anything else.
- */
-export function clientIp(request: Request): string {
-  const forwarded = request.headers.get('x-forwarded-for');
-  const first = forwarded?.split(',')[0]?.trim();
-  if (first) return first.slice(0, 64);
-  const real = request.headers.get('x-real-ip')?.trim();
-  return real ? real.slice(0, 64) : 'unknown';
-}
+/** Same trusted-proxy rules as the chat routes (see chat/client-ip.ts). */
+export { clientIp } from '../chat/client-ip';

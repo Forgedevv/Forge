@@ -27,12 +27,26 @@ export interface ChatLimits {
   maxOutputTokens: number;
   /** Approximate token budget of the history sent to the model (older turns are dropped). */
   historyTokenBudget: number;
-  /** Whole turn, tool rounds included. */
+  /** Whole turn, tool rounds included (model calls only). */
   turnTimeoutMs: number;
+  /**
+   * Budget of the whole request from its arrival: pre-turn work (session, limits, gating,
+   * database reads) plus the turn. Kept well under the route `maxDuration`
+   * (app/api/chat/route.ts) so the last cost write always runs before the platform kills the
+   * function. The turn gets min(turnTimeoutMs, what is left of this budget).
+   */
+  requestBudgetMs: number;
+  /** A turn with less time than this left is not started (the model call would be cut short). */
+  minTurnMs: number;
   /** Model calls per turn (a tool call needs one more call to get the follow-up text). */
   maxModelRounds: number;
   /** Total model spend allowed for one conversation. */
   conversationCostCapUsd: number;
+  /**
+   * Model spend allowed per wallet over a rolling 24 hours, all conversations together. Computed
+   * from `conversations.cost_usd` in the database, so it holds across server instances.
+   */
+  walletDailyCostCapUsd: number;
   /** User messages allowed in one conversation. */
   maxUserMessagesPerConversation: number;
   /** Per wallet: messages per short window and per day. */
@@ -48,9 +62,12 @@ export const DEFAULT_LIMITS: ChatLimits = {
   maxMessageChars: 2000,
   maxOutputTokens: 1500,
   historyTokenBudget: 6000,
-  turnTimeoutMs: 60_000,
+  turnTimeoutMs: 45_000,
+  requestBudgetMs: 50_000,
+  minTurnMs: 5_000,
   maxModelRounds: 3,
   conversationCostCapUsd: 1,
+  walletDailyCostCapUsd: 5,
   maxUserMessagesPerConversation: 60,
   walletPerWindow: 15,
   walletWindowMs: 10 * 60_000,
@@ -89,6 +106,11 @@ export function loadChatConfig(env: Env = process.env): ChatConfig {
         env,
         'CHAT_CONVERSATION_COST_CAP_USD',
         d.conversationCostCapUsd,
+      ),
+      walletDailyCostCapUsd: positiveNumber(
+        env,
+        'CHAT_WALLET_DAILY_COST_CAP_USD',
+        d.walletDailyCostCapUsd,
       ),
       walletPerWindow: positiveNumber(env, 'CHAT_WALLET_MESSAGES_PER_10_MIN', d.walletPerWindow),
       walletPerDay: positiveNumber(env, 'CHAT_WALLET_MESSAGES_PER_DAY', d.walletPerDay),

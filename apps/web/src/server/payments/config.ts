@@ -1,5 +1,5 @@
-import { PublicKey } from '@solana/web3.js';
-import type { PaymentCluster } from './core-adapter';
+import type { PublicKey } from '@solana/web3.js';
+import { ForgeAddressError, requireAddresses, type PaymentCluster } from './core-adapter';
 import { PaymentConfigError } from './errors';
 
 /*
@@ -12,7 +12,10 @@ export type Env = Readonly<Record<string, string | undefined>>;
 export interface PaymentsConfig {
   cluster: PaymentCluster;
   rpcUrl: string;
-  /** TODO(merge): read through `getCashboxWallet()` of @forge/core (PLANEXECUTE.md rule 7). */
+  /**
+   * FORGE_CASHBOX_WALLET, parsed once by `requireAddresses` of @forge/core. The gateway passes this
+   * value to every core call (quote transaction and verification).
+   */
   cashbox: PublicKey;
   supabaseUrl: string;
   supabaseServiceRoleKey: string;
@@ -63,19 +66,20 @@ export function readRpcUrl(env: Env, cluster: PaymentCluster): string {
   return url;
 }
 
-/** Same validation as `requireAddresses` of @forge/core: canonical base58, 32 bytes, not zero. */
+/** FORGE_CASHBOX_WALLET through `requireAddresses` of @forge/core (names only in errors). */
 export function readCashbox(env: Env): PublicKey {
-  const value = required(env, 'FORGE_CASHBOX_WALLET');
-  let key: PublicKey;
   try {
-    key = new PublicKey(value);
-  } catch {
-    throw new PaymentConfigError('FORGE_CASHBOX_WALLET is not a valid Solana public key');
+    return requireAddresses(['FORGE_CASHBOX_WALLET'], env).FORGE_CASHBOX_WALLET;
+  } catch (error) {
+    if (error instanceof ForgeAddressError) {
+      throw new PaymentConfigError(
+        error.missing.length > 0
+          ? 'FORGE_CASHBOX_WALLET is not set'
+          : 'FORGE_CASHBOX_WALLET is not a valid Solana public key',
+      );
+    }
+    throw error;
   }
-  if (key.toBase58() !== value || key.equals(PublicKey.default)) {
-    throw new PaymentConfigError('FORGE_CASHBOX_WALLET is not a valid Solana public key');
-  }
-  return key;
 }
 
 export function readPaymentsConfig(env: Env = process.env): PaymentsConfig {

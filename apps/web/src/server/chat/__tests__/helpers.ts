@@ -122,13 +122,31 @@ export const toolUse = (input: unknown, id = 'toolu_1'): ModelEvent => ({
 
 /** In-memory ChatStore with the same wallet scoping as the Supabase one. */
 export class MemoryStore implements ChatStore {
-  conversations = new Map<string, { owner: string; launchpadId: string | null }>();
+  conversations = new Map<
+    string,
+    {
+      owner: string;
+      launchpadId: string | null;
+      spec: LaunchpadSpecDraft | null;
+      costUsd: number;
+      lastActivity: number;
+    }
+  >();
   messages = new Map<string, NewMessage[]>();
   launchpads = new Map<string, { owner: string; spec: LaunchpadSpecDraft }>();
   flags: Record<string, boolean> = {};
   users = new Set<string>();
   confirmed: { wallet: string; conversationId: string; spec: LaunchpadSpec }[] = [];
   confirmOutcome: ConfirmOutcome = { status: 'created', launchpadId: 'lp-1', jobId: 'job-1' };
+  /** Every cost increment, in order (to assert per-round persistence). */
+  costWrites: { conversationId: string; deltaUsd: number }[] = [];
+  /** Every draft write, in order. */
+  draftWrites: LaunchpadSpecDraft[] = [];
+  /** When set, addCost rejects (database down). */
+  failCost = false;
+  /** Hook run at each cost increment (tests inspect the stream state at that moment). */
+  onCost: ((total: number) => void) | null = null;
+  clock: () => number = Date.now;
   private next = 0;
 
   ensureUser(wallet: string): Promise<void> {
@@ -138,7 +156,13 @@ export class MemoryStore implements ChatStore {
 
   createConversation(wallet: string, launchpadId: string | null): Promise<string> {
     const id = `00000000-0000-4000-8000-${String(++this.next).padStart(12, '0')}`;
-    this.conversations.set(id, { owner: wallet, launchpadId });
+    this.conversations.set(id, {
+      owner: wallet,
+      launchpadId,
+      spec: null,
+      costUsd: 0,
+      lastActivity: 0,
+    });
     this.messages.set(id, []);
     this.users.add(wallet);
     return Promise.resolve(id);
@@ -156,31 +180,48 @@ export class MemoryStore implements ChatStore {
 
   loadState(conversationId: string, wallet: string): Promise<ConversationState> {
     const c = this.conversations.get(conversationId);
-    const rows = c && c.owner === wallet ? (this.messages.get(conversationId) ?? []) : [];
-    let draft: LaunchpadSpecDraft | null = null;
-    let costUsd = 0;
-    for (const r of rows) {
-      if (r.role !== 'system') continue;
-      if (r.content.startsWith('forge:spec:')) {
-        draft = JSON.parse(r.content.slice('forge:spec:'.length)) as LaunchpadSpecDraft;
-      } else if (r.content.startsWith('forge:usage:')) {
-        costUsd += (JSON.parse(r.content.slice('forge:usage:'.length)) as { costUsd: number })
-          .costUsd;
-      }
-    }
+    const mine = c && c.owner === wallet ? c : null;
+    const rows = mine ? (this.messages.get(conversationId) ?? []) : [];
     return Promise.resolve({
-      draft,
-      costUsd,
+      draft: mine?.spec ?? null,
+      costUsd: mine?.costUsd ?? 0,
       userMessageCount: rows.filter((r) => r.role === 'user').length,
-      history: rows
-        .filter((r) => r.role !== 'system')
-        .map((r) => ({ role: r.role as 'user' | 'assistant', content: r.content })),
+      history: rows.map((r) => ({ role: r.role, content: r.content })),
     });
   }
 
   appendMessages(conversationId: string, rows: NewMessage[]): Promise<void> {
     this.messages.get(conversationId)?.push(...rows);
+    const c = this.conversations.get(conversationId);
+    if (c && rows.length > 0) c.lastActivity = this.clock();
     return Promise.resolve();
+  }
+
+  saveDraft(conversationId: string, wallet: string, draft: LaunchpadSpecDraft): Promise<void> {
+    const c = this.conversations.get(conversationId);
+    if (c && c.owner === wallet) {
+      c.spec = structuredClone(draft);
+      this.draftWrites.push(structuredClone(draft));
+    }
+    return Promise.resolve();
+  }
+
+  addCost(conversationId: string, wallet: string, deltaUsd: number): Promise<number> {
+    if (this.failCost) return Promise.reject(new Error('database down'));
+    const c = this.conversations.get(conversationId);
+    if (!c || c.owner !== wallet) return Promise.reject(new Error('no conversation'));
+    c.costUsd += deltaUsd;
+    this.costWrites.push({ conversationId, deltaUsd });
+    this.onCost?.(c.costUsd);
+    return Promise.resolve(c.costUsd);
+  }
+
+  walletSpendSince(wallet: string, since: Date): Promise<number> {
+    let total = 0;
+    for (const c of this.conversations.values()) {
+      if (c.owner === wallet && c.lastActivity >= since.getTime()) total += c.costUsd;
+    }
+    return Promise.resolve(total);
   }
 
   getFlag(key: 'signups_paused'): Promise<boolean> {
@@ -199,6 +240,11 @@ export class MemoryStore implements ChatStore {
   /** Messages of a conversation as stored, by role. */
   rows(conversationId: string, role?: NewMessage['role']): NewMessage[] {
     return (this.messages.get(conversationId) ?? []).filter((m) => !role || m.role === role);
+  }
+
+  /** Total model spend recorded for a conversation. */
+  cost(conversationId: string): number {
+    return this.conversations.get(conversationId)?.costUsd ?? 0;
   }
 }
 

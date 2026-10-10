@@ -11,7 +11,7 @@ import {
   validateDraft,
   type SpecMode,
 } from './spec-draft';
-import { specRow, usageRow, type ChatStore, type NewMessage } from './store';
+import type { ChatStore, NewMessage } from './store';
 
 export interface TurnInput {
   config: ChatConfig;
@@ -22,16 +22,29 @@ export interface TurnInput {
   mode: SpecMode;
   /** Draft at the start of the turn (already normalized). */
   draft: LaunchpadSpecDraft;
-  /** Draft as stored in the database, to know whether a snapshot must be written. */
+  /** Draft as stored in the database, to know whether it must be written. */
   storedDraft: LaunchpadSpecDraft | null;
   /** History plus the new user message, already trimmed. */
   messages: ModelMessage[];
-  priorCostUsd: number;
+  /**
+   * Spend still allowed before this turn (the lower of the conversation cap and the wallet daily
+   * cap, minus what was already spent). No further model round starts once the turn spent it.
+   */
+  budgetUsd: number;
+  /** Epoch ms by which the turn must be over (the request budget, see ChatLimits). */
+  deadlineAt: number;
   /** Client disconnect. */
   signal: AbortSignal;
+  now?: () => number;
 }
 
 const LEAK_NOTICE = "I can't share that. Let's get back to your launchpad.";
+
+const TOO_SLOW: ChatStreamEvent = {
+  type: 'error',
+  code: 'NETWORK',
+  message: 'The assistant took too long to answer. Please try again.',
+};
 
 function specEvent(draft: LaunchpadSpecDraft): ChatStreamEvent {
   return { type: 'spec', spec: draft, validation: validateDraft(draft) };
@@ -77,7 +90,13 @@ export async function* runTurn(input: TurnInput): AsyncGenerator<ChatStreamEvent
   const { config, store, wallet, conversationId, mode } = input;
   const { limits } = config;
 
-  const timeout = AbortSignal.timeout(limits.turnTimeoutMs);
+  const now = input.now ?? Date.now;
+  const turnMs = Math.min(limits.turnTimeoutMs, input.deadlineAt - now());
+  if (turnMs < limits.minTurnMs) {
+    yield TOO_SLOW;
+    return;
+  }
+  const timeout = AbortSignal.timeout(turnMs);
   const signal = AbortSignal.any([input.signal, timeout]);
   const tool = buildUpdateSpecTool(mode);
   const guard = new LeakGuard();
@@ -87,11 +106,26 @@ export async function* runTurn(input: TurnInput): AsyncGenerator<ChatStreamEvent
   const rejected = new Map<string, string>();
   const messages: ModelMessage[] = [...input.messages];
   let emitted = '';
-  let costSoFar = input.priorCostUsd;
   let turnCost = 0;
-  let inputTokens = 0;
-  let outputTokens = 0;
   let leaked = false;
+
+  // Spend and draft are written after EVERY model round, not only when the turn ends: a turn cut
+  // short (timeout, platform kill, disconnect) has still recorded all completed rounds.
+  let persistedCost = 0;
+  let savedKey = startKey;
+  let conversationCost = 0;
+  const persist = async () => {
+    const delta = turnCost - persistedCost;
+    if (delta > 0) {
+      conversationCost = await store.addCost(conversationId, wallet, delta);
+      persistedCost += delta;
+    }
+    const key = draftKey(draft);
+    if (key !== savedKey) {
+      await store.saveDraft(conversationId, wallet, draft);
+      savedKey = key;
+    }
+  };
 
   try {
     for (let round = 0; round < limits.maxModelRounds; round++) {
@@ -159,11 +193,7 @@ export async function* runTurn(input: TurnInput): AsyncGenerator<ChatStreamEvent
             }
           } else if (ev.type === 'usage') {
             usageSeen = true;
-            inputTokens += ev.inputTokens;
-            outputTokens += ev.outputTokens;
-            const c = costUsd(ev.inputTokens, ev.outputTokens);
-            turnCost += c;
-            costSoFar += c;
+            turnCost += costUsd(ev.inputTokens, ev.outputTokens);
           } else {
             stopReason = ev.reason;
           }
@@ -171,13 +201,11 @@ export async function* runTurn(input: TurnInput): AsyncGenerator<ChatStreamEvent
       } finally {
         if (!usageSeen) {
           // The stream broke before the provider reported usage: charge an estimate.
-          const est = costUsd(roundInputEstimate, Math.ceil(roundOutputChars / 3));
-          inputTokens += roundInputEstimate;
-          outputTokens += Math.ceil(roundOutputChars / 3);
-          turnCost += est;
-          costSoFar += est;
+          turnCost += costUsd(roundInputEstimate, Math.ceil(roundOutputChars / 3));
         }
       }
+      // Fails closed: when the spend cannot be recorded, no further round runs.
+      await persist();
 
       if (leaked) {
         emitted += LEAK_NOTICE;
@@ -185,7 +213,8 @@ export async function* runTurn(input: TurnInput): AsyncGenerator<ChatStreamEvent
         break;
       }
       if (toolUses.length === 0 || stopReason !== 'tool_use') break;
-      if (costSoFar >= limits.conversationCostCapUsd) break;
+      if (turnCost >= input.budgetUsd) break;
+      if (conversationCost >= limits.conversationCostCapUsd) break;
 
       const assistantBlocks: ContentBlock[] = [];
       if (roundText !== '') assistantBlocks.push({ type: 'text', text: roundText });
@@ -209,10 +238,13 @@ export async function* runTurn(input: TurnInput): AsyncGenerator<ChatStreamEvent
       yield errorEvent(error, timeout.aborted);
     }
   } finally {
+    try {
+      await persist();
+    } catch {
+      console.error('[chat] could not persist the turn cost or draft');
+    }
     const rows: NewMessage[] = [];
     if (emitted.trim() !== '') rows.push({ role: 'assistant', content: emitted });
-    if (draftKey(draft) !== startKey) rows.push(specRow(draft));
-    if (turnCost > 0) rows.push(usageRow({ inputTokens, outputTokens, costUsd: turnCost }));
     try {
       await store.appendMessages(conversationId, rows);
     } catch {
@@ -222,13 +254,7 @@ export async function* runTurn(input: TurnInput): AsyncGenerator<ChatStreamEvent
 }
 
 function errorEvent(error: unknown, timedOut: boolean): ChatStreamEvent {
-  if (timedOut) {
-    return {
-      type: 'error',
-      code: 'NETWORK',
-      message: 'The assistant took too long to answer. Please try again.',
-    };
-  }
+  if (timedOut) return TOO_SLOW;
   if (error instanceof ModelError) {
     console.error(`[chat] model error kind=${error.kind} status=${error.status ?? 'n/a'}`);
     if (error.kind === 'busy') {

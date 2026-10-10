@@ -80,6 +80,7 @@ const WRONG_WALLET_MESSAGE = 'This action must be signed with the wallet that ow
 const ALREADY_PAID_MESSAGE = 'This job has already been paid.';
 const SIGNATURE_USED_MESSAGE = 'This transaction was already used for another payment.';
 const OTHER_SIGNATURE_MESSAGE = 'This quote has already been paid with another transaction.';
+const LAUNCHPAD_DISABLED_MESSAGE = 'This launchpad has been disabled.';
 
 function notFound(what: 'Job' | 'Payment'): PaymentError {
   return new PaymentError(404, 'NOT_FOUND', `${what} not found.`);
@@ -144,7 +145,7 @@ export function createPaymentsService(deps: PaymentsServiceDeps): PaymentsServic
       throw new PaymentError(400, 'KIND_MISMATCH', 'This quote kind does not match the job.');
     }
     if (ctx.launchpad.status === 'disabled') {
-      throw new PaymentError(403, 'LAUNCHPAD_DISABLED', 'This launchpad has been disabled.');
+      throw new PaymentError(403, 'LAUNCHPAD_DISABLED', LAUNCHPAD_DISABLED_MESSAGE);
     }
     // Every status after spec_ready implies the job was paid.
     if (ctx.job.status !== 'spec_ready') {
@@ -188,6 +189,15 @@ export function createPaymentsService(deps: PaymentsServiceDeps): PaymentsServic
       lamports,
       quoteExpiresAt: new Date(now() + QUOTE_TIMING.validityMs),
     });
+    // An expired unpaid draft can be released (disabled, slug freed) by a confirmation of another
+    // wallet (chat/store.ts). The release writes the launchpad then reads the payments; a quote
+    // writes its row then reads the launchpad: whatever the interleaving, one of the two sees the
+    // other and backs off, so a quote is never handed out for a released draft.
+    const fresh = await store.getJobContext(ctx.job.id);
+    if (!fresh || fresh.launchpad.status === 'disabled') {
+      await store.markPaymentExpired(payment.id);
+      throw new PaymentError(403, 'LAUNCHPAD_DISABLED', LAUNCHPAD_DISABLED_MESSAGE);
+    }
     logger.log('info', 'quote.created', {
       paymentId: payment.id,
       jobId: ctx.job.id,
@@ -359,6 +369,22 @@ export function createPaymentsService(deps: PaymentsServiceDeps): PaymentsServic
 
     // Included modification: nothing to verify on-chain.
     if (payment.lamports === 0n) return { httpStatus: 200, status: payment.status };
+
+    // A creation draft released after expiry (its slug went to another wallet) can no longer be
+    // paid. Only reachable for a quote that was never confirmed within an hour of its expiry (the
+    // release requires that); the signature is logged so that a payment can be refunded by hand.
+    if (
+      payment.kind === 'creation' &&
+      payment.txSignature === null &&
+      ctx.launchpad.status === 'disabled'
+    ) {
+      logger.log('warn', 'confirm.launchpad_disabled', {
+        paymentId,
+        jobId: payment.jobId,
+        signature,
+      });
+      throw new PaymentError(403, 'LAUNCHPAD_DISABLED', LAUNCHPAD_DISABLED_MESSAGE);
+    }
 
     // Already recorded: idempotent retry (which also repairs the job) or another signature.
     if (payment.txSignature !== null) {

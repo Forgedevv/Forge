@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { PublicKey, SystemProgram, VersionedTransaction } from '@solana/web3.js';
 import { describe, expect, it } from 'vitest';
-import { decodeSystemTransfer, MEMO_PROGRAM_ID, paymentMemo } from './core-adapter';
+import { MEMO_PROGRAM_ID, paymentMemo } from './core-adapter';
 import { ClusterMismatchError, PriceUnavailableError, RpcUnavailableError } from './errors';
 import { MemoryLogger } from './log';
 import { MemoryPaymentsStore } from './memory-store';
@@ -13,6 +13,7 @@ import {
   landedTx,
   randomSignature,
   TestClock,
+  decodeSystemTransfer,
 } from './test-helpers';
 
 const T0 = Date.parse('2026-10-09T12:00:00.000Z');
@@ -198,6 +199,43 @@ describe('createQuote', () => {
     ctx.store.launchpads.get(ctx.launchpad.id)!.status = 'disabled';
     await expect(quoteCreation(ctx)).rejects.toMatchObject({ code: 'LAUNCHPAD_DISABLED' });
     expect(ctx.store.payments.size).toBe(0);
+  });
+
+  it('expires its own quote when the draft is released while the quote is being written', async () => {
+    const ctx = setup();
+    ctx.store.beforeStatement = (name) => {
+      // The release (another wallet's confirmation) lands right after the quote row is written.
+      if (name === 'insertQuote') {
+        queueMicrotask(() => {
+          ctx.store.launchpads.get(ctx.launchpad.id)!.status = 'disabled';
+        });
+      }
+    };
+    await expect(quoteCreation(ctx)).rejects.toMatchObject({
+      httpStatus: 403,
+      code: 'LAUNCHPAD_DISABLED',
+    });
+    const rows = [...ctx.store.payments.values()];
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.status).toBe('expired');
+  });
+
+  it('refuses to confirm a creation payment for a released draft and logs the signature', async () => {
+    const ctx = setup();
+    const quote = await quoteCreation(ctx);
+    const signature = pay(ctx, quote, ctx.job.id);
+    ctx.store.launchpads.get(ctx.launchpad.id)!.status = 'disabled';
+    await expect(confirm(ctx, quote.paymentId, signature)).rejects.toMatchObject({
+      httpStatus: 403,
+      code: 'LAUNCHPAD_DISABLED',
+    });
+    expect(ctx.store.jobs.get(ctx.job.id)!.status).toBe('spec_ready');
+    expect(ctx.gateway.verifyCalls).toHaveLength(0);
+    expect(
+      ctx.logger.entries.some(
+        (e) => e.event === 'confirm.launchpad_disabled' && e.fields.signature === signature,
+      ),
+    ).toBe(true);
   });
 
   it('rejects when spec.ownerWallet differs from the launchpad owner', async () => {

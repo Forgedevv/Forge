@@ -2,6 +2,7 @@
 import type { ChatStreamEvent } from '@forge/shared';
 import { describe, expect, it, vi } from 'vitest';
 import { ModelError } from '../anthropic';
+import { costUsd } from '../config';
 import { buildSystemPrompt, LeakGuard, PROMPT_CANARY } from '../prompt';
 import { initialDraft } from '../spec-draft';
 import { runTurn, type TurnInput } from '../turn';
@@ -36,7 +37,8 @@ async function setup(streamer: TurnInput['streamer'], over: Partial<TurnInput> =
     draft: initialDraft(WALLET),
     storedDraft: null,
     messages: [{ role: 'user', content: 'I want MoonPad' }],
-    priorCostUsd: 0,
+    budgetUsd: 1,
+    deadlineAt: Date.now() + 50_000,
     signal: new AbortController().signal,
     ...over,
   };
@@ -59,9 +61,10 @@ describe('runTurn', () => {
     const all = 'Hello there, welcome to FORGE. Tell me about your launchpad.';
     expect(events.map((e) => (e.type === 'text' ? e.delta : '')).join('')).toBe(all);
     expect(store.rows(conversationId, 'assistant')).toEqual([{ role: 'assistant', content: all }]);
-    const usageRows = store.rows(conversationId, 'system');
-    expect(usageRows).toHaveLength(1);
-    expect(usageRows[0]?.content).toContain('forge:usage:');
+    // Usage goes to conversations.cost_usd: 200 input + 20 output tokens.
+    expect(store.costWrites).toEqual([{ conversationId, deltaUsd: costUsd(200, 20) }]);
+    expect(store.cost(conversationId)).toBeCloseTo(costUsd(200, 20), 12);
+    expect(store.rows(conversationId).every((r) => !r.content.startsWith('forge:'))).toBe(true);
   });
 
   it('applies a tool call, emits a spec event and feeds the result back for the follow-up text', async () => {
@@ -112,9 +115,12 @@ describe('runTurn', () => {
     expect(streamer.requests[1]!.system).toContain('"tradingFeeBps":100');
     expect(streamer.requests[1]!.system).not.toContain(WALLET);
 
-    // Spec snapshot persisted.
-    const sys = store.rows(conversationId, 'system').map((r) => r.content);
-    expect(sys.some((c) => c.startsWith('forge:spec:') && c.includes('MoonPad'))).toBe(true);
+    // Draft persisted in conversations.spec, once (after the round that changed it).
+    expect(store.draftWrites).toHaveLength(1);
+    expect(store.conversations.get(conversationId)?.spec).toMatchObject({
+      name: 'MoonPad',
+      slug: 'moonpad',
+    });
   });
 
   it('rejects an out-of-bounds fee proposed after an injection attempt and tells the user', async () => {
@@ -263,11 +269,8 @@ describe('runTurn', () => {
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const events = await drain(runTurn(input));
     expect(events.at(-1)).toMatchObject({ type: 'error', code: 'NETWORK' });
-    const usageRow = store
-      .rows(conversationId, 'system')
-      .find((r) => r.content.startsWith('forge:usage:'));
-    expect(usageRow).toBeDefined();
-    expect(JSON.parse(usageRow!.content.slice('forge:usage:'.length)).costUsd).toBeGreaterThan(0);
+    expect(store.costWrites).toHaveLength(1);
+    expect(store.cost(conversationId)).toBeGreaterThan(0);
   });
 
   it('reports a timeout as a friendly error', async () => {
@@ -279,11 +282,117 @@ describe('runTurn', () => {
       });
       yield text('never');
     };
-    const { input } = await setup(slow as never, { config: testConfig({ turnTimeoutMs: 20 }) });
+    const { input } = await setup(slow as never, {
+      config: testConfig({ turnTimeoutMs: 20, minTurnMs: 0 }),
+    });
     const events = await drain(runTurn(input));
     expect(events).toEqual([
       { type: 'error', code: 'NETWORK', message: expect.stringContaining('too long') },
     ]);
+  });
+
+  it('caps the turn at what is left of the request budget, not the full turn timeout', async () => {
+    let aborted = 0;
+    const slow = async function* (req: { signal: AbortSignal }) {
+      await new Promise<void>((_resolve, reject) => {
+        req.signal.addEventListener('abort', () => {
+          aborted = Date.now();
+          reject(new DOMException('aborted', 'AbortError'));
+        });
+      });
+      yield text('never');
+    };
+    // Pre-turn work already used most of the request budget: 30 ms are left.
+    const { input } = await setup(slow as never, {
+      config: testConfig({ turnTimeoutMs: 45_000, minTurnMs: 0 }),
+      deadlineAt: Date.now() + 30,
+    });
+    const started = Date.now();
+    const events = await drain(runTurn(input));
+    expect(events).toEqual([
+      { type: 'error', code: 'NETWORK', message: expect.stringContaining('too long') },
+    ]);
+    expect(aborted - started).toBeLessThan(1_000);
+  });
+
+  it('does not call the model when too little of the request budget is left', async () => {
+    const streamer = scriptedStreamer([[text('x'), usage(), stop()]]);
+    const { input } = await setup(streamer, {
+      config: testConfig({ minTurnMs: 5_000 }),
+      deadlineAt: Date.now() + 1_000,
+    });
+    const events = await drain(runTurn(input));
+    expect(events).toEqual([{ type: 'error', code: 'NETWORK', message: expect.any(String) }]);
+    expect(streamer.requests).toHaveLength(0);
+  });
+
+  it('records the cost of each model round before the next one starts', async () => {
+    const streamer = scriptedStreamer([
+      [toolUse({ name: 'MoonPad' }), usage(1000, 100), stop('tool_use')],
+      [toolUse({ slug: 'moonpad' }, 'toolu_2'), usage(2000, 200), stop('tool_use')],
+      [text('Done.'), usage(3000, 300), stop()],
+    ]);
+    const { store, input } = await setup(streamer);
+    const seenAtRound: number[] = [];
+    const wrapped: TurnInput['streamer'] = (req) => {
+      seenAtRound.push(store.costWrites.length);
+      return streamer(req);
+    };
+    await drain(runTurn({ ...input, streamer: wrapped }));
+    // Round n starts only after rounds 1..n-1 were written.
+    expect(seenAtRound).toEqual([0, 1, 2]);
+    const expected = [costUsd(1000, 100), costUsd(2000, 200), costUsd(3000, 300)];
+    expect(store.costWrites).toHaveLength(3);
+    store.costWrites.forEach((w, i) => expect(w.deltaUsd).toBeCloseTo(expected[i]!, 12));
+    // The draft is written after each round that changed it.
+    expect(store.draftWrites.map((d) => d.slug ?? null)).toEqual([null, 'moonpad']);
+  });
+
+  it('records the cost of completed rounds even when the turn is then cut short', async () => {
+    const ctrl = new AbortController();
+    let calls = 0;
+    const streamer = async function* (req: { signal: AbortSignal }) {
+      calls++;
+      if (calls === 1) {
+        yield toolUse({ name: 'MoonPad' });
+        yield usage(1000, 100);
+        yield stop('tool_use');
+        return;
+      }
+      // The second round hangs until the request is cut.
+      await new Promise<void>((_resolve, reject) => {
+        req.signal.addEventListener('abort', () =>
+          reject(new DOMException('aborted', 'AbortError')),
+        );
+      });
+    };
+    const { store, conversationId, input } = await setup(streamer as never, {
+      signal: ctrl.signal,
+    });
+    store.onCost = () => setTimeout(() => ctrl.abort(), 5);
+    await drain(runTurn(input));
+    expect(calls).toBe(2);
+    // First round written during the turn; the cut round is charged an estimate at the end.
+    expect(store.costWrites[0]?.deltaUsd).toBe(costUsd(1000, 100));
+    expect(store.cost(conversationId)).toBeGreaterThanOrEqual(costUsd(1000, 100));
+  });
+
+  it('stops the turn when its spend cannot be recorded (fails closed)', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const loop = [toolUse({ name: 'MoonPad' }), usage(), stop('tool_use')];
+    const streamer = scriptedStreamer([loop]);
+    const { store, input } = await setup(streamer);
+    store.failCost = true;
+    const events = await drain(runTurn(input));
+    expect(streamer.requests).toHaveLength(1);
+    expect(events.at(-1)).toMatchObject({ type: 'error', code: 'NETWORK' });
+  });
+
+  it('stops looping once the remaining budget (daily or conversation) is spent', async () => {
+    const streamer = scriptedStreamer([[toolUse({ name: 'MoonPad' }), usage(), stop('tool_use')]]);
+    const { input } = await setup(streamer, { budgetUsd: costUsd(100, 50) / 2 });
+    await drain(runTurn(input));
+    expect(streamer.requests).toHaveLength(1);
   });
 
   it('stops quietly and persists the partial text when the client disconnects', async () => {
@@ -312,9 +421,7 @@ describe('runTurn', () => {
     expect(started).toHaveBeenCalled();
     expect(collected.some((e) => e.type === 'error')).toBe(false);
     expect(store.rows(conversationId, 'assistant')[0]?.content).toContain('Part one of the answer');
-    expect(
-      store.rows(conversationId, 'system').some((r) => r.content.startsWith('forge:usage:')),
-    ).toBe(true);
+    expect(store.cost(conversationId)).toBeGreaterThan(0);
   });
 });
 

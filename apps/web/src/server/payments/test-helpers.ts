@@ -24,6 +24,14 @@ import type { BuiltPayment, PaymentGateway } from './gateway';
  * Test doubles shared by the payment tests (no network). Not imported by production code.
  */
 
+/** Lamports of a SystemProgram `Transfer` instruction, or null for any other instruction. */
+export function decodeSystemTransfer(data: Uint8Array): bigint | null {
+  if (data.length !== 12) return null;
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  if (view.getUint32(0, true) !== 2) return null;
+  return view.getBigUint64(4, true);
+}
+
 /** Any 32-byte base58 value works as a blockhash for offline compilation. */
 export const TEST_BLOCKHASH = new PublicKey(new Uint8Array(32).fill(7)).toBase58();
 

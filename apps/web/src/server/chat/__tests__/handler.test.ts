@@ -1,6 +1,8 @@
 // @vitest-environment node
 import { ChatRequest, CLIENT_ERROR_CODES } from '@forge/shared';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { maxDuration } from '../../../../app/api/chat/route';
+import { DEFAULT_LIMITS } from '../config';
 import { handleChat } from '../handler';
 import {
   APP,
@@ -181,7 +183,7 @@ describe('POST /api/chat: conversations', () => {
     );
     const first = events[0];
     const id = first?.type === 'conversation' ? first.conversationId : '';
-    expect(store.conversations.get(id)).toEqual({ owner: WALLET, launchpadId: null });
+    expect(store.conversations.get(id)).toMatchObject({ owner: WALLET, launchpadId: null });
     expect(store.rows(id, 'user')).toEqual([{ role: 'user', content: 'hello' }]);
     expect(store.rows(id, 'assistant')[0]?.content).toBe(LONG_REPLY);
     expect(store.users.has(WALLET)).toBe(true);
@@ -197,14 +199,14 @@ describe('POST /api/chat: conversations', () => {
       .push(
         { role: 'user', content: 'old question' },
         { role: 'assistant', content: 'old answer' },
-        { role: 'system', content: 'forge:spec:{"name":"MoonPad"}' },
       );
+    store.conversations.get(id)!.spec = { name: 'MoonPad' };
     await readEvents(
       await handleChat(postJson('/api/chat', { message: 'new', conversationId: id }), deps),
     );
     const sent = streamer.requests[0]!.messages;
     expect(sent.map((m) => m.content)).toEqual(['old question', 'old answer', 'new']);
-    // The stored snapshot is restored into the draft shown to the model.
+    // The stored draft (conversations.spec) is restored into the draft shown to the model.
     expect(streamer.requests[0]!.system).toContain('"name":"MoonPad"');
   });
 
@@ -326,8 +328,9 @@ describe('POST /api/chat: limits and gates', () => {
     await other.text();
   });
 
-  it('rate limits per IP across wallets', async () => {
+  it('rate limits per IP across wallets, whatever the client puts first in x-forwarded-for', async () => {
     const deps = makeDeps({ loadConfig: () => testConfig({ ipPerWindow: 2 }) });
+    let spoof = 0;
     const call = (wallet: string) =>
       handleChat(
         postJson(
@@ -335,7 +338,7 @@ describe('POST /api/chat: limits and gates', () => {
           { message: 'hi' },
           {
             cookie: sessionCookie(wallet),
-            headers: { 'x-forwarded-for': '203.0.113.9, 10.0.0.1' },
+            headers: { 'x-forwarded-for': `10.0.0.${++spoof}, 203.0.113.9` },
           },
         ),
         deps,
@@ -389,6 +392,30 @@ describe('POST /api/chat: limits and gates', () => {
     await next.text();
   });
 
+  it('enqueues nothing once the client cancelled (no write to a closed stream)', async () => {
+    const streamer = async function* (req: { signal: AbortSignal }) {
+      yield text('This is a fairly long partial answer that gets released early. ');
+      await rejectOnAbort(req.signal);
+    };
+    const deps = makeDeps({ streamer: streamer as never });
+    const res = await handleChat(postJson('/api/chat', { message: 'one' }), deps);
+    const reader = res.body!.getReader();
+    await reader.read(); // conversation
+    await reader.read(); // first text
+    const pending = reader.read(); // the next pull now waits on the model
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    await reader.cancel();
+    await pending;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    // Before the fix, the pending pull enqueued `done` into the cancelled stream, threw, and
+    // logged a stream failure.
+    expect(console.error).not.toHaveBeenCalled();
+    // The turn was still persisted.
+    const id = [...deps.store().conversations.keys()][0]!;
+    expect(deps.store().rows(id, 'assistant')[0]?.content).toContain('partial answer');
+    expect(deps.store().cost(id)).toBeGreaterThan(0);
+  });
+
   it('aborts the model call when the HTTP request is aborted', async () => {
     const ctrl = new AbortController();
     let aborted = false;
@@ -435,10 +462,7 @@ describe('POST /api/chat: limits and gates', () => {
   it('stops a conversation that spent its cost cap', async () => {
     const store = new MemoryStore();
     const id = await store.createConversation(WALLET, null);
-    store.messages.get(id)!.push({
-      role: 'system',
-      content: 'forge:usage:{"inputTokens":1,"outputTokens":1,"costUsd":1.5}',
-    });
+    store.conversations.get(id)!.costUsd = 1.5;
     const streamer = scriptedStreamer([[text('x'), usage(), stop()]]);
     const res = await handleChat(
       postJson('/api/chat', { message: 'c', conversationId: id }),
@@ -447,6 +471,91 @@ describe('POST /api/chat: limits and gates', () => {
     expect(res.status).toBe(429);
     expect((await errorBody(res)).message).toContain('usage limit');
     expect(streamer.requests).toHaveLength(0);
+  });
+
+  it('applies a daily spend cap per wallet across conversations (from the stored costs)', async () => {
+    const store = new MemoryStore();
+    // Three conversations, each under its own cap, together over the wallet daily cap.
+    for (let i = 0; i < 3; i++) {
+      const id = await store.createConversation(WALLET, null);
+      await store.appendMessages(id, [{ role: 'user', content: 'hi' }]);
+      store.conversations.get(id)!.costUsd = 0.9;
+    }
+    const streamer = scriptedStreamer([[text('x'), usage(), stop()]]);
+    const deps = makeDeps({
+      store,
+      streamer,
+      loadConfig: () => testConfig({ walletDailyCostCapUsd: 2.5 }),
+    });
+    const res = await handleChat(postJson('/api/chat', { message: 'new chat' }), deps);
+    expect(res.status).toBe(429);
+    expect((await errorBody(res)).message).toContain('daily usage limit');
+    expect(streamer.requests).toHaveLength(0);
+
+    // Another wallet is not affected.
+    const other = await handleChat(
+      postJson('/api/chat', { message: 'hi' }, { cookie: sessionCookie(OTHER_WALLET) }),
+      deps,
+    );
+    expect(other.status).toBe(200);
+    await other.text();
+  });
+
+  it('passes the smaller of the conversation and daily budgets to the turn', async () => {
+    const store = new MemoryStore();
+    const old = await store.createConversation(WALLET, null);
+    await store.appendMessages(old, [{ role: 'user', content: 'hi' }]);
+    store.conversations.get(old)!.costUsd = 2.4;
+    // One expensive round (0.2 USD) spends the 0.1 USD left today: no second round.
+    const streamer = scriptedStreamer([
+      [toolUse({ name: 'MoonPad' }), usage(100_000, 0), stop('tool_use')],
+      [text('x'), usage(), stop()],
+    ]);
+    const deps = makeDeps({
+      store,
+      streamer,
+      loadConfig: () => testConfig({ walletDailyCostCapUsd: 2.5 }),
+    });
+    await readEvents(await handleChat(postJson('/api/chat', { message: 'hi' }), deps));
+    expect(streamer.requests).toHaveLength(1);
+  });
+
+  it('gives the turn only what is left of the request budget after pre-turn work', async () => {
+    let clock = 1_000_000;
+    const store = new MemoryStore();
+    // Pre-turn work (database reads) takes 47 s of the 50 s request budget.
+    const load = store.loadState.bind(store);
+    store.loadState = async (id, wallet) => {
+      clock += 47_000;
+      return load(id, wallet);
+    };
+    let turnSignal: AbortSignal | null = null;
+    const streamer = scriptedStreamer([[text('x'), usage(), stop()]]);
+    const spy: typeof streamer = Object.assign(
+      (req: Parameters<typeof streamer>[0]) => {
+        turnSignal = req.signal;
+        return streamer(req);
+      },
+      { requests: streamer.requests },
+    );
+    const deps = makeDeps({
+      store,
+      streamer: spy,
+      now: () => clock,
+      loadConfig: () => testConfig({ requestBudgetMs: 50_000, minTurnMs: 5_000 }),
+    });
+    const res = await handleChat(postJson('/api/chat', { message: 'hi' }), deps);
+    // 3 s left < minTurnMs: refused before the stream opens, nothing billed.
+    expect(res.status).toBe(503);
+    expect(turnSignal).toBeNull();
+    expect(store.costWrites).toHaveLength(0);
+  });
+
+  it('keeps the request budget and turn timeout under the route maxDuration', () => {
+    const { requestBudgetMs, turnTimeoutMs } = DEFAULT_LIMITS;
+    expect(turnTimeoutMs).toBeLessThanOrEqual(requestBudgetMs);
+    // At least 10 s are left for the last cost write after the turn is cut.
+    expect(requestBudgetMs + 10_000).toBeLessThanOrEqual(maxDuration * 1000);
   });
 
   it('refuses new conversations while signups are paused, but not existing ones', async () => {
@@ -540,10 +649,7 @@ describe('POST /api/chat: injection attempts', () => {
       const all = events.map((e) => (e.type === 'text' ? e.delta : '')).join('');
       expect(all).toContain('Not applied');
       // Nothing illegal reached storage.
-      const stored = store
-        .rows([...store.conversations.keys()][0]!, 'system')
-        .map((r) => r.content)
-        .join('\n');
+      const stored = JSON.stringify(store.conversations.get([...store.conversations.keys()][0]!));
       expect(stored).not.toContain('9000');
       expect(stored).not.toContain(OTHER_WALLET);
     },

@@ -113,12 +113,21 @@ describe('POST /api/spec/confirm', () => {
       [{ status: 'conversation_not_found' }, 404],
       [{ status: 'slug_taken' }, 409],
       [{ status: 'conflict' }, 409],
+      [{ status: 'too_many_drafts' }, 409],
+      [{ status: 'draft_released' }, 409],
     ] as const;
     for (const [outcome, status] of cases) {
       const store = new MemoryStore();
       store.confirmOutcome = outcome;
       expect((await call(body(), makeDeps({ store }))).status).toBe(status);
     }
+  });
+
+  it('explains the unpaid draft cap', async () => {
+    const store = new MemoryStore();
+    store.confirmOutcome = { status: 'too_many_drafts' };
+    const res = await call(body(), makeDeps({ store }));
+    expect((await json(res)).message).toContain('3 unpaid launchpad drafts');
   });
 
   it('respects the signups_paused flag and the token gate', async () => {
