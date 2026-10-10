@@ -1,5 +1,6 @@
 import { useId, type CSSProperties } from 'react';
 import { isHexColor } from '../muse/paint';
+import { FORGE_PRIMARY, FORGE_ACCENT } from '../muse/engine';
 
 /** An identity study, not a screenshot of the deployed site. */
 export function LaunchpadArt({
@@ -16,8 +17,8 @@ export function LaunchpadArt({
   const id = useId().replace(/:/g, '');
   const seed = Array.from(slug).reduce((value, letter) => value + letter.charCodeAt(0), 0);
   const style = {
-    '--pad-primary': isHexColor(primary) ? primary : '#8c9da1',
-    '--pad-accent': isHexColor(accent) ? accent : '#bd937b',
+    '--pad-primary': isHexColor(primary) ? primary : FORGE_PRIMARY,
+    '--pad-accent': isHexColor(accent) ? accent : FORGE_ACCENT,
   } as CSSProperties;
   return (
     <div className="fw-pad-art" data-study={seed % 3} style={style} aria-hidden="true">
@@ -27,9 +28,9 @@ export function LaunchpadArt({
         <defs>
           <linearGradient id={`${id}-metal`} x1="90" y1="30" x2="310" y2="280" gradientUnits="userSpaceOnUse">
             <stop stopColor="var(--pad-accent)" />
-            <stop offset=".34" stopColor="#eee9dc" />
+            <stop offset=".34" stopColor="var(--fw-text)" />
             <stop offset=".58" stopColor="var(--pad-primary)" />
-            <stop offset="1" stopColor="#30383c" />
+            <stop offset="1" stopColor="var(--fw-raised)" />
           </linearGradient>
         </defs>
         <g className="fw-pad-art-rings" transform="translate(200 160) rotate(-28)">

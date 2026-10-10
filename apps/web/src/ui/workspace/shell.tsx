@@ -71,7 +71,7 @@ function BrandLogo({
     <>
       <img
         className={`${className} fw-logo-for-dark`}
-        src="/brand/forge-logo-mono-white.svg"
+        src="/brand/forge-logo-wordmark-light-text.svg"
         alt={common.brand}
         width={width}
         height={height}

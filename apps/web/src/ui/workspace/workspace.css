@@ -1,26 +1,26 @@
 .fw,
 .fw-toast {
-  /* Graphite, ivory and copper. */
-  --fw-bg: #202426;
-  --fw-surface: #292f32;
-  --fw-raised: #343d40;
-  --fw-text: #eae6dc;
-  --fw-muted: #b0b8b9;
-  --fw-border: #4c595e;
+  /* FORGE's established violet identity. */
+  --fw-bg: #0b0a12;
+  --fw-surface: #161426;
+  --fw-raised: #201c36;
+  --fw-text: #f2f0ff;
+  --fw-muted: #aca6c8;
+  --fw-border: #3a3360;
   /* Accent fills, borders, and the focus ring. */
-  --fw-accent: #b78970;
+  --fw-accent: #9b5cff;
   /* Accent-colored text, lighter than the fill so it stays AA on every surface. */
-  --fw-accent-text: #d5b29b;
-  /* Soft metal highlight. */
-  --fw-accent-2: #c9c5b7;
-  --fw-on-accent: #202426;
+  --fw-accent-text: #b794ff;
+  /* Magenta is reserved for small highlights. */
+  --fw-accent-2: #ff4fd8;
+  --fw-on-accent: #0b0a12;
   --fw-focus: var(--fw-accent);
   --fw-error: #ff8a80;
   --fw-success: #5ee6b0;
-  --fw-glow: #b7897020;
+  --fw-glow: #9b5cff40;
   --fw-shadow: #0000004d;
-  --fw-backdrop: #202426cc;
-  --fw-radius: 5px;
+  --fw-backdrop: #0b0a12cc;
+  --fw-radius: 22px;
   --fw-gap: 24px;
   color: var(--fw-text);
   font-family: var(--font-space-grotesk), Arial, Helvetica, sans-serif;
@@ -32,21 +32,21 @@
 }
 .fw[data-theme='light'],
 .fw-toast[data-theme='light'] {
-  --fw-bg: #eeede7;
+  --fw-bg: #f4f2fb;
   --fw-surface: #ffffff;
-  --fw-raised: #e3e5e2;
-  --fw-text: #20292d;
-  --fw-muted: #5f6b6f;
-  --fw-border: #c6cece;
-  --fw-accent: #b78970;
-  --fw-accent-text: #79523e;
-  --fw-accent-2: #79523e;
-  --fw-on-accent: #202426;
+  --fw-raised: #eae6f7;
+  --fw-text: #1a1530;
+  --fw-muted: #575073;
+  --fw-border: #cfc8e6;
+  --fw-accent: #9b5cff;
+  --fw-accent-text: #6a2fd6;
+  --fw-accent-2: #b5168f;
+  --fw-on-accent: #0b0a12;
   --fw-error: #b3261e;
   --fw-success: #0b7350;
-  --fw-glow: #b7897033;
-  --fw-shadow: #20292d26;
-  --fw-backdrop: #20292d99;
+  --fw-glow: #9b5cff33;
+  --fw-shadow: #1a153026;
+  --fw-backdrop: #1a153099;
   color-scheme: light;
 }
 .fw {
@@ -1484,17 +1484,11 @@
 }
 
 /* The workshop is a portfolio, with the controls attached to each site. */
-.fw { --fw-display: Georgia, 'Times New Roman', serif; }
-.fw-header { min-height: 76px; }
-.fw-main { max-width: 1280px; padding-top: 38px; }
-.fw-heading h1 { font: 400 clamp(38px, 5.1vw, 64px)/1.04 var(--fw-display); letter-spacing: -.065em; }
+.fw { --fw-display: var(--font-space-grotesk), Arial, Helvetica, sans-serif; }
 .fw-heading { margin-bottom: 0; }
 .fw-title-row { margin-bottom: 25px; align-items: center; }
-.fw-button { border-radius: 3px; transition: transform 180ms, background 180ms; }
-.fw-button-primary { background: var(--fw-text); color: var(--fw-bg); border-color: var(--fw-text); }
-.fw-button-primary:not(:disabled):hover { transform: translateY(-2px); background: var(--fw-accent-text); border-color: var(--fw-accent-text); box-shadow: none; }
-.fw-muse-hero { grid-template-areas: 'copy stage'; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); min-height: 200px; padding: 0; border: 1px solid var(--fw-border); border-radius: 5px; background: var(--fw-surface); margin: 0 0 24px; }
-.fw-muse-hero-stage { grid-area: stage; height: 200px; background: linear-gradient(110deg, var(--fw-surface), var(--fw-bg)); }
+.fw-muse-hero { grid-template-areas: 'copy stage'; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); min-height: 200px; padding: 0; border: 1px solid var(--fw-border); border-radius: var(--fw-radius); background: var(--fw-surface); margin: 0 0 24px; }
+.fw-muse-hero-stage { grid-area: stage; height: 200px; background: radial-gradient(ellipse at 65% 65%, var(--fw-glow), transparent 65%), linear-gradient(110deg, var(--fw-surface), var(--fw-bg)); }
 .fw-muse-hero-copy { grid-area: copy; padding: 25px 32px; gap: 9px; }
 .fw-muse-hero-copy .fw-eyebrow { font-size: 9px; color: var(--fw-muted); letter-spacing: .14em; }
 .fw-muse-hero-copy h2 { font: 400 clamp(27px, 3.5vw, 43px)/1.04 var(--fw-display); letter-spacing: -.05em; }
@@ -1514,7 +1508,7 @@
 .fw-pad-toolbar { align-items: center; }
 .fw-pad-toolbar .fw-eyebrow { display: none; }
 .fw-pad-toolbar h2 { font-size: 18px; font-weight: 500; letter-spacing: -.03em; }
-.fw-pad-search { min-height: 42px; border-radius: 3px; background: transparent; }
+.fw-pad-search { min-height: 42px; border-radius: 999px; background: transparent; }
 .fw-pad-search:focus-within { outline: 2px solid var(--fw-accent); outline-offset: 2px; }
 .fw-pad-filters { gap: 0; margin: 14px 0 22px; border-bottom: 1px solid var(--fw-border); }
 .fw-pad-filters button { min-height: 44px; border: 0; border-bottom: 2px solid transparent; border-radius: 0; padding-inline: 14px; font-size: 12px; }
@@ -1522,23 +1516,23 @@
 .fw-pad-filters button:hover, .fw-pad-filters button.is-active { border-color: var(--fw-accent); background: transparent; color: var(--fw-text); }
 .fw-pad-filters button span { background: transparent; }
 .fw-pad-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 22px; align-items: start; }
-.fw-pad-card { display: flex; flex-direction: column; gap: 0; padding: 0; overflow: hidden; border: 1px solid var(--fw-border); border-radius: 5px; background: var(--fw-surface); transition: border-color 200ms, transform 200ms; }
+.fw-pad-card { display: flex; flex-direction: column; gap: 0; padding: 0; overflow: hidden; border: 1px solid var(--fw-border); border-radius: var(--fw-radius); background: var(--fw-surface); transition: border-color 200ms, transform 200ms; }
 .fw-pad-card:hover { border-color: var(--fw-accent); }
 .fw-pad-cover-link { display: block; position: relative; overflow: hidden; color: var(--fw-text); }
-.fw-pad-cover-link > .fw-badge { position: absolute; left: 16px; top: 16px; border: 1px solid #eae6dc55; background: #202426e8; color: #eae6dc; backdrop-filter: blur(8px); }
-.fw-pad-cover-arrow { position: absolute; right: 15px; top: 15px; display: grid; place-items: center; width: 32px; height: 32px; border: 1px solid #eae6dc55; border-radius: 50%; background: #202426a0; color: #eae6dc; transition: transform 220ms; }
+.fw-pad-cover-link > .fw-badge { position: absolute; left: 16px; top: 16px; border: 1px solid var(--fw-border); background: var(--fw-backdrop); color: var(--fw-text); backdrop-filter: blur(8px); }
+.fw-pad-cover-arrow { position: absolute; right: 15px; top: 15px; display: grid; place-items: center; width: 32px; height: 32px; border: 1px solid var(--fw-border); border-radius: 50%; background: var(--fw-backdrop); color: var(--fw-text); transition: transform 220ms; }
 .fw-pad-cover-link:hover .fw-pad-cover-arrow { transform: rotate(45deg); }
-.fw-pad-art { position: relative; height: 235px; overflow: hidden; isolation: isolate; background: #20282c; color: #eae6dc; }
-.fw-pad-art-grid { position: absolute; inset: 0; opacity: .16; background: linear-gradient(#a3afb3 1px, transparent 1px), linear-gradient(90deg, #a3afb3 1px, transparent 1px); background-size: 36px 36px; mask-image: radial-gradient(ellipse at 65% 45%, black, transparent 70%); }
+.fw-pad-art { position: relative; height: 235px; overflow: hidden; isolation: isolate; background: var(--fw-bg); color: var(--fw-text); }
+.fw-pad-art-grid { position: absolute; inset: 0; opacity: .16; background: linear-gradient(var(--fw-accent-text) 1px, transparent 1px), linear-gradient(90deg, var(--fw-accent-text) 1px, transparent 1px); background-size: 36px 36px; mask-image: radial-gradient(ellipse at 65% 45%, black, transparent 70%); }
 .fw-pad-art-sculpture { position: absolute; right: -15%; top: -5%; height: 105%; width: 90%; transform: rotate(-12deg); transition: transform 750ms cubic-bezier(.2,.8,.2,1); }
 .fw-pad-cover-link:hover .fw-pad-art-sculpture { transform: rotate(8deg) scale(1.06); }
 .fw-pad-art-wordmark { position: absolute; left: 18px; right: 18px; bottom: 29px; font: 400 clamp(32px, 3.1vw, 52px)/.98 var(--fw-display); letter-spacing: -.06em; max-width: 9ch; overflow-wrap: anywhere; }
 .fw-pad-art-initial { position: absolute; left: -12px; top: -16px; font: 400 230px/.9 var(--fw-display); color: var(--pad-primary); opacity: .1; }
 .fw-pad-art-coordinates { position: absolute; left: 19px; bottom: 12px; font: 8px/1 'Courier New', monospace; letter-spacing: .1em; opacity: .6; }
-.fw-pad-art[data-study='1'] { background: #d8d8cd; color: #263035; }
+.fw-pad-art[data-study='1'] { background: color-mix(in srgb, var(--pad-primary) 16%, var(--fw-raised)); color: var(--fw-text); }
 .fw-pad-art[data-study='1'] .fw-pad-art-sculpture { right: -24%; transform: rotate(55deg); }
 .fw-pad-cover-link:hover .fw-pad-art[data-study='1'] .fw-pad-art-sculpture { transform: rotate(75deg) scale(1.06); }
-.fw-pad-art[data-study='2'] { background: color-mix(in srgb, var(--pad-primary) 35%, #252b30); }
+.fw-pad-art[data-study='2'] { background: color-mix(in srgb, var(--pad-primary) 35%, var(--fw-bg)); }
 .fw-pad-art[data-study='2'] .fw-pad-art-sculpture { top: -17%; transform: rotate(-55deg); }
 .fw-pad-cover-link:hover .fw-pad-art[data-study='2'] .fw-pad-art-sculpture { transform: rotate(-35deg) scale(1.06); }
 .fw-pad-main { padding: 18px 18px 0; }

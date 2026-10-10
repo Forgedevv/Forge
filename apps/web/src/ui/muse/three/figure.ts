@@ -56,12 +56,12 @@ void main() {
   vec3 v = normalize(vView);
   float facing = clamp(dot(n, v), 0.0, 1.0);
   float fres = 1.0 - facing;
-  vec3 ink = vec3(0.012, 0.017, 0.021);
+  vec3 ink = vec3(0.008, 0.004, 0.03);
   vec3 deep = mix(uPrimary, ink, 0.88);
   // A soft inner light makes the body read as luminous and slightly translucent.
   vec3 col = mix(deep, mix(uPrimary, ink, 0.66), pow(facing, 2.0) * 0.85);
   col += mix(uPrimary, uAccent, 0.5) * smoothstep(1.2, 0.2, vHeight) * 0.05 * uGlow;
-  // Soft metal rim light.
+  // Soft magenta rim light.
   col += mix(uAccent, vec3(1.0), 0.2) * pow(fres, 2.2) * 0.65 * uGlow;
   // Key light from the upper left.
   vec3 l = normalize(vec3(-0.5, 0.7, 0.6));

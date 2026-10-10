@@ -1,10 +1,10 @@
 import * as T from 'three';
 import { acquireMuseTextures, createMuseOrb, releaseMuseTextures, type MuseOrb } from './orb';
 import { createMuseFigure, type FigureAction } from './figure';
-import { palette } from '../../home/content';
+import { FORGE_PRIMARY, FORGE_ACCENT } from '../engine';
 
 /**
- * The dashboard hero: the full-body FORGE Muse on a graphite drafting table, with a light pool, a
+ * The dashboard hero: the full-body FORGE Muse on a violet drafting table, with a light pool, a
  * contact shadow, a few floating sparks, and the user's own launchpad Muses hovering around
  * it in their theme colors. One canvas; it pauses offscreen and in hidden tabs, and draws a
  * single static pose under reduced motion.
@@ -89,8 +89,8 @@ function build(container: HTMLElement, options: HeroOptions, renderer: T.WebGLRe
 
   const floorMaterial = new T.ShaderMaterial({
     uniforms: {
-      uFloor: { value: new T.Color(palette.ink) },
-      uPool: { value: new T.Color(palette.plum) },
+      uFloor: { value: new T.Color('#140f2a') },
+      uPool: { value: new T.Color('#3b2378') },
     },
     vertexShader: floorVertex,
     fragmentShader: floorFragment,
@@ -104,7 +104,7 @@ function build(container: HTMLElement, options: HeroOptions, renderer: T.WebGLRe
 
   const shadowMaterial = new T.MeshBasicMaterial({
     map: tex.glow,
-    color: new T.Color('#151c20'),
+    color: new T.Color('#05030d'),
     transparent: true,
     depthWrite: false,
     opacity: 0.8,
@@ -115,7 +115,7 @@ function build(container: HTMLElement, options: HeroOptions, renderer: T.WebGLRe
   shadow.renderOrder = -1;
   scene.add(shadow);
 
-  const figure = createMuseFigure({ still: reduced, primary: palette.wire, accent: palette.accent });
+  const figure = createMuseFigure({ still: reduced, primary: FORGE_PRIMARY, accent: FORGE_ACCENT });
   figure.setAction(options.action);
   scene.add(figure.root);
 
@@ -123,7 +123,7 @@ function build(container: HTMLElement, options: HeroOptions, renderer: T.WebGLRe
   const floaters = Array.from({ length: 7 }, (_, i) => {
     const material = new T.SpriteMaterial({
       map: tex.spark,
-      color: new T.Color(i % 2 ? palette.accent : palette.lilac),
+      color: new T.Color(i % 2 ? '#ff8be6' : '#c4a6ff'),
       blending: T.AdditiveBlending,
       transparent: true,
       depthWrite: false,
@@ -142,7 +142,7 @@ function build(container: HTMLElement, options: HeroOptions, renderer: T.WebGLRe
   // An engraved drafting dial anchors the scene instead of an unbounded glow.
   const dial = new T.Group();
   dial.position.y = 0.012;
-  const dialMaterial = new T.MeshBasicMaterial({ color: palette.wire, transparent: true, opacity: 0.24, side: T.DoubleSide });
+  const dialMaterial = new T.MeshBasicMaterial({ color: FORGE_PRIMARY, transparent: true, opacity: 0.24, side: T.DoubleSide });
   const dialGeometries: T.BufferGeometry[] = [];
   for (const radius of [0.8, 1.48, 2.05]) {
     const geometry = new T.RingGeometry(radius, radius + 0.007, 100);
