@@ -16,7 +16,6 @@ import {
   Card,
   ClaimButton,
   ErrorNotice,
-  Heading,
   Loading,
   readableError,
 } from './components';
@@ -82,23 +81,54 @@ export function DashboardScreen({
     [filter, launchpads, query],
   );
   const hero = (action: HeroAction) => (
-    <MuseHero action={action} muses={muses} forceFallback={heroFallback} layout="open">
-      {action === 'welcome' && create}
-      {action === 'building' && activeJobId && (
-        <ActionLink href={`/jobs/${activeJobId}`}>{copy.job}</ActionLink>
+    <MuseHero
+      action={action}
+      muses={muses}
+      forceFallback={heroFallback}
+      layout="open"
+      heading={<h1 className="fw-dashboard-title">{copy.title}</h1>}
+      body={action === 'welcome' ? copy.hero.welcome.body : null}
+      footer={
+        launchpads.length > 0 && (
+          <section className="fw-workshop-pulse" aria-label={copy.overview}>
+            <dl className="fw-pulse-grid">
+              <PulseMetric label={copy.totalLaunchpads} value={launchpads.length} />
+              <PulseMetric
+                label={copy.liveLaunchpads}
+                value={launchpads.filter((pad) => pad.status === 'live').length}
+              />
+              <PulseMetric
+                label={copy.coins}
+                value={launchpads.reduce((sum, pad) => sum + pad.coinsCount, 0)}
+              />
+              <PulseMetric
+                label={copy.activeBuilds}
+                value={launchpads.filter((pad) => pad.activeJobId).length}
+              />
+            </dl>
+          </section>
+        )
+      }
+    >
+      {(create || (action === 'building' && activeJobId)) && (
+        <div className="fw-dashboard-actions">
+          {create}
+          {action === 'building' && activeJobId && (
+            <ActionLink href={`/jobs/${activeJobId}`} secondary>
+              {copy.job}
+            </ActionLink>
+          )}
+        </div>
       )}
     </MuseHero>
   );
   return (
-    <>
-      <div className="fw-title-row">
-        <Heading eyebrow={copy.eyebrow} title={copy.title} />
-        {!signupsPaused && launchpads.length > 0 && (
-          <ActionLink href="/new">{common.create}</ActionLink>
-        )}
-      </div>
+    <div className="fw-dashboard">
       {loading ? (
-        <Loading />
+        <>
+          <h1 className="fw-dashboard-title">{copy.title}</h1>
+          <Loading />
+        </>
       ) : (
         <>
           {activeJobId ? (
@@ -108,30 +138,6 @@ export function DashboardScreen({
           )}
           {launchpads.length > 0 && (
             <>
-              <section className="fw-workshop-pulse" aria-label={copy.overview}>
-                <div className="fw-pulse-heading">
-                  <div>
-                    <p className="fw-eyebrow">{copy.overviewEyebrow}</p>
-                    <h2>{copy.overview}</h2>
-                  </div>
-                  <span>{copy.acrossLaunchpads(launchpads.length)}</span>
-                </div>
-                <div className="fw-pulse-grid">
-                  <PulseMetric label={copy.totalLaunchpads} value={launchpads.length} />
-                  <PulseMetric
-                    label={copy.liveLaunchpads}
-                    value={launchpads.filter((pad) => pad.status === 'live').length}
-                  />
-                  <PulseMetric
-                    label={copy.coins}
-                    value={launchpads.reduce((sum, pad) => sum + pad.coinsCount, 0)}
-                  />
-                  <PulseMetric
-                    label={copy.activeBuilds}
-                    value={launchpads.filter((pad) => pad.activeJobId).length}
-                  />
-                </div>
-              </section>
               <section className="fw-pad-section" aria-label={copy.padSection}>
                 <div className="fw-pad-toolbar">
                   <div>
@@ -202,15 +208,15 @@ export function DashboardScreen({
           )}
         </>
       )}
-    </>
+    </div>
   );
 }
 
 function PulseMetric({ label, value }: { label: string; value: number }) {
   return (
     <div className="fw-pulse-metric">
-      <span>{label}</span>
-      <strong>{value.toLocaleString()}</strong>
+      <dt>{label}</dt>
+      <dd>{value.toLocaleString()}</dd>
     </div>
   );
 }

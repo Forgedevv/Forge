@@ -169,3 +169,17 @@ Agent 3 (`src/client/`), agent 2 (`src/forge/` components and `SiteConfig`). Mea
 
 **Requests / notes**
 - No new dependency, backend change, financial logic, palette change, global setting, push, or deployment. No new request is needed.
+
+### 2026-10-10 - Compact dashboard introduction
+
+**Done**
+- Combined the page title, state-driven status, creation/build actions, and Muse into one compact introduction. Reduced the title scale and removed the second large heading and repeated supporting sentence for populated workshops.
+- Moved the four overview counts into the introduction as a compact definition list. Removed the tall metric columns and their vertical dividers so the site collection starts sooner.
+- Kept the established violet palette, animated Muse, search/status filtering, site actions, and paused-signup behavior. Mobile places Muse beside the copy and stacks each count above its label; the smaller 2D fallback and wrapping satellite row fit the narrower stage.
+- Web typecheck, lint, and production build pass. The full 204-test suite passed, and the seven dashboard/hero tests were rerun successfully after the fallback adjustment. Local HTTP inspection returns 200 and confirms the integrated heading, summary, site grid, and updated stylesheet at `/dev/workshop`.
+
+**Not done / uncertain**
+- The user's screenshot guided this change. Rendered desktop/mobile layout is still unverified: browser inventory is empty and opening the in-app browser returns `Browser is not available: iab`.
+
+**Requests / notes**
+- No new dependency or backend request. The preview remains local on port 3000. No financial logic, global setting, Git configuration, push, or deployment was changed.
