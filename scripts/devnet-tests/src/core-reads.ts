@@ -123,7 +123,11 @@ export async function runCoreReads(): Promise<boolean> {
     jobId: payment.jobId,
   };
   const verifyEnv = { ...coreEnv, FORGE_CASHBOX_WALLET: payment.cashbox };
-  let verification: PaymentVerification = { status: 'pending', signature: payment.signature };
+  let verification: PaymentVerification = {
+    status: 'pending',
+    signature: payment.signature,
+    reason: 'not_found',
+  };
   const deadline = Date.now() + VERIFY_DEADLINE_MS;
   while (verification.status === 'pending' && Date.now() < deadline) {
     verification = await verifyPayment(connection, payment.signature, expected, { env: verifyEnv });

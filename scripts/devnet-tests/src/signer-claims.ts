@@ -30,7 +30,7 @@ import {
   TransactionInstruction,
   VersionedTransaction,
 } from '@solana/web3.js';
-import { createSdkSignerCore } from '../../../apps/signer/src/core-adapter.js';
+import { createForgeSignerCore } from '../../../apps/signer/src/core-adapter.js';
 import {
   creatorRole,
   openKeystore,
@@ -41,9 +41,15 @@ import {
   createClaimsJob,
   type CreatorLaunchpad,
 } from '../../../apps/signer/src/jobs/claims.js';
-import { RefundJournalEntry, createRefundsJob } from '../../../apps/signer/src/jobs/refunds.js';
+import {
+  RefundJournalEntry,
+  RefundManualMark,
+  createRefundsJob,
+} from '../../../apps/signer/src/jobs/refunds.js';
 import {
   createFileJournal,
+  createMemoryJournal,
+  Mutex,
   rpcFromConnection,
   scrubText,
   type JobAlerter,
@@ -254,13 +260,15 @@ async function refundPart(state: State, wallets: ReturnType<typeof loadWallets>)
       createRefundsJob({
         store: db,
         rpc: rpcFromConnection(connection),
-        core: createSdkSignerCore({ connection, cashbox }),
+        core: createForgeSignerCore({ connection, cashbox, cluster: 'devnet' }),
         keystore,
         journal: createFileJournal({
           dir: resolve(WORK_DIR, 'journal'),
           namespace: 'refunds',
           schema: RefundJournalEntry,
         }),
+        manualMarks: createMemoryJournal(RefundManualMark),
+        walletLock: new Mutex(),
         flags: memoryFlags(),
         alerter: consoleAlerter(alerts),
         logger: consoleLogger('refunds'),
@@ -326,7 +334,11 @@ async function refundPart(state: State, wallets: ReturnType<typeof loadWallets>)
 async function claimPart(state: State, wallets: ReturnType<typeof loadWallets>): Promise<boolean> {
   console.log('\n=== 2. Creator-fee claim to the multisig stand-in ===');
   const connection = getConnection();
-  const core = createSdkSignerCore({ connection, cashbox: wallets.funder.publicKey });
+  const core = createForgeSignerCore({
+    connection,
+    cashbox: wallets.funder.publicKey,
+    cluster: 'devnet',
+  });
   const vault = wallets.multisigStandIn.publicKey;
   const pools = ['test2.pool', 'test3.launch', 'test4.pool', 'test1.pool']
     .map((key) => state.get<{ pool: string }>(key)?.pool)
@@ -382,6 +394,7 @@ async function claimPart(state: State, wallets: ReturnType<typeof loadWallets>):
     alerter: consoleAlerter(alerts),
     logger: consoleLogger('claims'),
     config: { vault, minClaimLamports: DEVNET_MIN_CLAIM_LAMPORTS, feePayer: 'payer' },
+    onBeforeSend: () => undefined,
   });
   const report = await job.runOnce();
   const claimed = report.outcomes.filter((o) => o.result === 'claimed') as Array<{

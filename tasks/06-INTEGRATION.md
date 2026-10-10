@@ -39,4 +39,4 @@ You are the session that starts before the others and assembles at the end.
 
 ## Report
 
-_To be filled in at the end of the phase._
+Local Wave 3 hardening and integration are complete on `w3/integration`. The full local typecheck, lint, test, and production build checks pass. The database-backed Supabase tests, external builder sandbox tests, live web smoke tests, complete devnet user journey, deployed kill switches, and malicious-chat scan are not fully verified; details and pre-mainnet checks are in [`docs/INTEGRATION_REPORT.md`](../docs/INTEGRATION_REPORT.md).

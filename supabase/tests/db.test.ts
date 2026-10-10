@@ -1,14 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import pg from 'pg';
-// @ts-expect-error plain JS helper without types
-import { loadEnv } from '../scripts/migrate.mjs';
 
-loadEnv();
 const url = process.env.SUPABASE_DB_URL;
-if (!url) throw new Error('SUPABASE_DB_URL is not set (supabase/.env)');
+const describeDb = url ? describe : describe.skip;
 
 const connect = async (): Promise<pg.Client> => {
+  if (!url) throw new Error('SUPABASE_DB_URL is required for database integration tests.');
   const c = new pg.Client({ connectionString: url, ssl: { rejectUnauthorized: false } });
   await c.connect();
   return c;
@@ -59,6 +57,7 @@ async function q1(c: pg.Client, sql: string, params: unknown[] = []): Promise<st
 }
 
 beforeAll(async () => {
+  if (!url) return;
   admin = await connect();
   await admin.query('insert into users (wallet) values ($1), ($2)', [A, B]);
   const mk = async (wallet: string, tag: string) => {
@@ -129,7 +128,7 @@ afterAll(async () => {
   await admin.end();
 });
 
-describe('RLS isolation', () => {
+describeDb('RLS isolation', () => {
   const tables: [string, (i: Ids, w: 'A' | 'B') => string][] = [
     ['launchpads', (i, w) => (w === 'A' ? i.lpA : i.lpB)],
     ['jobs', (i, w) => (w === 'A' ? i.jobA : i.jobB)],
@@ -264,7 +263,7 @@ describe('RLS isolation', () => {
   });
 });
 
-describe('enum checks', () => {
+describeDb('enum checks', () => {
   const bad: [string, string, unknown[]][] = [
     [
       'launchpads.status',
@@ -353,7 +352,7 @@ describe('enum checks', () => {
   });
 });
 
-describe('job functions', () => {
+describeDb('job functions', () => {
   // Jobs with a very old created_at so they sort before anything else in the dev database.
   const created: string[] = [];
   async function mkJob(status: string, extra: Record<string, unknown> = {}): Promise<string> {

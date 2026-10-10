@@ -174,7 +174,7 @@ export class FakeChainGateway implements PaymentGateway {
     await Promise.resolve();
     if (this.failure) throw this.failure;
     const tx = this.txs.get(signature);
-    if (!tx) return { status: 'pending', signature };
+    if (!tx) return { status: 'pending', signature, reason: 'not_found' };
     return checkPaymentTransaction(tx, signature, {
       cashbox: this.cashbox,
       payer: expected.payer,
