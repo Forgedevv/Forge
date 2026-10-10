@@ -155,3 +155,17 @@ Agent 3 (`src/client/`), agent 2 (`src/forge/` components and `SiteConfig`). Mea
 **Requests / notes**
 - No new dependency, backend/API/database change, transaction construction, amount calculation, environment-file edit, global setting, Git configuration change, remote change, push, or deployment.
 - Changes are committed locally on `agent/frontend` with the verified `Forgedevv` identity. No new dependency or backend request is needed for this pass.
+
+### 2026-10-10 — Open dashboard composition
+
+**Done**
+- Removed the dashboard Muse banner's enclosing border, rounded frame, solid surface, and rectangular stage background. Muse now sits directly on the page in the existing violet identity.
+- Reduced the supporting heading and hid its repeated workshop label. Desktop places the short status copy beside Muse; mobile places Muse above centered copy. Existing scene interactions, launchpad satellites, state-driven actions, and fallback remain.
+- Added an explicit open layout to the shared hero and selected it only in the dashboard; session panels retain their existing layout.
+- Web typecheck, lint, production build, and all 204 tests pass. Local HTTP inspection confirms the open-layout markup and stylesheet are served by `/dev/workshop`.
+
+**Not done / uncertain**
+- The supplied screenshot informed the correction. Final desktop/mobile rendering remains unverified; inspecting HTML and CSS is not a rendered visual check.
+
+**Requests / notes**
+- No new dependency, backend change, financial logic, palette change, global setting, push, or deployment. No new request is needed.

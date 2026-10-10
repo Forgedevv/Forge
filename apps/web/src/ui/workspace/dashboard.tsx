@@ -82,7 +82,7 @@ export function DashboardScreen({
     [filter, launchpads, query],
   );
   const hero = (action: HeroAction) => (
-    <MuseHero action={action} muses={muses} forceFallback={heroFallback}>
+    <MuseHero action={action} muses={muses} forceFallback={heroFallback} layout="open">
       {action === 'welcome' && create}
       {action === 'building' && activeJobId && (
         <ActionLink href={`/jobs/${activeJobId}`}>{copy.job}</ActionLink>

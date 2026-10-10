@@ -34,6 +34,7 @@ export function MuseHero({
   action,
   muses,
   forceFallback = false,
+  layout = 'card',
   title,
   body,
   children,
@@ -42,6 +43,8 @@ export function MuseHero({
   muses: HeroMuse[];
   /** Development gallery: show the 2D fallback. */
   forceFallback?: boolean;
+  /** Open composition for the dashboard; session screens retain their panel. */
+  layout?: 'card' | 'open';
   /** Overrides the copy of the action, for screens other than the dashboard. */
   title?: string;
   body?: ReactNode;
@@ -94,7 +97,12 @@ export function MuseHero({
   }, [museKey]);
 
   return (
-    <section className="fw-card fw-muse-hero" data-action={action} aria-label={copy.hero.label}>
+    <section
+      className={layout === 'open' ? 'fw-muse-hero' : 'fw-card fw-muse-hero'}
+      data-layout={layout}
+      data-action={action}
+      aria-label={copy.hero.label}
+    >
       <div
         ref={stage}
         className="fw-muse-hero-stage"
