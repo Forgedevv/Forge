@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { openKeystore, type Keystore } from '../keystore.js';
 import {
   RefundJournalEntry,
+  RefundManualMark,
   createPostgrestRefundStore,
   createRefundsJob,
   decideRefund,
@@ -17,6 +18,7 @@ import {
 import {
   createJobLogger,
   createMemoryJournal,
+  Mutex,
   createPostgrestClient,
   silentJobLogger,
   type RetryOptions,
@@ -76,6 +78,9 @@ function setup(overrides: Partial<RefundsDeps> = {}) {
       core,
       keystore,
       journal,
+      manualMarks: createMemoryJournal(RefundManualMark),
+      walletLock: new Mutex(),
+      onBeforeSend: () => undefined,
       flags,
       alerter,
       logger: silentJobLogger,
@@ -470,11 +475,14 @@ describe('refunds: concurrency and crashes', () => {
       return release(p);
     };
     const first = await t.job().runOnce();
-    const released = first.outcomes.find((o) => o.result === 'released');
+    expect(first.outcomes.some((o) => o.result === 'in_flight')).toBe(true);
+    t.chain.advance(600); // expiry and finality margins must both be proven by the RPC
+    const expired = await t.job().runOnce();
+    const released = expired.outcomes.find((o) => o.result === 'released');
     expect(released).toBeDefined();
     const entryHeight = t.chain.blockhashes.values().next().value as number;
     expect(heightAtRelease).toBeGreaterThan(entryHeight);
-    expect(t.db.payments.get(payment.id)!.refundSignature).toBeNull();
+    expect(t.db.payments.get(payment.id)!.refundSignature).not.toBeNull();
     expect(t.chain.transfers).toHaveLength(0);
 
     t.chain.defaultBehavior = 'land';
@@ -496,7 +504,7 @@ describe('refunds: concurrency and crashes', () => {
     expect(t.db.payments.get(payment.id)!.refundSignature).toBe(ghost);
     expect(t.chain.transfers).toHaveLength(0);
 
-    t.chain.advance(400); // past observed height + FALLBACK_EXPIRY_BLOCKS, finalized
+    t.chain.advance(600); // past the expiry and finality margins
     const second = await t.job().runOnce();
     expect(second.outcomes.map((o) => o.result)).toEqual(
       expect.arrayContaining(['released', 'refunded']),

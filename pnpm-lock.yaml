@@ -205,6 +205,9 @@ importers:
 
   apps/signer:
     dependencies:
+      '@forge/core':
+        specifier: workspace:*
+        version: link:../../packages/core
       '@forge/shared':
         specifier: workspace:*
         version: link:../../packages/shared

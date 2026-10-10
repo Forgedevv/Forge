@@ -6,7 +6,8 @@
  * - every transaction is checked against a strict policy BEFORE the keystore signs it;
  * - a transaction is confirmed by polling `getSignatureStatuses`, and it is only declared
  *   "expired" (safe to replace) once the FINALIZED block height is past its last valid block
- *   height and its signature is still unknown, in that order (see `checkSettlement`);
+ *   height plus a margin, then its signature is still unknown on a node at least as recent, and
+ *   no finalized transaction exists for it, in that order (see `checkSettlement`);
  * - network calls retry with exponential backoff; a signed transaction is only ever re-sent
  *   byte for byte (same signature), never rebuilt while it may still land;
  * - errors and log fields are scrubbed: no URL (the RPC URL carries the Helius key), no
@@ -32,6 +33,7 @@ import {
 } from '@solana/web3.js';
 import type pino from 'pino';
 import { z } from 'zod';
+import type { FlagKey } from '@forge/shared';
 import type { Keystore } from '../keystore.js';
 import { redactSecrets } from '../keystore.js';
 
@@ -181,19 +183,21 @@ export async function sendAlert(
 export type BeforeSendHook = (signature: string) => void;
 
 /**
- * Wraps the optional `onBeforeSend` hook (pre-registration with the outflow watcher): called once
- * per signature per process, before the first broadcast. Returns false when the hook threw: the
+ * Wraps the `onBeforeSend` hook (pre-registration with the outflow watcher): called once per
+ * signature per process, before the first broadcast. Returns false when the hook threw: the
  * caller must then NOT broadcast (the transaction stays tracked and settles or expires later).
+ * The hook is required: a job wired without it would make the watcher raise false alerts.
  */
 export function createAnnouncer(
-  hook: BeforeSendHook | undefined,
+  hook: BeforeSendHook,
   logger: JobLogger,
 ): (signature: string) => boolean {
+  if (typeof hook !== 'function') throw new JobError('CONFIG', 'onBeforeSend hook is required');
   const announced = new Set<string>();
   return (signature) => {
     if (announced.has(signature)) return true;
     try {
-      hook?.(signature);
+      hook(signature);
     } catch (err) {
       logger.error({ signature, err: describeError(err) }, 'onBeforeSend failed: not broadcasting');
       return false;
@@ -282,30 +286,90 @@ export interface SignatureState {
   err: unknown;
 }
 
-export interface SolanaRpc {
-  getLatestBlockhash(): Promise<{ blockhash: string; lastValidBlockHeight: number }>;
+/** A signature status lookup, with the slot of the node that answered. */
+export interface SignatureLookup {
+  /** Null when the signature is unknown to that node (full history searched). */
+  state: SignatureState | null;
+  /** `context.slot` of the `getSignatureStatuses` answer. */
+  contextSlot: number;
+}
+
+/** A recent signature of an address (`getSignaturesForAddress`), newest first. */
+export interface RecentSignature {
+  signature: string;
+  /** Null when the node does not report it (treated as not finalized). */
+  confirmationStatus: ConfirmationLevel | null;
+  failed: boolean;
+  /** Memo text as reported by the RPC (e.g. `[19] forge:cashbox-sweep`), null when none. */
+  memo: string | null;
+}
+
+/** The calls `checkSettlement` needs. */
+export interface SettlementRpc {
   getBlockHeight(commitment: 'confirmed' | 'finalized'): Promise<number>;
-  /** Status of a signature, searching the whole transaction history. Null when unknown. */
-  getSignatureState(signature: string): Promise<SignatureState | null>;
+  getSlot(commitment: 'finalized'): Promise<number>;
+  /** Status of a signature, searching the whole transaction history. */
+  getSignatureState(signature: string): Promise<SignatureLookup>;
+  /** True when the node returns the transaction at finalized commitment. */
+  hasFinalizedTransaction(signature: string): Promise<boolean>;
+}
+
+export interface SolanaRpc extends SettlementRpc {
+  getLatestBlockhash(): Promise<{ blockhash: string; lastValidBlockHeight: number }>;
   /** Sends a fully signed transaction with preflight; returns its signature. */
   sendRawTransaction(raw: Uint8Array): Promise<string>;
   getBalance(address: PublicKey, commitment: 'confirmed' | 'finalized'): Promise<bigint>;
   getMinimumBalanceForRentExemption(dataLength: number): Promise<bigint>;
+  /** Newest-first signatures of `address` at confirmed commitment. */
+  getRecentSignatures(address: PublicKey, limit: number): Promise<RecentSignature[]>;
 }
 
-export function rpcFromConnection(connection: Connection): SolanaRpc {
+export type SettlementConnection = Pick<
+  Connection,
+  'getBlockHeight' | 'getSlot' | 'getSignatureStatuses' | 'getTransaction'
+>;
+
+/** `SettlementRpc` over a web3.js connection (also used by the conversion job). */
+export function settlementRpcFromConnection(connection: SettlementConnection): SettlementRpc {
   return {
-    getLatestBlockhash: () => connection.getLatestBlockhash('confirmed'),
     getBlockHeight: (commitment) => connection.getBlockHeight(commitment),
+    getSlot: (commitment) => connection.getSlot(commitment),
     async getSignatureState(signature) {
       const res = await connection.getSignatureStatuses([signature], {
         searchTransactionHistory: true,
       });
       const status = res.value[0];
-      if (!status) return null;
+      const contextSlot = res.context.slot;
+      if (!status) return { state: null, contextSlot };
       const level: ConfirmationLevel =
         status.confirmationStatus ?? (status.confirmations === null ? 'finalized' : 'processed');
-      return { slot: status.slot, confirmationStatus: level, err: status.err ?? null };
+      return {
+        state: { slot: status.slot, confirmationStatus: level, err: status.err ?? null },
+        contextSlot,
+      };
+    },
+    async hasFinalizedTransaction(signature) {
+      const tx = await connection.getTransaction(signature, {
+        commitment: 'finalized',
+        maxSupportedTransactionVersion: 0,
+      });
+      return tx !== null;
+    },
+  };
+}
+
+export function rpcFromConnection(connection: Connection): SolanaRpc {
+  return {
+    ...settlementRpcFromConnection(connection),
+    getLatestBlockhash: () => connection.getLatestBlockhash('confirmed'),
+    async getRecentSignatures(address, limit) {
+      const sigs = await connection.getSignaturesForAddress(address, { limit }, 'confirmed');
+      return sigs.map((s) => ({
+        signature: s.signature,
+        confirmationStatus: s.confirmationStatus ?? null,
+        failed: s.err !== null,
+        memo: s.memo ?? null,
+      }));
     },
     sendRawTransaction: (raw) =>
       connection.sendRawTransaction(raw, {
@@ -343,6 +407,13 @@ export async function spendableBalance(
  */
 export const FALLBACK_EXPIRY_BLOCKS = 300;
 
+/**
+ * Blocks the finalized height must be past `lastValidBlockHeight` before an unknown signature is
+ * declared expired. Covers RPC nodes behind a load balancer that disagree on heights, and a
+ * `lastValidBlockHeight` reported by a node that was itself ahead.
+ */
+export const EXPIRY_MARGIN_BLOCKS = 150;
+
 export type Settlement =
   | { kind: 'finalized'; slot: number }
   | { kind: 'confirmed'; slot: number }
@@ -353,18 +424,23 @@ export type Settlement =
 
 /**
  * Where a signature stands. `expired` is only returned when the transaction can never land:
- * the finalized block height (read FIRST) is past `lastValidBlockHeight` and the signature is
- * still unknown in the full history (read SECOND). Any block that could hold it is then
- * finalized, so the history lookup would have found it.
+ * 1. the finalized slot and the finalized block height are read FIRST, and that height is past
+ *    `lastValidBlockHeight + EXPIRY_MARGIN_BLOCKS`;
+ * 2. the signature is then unknown in the full history, on a node whose answer (`context.slot`)
+ *    is at least the finalized slot read in step 1 (a lagging node proves nothing);
+ * 3. no finalized transaction is returned for it either.
+ * Any block that could hold it is then finalized, so the history lookups would have found it.
  */
 export async function checkSettlement(
-  rpc: SolanaRpc,
+  rpc: SettlementRpc,
   signature: string,
   lastValidBlockHeight: number,
   retry: RetryOptions,
 ): Promise<Settlement> {
+  const finalizedSlot = await withRetry(() => rpc.getSlot('finalized'), retry);
   const finalizedHeight = await withRetry(() => rpc.getBlockHeight('finalized'), retry);
-  const state = await withRetry(() => rpc.getSignatureState(signature), retry);
+  const lookup = await withRetry(() => rpc.getSignatureState(signature), retry);
+  const state = lookup.state;
   if (state) {
     if (state.confirmationStatus === 'processed') return { kind: 'processing' };
     if (state.err !== null && state.err !== undefined) {
@@ -374,8 +450,15 @@ export async function checkSettlement(
       ? { kind: 'finalized', slot: state.slot }
       : { kind: 'confirmed', slot: state.slot };
   }
-  if (finalizedHeight > lastValidBlockHeight) return { kind: 'expired' };
-  return { kind: 'pending' };
+  if (finalizedHeight <= lastValidBlockHeight + EXPIRY_MARGIN_BLOCKS) return { kind: 'pending' };
+  if (!Number.isFinite(lookup.contextSlot) || lookup.contextSlot < finalizedSlot) {
+    return { kind: 'pending' };
+  }
+  if (await withRetry(() => rpc.hasFinalizedTransaction(signature), retry)) {
+    // The status index missed it but the ledger has it: never call that expired.
+    return { kind: 'pending' };
+  }
+  return { kind: 'expired' };
 }
 
 function safeJson(value: unknown): string {
@@ -615,6 +698,17 @@ export function createFileJournal<T>(options: {
       return out;
     },
   };
+}
+
+/** Default directory of the job journals (relative to the working directory). */
+export const DEFAULT_JOURNAL_DIR = './journal';
+
+/** SIGNER_JOURNAL_DIR (default `./journal`): where every job keeps its durable state. */
+export function journalDirFromEnv(env: Readonly<Record<string, string | undefined>>): string {
+  const dir = env.SIGNER_JOURNAL_DIR;
+  if (dir === undefined || dir === '') return DEFAULT_JOURNAL_DIR;
+  if (dir.includes('\0')) throw new JobError('CONFIG', 'SIGNER_JOURNAL_DIR is invalid');
+  return dir;
 }
 
 async function syncDir(dir: string): Promise<void> {
@@ -869,6 +963,12 @@ export interface CreatorClaimExpectation {
   feePayer: PublicKey;
   /** FORGE multisig vault: every claimed lamport and token must end up there. */
   receiver: PublicKey;
+  /**
+   * Quote fees (lamports) the claim reports (core `summary.claimable.quote`). Required when the
+   * transaction forwards the SOL with a System transfer from the creator: that transfer must be
+   * exactly this amount.
+   */
+  claimedQuoteLamports?: bigint;
 }
 
 function isTokenProgram(id: PublicKey): boolean {
@@ -880,12 +980,16 @@ function isTokenProgram(id: PublicKey): boolean {
  * - fee payer = expected payer; required signers within {creator, payer};
  * - programs: DBC (exactly one creator-claim instruction, on the expected pool, base mint,
  *   SOL quote and creator), Associated Token (create / create-idempotent, funded by a signer,
- *   owned by the receiver or by the creator), SPL Token (CloseAccount to the receiver with the
- *   creator as authority, SyncNative), bounded compute budget. Nothing else: no System transfer,
- *   no `transfer_pool_creator`, no approve/setAuthority;
- * - the claimed base fees go to the receiver's ATA; the claimed quote fees go to the receiver's
- *   ATA, or to the creator's temporary WSOL ATA that the same transaction then closes to the
- *   receiver (after the claim).
+ *   owned by the receiver or by the creator), SPL Token (CloseAccount of the creator's temporary
+ *   WSOL account, SyncNative), System (at most one transfer, see below), bounded compute budget.
+ *   Nothing else: no `transfer_pool_creator`, no approve/setAuthority, no other System call;
+ * - the claimed base fees go to the receiver's ATA;
+ * - the claimed quote fees go to one of:
+ *   a. the receiver's WSOL ATA (no close, no transfer);
+ *   b. the creator's temporary WSOL ATA, closed (after the claim) to the receiver, no transfer;
+ *   c. the creator's temporary WSOL ATA, closed (after the claim) to the creator, then exactly one
+ *      System transfer creator -> receiver of exactly `claimedQuoteLamports` (after the close):
+ *      the creator keeps the account rent instead of advancing it to the vault.
  */
 export function assertCreatorClaimTx(tx: Transaction, expected: CreatorClaimExpectation): void {
   const signerSet = [expected.creator, expected.feePayer];
@@ -896,7 +1000,8 @@ export function assertCreatorClaimTx(tx: Transaction, expected: CreatorClaimExpe
   let claimIndex = -1;
   let tokenB: PublicKey | undefined;
   let tokenBProgram: PublicKey | undefined;
-  const closes: Array<{ index: number; account: PublicKey }> = [];
+  const closes: Array<{ index: number; account: PublicKey; destination: PublicKey }> = [];
+  const transfers: Array<{ index: number; from: PublicKey; to: PublicKey; lamports: bigint }> = [];
 
   tx.instructions.forEach((ix, index) => {
     const data = Buffer.from(ix.data);
@@ -941,12 +1046,22 @@ export function assertCreatorClaimTx(tx: Transaction, expected: CreatorClaimExpe
       }
     } else if (isTokenProgram(ix.programId)) {
       if (data[0] === 9 && data.length === 1) {
-        if (!key(1).equals(expected.receiver)) policy('account closed to a non-receiver');
+        const destination = key(1);
+        if (!destination.equals(expected.receiver) && !destination.equals(expected.creator)) {
+          policy('account closed to a non-receiver');
+        }
         if (!key(2).equals(expected.creator)) policy('unexpected close authority');
-        closes.push({ index, account: key(0) });
+        closes.push({ index, account: key(0), destination });
       } else if (!(data[0] === 17 && data.length === 1)) {
         policy('token instruction not allowed');
       }
+    } else if (ix.programId.equals(SystemProgram.programId)) {
+      const t = decodeSystemTransfer(ix);
+      if (!t) policy('system instruction other than a transfer');
+      if (!t.from.equals(expected.creator) || !t.to.equals(expected.receiver)) {
+        policy('transfer between unexpected accounts');
+      }
+      transfers.push({ index, ...t });
     } else if (ix.programId.equals(ComputeBudgetProgram.programId)) {
       checkComputeBudget(ix);
     } else {
@@ -955,24 +1070,43 @@ export function assertCreatorClaimTx(tx: Transaction, expected: CreatorClaimExpe
   });
 
   if (claimIndex === -1 || !tokenB || !tokenBProgram) policy('no claim instruction');
+  if (transfers.length > 1) policy('more than one transfer in a claim');
+  const transfer = transfers[0];
   const receiverQuote = getAssociatedTokenAddressSync(
     NATIVE_MINT,
     expected.receiver,
     true,
     tokenBProgram,
   );
-  if (!tokenB.equals(receiverQuote)) {
-    const creatorTemp = getAssociatedTokenAddressSync(
-      NATIVE_MINT,
-      expected.creator,
-      true,
-      tokenBProgram,
-    );
-    if (!tokenB.equals(creatorTemp)) policy('quote fees not sent to the receiver');
-    const claimedB = tokenB;
-    if (!closes.some((c) => c.index > claimIndex && c.account.equals(claimedB))) {
-      policy('temporary WSOL account not closed to the receiver');
-    }
+  if (tokenB.equals(receiverQuote)) {
+    // a. Straight to the receiver's WSOL account: nothing to close or forward.
+    if (transfer) policy('unexpected transfer in a claim');
+    if (closes.length > 0) policy('unexpected token account close');
+    return;
+  }
+  const creatorTemp = getAssociatedTokenAddressSync(
+    NATIVE_MINT,
+    expected.creator,
+    true,
+    tokenBProgram,
+  );
+  if (!tokenB.equals(creatorTemp)) policy('quote fees not sent to the receiver');
+  if (closes.length !== 1) policy('exactly one token account close expected');
+  const close = closes[0]!;
+  if (!close.account.equals(creatorTemp) || close.index < claimIndex) {
+    policy('temporary WSOL account not closed after the claim');
+  }
+  if (close.destination.equals(expected.receiver)) {
+    // b. Closed to the receiver: the vault gets the fees plus the account rent.
+    if (transfer) policy('unexpected transfer in a claim');
+    return;
+  }
+  // c. Closed to the creator, then the claimed lamports forwarded to the receiver.
+  if (!transfer) policy('claimed SOL not forwarded to the receiver');
+  if (transfer.index < close.index) policy('transfer before the temporary account is closed');
+  if (expected.claimedQuoteLamports === undefined) policy('claimed amount unknown');
+  if (expected.claimedQuoteLamports <= 0n || transfer.lamports !== expected.claimedQuoteLamports) {
+    policy('forwarded amount differs from the claimed amount');
   }
 }
 
@@ -1029,34 +1163,62 @@ export interface FlagsReader {
 }
 
 /**
- * Flags of these jobs. They are not in the `flags` table yet (see the change request): until
- * they are, reading them returns "absent" = not paused, and the env kill switches apply.
+ * Kill switches of these jobs (`flags` table, seeded by migration 0005 with `false`). A missing
+ * row pauses the job: the switch must exist for an operator to be able to use it.
  */
 export const JOB_FLAGS = {
   claims: 'claims_paused',
   cashbox: 'cashbox_sweep_paused',
   refunds: 'refunds_paused',
-} as const;
+} as const satisfies Record<string, FlagKey>;
 
-export type PauseCheck =
-  { paused: false } | { paused: true; reason: 'config' | 'flag' | 'flags_unavailable' };
+export type PauseReason = 'config' | 'flag' | 'flag_missing' | 'flags_unavailable';
 
-/** Fail closed: a job that cannot read its flags does not run. */
+export type PauseCheck = { paused: false } | { paused: true; reason: PauseReason };
+
+/** Fail closed: a job that cannot read its flag, or whose flag row is missing, does not run. */
 export async function checkPaused(
   flags: FlagsReader,
-  key: string,
+  key: FlagKey,
   localPaused: boolean | undefined,
   logger: JobLogger,
 ): Promise<PauseCheck> {
   if (localPaused) return { paused: true, reason: 'config' };
+  let values: ReadonlyMap<string, boolean>;
   try {
-    const values = await flags.read();
-    if (values.get(key) === true) return { paused: true, reason: 'flag' };
-    return { paused: false };
+    values = await flags.read();
   } catch (err) {
     logger.warn({ flag: key, err: describeError(err) }, 'flags unavailable: job paused');
     return { paused: true, reason: 'flags_unavailable' };
   }
+  const value = values.get(key);
+  if (value === undefined) {
+    logger.warn({ flag: key }, 'kill switch row missing: job paused');
+    return { paused: true, reason: 'flag_missing' };
+  }
+  return value ? { paused: true, reason: 'flag' } : { paused: false };
+}
+
+/** Alerts for a pause that is not an operator decision (missing row, unreadable flags). */
+export async function alertAbnormalPause(
+  alerter: JobAlerter,
+  logger: JobLogger,
+  job: string,
+  key: FlagKey,
+  reason: PauseReason,
+): Promise<void> {
+  if (reason !== 'flag_missing' && reason !== 'flags_unavailable') return;
+  await sendAlert(
+    alerter,
+    logger,
+    'high',
+    `${job}_paused_${reason}`,
+    reason === 'flag_missing'
+      ? `The ${job} job is paused: its kill switch row "${key}" is missing from the flags table`
+      : `The ${job} job is paused: the flags table cannot be read`,
+    { flag: key },
+    `${job}_paused_${reason}`,
+  );
 }
 
 // ---------------------------------------------------------------------------------------

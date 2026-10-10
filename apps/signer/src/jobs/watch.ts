@@ -5,25 +5,38 @@
  *   - balance below a threshold (payer, cashbox, vault, fee wallet, creator wallets' rent SOL);
  *   - an account that is not rent-exempt (devnet finding: a fee recipient below the rent minimum
  *     makes the whole swap transaction fail);
- *   - an unexpected outflow from the vault or the cashbox (read from the transactions, so a
- *     withdrawal masked by a deposit in the same interval is still seen);
+ *   - an unexpected outflow from the vault or the cashbox, in SOL (pre/post balances) and in
+ *     tokens (pre/post token balances BY OWNER, read from the owner's transactions and from each
+ *     of its token accounts' transactions, so a delegate or a closed account is seen too);
  *   - a pool whose creator role moved (transferPoolCreator), a graduated pool, a vanished pool;
+ *   - a launchpad row that cannot be turned into a watch target (alerted, the others still run);
  *   - a streak of failed RPC cycles.
  *
  * Every detection is a pure function of fixtures-friendly inputs (snapshots in, `Detection[]`
  * out). The I/O is behind the small `WatchRpc` and `WatchTargetSource` interfaces; the adapters
  * for web3.js, the DBC SDK and Supabase are at the bottom of the file.
  *
- * State is kept in memory only (no migration provides a table for it): `exportWatchState` /
- * `importWatchState` give a JSON form the caller can persist. After a restart the first
- * observation of a pool or of an outflow cursor is silent: nothing is alerted retroactively.
+ * Outflow cursors: for each address, every signature at or older than its cursor has been
+ * examined. A cycle pages backwards (`before`) from the newest signature down to the cursor and
+ * examines the gap oldest first; the cursor only ever moves over examined signatures. A gap
+ * larger than one cycle's bound (`signatureLimit` x `maxSignaturePages`) raises OUTFLOW_BACKLOG
+ * and is worked through over the next cycles (the paging point is remembered), never skipped.
+ *
+ * The fixed FORGE accounts (`staticAccounts`) are checked on every cycle even when the dynamic
+ * targets (launchpads from Supabase) cannot be loaded.
+ *
+ * State (cursors, paging points, pool references, expected signatures) is persisted to a file
+ * journal (`SIGNER_JOURNAL_DIR`, namespace `watch`) after every cycle and restored at start, so a
+ * restart resumes where it stopped and the downtime is examined. Only the very first observation
+ * of an address or a pool (no saved state) is silent.
  *
  * The job is read-only: it never signs and never sends a transaction.
  */
 import { PublicKey, type Connection } from '@solana/web3.js';
-import { NATIVE_MINT } from '@solana/spl-token';
+import { NATIVE_MINT, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from '@solana/spl-token';
 import { z } from 'zod';
 import type { Alerter, AlertLevel } from '../alerts.js';
+import { createFileJournal, type Journal } from './shared.js';
 
 // ---------------------------------------------------------------------------------------------
 // Types
@@ -38,8 +51,10 @@ export interface WatchedAccount {
   minLamports?: bigint;
   /** Alert when the account is missing or below the rent-exempt minimum for its data size. */
   requireRentExempt?: boolean;
-  /** Read the account's transactions and alert on outflows. */
+  /** Read the account's transactions and alert on outflows (SOL and tokens it owns). */
   watchOutflows?: boolean;
+  /** Also read the transactions of every token account this address owns (token outflows). */
+  watchTokenAccounts?: boolean;
   /** Recipients that make an outflow normal (e.g. the multisig vault for the cashbox). */
   allowedDestinations?: readonly string[];
 }
@@ -51,9 +66,18 @@ export interface WatchedPool {
   expectedCreator?: string;
 }
 
+/** A target row that could not be used (malformed, invalid address...). */
+export interface InvalidTarget {
+  /** Row reference for the operator (launchpad slug, or the row position). */
+  ref: string;
+  reason: string;
+}
+
 export interface WatchTargets {
   accounts: WatchedAccount[];
   pools: WatchedPool[];
+  /** Rows skipped individually (each one alerted). */
+  invalid?: InvalidTarget[];
 }
 
 export interface AccountSnapshot {
@@ -71,6 +95,16 @@ export interface PoolSnapshot {
   migrationProgress?: number;
 }
 
+/** A token balance of a transaction (`meta.pre/postTokenBalances`). */
+export interface TokenBalanceLite {
+  accountIndex: number;
+  mint: string;
+  /** Owner of the token account; null when the node does not report it. */
+  owner: string | null;
+  /** Raw units. */
+  amount: bigint;
+}
+
 /** The parts of a confirmed transaction the outflow detection needs. */
 export interface TxLite {
   signature: string;
@@ -81,6 +115,8 @@ export interface TxLite {
   accountKeys: readonly string[];
   preBalances: readonly bigint[];
   postBalances: readonly bigint[];
+  preTokenBalances?: readonly TokenBalanceLite[];
+  postTokenBalances?: readonly TokenBalanceLite[];
 }
 
 export interface SignatureLite {
@@ -95,16 +131,26 @@ export interface Detection {
   /** Distinct per subject, so two wallets raising the same code are two alerts. */
   dedupKey: string;
   details: Record<string, unknown>;
+  /** Raised once (the cursor moves on): the alerter retries it until delivered. */
+  oneShot?: boolean;
 }
 
 export interface WatchRpc {
   getAccounts(addresses: readonly string[]): Promise<(AccountSnapshot | null)[]>;
   getRentExemptMinimum(dataLength: number): Promise<bigint>;
-  /** Newest first. `until` excludes that signature and everything older. */
-  getSignatures(address: string, opts: { until?: string; limit: number }): Promise<SignatureLite[]>;
+  /**
+   * Newest first. `until` excludes that signature and everything older; `before` excludes that
+   * signature and everything newer.
+   */
+  getSignatures(
+    address: string,
+    opts: { until?: string; before?: string; limit: number },
+  ): Promise<SignatureLite[]>;
   getTransaction(signature: string): Promise<TxLite | null>;
   /** One snapshot per address, `exists: false` when the account is gone. */
   getPools(addresses: readonly string[]): Promise<PoolSnapshot[]>;
+  /** Addresses of the token accounts (classic and Token-2022) owned by `owner`. */
+  getTokenAccounts(owner: string): Promise<string[]>;
 }
 
 export interface WatchTargetSource {
@@ -118,8 +164,10 @@ export interface WatchConfig {
   rpcErrorStreak: number;
   /** Outflows at or below this are ignored (transaction fees). */
   outflowToleranceLamports: bigint;
-  /** Signatures read per account and cycle. */
+  /** Signatures read per page. */
   signatureLimit: number;
+  /** Pages read per address and cycle before the gap is declared a backlog. */
+  maxSignaturePages: number;
   minLamports: {
     vault: bigint;
     platformFee: bigint;
@@ -147,6 +195,7 @@ const envSchema = z.object({
   WATCH_RPC_ERROR_STREAK: z.coerce.number().int().min(1).default(5),
   WATCH_OUTFLOW_TOLERANCE_LAMPORTS: lamportsString.default(20_000n),
   WATCH_SIGNATURE_LIMIT: z.coerce.number().int().min(1).max(1000).default(50),
+  WATCH_MAX_SIGNATURE_PAGES: z.coerce.number().int().min(1).max(1000).default(20),
   WATCH_MIN_VAULT_LAMPORTS: lamportsString.default(0n),
   WATCH_MIN_PLATFORM_FEE_LAMPORTS: lamportsString.default(0n),
   WATCH_MIN_CASHBOX_LAMPORTS: lamportsString.default(100_000_000n),
@@ -163,6 +212,7 @@ export function parseWatchConfig(env: Readonly<Record<string, string | undefined
     rpcErrorStreak: parsed.WATCH_RPC_ERROR_STREAK,
     outflowToleranceLamports: parsed.WATCH_OUTFLOW_TOLERANCE_LAMPORTS,
     signatureLimit: parsed.WATCH_SIGNATURE_LIMIT,
+    maxSignaturePages: parsed.WATCH_MAX_SIGNATURE_PAGES,
     minLamports: {
       vault: parsed.WATCH_MIN_VAULT_LAMPORTS,
       platformFee: parsed.WATCH_MIN_PLATFORM_FEE_LAMPORTS,
@@ -183,7 +233,7 @@ export interface ForgeWatchAddresses {
   payer?: string;
 }
 
-/** Account list for the fixed FORGE addresses. */
+/** Account list for the fixed FORGE addresses (pass it as `WatchDeps.staticAccounts`). */
 export function buildStaticAccounts(
   addresses: ForgeWatchAddresses,
   config: WatchConfig,
@@ -195,6 +245,7 @@ export function buildStaticAccounts(
       role: 'vault',
       minLamports: config.minLamports.vault,
       watchOutflows: true,
+      watchTokenAccounts: true,
       allowedDestinations: [],
     },
     {
@@ -211,6 +262,7 @@ export function buildStaticAccounts(
       minLamports: config.minLamports.cashbox,
       requireRentExempt: true,
       watchOutflows: true,
+      watchTokenAccounts: true,
       allowedDestinations: [addresses.vault],
     },
   ];
@@ -340,6 +392,52 @@ export function recipientsOf(tx: TxLite, excluding: string): string[] {
   return out;
 }
 
+export interface TokenOutflow {
+  mint: string;
+  /** Raw units that left the owner's token accounts. */
+  amount: bigint;
+  /** Owners whose balance of that mint went up. */
+  recipients: string[];
+}
+
+function sumByOwnerAndMint(
+  balances: readonly TokenBalanceLite[] | undefined,
+  mint: string | null,
+  include: (owner: string) => boolean,
+): Map<string, bigint> {
+  const out = new Map<string, bigint>();
+  for (const b of balances ?? []) {
+    if (b.owner === null || !include(b.owner) || (mint !== null && b.mint !== mint)) continue;
+    const k = mint === null ? b.mint : b.owner;
+    out.set(k, (out.get(k) ?? 0n) + b.amount);
+  }
+  return out;
+}
+
+/**
+ * Tokens that left the token accounts OWNED by `owner` in this transaction, per mint (by owner,
+ * not by account: a closed account, an owner change or a delegate transfer all count).
+ */
+export function tokenOutflowsOf(tx: TxLite, owner: string): TokenOutflow[] {
+  if (tx.failed) return [];
+  const mine = (o: string) => o === owner;
+  const pre = sumByOwnerAndMint(tx.preTokenBalances, null, mine);
+  const post = sumByOwnerAndMint(tx.postTokenBalances, null, mine);
+  const out: TokenOutflow[] = [];
+  for (const mint of new Set([...pre.keys(), ...post.keys()])) {
+    const delta = (post.get(mint) ?? 0n) - (pre.get(mint) ?? 0n);
+    if (delta >= 0n) continue;
+    const others = (o: string) => o !== owner;
+    const before = sumByOwnerAndMint(tx.preTokenBalances, mint, others);
+    const after = sumByOwnerAndMint(tx.postTokenBalances, mint, others);
+    const recipients = [...new Set([...before.keys(), ...after.keys()])].filter(
+      (o) => (after.get(o) ?? 0n) > (before.get(o) ?? 0n),
+    );
+    out.push({ mint, amount: -delta, recipients });
+  }
+  return out;
+}
+
 export interface OutflowContext {
   toleranceLamports: bigint;
   /** Signatures sent by FORGE jobs themselves (refunds, sweeps, buyback funding). */
@@ -364,6 +462,7 @@ export function detectOutflows(
       level: 'immediate',
       message: `Unexpected outflow of ${formatSol(amount)} from the ${account.label}`,
       dedupKey: `outflow:${tx.signature}`,
+      oneShot: true,
       details: {
         account: account.address,
         role: account.role,
@@ -372,6 +471,38 @@ export function detectOutflows(
         recipients: recipients.slice(0, 5),
       },
     });
+  }
+  return out;
+}
+
+/** Token outflows from the token accounts owned by `account` (no tolerance: any amount). */
+export function detectTokenOutflows(
+  account: WatchedAccount,
+  txs: readonly TxLite[],
+  ctx: Pick<OutflowContext, 'isExpectedSignature'>,
+): Detection[] {
+  const out: Detection[] = [];
+  const allowed = new Set(account.allowedDestinations ?? []);
+  for (const tx of txs) {
+    if (ctx.isExpectedSignature?.(tx.signature)) continue;
+    for (const flow of tokenOutflowsOf(tx, account.address)) {
+      if (flow.recipients.length > 0 && flow.recipients.every((r) => allowed.has(r))) continue;
+      out.push({
+        code: 'UNEXPECTED_TOKEN_OUTFLOW',
+        level: 'immediate',
+        message: `Unexpected token outflow from the ${account.label}`,
+        dedupKey: `token-outflow:${tx.signature}:${flow.mint}`,
+        oneShot: true,
+        details: {
+          account: account.address,
+          role: account.role,
+          mint: flow.mint,
+          amount: flow.amount.toString(),
+          signature: tx.signature,
+          recipients: flow.recipients.slice(0, 5),
+        },
+      });
+    }
   }
   return out;
 }
@@ -417,10 +548,21 @@ export function detectPoolChanges(
       level: 'normal',
       message: `Pool ${pool.label} graduated and migrated: check the post-graduation claims`,
       dedupKey: `migrated:${pool.address}`,
+      oneShot: true,
       details: { pool: pool.address },
     });
   }
   return out;
+}
+
+export function detectInvalidTarget(target: InvalidTarget): Detection {
+  return {
+    code: 'WATCH_TARGET_INVALID',
+    level: 'high',
+    message: `A launchpad row cannot be watched (${target.reason}): fix the row`,
+    dedupKey: `invalid-target:${target.ref}:${target.reason}`,
+    details: { row: target.ref, reason: target.reason },
+  };
 }
 
 export function detectRpcErrorStreak(
@@ -451,36 +593,83 @@ export function nextDelayMs(
 }
 
 // ---------------------------------------------------------------------------------------------
-// State and cycle
+// State
 
 export interface WatchState {
   rpcErrorStreak: number;
-  /** Newest signature already examined, per watched address. */
+  /** Per address: every signature at or older than this one was examined ('' = none exists). */
   outflowCursor: Map<string, string>;
+  /** Per address: where a gap too large for one cycle continues paging (see `checkStream`). */
+  backfillBefore: Map<string, string>;
   pools: Map<string, PoolMemory>;
+  /** Owners whose token accounts were listed once: a token account found later is read in full. */
+  tokenOwnersSeen: Set<string>;
 }
 
 export function createWatchState(): WatchState {
-  return { rpcErrorStreak: 0, outflowCursor: new Map(), pools: new Map() };
-}
-
-export interface SerializedWatchState {
-  outflowCursor: Record<string, string>;
-  pools: Record<string, PoolMemory>;
-}
-
-export function exportWatchState(state: WatchState): SerializedWatchState {
   return {
-    outflowCursor: Object.fromEntries(state.outflowCursor),
-    pools: Object.fromEntries(state.pools),
+    rpcErrorStreak: 0,
+    outflowCursor: new Map(),
+    backfillBefore: new Map(),
+    pools: new Map(),
+    tokenOwnersSeen: new Set(),
   };
 }
 
-export function importWatchState(data: SerializedWatchState): WatchState {
+export const SerializedWatchState = z.object({
+  v: z.literal(1),
+  outflowCursor: z.record(z.string(), z.string()),
+  backfillBefore: z.record(z.string(), z.string()),
+  pools: z.record(z.string(), z.object({ creator: z.string(), isMigrated: z.boolean() })),
+  tokenOwnersSeen: z.array(z.string()),
+  expected: z.array(z.object({ signature: z.string(), at: z.number() })),
+});
+export type SerializedWatchState = z.infer<typeof SerializedWatchState>;
+
+/** Accepted by `importWatchState`: the current form, or the older one (cursors and pools only). */
+export type SerializedWatchStateInput = Pick<SerializedWatchState, 'outflowCursor' | 'pools'> &
+  Partial<SerializedWatchState>;
+
+export function exportWatchState(
+  state: WatchState,
+  expected?: ExpectedSignatures,
+): SerializedWatchState {
+  return {
+    v: 1,
+    outflowCursor: Object.fromEntries(state.outflowCursor),
+    backfillBefore: Object.fromEntries(state.backfillBefore),
+    pools: Object.fromEntries(state.pools),
+    tokenOwnersSeen: [...state.tokenOwnersSeen].sort(),
+    expected: expected?.entries() ?? [],
+  };
+}
+
+export function importWatchState(
+  data: SerializedWatchStateInput,
+  expected?: ExpectedSignatures,
+): WatchState {
   const state = createWatchState();
-  for (const [k, v] of Object.entries(data.outflowCursor)) state.outflowCursor.set(k, v);
-  for (const [k, v] of Object.entries(data.pools)) state.pools.set(k, v);
+  applyWatchState(state, data, expected);
   return state;
+}
+
+function applyWatchState(
+  state: WatchState,
+  data: SerializedWatchStateInput,
+  expected?: ExpectedSignatures,
+): void {
+  for (const [k, v] of Object.entries(data.outflowCursor)) state.outflowCursor.set(k, v);
+  for (const [k, v] of Object.entries(data.backfillBefore ?? {})) state.backfillBefore.set(k, v);
+  for (const [k, v] of Object.entries(data.pools)) state.pools.set(k, v);
+  for (const owner of data.tokenOwnersSeen ?? []) state.tokenOwnersSeen.add(owner);
+  if (expected && data.expected) expected.restore(data.expected);
+}
+
+export const WATCH_STATE_KEY = 'state';
+
+/** File journal of the watcher state (`<dir>/watch.state.json`). */
+export function createWatchStateJournal(dir: string): Journal<SerializedWatchState> {
+  return createFileJournal({ dir, namespace: 'watch', schema: SerializedWatchState });
 }
 
 /** Remembers signatures sent by FORGE jobs so their outflows are not flagged. */
@@ -488,6 +677,10 @@ export interface ExpectedSignatures {
   /** Call right after signing and before sending, so the watcher cannot see the tx first. */
   expect(signature: string): void;
   has(signature: string): boolean;
+  /** Live entries, for persistence. */
+  entries(): Array<{ signature: string; at: number }>;
+  /** Re-adds persisted entries (expired ones are ignored). */
+  restore(entries: ReadonlyArray<{ signature: string; at: number }>): void;
 }
 
 export function createExpectedSignatures(
@@ -495,18 +688,36 @@ export function createExpectedSignatures(
   now: () => number = Date.now,
 ): ExpectedSignatures {
   const map = new Map<string, number>();
+  const prune = (t: number) => {
+    for (const [sig, at] of map) if (t - at > ttlMs) map.delete(sig);
+  };
   return {
     expect(signature) {
       const t = now();
-      for (const [sig, at] of map) if (t - at > ttlMs) map.delete(sig);
+      prune(t);
       map.set(signature, t);
     },
     has(signature) {
       const at = map.get(signature);
       return at !== undefined && now() - at <= ttlMs;
     },
+    entries() {
+      prune(now());
+      return [...map].map(([signature, at]) => ({ signature, at }));
+    },
+    restore(entries) {
+      const t = now();
+      for (const e of entries) {
+        if (t - e.at <= ttlMs && (map.get(e.signature) ?? -Infinity) < e.at) {
+          map.set(e.signature, e.at);
+        }
+      }
+    },
   };
 }
+
+// ---------------------------------------------------------------------------------------------
+// Cycle
 
 export interface WatchLogger {
   info(obj: object, msg?: string): void;
@@ -516,12 +727,17 @@ export interface WatchLogger {
 
 export interface WatchDeps {
   rpc: WatchRpc;
+  /** Dynamic targets (launchpad pools and creator wallets). */
   targets: WatchTargetSource;
+  /** Fixed FORGE accounts: checked on every cycle, even when `targets` fails. */
+  staticAccounts?: readonly WatchedAccount[];
   alerter: Alerter;
   logger: WatchLogger;
   config: WatchConfig;
   state: WatchState;
   expected?: ExpectedSignatures;
+  /** Durable state (cursors...). Saved after every cycle, restored by `startWatch`. */
+  journal?: Journal<SerializedWatchState>;
 }
 
 export interface WatchCycleResult {
@@ -565,37 +781,79 @@ async function checkAccounts(
   }
 }
 
-async function checkOutflows(
+interface Gap {
+  /** Newest first. */
+  sigs: SignatureLite[];
+  complete: boolean;
+  /** When incomplete: the oldest signature read, where the next cycle continues. */
+  before?: string;
+}
+
+/** Pages backwards from `startBefore` (or the newest) down to `cursor`, within the cycle bound. */
+async function collectGap(
   deps: WatchDeps,
-  account: WatchedAccount,
+  address: string,
+  cursor: string,
+  startBefore: string | undefined,
+): Promise<Gap> {
+  const limit = deps.config.signatureLimit;
+  const pages = Math.max(1, deps.config.maxSignaturePages);
+  let before = startBefore;
+  const sigs: SignatureLite[] = [];
+  for (let page = 0; page < pages; page++) {
+    const batch = await deps.rpc.getSignatures(address, {
+      ...(cursor ? { until: cursor } : {}),
+      ...(before ? { before } : {}),
+      limit,
+    });
+    sigs.push(...batch);
+    if (batch.length < limit) return { sigs, complete: true };
+    before = batch[batch.length - 1]!.signature;
+  }
+  return { sigs, complete: false, ...(before ? { before } : {}) };
+}
+
+/**
+ * Examines the new signatures of `stream` (an owner, or one of its token accounts) for outflows
+ * of `owner`. On first sight the cursor is set silently to the newest signature, unless
+ * `fullHistoryOnFirstSight` (a token account that appeared after its owner was first listed).
+ */
+async function checkStream(
+  deps: WatchDeps,
+  stream: string,
+  owner: WatchedAccount,
+  kind: 'owner' | 'token',
+  fullHistoryOnFirstSight: boolean,
   out: Detection[],
 ): Promise<void> {
-  const cursor = deps.state.outflowCursor.get(account.address);
-  if (cursor === undefined) {
+  const cursor = deps.state.outflowCursor.get(stream);
+  if (cursor === undefined && !fullHistoryOnFirstSight) {
     // First sight: remember where we are, do not alert on history.
-    const latest = await deps.rpc.getSignatures(account.address, { limit: 1 });
-    const newest = latest[0];
-    if (newest) deps.state.outflowCursor.set(account.address, newest.signature);
-    else deps.state.outflowCursor.set(account.address, '');
+    const latest = await deps.rpc.getSignatures(stream, { limit: 1 });
+    deps.state.outflowCursor.set(stream, latest[0]?.signature ?? '');
+    deps.state.backfillBefore.delete(stream);
     return;
   }
-  const limit = deps.config.signatureLimit;
-  const sigs = await deps.rpc.getSignatures(account.address, {
-    ...(cursor ? { until: cursor } : {}),
-    limit,
-  });
-  if (sigs.length === 0) return;
-  if (sigs.length >= limit) {
+  const startBefore = deps.state.backfillBefore.get(stream);
+  const gap = await collectGap(deps, stream, cursor ?? '', startBefore);
+  if (!gap.complete) {
+    if (gap.before) deps.state.backfillBefore.set(stream, gap.before);
+    const bound = deps.config.signatureLimit * deps.config.maxSignaturePages;
     out.push({
       code: 'OUTFLOW_BACKLOG',
       level: 'high',
-      message: `More than ${limit} new transactions on the ${account.label} in one cycle: some may be skipped`,
-      dedupKey: `backlog:${account.address}`,
-      details: { account: account.address, limit },
+      message: `More than ${bound} unexamined transactions on the ${owner.label}: they are being read over the next cycles, nothing is skipped`,
+      dedupKey: `backlog:${stream}`,
+      details: { account: owner.address, stream, bound },
     });
+    return;
   }
-  // Oldest first, so the cursor only moves past transactions that were really examined.
-  const ordered = [...sigs].reverse();
+
+  // Oldest first, so the cursor only moves past transactions that were really examined. When
+  // a backfill reaches the cursor, its paging point (the signature just above the segment) is
+  // examined too: the cursor then always makes progress.
+  const ordered = [...gap.sigs].reverse();
+  if (startBefore) ordered.push({ signature: startBefore, failed: false });
   const txs: TxLite[] = [];
   let lastExamined: string | undefined;
   let failure: unknown;
@@ -614,13 +872,42 @@ async function checkOutflows(
       break;
     }
   }
-  out.push(
-    ...detectOutflows(account, txs, {
-      toleranceLamports: deps.config.outflowToleranceLamports,
-      ...(deps.expected ? { isExpectedSignature: (sig: string) => deps.expected!.has(sig) } : {}),
-    }),
-  );
-  if (lastExamined !== undefined) deps.state.outflowCursor.set(account.address, lastExamined);
+  const isExpectedSignature = deps.expected
+    ? (sig: string) => deps.expected!.has(sig)
+    : undefined;
+  const ctx = {
+    toleranceLamports: deps.config.outflowToleranceLamports,
+    ...(isExpectedSignature ? { isExpectedSignature } : {}),
+  };
+  if (kind === 'owner') out.push(...detectOutflows(owner, txs, ctx));
+  out.push(...detectTokenOutflows(owner, txs, ctx));
+  if (lastExamined !== undefined) deps.state.outflowCursor.set(stream, lastExamined);
+  else if (cursor === undefined && ordered.length === 0) deps.state.outflowCursor.set(stream, '');
+  if (failure !== undefined) throw failure;
+  deps.state.backfillBefore.delete(stream);
+}
+
+/** Every token account of `owner`: its own transaction stream, token outflows by owner. */
+async function checkTokenAccounts(
+  deps: WatchDeps,
+  owner: WatchedAccount,
+  out: Detection[],
+): Promise<void> {
+  const tokenAccounts = await deps.rpc.getTokenAccounts(owner.address);
+  const known = deps.state.tokenOwnersSeen.has(owner.address);
+  let failure: unknown;
+  for (const address of tokenAccounts) {
+    try {
+      await checkStream(deps, address, owner, 'token', known, out);
+    } catch (err) {
+      failure ??= err;
+      deps.logger.error(
+        { stage: `tokens:${owner.role}`, errorName: errorName(err) },
+        'token account stream failed',
+      );
+    }
+  }
+  deps.state.tokenOwnersSeen.add(owner.address);
   if (failure !== undefined) throw failure;
 }
 
@@ -647,9 +934,69 @@ async function checkPools(
   }
 }
 
+function uniqueAccounts(accounts: readonly WatchedAccount[]): WatchedAccount[] {
+  const seen = new Set<string>();
+  const out: WatchedAccount[] = [];
+  for (const a of accounts) {
+    if (seen.has(a.address)) continue;
+    seen.add(a.address);
+    out.push(a);
+  }
+  return out;
+}
+
+function uniqueDetections(detections: readonly Detection[]): Detection[] {
+  const seen = new Set<string>();
+  return detections.filter((d) => {
+    const k = `${d.code}|${d.dedupKey}`;
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+}
+
+/** Writes the state to the journal (no-op without a journal). */
+export async function saveWatchState(deps: WatchDeps): Promise<void> {
+  if (!deps.journal) return;
+  await deps.journal.put(WATCH_STATE_KEY, exportWatchState(deps.state, deps.expected));
+}
+
 /**
- * One monitoring pass. Stage failures are collected, not thrown: the other stages still run.
- * The cycle counts as failed (RPC streak) when any stage threw.
+ * Loads the saved state into `deps.state` (and the expected signatures). Never throws: an
+ * unreadable journal is alerted and the watcher starts fresh. Returns true when state was loaded.
+ */
+export async function restoreWatchState(deps: WatchDeps): Promise<boolean> {
+  if (!deps.journal) return false;
+  try {
+    const saved = await deps.journal.get(WATCH_STATE_KEY);
+    if (!saved) return false;
+    applyWatchState(deps.state, saved, deps.expected);
+    deps.logger.info(
+      { cursors: deps.state.outflowCursor.size, pools: deps.state.pools.size },
+      'watch state restored',
+    );
+    return true;
+  } catch (err) {
+    deps.logger.error({ errorName: errorName(err) }, 'watch state unreadable');
+    try {
+      await deps.alerter.alert(
+        'high',
+        'WATCH_STATE_UNREADABLE',
+        'The watcher state could not be read: it starts fresh, so the downtime is not examined',
+        { error: errorName(err) },
+        { dedupKey: 'watch-state-unreadable' },
+      );
+    } catch {
+      /* alerting must not stop the watcher */
+    }
+    return false;
+  }
+}
+
+/**
+ * One monitoring pass. Stage failures are collected, not thrown: the other stages still run, and
+ * the static accounts are always checked. The cycle counts as failed (RPC streak) when any stage
+ * threw. Detections are alerted, then the state is saved.
  */
 export async function runWatchCycle(deps: WatchDeps): Promise<WatchCycleResult> {
   const detections: Detection[] = [];
@@ -663,15 +1010,36 @@ export async function runWatchCycle(deps: WatchDeps): Promise<WatchCycleResult> 
     }
   };
 
-  let targets: WatchTargets = { accounts: [], pools: [] };
+  const staticAccounts = uniqueAccounts(deps.staticAccounts ?? []);
+  let dynamic: WatchTargets = { accounts: [], pools: [] };
   await stage('targets', async () => {
-    targets = await deps.targets.load();
+    dynamic = await deps.targets.load();
   });
-  await stage('accounts', () => checkAccounts(deps, targets.accounts, detections));
-  for (const account of targets.accounts.filter((a) => a.watchOutflows)) {
-    await stage(`outflows:${account.role}`, () => checkOutflows(deps, account, detections));
+  const staticSet = new Set(staticAccounts.map((a) => a.address));
+  const dynamicAccounts = uniqueAccounts(dynamic.accounts.filter((a) => !staticSet.has(a.address)));
+  for (const bad of dynamic.invalid ?? []) detections.push(detectInvalidTarget(bad));
+
+  await stage('accounts:static', () => checkAccounts(deps, staticAccounts, detections));
+  await stage('accounts', () => checkAccounts(deps, dynamicAccounts, detections));
+  const accounts = [...staticAccounts, ...dynamicAccounts];
+  for (const account of accounts.filter((a) => a.watchOutflows)) {
+    await stage(`outflows:${account.role}`, () =>
+      checkStream(deps, account.address, account, 'owner', false, detections),
+    );
   }
-  await stage('pools', () => checkPools(deps, targets.pools, detections));
+  for (const account of accounts.filter((a) => a.watchTokenAccounts)) {
+    await stage(`tokens:${account.role}`, () => checkTokenAccounts(deps, account, detections));
+  }
+  await stage('pools', () => checkPools(deps, dynamic.pools, detections));
+
+  const unique = uniqueDetections(detections);
+  for (const d of unique) {
+    await deps.alerter.alert(d.level, d.code, d.message, d.details, {
+      dedupKey: d.dedupKey,
+      ...(d.oneShot ? { oneShot: true } : {}),
+    });
+  }
+  await stage('state', () => saveWatchState(deps));
 
   if (errors.length > 0) deps.state.rpcErrorStreak += 1;
   else deps.state.rpcErrorStreak = 0;
@@ -680,16 +1048,18 @@ export async function runWatchCycle(deps: WatchDeps): Promise<WatchCycleResult> 
     deps.config.rpcErrorStreak,
     errors[errors.length - 1],
   );
-  if (streak) detections.push(streak);
-
-  for (const d of detections) {
-    await deps.alerter.alert(d.level, d.code, d.message, d.details, { dedupKey: d.dedupKey });
+  if (streak) {
+    unique.push(streak);
+    await deps.alerter.alert(streak.level, streak.code, streak.message, streak.details, {
+      dedupKey: streak.dedupKey,
+    });
   }
+  await deps.alerter.flushPending?.();
   return {
-    detections,
+    detections: unique,
     errors,
-    accountsChecked: targets.accounts.length,
-    poolsChecked: targets.pools.length,
+    accountsChecked: accounts.length,
+    poolsChecked: dynamic.pools.length,
   };
 }
 
@@ -699,7 +1069,10 @@ export interface WatchHandle {
   done: Promise<void>;
 }
 
-/** Runs cycles forever: `intervalMs` apart, with exponential backoff while cycles fail. */
+/**
+ * Restores the saved state, then runs cycles forever: `intervalMs` apart, with exponential
+ * backoff while cycles fail.
+ */
 export function startWatch(
   deps: WatchDeps,
   sleep: (ms: number, signal: AbortSignal) => Promise<void> = abortableSleep,
@@ -707,6 +1080,7 @@ export function startWatch(
 ): WatchHandle {
   const controller = new AbortController();
   const loop = async (): Promise<void> => {
+    await restoreWatchState(deps);
     while (!controller.signal.aborted) {
       try {
         await runWatchCycle(deps);
@@ -749,6 +1123,22 @@ export interface PoolStateLite {
 export interface Web3WatchRpcOptions {
   /** Reads one DBC pool; null when it does not exist. Default: the DBC SDK `state.getPool`. */
   getPoolState?: (address: PublicKey) => Promise<PoolStateLite | null>;
+}
+
+interface RawTokenBalance {
+  accountIndex: number;
+  mint: string;
+  owner?: string;
+  uiTokenAmount: { amount: string };
+}
+
+function toTokenBalances(list: readonly RawTokenBalance[] | null | undefined): TokenBalanceLite[] {
+  return (list ?? []).map((b) => ({
+    accountIndex: b.accountIndex,
+    mint: b.mint,
+    owner: b.owner ?? null,
+    amount: BigInt(b.uiTokenAmount.amount),
+  }));
 }
 
 export function createWeb3WatchRpc(
@@ -799,7 +1189,11 @@ export function createWeb3WatchRpc(
     async getSignatures(address, opts) {
       const sigs = await connection.getSignaturesForAddress(
         new PublicKey(address),
-        { limit: opts.limit, ...(opts.until ? { until: opts.until } : {}) },
+        {
+          limit: opts.limit,
+          ...(opts.until ? { until: opts.until } : {}),
+          ...(opts.before ? { before: opts.before } : {}),
+        },
         'confirmed',
       );
       return sigs.map((s) => ({ signature: s.signature, failed: s.err !== null }));
@@ -822,6 +1216,8 @@ export function createWeb3WatchRpc(
         accountKeys: keys,
         preBalances: tx.meta.preBalances.map((b) => BigInt(b)),
         postBalances: tx.meta.postBalances.map((b) => BigInt(b)),
+        preTokenBalances: toTokenBalances(tx.meta.preTokenBalances),
+        postTokenBalances: toTokenBalances(tx.meta.postTokenBalances),
       };
     },
     async getPools(addresses) {
@@ -839,6 +1235,18 @@ export function createWeb3WatchRpc(
               }
             : { address, exists: false, creator: '', isMigrated: false },
         );
+      }
+      return out;
+    },
+    async getTokenAccounts(owner) {
+      const out: string[] = [];
+      for (const programId of [TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID]) {
+        const res = await connection.getTokenAccountsByOwner(
+          new PublicKey(owner),
+          { programId },
+          'confirmed',
+        );
+        for (const { pubkey } of res.value) out.push(pubkey.toBase58());
       }
       return out;
     },
@@ -862,19 +1270,24 @@ export interface SupabaseTargetSourceOptions {
   /** Public key of a keystore creator wallet reference. */
   resolveCreator: (ref: string) => Promise<string | undefined>;
   config: WatchConfig;
-  /** Fixed FORGE accounts, always returned. */
-  staticAccounts: readonly WatchedAccount[];
+}
+
+function rowRef(raw: unknown, index: number): string {
+  const slug = (raw as { slug?: unknown } | null)?.slug;
+  return typeof slug === 'string' && /^[a-z0-9-]{1,64}$/.test(slug) ? slug : `row ${index}`;
 }
 
 /**
  * Reads the launched pools and their creator wallets from the `launchpads` table over PostgREST
- * (service role key, read only), and merges them with the fixed accounts.
+ * (service role key, read only). Dynamic targets only: the fixed FORGE accounts are passed to
+ * the watcher separately. A row that cannot be used is skipped and reported (`invalid`); only a
+ * failed request or a non-array answer fails the whole load.
  */
 export function createSupabaseTargetSource(opts: SupabaseTargetSourceOptions): WatchTargetSource {
   const doFetch = opts.fetch ?? globalThis.fetch;
   return {
     async load() {
-      const rows: z.infer<typeof launchpadRowSchema>[] = [];
+      const raws: unknown[] = [];
       for (let offset = 0; ; offset += PAGE_SIZE) {
         const url =
           `${opts.supabaseUrl.replace(/\/+$/, '')}/rest/v1/launchpads` +
@@ -889,8 +1302,8 @@ export function createSupabaseTargetSource(opts: SupabaseTargetSourceOptions): W
           signal: AbortSignal.timeout(15_000),
         });
         if (!res.ok) throw new Error(`launchpads query failed with status ${res.status}`);
-        const page = z.array(launchpadRowSchema).parse(await res.json());
-        rows.push(...page);
+        const page = z.array(z.unknown()).parse(await res.json());
+        raws.push(...page);
         if (page.length < PAGE_SIZE) break;
       }
 
@@ -898,15 +1311,34 @@ export function createSupabaseTargetSource(opts: SupabaseTargetSourceOptions): W
       const pools: WatchedPool[] = [];
       const creators: { address: string; label: string }[] = [];
       const seenCreators = new Set<string>();
-      for (const row of rows) {
+      const invalid: InvalidTarget[] = [];
+      for (const [index, raw] of raws.entries()) {
+        const ref = rowRef(raw, index);
+        const parsed = launchpadRowSchema.safeParse(raw);
+        if (!parsed.success) {
+          invalid.push({ ref, reason: 'malformed_row' });
+          continue;
+        }
+        const row = parsed.data;
         if (!row.launchpad_coin_mint || !row.launchpad_coin_config) continue;
-        const creator = row.creator_wallet_ref
-          ? await opts.resolveCreator(row.creator_wallet_ref)
-          : undefined;
-        const address = derive(
-          new PublicKey(row.launchpad_coin_mint),
-          new PublicKey(row.launchpad_coin_config),
-        ).toBase58();
+        let address: string;
+        try {
+          address = derive(
+            new PublicKey(row.launchpad_coin_mint),
+            new PublicKey(row.launchpad_coin_config),
+          ).toBase58();
+        } catch {
+          invalid.push({ ref, reason: 'invalid_address' });
+          continue;
+        }
+        let creator: string | undefined;
+        if (row.creator_wallet_ref) {
+          try {
+            creator = await opts.resolveCreator(row.creator_wallet_ref);
+          } catch {
+            invalid.push({ ref, reason: 'creator_unresolved' });
+          }
+        }
         pools.push({
           address,
           label: row.slug,
@@ -918,8 +1350,9 @@ export function createSupabaseTargetSource(opts: SupabaseTargetSourceOptions): W
         }
       }
       return {
-        accounts: [...opts.staticAccounts, ...buildCreatorAccounts(creators, opts.config)],
+        accounts: buildCreatorAccounts(creators, opts.config),
         pools,
+        ...(invalid.length > 0 ? { invalid } : {}),
       };
     },
   };

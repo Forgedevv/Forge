@@ -421,6 +421,10 @@ function makeRpc(chain: FakeChain): WatchRpc {
         (a) => chain.pools.get(a) ?? { address: a, exists: false, creator: '', isMigrated: false },
       );
     },
+    async getTokenAccounts() {
+      guard();
+      return [];
+    },
   };
 }
 
@@ -670,15 +674,14 @@ describe('createSupabaseTargetSource', () => {
       derivePoolAddress: derive,
       resolveCreator: async (ref) => (ref === 'creator-1' ? creatorA : undefined),
       config,
-      staticAccounts: [vaultAccount],
     });
     const targets = await source.load();
     expect(targets.pools).toEqual([
       { address: mintA, label: 'alpha', expectedCreator: creatorA },
       { address: mintB, label: 'beta' },
     ]);
-    expect(targets.accounts.map((a) => a.address)).toEqual([VAULT, creatorA]);
-    expect(targets.accounts[1]?.role).toBe('creator');
+    expect(targets.accounts.map((a) => a.address)).toEqual([creatorA]);
+    expect(targets.accounts[0]?.role).toBe('creator');
     const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toContain('https://db.example.test/rest/v1/launchpads?select=');
     expect(url).toContain('launchpad_coin_mint=not.is.null');
@@ -694,7 +697,6 @@ describe('createSupabaseTargetSource', () => {
         derivePoolAddress: (m) => m,
         resolveCreator: async () => undefined,
         config,
-        staticAccounts: [],
       });
     await expect(make(() => new Response('no', { status: 500 })).load()).rejects.toThrow(/500/);
     await expect(make(() => new Response('{"a":1}', { status: 200 })).load()).rejects.toThrow();

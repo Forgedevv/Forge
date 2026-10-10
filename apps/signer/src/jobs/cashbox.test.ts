@@ -15,7 +15,7 @@ import {
   type CashboxConfig,
   type CashboxDeps,
 } from './cashbox.js';
-import { RefundJournalEntry, createRefundsJob } from './refunds.js';
+import { RefundJournalEntry, RefundManualMark, createRefundsJob } from './refunds.js';
 import {
   Mutex,
   createMemoryJournal,
@@ -92,6 +92,8 @@ function setup(config: Partial<CashboxConfig> = {}, deps: Partial<CashboxDeps> =
       logger: silentJobLogger,
       config: fullConfig,
       retry,
+      walletLock: new Mutex(),
+      onBeforeSend: () => undefined,
       sleep,
       now: clock.now,
       ...deps,
@@ -273,7 +275,7 @@ describe('cashbox job', () => {
     expect(second.outcome).toMatchObject({ result: 'in_flight', signature: sig });
     expect(new Set(t.chain.sendAttempts)).toEqual(new Set([sig]));
 
-    t.chain.advance(300);
+    t.chain.advance(400);
     t.chain.defaultBehavior = 'land';
     const third = await t
       .job({
@@ -297,6 +299,7 @@ describe('cashbox job', () => {
     await t.job().runOnce();
     const entry = await t.journal.get('sweep');
     await t.chain.sendRawTransaction(Buffer.from(entry!.inFlight!.rawTx, 'base64'));
+    t.chain.advance(100);
     const report = await t.job().runOnce();
     expect(report.outcome).toMatchObject({
       result: 'swept',
@@ -418,6 +421,7 @@ describe('cashbox job', () => {
       core: t.core,
       keystore,
       journal: createMemoryJournal(RefundJournalEntry),
+      manualMarks: createMemoryJournal(RefundManualMark),
       flags: memoryFlags(),
       alerter: new RecordingAlerter(),
       logger: silentJobLogger,
@@ -426,6 +430,7 @@ describe('cashbox job', () => {
       sleep: t.sleep,
       now: t.clock.now,
       walletLock: wrap('refunds'),
+      onBeforeSend: () => undefined,
     });
     const sweep = t.job({ walletLock: wrap('cashbox') });
     await Promise.all([sweep.runOnce(), refunds.runOnce()]);

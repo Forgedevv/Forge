@@ -12,20 +12,64 @@
  *     so devnet always runs in dry-run. The live check is repeated right before signing.
  *   - Quote validation. The quote must be an ExactIn swap of exactly the amount asked, from the
  *     asked mint to wrapped SOL, with slippage and price impact under the caps and an output
- *     above the minimum. Anything else is refused, never adjusted.
+ *     above the minimum. Anything else is refused, never adjusted. $FORGE (FORGE_MINT) and the
+ *     excluded mints are never sold.
+ *   - Transaction validation. The transaction returned by the API is NOT trusted:
+ *       1. static allowlist (`verifySwapTransaction`), lookup tables resolved first: the owner is
+ *          the fee payer and only signer; only compute budget (bounded priority fee), idempotent
+ *          ATA creation for the owner (wSOL or the input mint), SyncNative / CloseAccount of the
+ *          owner's wSOL account back to the owner, System transfer / CreateAccount only into the
+ *          owner's wSOL account, and the Jupiter program. Approve, SetAuthority, token transfers
+ *          and anything else are refused;
+ *       2. simulation (`checkSwapSimulation`) with the post-state of every account the owner
+ *          holds: the input mint decreases by at most the quoted amount, the owner's SOL (wallet +
+ *          wSOL accounts) grows by at least `otherAmountThreshold` minus the fee bound, and
+ *          nothing else changes (no other token amount, owner, delegate or close authority).
  *   - Idempotency. A (wallet, mint, run window) is converted at most once: the ledger entry is
  *     written as `submitted` BEFORE the transaction is sent and is never retried within the
- *     window, even after a crash or an unknown outcome (a resend could swap twice). A swap that
- *     is confirmed as failed on-chain is marked `failed` and may be retried in the next window.
+ *     window, even after a crash or an unknown outcome (a resend could swap twice). The ledger is
+ *     a file journal by default (`SIGNER_JOURNAL_DIR`), so a restart keeps it. A swap that is
+ *     confirmed as failed, proven expired, or refused before sending may be retried in the next
+ *     window.
+ *   - Settlement. Same rule as the other jobs (`checkSettlement`): finalized height read before
+ *     the status, expiry only past the last valid block height plus a margin.
  *   - Errors are reported, never swallowed: each balance gets its own outcome and failures raise
  *     an alert. HTTP calls are rate limited (the free Jupiter tier allows 1 request per second).
  *
  * Signing is delegated to the injected `SwapSender`; this file never touches key material.
  */
+import { createHash } from 'node:crypto';
 import { z } from 'zod';
-import { NATIVE_MINT, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from '@solana/spl-token';
-import { PublicKey, VersionedTransaction, type Connection } from '@solana/web3.js';
+import {
+  ASSOCIATED_TOKEN_PROGRAM_ID,
+  AccountLayout,
+  NATIVE_MINT,
+  TOKEN_2022_PROGRAM_ID,
+  TOKEN_PROGRAM_ID,
+  getAssociatedTokenAddressSync,
+} from '@solana/spl-token';
+import {
+  ComputeBudgetProgram,
+  PublicKey,
+  SystemProgram,
+  VersionedTransaction,
+  type AccountInfo,
+  type AddressLookupTableAccount,
+  type Connection,
+  type MessageAccountKeys,
+  type VersionedMessage,
+} from '@solana/web3.js';
 import type { Alerter } from '../alerts.js';
+import {
+  FALLBACK_EXPIRY_BLOCKS,
+  MAX_COMPUTE_UNIT_LIMIT,
+  base58Encode,
+  checkSettlement,
+  createFileJournal,
+  journalDirFromEnv,
+  settlementRpcFromConnection,
+  type RetryOptions,
+} from './shared.js';
 
 export const WSOL_MINT = NATIVE_MINT.toBase58();
 export const DEFAULT_JUPITER_URL = 'https://api.jup.ag/swap/v1';
@@ -74,6 +118,8 @@ export interface ConvertConfig {
   minOutputLamports: bigint;
   /** Never swap more than this many input units of one mint in one run (0n: no cap). */
   maxInputAmount: bigint;
+  /** Highest priority fee (lamports) a swap transaction may carry. */
+  maxPriorityFeeLamports: bigint;
   /** Minimum delay between two Jupiter HTTP calls. */
   minRequestIntervalMs: number;
   requestTimeoutMs: number;
@@ -81,8 +127,19 @@ export interface ConvertConfig {
   excludedMints: readonly string[];
 }
 
+const httpsUrl = z
+  .string()
+  .url()
+  .refine((v) => {
+    try {
+      return new URL(v).protocol === 'https:';
+    } catch {
+      return false;
+    }
+  }, 'JUPITER_API_URL must use https');
+
 const envSchema = z.object({
-  JUPITER_API_URL: z.string().url().default(DEFAULT_JUPITER_URL),
+  JUPITER_API_URL: httpsUrl.default(DEFAULT_JUPITER_URL),
   JUPITER_API_KEY: z.string().optional(),
   CONVERT_SLIPPAGE_BPS: z.coerce.number().int().min(1).max(500).default(50),
   CONVERT_MAX_SLIPPAGE_BPS: z.coerce.number().int().min(1).max(500).default(100),
@@ -96,6 +153,11 @@ const envSchema = z.object({
     .string()
     .regex(/^\d{1,30}$/)
     .default('0')
+    .transform((v) => BigInt(v)),
+  CONVERT_MAX_PRIORITY_FEE_LAMPORTS: z
+    .string()
+    .regex(/^\d{1,12}$/)
+    .default('1000000')
     .transform((v) => BigInt(v)),
   CONVERT_REQUEST_INTERVAL_MS: z.coerce.number().int().min(0).default(1100),
   CONVERT_REQUEST_TIMEOUT_MS: z.coerce.number().int().min(1000).default(15_000),
@@ -120,6 +182,7 @@ export function parseConvertConfig(
     maxPriceImpactBps: p.CONVERT_MAX_PRICE_IMPACT_BPS,
     minOutputLamports: p.CONVERT_MIN_OUTPUT_LAMPORTS,
     maxInputAmount: p.CONVERT_MAX_INPUT_AMOUNT,
+    maxPriorityFeeLamports: p.CONVERT_MAX_PRIORITY_FEE_LAMPORTS,
     minRequestIntervalMs: p.CONVERT_REQUEST_INTERVAL_MS,
     requestTimeoutMs: p.CONVERT_REQUEST_TIMEOUT_MS,
     excludedMints: [...excluded],
@@ -176,14 +239,25 @@ export interface JupiterClientOptions {
   fetch?: typeof fetch;
   minRequestIntervalMs: number;
   timeoutMs: number;
+  /** Priority fee cap passed to Jupiter (lamports). Default 1 000 000. */
+  maxPriorityFeeLamports?: bigint;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
 }
 
 export function createJupiterClient(opts: JupiterClientOptions): JupiterClient {
+  let base: URL;
+  try {
+    base = new URL(opts.baseUrl);
+  } catch {
+    throw new JupiterError('Jupiter API URL is invalid');
+  }
+  // The API key and the quotes travel in this request: never over plain http.
+  if (base.protocol !== 'https:') throw new JupiterError('Jupiter API URL must use https');
   const doFetch = opts.fetch ?? globalThis.fetch;
   const now = opts.now ?? Date.now;
   const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const maxPriorityFee = opts.maxPriorityFeeLamports ?? 1_000_000n;
   let lastCall = Number.NEGATIVE_INFINITY;
 
   async function throttle(): Promise<void> {
@@ -242,6 +316,12 @@ export function createJupiterClient(opts: JupiterClientOptions): JupiterClient {
           // Output arrives as native SOL in the wallet.
           wrapAndUnwrapSol: true,
           dynamicComputeUnitLimit: true,
+          prioritizationFeeLamports: {
+            priorityLevelWithMaxLamports: {
+              maxLamports: Number(maxPriorityFee),
+              priorityLevel: 'medium',
+            },
+          },
         }),
       });
       const parsed = swapResponseSchema.safeParse(body);
@@ -256,6 +336,7 @@ export function createJupiterClient(opts: JupiterClientOptions): JupiterClient {
 
 export type QuoteRejection =
   | 'input_mint_mismatch'
+  | 'input_mint_excluded'
   | 'output_not_sol'
   | 'amount_mismatch'
   | 'not_exact_in'
@@ -269,9 +350,11 @@ export type QuoteRejection =
 export function validateQuote(
   quote: JupiterQuote,
   request: { inputMint: string; amount: bigint },
-  config: Pick<ConvertConfig, 'maxSlippageBps' | 'maxPriceImpactBps' | 'minOutputLamports'>,
+  config: Pick<ConvertConfig, 'maxSlippageBps' | 'maxPriceImpactBps' | 'minOutputLamports'> &
+    Partial<Pick<ConvertConfig, 'excludedMints'>>,
 ): QuoteRejection | null {
   if (quote.inputMint !== request.inputMint) return 'input_mint_mismatch';
+  if (config.excludedMints?.includes(quote.inputMint)) return 'input_mint_excluded';
   if (quote.outputMint !== WSOL_MINT) return 'output_not_sol';
   if (BigInt(quote.inAmount) !== request.amount) return 'amount_mismatch';
   if (quote.swapMode !== 'ExactIn') return 'not_exact_in';
@@ -294,7 +377,7 @@ export function runWindowKey(nowMs: number, windowMs = 24 * 60 * 60_000): string
 // ---------------------------------------------------------------------------------------------
 // Ledger (idempotency)
 
-export type LedgerStatus = 'submitted' | 'confirmed' | 'failed';
+export type LedgerStatus = 'submitted' | 'confirmed' | 'failed' | 'refused';
 
 export interface LedgerEntry {
   status: LedgerStatus;
@@ -307,6 +390,7 @@ export interface ConvertLedger {
   set(key: string, entry: LedgerEntry): Promise<void>;
 }
 
+/** In-memory ledger: tests only (a restart would forget what was submitted). */
 export function createMemoryLedger(): ConvertLedger {
   const map = new Map<string, LedgerEntry>();
   return {
@@ -315,6 +399,37 @@ export function createMemoryLedger(): ConvertLedger {
     },
     async set(key, entry) {
       map.set(key, entry);
+    },
+  };
+}
+
+const StoredLedgerEntry = z.object({
+  key: z.string(),
+  status: z.enum(['submitted', 'confirmed', 'failed', 'refused']),
+  signature: z.string().optional(),
+  at: z.number(),
+});
+
+/**
+ * Durable ledger: one file journal entry per (owner, mint, window), named by the SHA-256 of the
+ * ledger key (`<dir>/convert.<hash>.json`). The full key is stored and checked on read.
+ */
+export function createFileLedger(dir: string): ConvertLedger {
+  const journal = createFileJournal({ dir, namespace: 'convert', schema: StoredLedgerEntry });
+  const id = (key: string) => createHash('sha256').update(key, 'utf8').digest('hex');
+  return {
+    async get(key) {
+      const stored = await journal.get(id(key));
+      if (!stored) return undefined;
+      if (stored.key !== key) throw new Error('convert ledger entry does not match its key');
+      return {
+        status: stored.status,
+        at: stored.at,
+        ...(stored.signature !== undefined ? { signature: stored.signature } : {}),
+      };
+    },
+    async set(key, entry) {
+      await journal.put(id(key), { key, ...entry });
     },
   };
 }
@@ -338,18 +453,32 @@ export interface BalanceSource {
   list(): Promise<TokenBalance[]>;
 }
 
+/** What the swap transaction may do, from the validated quote. */
+export interface SwapExpectation {
+  inputMint: string;
+  /** Raw input units of the quote: the swap may sell at most this. */
+  inAmount: bigint;
+  /** Lamports the quote guarantees (`otherAmountThreshold`). */
+  minOutLamports: bigint;
+  /** Mints that must never be sold ($FORGE and the excluded mints). */
+  forbiddenMints: readonly string[];
+}
+
 export type SendResult =
   | { status: 'confirmed'; signature: string }
   | { status: 'failed'; signature: string; error: string }
   /** Sent but the outcome is unknown after the deadline. */
-  | { status: 'unknown'; signature: string };
+  | { status: 'unknown'; signature: string }
+  /** Refused before signing: nothing was signed or sent. */
+  | { status: 'refused'; reason: string };
 
-/** Signs (with the keystore) and sends a base64 transaction, then waits for its status. */
+/** Verifies, signs (with the keystore) and sends a base64 transaction, then waits for it. */
 export interface SwapSender {
   send(input: {
     owner: string;
     swapTransaction: string;
     lastValidBlockHeight?: number;
+    expected: SwapExpectation;
   }): Promise<SendResult>;
 }
 
@@ -359,6 +488,7 @@ export type ConvertOutcome =
   | { status: 'quoted'; outAmount: bigint; slippageBps: number }
   | { status: 'confirmed'; signature: string; outAmount: bigint }
   | { status: 'failed'; error: string; signature?: string }
+  | { status: 'refused'; reason: string }
   | { status: 'unknown'; signature: string };
 
 export interface ConvertItemResult {
@@ -386,7 +516,10 @@ export interface ConvertDeps {
   balances: BalanceSource;
   /** Required for live mode; unused in dry-run. */
   sender?: SwapSender;
-  ledger: ConvertLedger;
+  /** Default: the file ledger in `journalDir` (SIGNER_JOURNAL_DIR). */
+  ledger?: ConvertLedger;
+  /** Directory of the default file ledger. Default: SIGNER_JOURNAL_DIR, then `./journal`. */
+  journalDir?: string;
   alerter: Alerter;
   logger: ConvertLogger;
   config: ConvertConfig;
@@ -399,6 +532,19 @@ function errName(err: unknown): string {
   return err instanceof Error ? err.name : 'unknown';
 }
 
+const defaultLedgers = new WeakMap<ConvertDeps, ConvertLedger>();
+
+/** The ledger of these deps: the injected one, else a file ledger (created once). */
+export function ledgerOf(deps: ConvertDeps): ConvertLedger {
+  if (deps.ledger) return deps.ledger;
+  let ledger = defaultLedgers.get(deps);
+  if (!ledger) {
+    ledger = createFileLedger(deps.journalDir ?? journalDirFromEnv(process.env));
+    defaultLedgers.set(deps, ledger);
+  }
+  return ledger;
+}
+
 async function convertOne(
   deps: ConvertDeps,
   decision: ConvertModeDecision,
@@ -406,14 +552,15 @@ async function convertOne(
   balance: TokenBalance,
 ): Promise<ConvertOutcome> {
   const { config } = deps;
+  const ledger = ledgerOf(deps);
   if (balance.mint === WSOL_MINT) return { status: 'skipped', reason: 'already_sol' };
   if (config.excludedMints.includes(balance.mint))
     return { status: 'skipped', reason: 'excluded_mint' };
   if (balance.amount <= 0n) return { status: 'skipped', reason: 'empty' };
 
   const key = ledgerKey(balance.owner, balance.mint, window);
-  const previous = await deps.ledger.get(key);
-  // `failed` may be retried only in another window; anything else is final for this window.
+  const previous = await ledger.get(key);
+  // `failed` / `refused` may be retried only in another window; anything else is final for it.
   if (previous) return { status: 'skipped', reason: `already_${previous.status}` };
 
   const amount =
@@ -455,9 +602,16 @@ async function convertOne(
     return { status: 'failed', error: `swap: ${errName(err)}` };
   }
 
+  // What the transaction may do comes from the VALIDATED quote, never from the swap answer.
+  const expected: SwapExpectation = {
+    inputMint: balance.mint,
+    inAmount: amount,
+    minOutLamports: BigInt(quote.otherAmountThreshold),
+    forbiddenMints: config.excludedMints,
+  };
   const now = (deps.now ?? Date.now)();
   // Written before sending: a crash or an unknown outcome must never lead to a second swap.
-  await deps.ledger.set(key, { status: 'submitted', at: now });
+  await ledger.set(key, { status: 'submitted', at: now });
   let sent: SendResult;
   try {
     sent = await deps.sender.send({
@@ -466,17 +620,23 @@ async function convertOne(
       ...(swap.lastValidBlockHeight !== undefined
         ? { lastValidBlockHeight: swap.lastValidBlockHeight }
         : {}),
+      expected,
     });
   } catch (err) {
     // The transaction may have reached the network: keep `submitted`.
     return { status: 'failed', error: `send: ${errName(err)}` };
   }
+  if (sent.status === 'refused') {
+    // Nothing was signed or sent: the next window may try again with a fresh quote.
+    await ledger.set(key, { status: 'refused', at: now });
+    return { status: 'refused', reason: sent.reason };
+  }
   if (sent.status === 'confirmed') {
-    await deps.ledger.set(key, { status: 'confirmed', signature: sent.signature, at: now });
+    await ledger.set(key, { status: 'confirmed', signature: sent.signature, at: now });
     return { status: 'confirmed', signature: sent.signature, outAmount };
   }
   if (sent.status === 'failed') {
-    await deps.ledger.set(key, { status: 'failed', signature: sent.signature, at: now });
+    await ledger.set(key, { status: 'failed', signature: sent.signature, at: now });
     return { status: 'failed', error: sent.error, signature: sent.signature };
   }
   return { status: 'unknown', signature: sent.signature };
@@ -567,6 +727,15 @@ async function alertForOutcome(
         { dedupKey: `${dedupKey}:refused` },
       );
       return;
+    case 'refused':
+      await deps.alerter.alert(
+        'high',
+        'CONVERT_TX_REFUSED',
+        `The swap transaction from the Jupiter API was refused before signing: ${outcome.reason}`,
+        details,
+        { dedupKey: `${dedupKey}:tx-refused` },
+      );
+      return;
     case 'unknown':
       await deps.alerter.alert(
         'high',
@@ -621,28 +790,424 @@ function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Adapters
+// Swap transaction checks
 
 /** Jupiter aggregator v6 program: every Jupiter swap transaction invokes it. */
 export const JUPITER_PROGRAM_ID = 'JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4';
 
+/** Base fee per signature (lamports). */
+export const BASE_FEE_LAMPORTS_PER_SIGNATURE = 5_000n;
+/** Compute units per instruction when no limit is set (runtime default). */
+const DEFAULT_UNITS_PER_INSTRUCTION = 200_000;
+
+export type SwapRefusal =
+  | 'undecodable'
+  | 'fee_payer_mismatch'
+  | 'extra_signers'
+  | 'input_mint_forbidden'
+  | 'lookup_table_missing'
+  | 'program_from_lookup_table'
+  | 'missing_accounts'
+  | 'compute_budget_not_allowed'
+  | 'compute_unit_limit_too_high'
+  | 'priority_fee_too_high'
+  | 'ata_not_allowed'
+  | 'token_instruction_not_allowed'
+  | 'system_instruction_not_allowed'
+  | 'program_not_allowed'
+  | 'jupiter_program_missing'
+  | 'simulation_failed'
+  | 'simulation_incomplete'
+  | 'state_changed_during_check'
+  | 'owner_account_changed'
+  | 'token_account_changed'
+  | 'input_increased'
+  | 'input_overspent'
+  | 'output_below_minimum';
+
+export type SwapCheck = { ok: true; feeBoundLamports: bigint } | { ok: false; reason: SwapRefusal };
+
+export interface VerifySwapParams {
+  owner: string;
+  /** The lookup tables the message references, resolved from the chain. */
+  lookupTables: readonly AddressLookupTableAccount[];
+  expected: SwapExpectation;
+  maxPriorityFeeLamports: bigint;
+}
+
+function isTokenProgram(id: PublicKey): boolean {
+  return id.equals(TOKEN_PROGRAM_ID) || id.equals(TOKEN_2022_PROGRAM_ID);
+}
+
+const refuse = (reason: SwapRefusal): SwapCheck => ({ ok: false, reason });
+
 /**
- * Checks a Jupiter-provided transaction before it is signed: the API answer is not trusted.
- * The wallet must be the fee payer and the only required signer, and the Jupiter program must
- * be invoked. Returns null when acceptable, otherwise the reason.
+ * Static allowlist of a Jupiter-provided transaction, before anything is simulated or signed.
+ * Every instruction's accounts are resolved (static keys + lookup tables). Allowed:
+ * - ComputeBudget SetComputeUnitLimit (<= 1.4M) and SetComputeUnitPrice (total priority fee
+ *   <= `maxPriorityFeeLamports`);
+ * - Associated Token CreateIdempotent paid by the owner, for the owner, of wSOL or the input mint;
+ * - Token SyncNative of the owner's wSOL account; CloseAccount of it, to the owner, by the owner;
+ * - System Transfer / CreateAccount from the owner into the owner's wSOL account;
+ * - the Jupiter program (at least once).
+ * Anything else (Approve, SetAuthority, token transfers, other programs...) is refused. Returns the
+ * fee bound (base fee + priority fee) used by the simulation check.
  */
-export function verifySwapTransaction(
-  tx: VersionedTransaction,
-  owner: string,
-): 'fee_payer_mismatch' | 'extra_signers' | 'jupiter_program_missing' | null {
+export function verifySwapTransaction(tx: VersionedTransaction, params: VerifySwapParams): SwapCheck {
+  const { expected } = params;
   const message = tx.message;
-  const keys = message.staticAccountKeys.map((k) => k.toBase58());
-  if (keys[0] !== owner) return 'fee_payer_mismatch';
-  if (message.header.numRequiredSignatures !== 1) return 'extra_signers';
-  const invoked = message.compiledInstructions.map((ix) => keys[ix.programIdIndex]);
-  if (!invoked.includes(JUPITER_PROGRAM_ID)) return 'jupiter_program_missing';
+  let ownerKey: PublicKey;
+  let inputMint: PublicKey;
+  try {
+    ownerKey = new PublicKey(params.owner);
+    inputMint = new PublicKey(expected.inputMint);
+  } catch {
+    return refuse('undecodable');
+  }
+  const staticKeys = message.staticAccountKeys;
+  if (!staticKeys[0]?.equals(ownerKey)) return refuse('fee_payer_mismatch');
+  if (message.header.numRequiredSignatures !== 1) return refuse('extra_signers');
+  if (expected.inputMint === WSOL_MINT || expected.forbiddenMints.includes(expected.inputMint)) {
+    return refuse('input_mint_forbidden');
+  }
+  let keys: MessageAccountKeys;
+  try {
+    keys = message.getAccountKeys({ addressLookupTableAccounts: [...params.lookupTables] });
+  } catch {
+    return refuse('lookup_table_missing');
+  }
+  const wsolAta = getAssociatedTokenAddressSync(NATIVE_MINT, ownerKey, true, TOKEN_PROGRAM_ID);
+
+  let jupiter = 0;
+  let nonBudget = 0;
+  let unitLimit: number | null = null;
+  let unitPrice = 0n;
+  for (const ix of message.compiledInstructions) {
+    if (ix.programIdIndex >= staticKeys.length) return refuse('program_from_lookup_table');
+    const program = staticKeys[ix.programIdIndex]!;
+    const data = Buffer.from(ix.data);
+    const accounts: PublicKey[] = [];
+    for (const index of ix.accountKeyIndexes) {
+      const key = keys.get(index);
+      if (!key) return refuse('missing_accounts');
+      accounts.push(key);
+    }
+    const at = (i: number): PublicKey | undefined => accounts[i];
+
+    if (program.equals(ComputeBudgetProgram.programId)) {
+      if (data[0] === 2 && data.length === 5) {
+        const units = data.readUInt32LE(1);
+        if (units > MAX_COMPUTE_UNIT_LIMIT) return refuse('compute_unit_limit_too_high');
+        unitLimit = units;
+      } else if (data[0] === 3 && data.length === 9) {
+        unitPrice = data.readBigUInt64LE(1);
+      } else {
+        return refuse('compute_budget_not_allowed');
+      }
+      continue;
+    }
+    nonBudget++;
+    if (program.toBase58() === JUPITER_PROGRAM_ID) {
+      jupiter++;
+      continue;
+    }
+    if (program.equals(ASSOCIATED_TOKEN_PROGRAM_ID)) {
+      if (!(data.length === 1 && data[0] === 1) || accounts.length < 6) {
+        return refuse('ata_not_allowed');
+      }
+      const [payer, ata, wallet, mint, system, tokenProgram] = accounts as [
+        PublicKey,
+        PublicKey,
+        PublicKey,
+        PublicKey,
+        PublicKey,
+        PublicKey,
+      ];
+      if (!payer.equals(ownerKey) || !wallet.equals(ownerKey)) return refuse('ata_not_allowed');
+      if (!mint.equals(NATIVE_MINT) && !mint.equals(inputMint)) return refuse('ata_not_allowed');
+      if (!system.equals(SystemProgram.programId) || !isTokenProgram(tokenProgram)) {
+        return refuse('ata_not_allowed');
+      }
+      if (!ata.equals(getAssociatedTokenAddressSync(mint, ownerKey, true, tokenProgram))) {
+        return refuse('ata_not_allowed');
+      }
+      continue;
+    }
+    if (program.equals(TOKEN_PROGRAM_ID)) {
+      if (data.length === 1 && data[0] === 17) {
+        if (!at(0)?.equals(wsolAta)) return refuse('token_instruction_not_allowed');
+        continue;
+      }
+      if (data.length === 1 && data[0] === 9) {
+        if (!at(0)?.equals(wsolAta) || !at(1)?.equals(ownerKey) || !at(2)?.equals(ownerKey)) {
+          return refuse('token_instruction_not_allowed');
+        }
+        continue;
+      }
+      return refuse('token_instruction_not_allowed');
+    }
+    if (program.equals(SystemProgram.programId)) {
+      const kind = data.length >= 4 ? data.readUInt32LE(0) : -1;
+      const intoWsol = at(0)?.equals(ownerKey) && at(1)?.equals(wsolAta);
+      if ((kind === 2 && data.length === 12) || (kind === 0 && data.length === 52)) {
+        if (!intoWsol) return refuse('system_instruction_not_allowed');
+        continue;
+      }
+      return refuse('system_instruction_not_allowed');
+    }
+    return refuse('program_not_allowed');
+  }
+  if (jupiter === 0) return refuse('jupiter_program_missing');
+  const units =
+    unitLimit ?? Math.min(MAX_COMPUTE_UNIT_LIMIT, DEFAULT_UNITS_PER_INSTRUCTION * nonBudget);
+  const priorityFee = (unitPrice * BigInt(units) + 999_999n) / 1_000_000n;
+  if (priorityFee > params.maxPriorityFeeLamports) return refuse('priority_fee_too_high');
+  return {
+    ok: true,
+    feeBoundLamports:
+      BASE_FEE_LAMPORTS_PER_SIGNATURE * BigInt(message.header.numRequiredSignatures) + priorityFee,
+  };
+}
+
+/** Account state for the delta check: program owner, lamports and raw data. */
+export interface AccountStateLite {
+  owner: string;
+  lamports: bigint;
+  data: Buffer;
+}
+
+export interface AccountDelta {
+  address: string;
+  /** Null: the account does not exist. */
+  pre: AccountStateLite | null;
+  post: AccountStateLite | null;
+}
+
+interface TokenFields {
+  mint: string;
+  owner: string;
+  amount: bigint;
+  delegate: string | null;
+  delegatedAmount: bigint;
+  closeAuthority: string | null;
+  state: number;
+}
+
+function decodeTokenAccount(state: AccountStateLite | null): TokenFields | null {
+  if (!state || state.data.length < AccountLayout.span) return null;
+  if (state.owner !== TOKEN_PROGRAM_ID.toBase58() && state.owner !== TOKEN_2022_PROGRAM_ID.toBase58()) {
+    return null;
+  }
+  const raw = AccountLayout.decode(state.data.subarray(0, AccountLayout.span));
+  return {
+    mint: raw.mint.toBase58(),
+    owner: raw.owner.toBase58(),
+    amount: raw.amount,
+    delegate: raw.delegateOption ? raw.delegate.toBase58() : null,
+    delegatedAmount: raw.delegatedAmount,
+    closeAuthority: raw.closeAuthorityOption ? raw.closeAuthority.toBase58() : null,
+    state: raw.state,
+  };
+}
+
+function sameState(a: AccountStateLite | null, b: AccountStateLite | null): boolean {
+  if (!a || !b) return a === b;
+  return a.owner === b.owner && a.lamports === b.lamports && a.data.equals(b.data);
+}
+
+/**
+ * Pure: compares the owner's accounts before and after the simulated swap.
+ * - the owner wallet stays a plain System account;
+ * - token accounts keep their mint, owner (= the owner), delegate, close authority and state;
+ * - only wSOL accounts may be created or closed (they count as SOL, by lamports);
+ * - input mint: decreases by at most `expected.inAmount` (never increases);
+ * - every other mint: unchanged;
+ * - SOL (wallet + wSOL accounts): grows by at least `minOutLamports - feeBoundLamports`.
+ */
+export function compareSwapStates(
+  owner: string,
+  expected: SwapExpectation,
+  feeBoundLamports: bigint,
+  deltas: readonly AccountDelta[],
+): SwapRefusal | null {
+  const system = SystemProgram.programId.toBase58();
+  let solPre = 0n;
+  let solPost = 0n;
+  let inputPre = 0n;
+  let inputPost = 0n;
+  let sawOwner = false;
+  for (const d of deltas) {
+    if (d.address === owner) {
+      sawOwner = true;
+      if (!d.pre || !d.post || d.post.owner !== system || d.post.data.length !== 0) {
+        return 'owner_account_changed';
+      }
+      solPre += d.pre.lamports;
+      solPost += d.post.lamports;
+      continue;
+    }
+    const pre = decodeTokenAccount(d.pre);
+    const post = decodeTokenAccount(d.post);
+    if ((d.pre && !pre) || (d.post && !post)) {
+      // Not (or no longer) a token account: it must not change at all.
+      if (!sameState(d.pre, d.post)) return 'token_account_changed';
+      continue;
+    }
+    if (!pre && !post) continue;
+    const mint = (pre ?? post)!.mint;
+    const ref = pre ?? post!;
+    for (const t of [pre, post]) {
+      if (t && (t.owner !== owner || t.mint !== mint)) return 'token_account_changed';
+    }
+    if (pre && post) {
+      if (
+        pre.delegate !== post.delegate ||
+        pre.delegatedAmount !== post.delegatedAmount ||
+        pre.closeAuthority !== post.closeAuthority ||
+        pre.state !== post.state
+      ) {
+        return 'token_account_changed';
+      }
+    } else if (post && (post.delegate !== null || post.closeAuthority !== null)) {
+      return 'token_account_changed';
+    }
+    if (mint === WSOL_MINT && d.address === getAssociatedTokenAddressSync(NATIVE_MINT, new PublicKey(owner), true, TOKEN_PROGRAM_ID).toBase58()) {
+      solPre += d.pre?.lamports ?? 0n;
+      solPost += d.post?.lamports ?? 0n;
+      continue;
+    }
+    // Any other account must exist before and after (only the wSOL account comes and goes).
+    if (!pre || !post) return 'token_account_changed';
+    if (mint === expected.inputMint) {
+      inputPre += pre.amount;
+      inputPost += post.amount;
+      continue;
+    }
+    if (pre.amount !== post.amount || d.pre!.lamports !== d.post!.lamports || ref.mint !== mint) {
+      return 'token_account_changed';
+    }
+  }
+  if (!sawOwner) return 'simulation_incomplete';
+  if (inputPost > inputPre) return 'input_increased';
+  if (inputPre - inputPost > expected.inAmount) return 'input_overspent';
+  if (solPost - solPre < expected.minOutLamports - feeBoundLamports) return 'output_below_minimum';
   return null;
 }
+
+export type SwapConnection = Pick<
+  Connection,
+  | 'sendRawTransaction'
+  | 'getSignatureStatuses'
+  | 'getBlockHeight'
+  | 'getSlot'
+  | 'getTransaction'
+  | 'getAddressLookupTable'
+  | 'simulateTransaction'
+  | 'getMultipleAccountsInfoAndContext'
+  | 'getTokenAccountsByOwner'
+>;
+
+const ACCOUNTS_PER_REQUEST = 100;
+
+function toLite(info: AccountInfo<Buffer> | null | undefined): AccountStateLite | null {
+  if (!info) return null;
+  return { owner: info.owner.toBase58(), lamports: BigInt(info.lamports), data: info.data };
+}
+
+async function readAccounts(
+  connection: SwapConnection,
+  keys: readonly PublicKey[],
+): Promise<{ slot: number; states: (AccountStateLite | null)[] }> {
+  const states: (AccountStateLite | null)[] = [];
+  let slot = 0;
+  for (let i = 0; i < keys.length; i += ACCOUNTS_PER_REQUEST) {
+    const res = await connection.getMultipleAccountsInfoAndContext(
+      keys.slice(i, i + ACCOUNTS_PER_REQUEST),
+      'confirmed',
+    );
+    slot = Math.max(slot, res.context.slot);
+    for (const info of res.value) states.push(toLite(info));
+  }
+  return { slot, states };
+}
+
+/**
+ * Simulates the swap with the post-state of every account the owner holds (its wallet, all its
+ * token accounts of both programs, its wSOL and input-mint ATAs) and checks the deltas with
+ * `compareSwapStates`. The pre-state is read before AND after the simulation and must be the
+ * same, so the simulation ran on the state that was compared.
+ */
+export async function checkSwapSimulation(
+  connection: SwapConnection,
+  tx: VersionedTransaction,
+  input: { owner: string; expected: SwapExpectation; feeBoundLamports: bigint },
+): Promise<SwapRefusal | null> {
+  const owner = new PublicKey(input.owner);
+  const watched = new Map<string, PublicKey>();
+  const add = (k: PublicKey) => watched.set(k.toBase58(), k);
+  add(owner);
+  for (const programId of [TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID]) {
+    const res = await connection.getTokenAccountsByOwner(owner, { programId }, 'confirmed');
+    for (const { pubkey } of res.value) add(pubkey);
+  }
+  const inputMint = new PublicKey(input.expected.inputMint);
+  add(getAssociatedTokenAddressSync(NATIVE_MINT, owner, true, TOKEN_PROGRAM_ID));
+  add(getAssociatedTokenAddressSync(inputMint, owner, true, TOKEN_PROGRAM_ID));
+  add(getAssociatedTokenAddressSync(inputMint, owner, true, TOKEN_2022_PROGRAM_ID));
+  const keys = [...watched.values()];
+
+  const before = await readAccounts(connection, keys);
+  const sim = await connection.simulateTransaction(tx, {
+    sigVerify: false,
+    replaceRecentBlockhash: false,
+    commitment: 'confirmed',
+    minContextSlot: before.slot,
+    accounts: { encoding: 'base64', addresses: keys.map((k) => k.toBase58()) },
+  });
+  const again = await readAccounts(connection, keys);
+  if (sim.value.err !== null && sim.value.err !== undefined) return 'simulation_failed';
+  const post = sim.value.accounts;
+  if (!post || post.length !== keys.length) return 'simulation_incomplete';
+  for (let i = 0; i < keys.length; i++) {
+    if (!sameState(before.states[i] ?? null, again.states[i] ?? null)) {
+      return 'state_changed_during_check';
+    }
+  }
+  const deltas: AccountDelta[] = keys.map((k, i) => {
+    const p = post[i];
+    return {
+      address: k.toBase58(),
+      pre: before.states[i] ?? null,
+      post: p
+        ? {
+            owner: p.owner,
+            lamports: BigInt(p.lamports),
+            data: Buffer.from(p.data[0] ?? '', 'base64'),
+          }
+        : null,
+    };
+  });
+  return compareSwapStates(input.owner, input.expected, input.feeBoundLamports, deltas);
+}
+
+/** Resolves the lookup tables of a message; null when one cannot be found. */
+export async function loadLookupTables(
+  connection: Pick<Connection, 'getAddressLookupTable'>,
+  message: VersionedMessage,
+): Promise<AddressLookupTableAccount[] | null> {
+  const out: AddressLookupTableAccount[] = [];
+  for (const lookup of message.addressTableLookups) {
+    const res = await connection.getAddressLookupTable(lookup.accountKey, {
+      commitment: 'confirmed',
+    });
+    if (!res.value) return null;
+    out.push(res.value);
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Adapters
 
 /** Token balances (classic and Token-2022) of the given wallets, one entry per (owner, mint). */
 export function createRpcBalanceSource(
@@ -675,53 +1240,87 @@ export function createRpcBalanceSource(
 }
 
 export interface RpcSwapSenderOptions {
-  connection: Pick<Connection, 'sendRawTransaction' | 'getSignatureStatuses' | 'getBlockHeight'>;
+  connection: SwapConnection;
   /** Signs in place with the key of `owner` (keystore `withSigner`). */
   signTransaction(owner: string, tx: VersionedTransaction): Promise<void>;
-  /** Give up waiting for a status after this long. Default 60 s. */
+  /** Highest priority fee accepted in a swap transaction. Default 1 000 000 lamports. */
+  maxPriorityFeeLamports?: bigint;
+  /** Give up waiting for a status after this long. Default 180 s (past a proven expiry). */
   confirmTimeoutMs?: number;
   pollIntervalMs?: number;
+  /** Retries of the settlement reads. */
+  retry?: RetryOptions;
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
 }
 
-/** Signs and sends a Jupiter swap, then polls `getSignatureStatuses` (no websocket). */
+/**
+ * Verifies (allowlist + simulation), signs and sends a Jupiter swap, then polls its settlement
+ * with `checkSettlement` (no websocket). Returns `refused` when nothing was signed or sent.
+ */
 export function createRpcSwapSender(opts: RpcSwapSenderOptions): SwapSender {
   const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const now = opts.now ?? Date.now;
-  const timeoutMs = opts.confirmTimeoutMs ?? 60_000;
+  const timeoutMs = opts.confirmTimeoutMs ?? 180_000;
   const pollMs = opts.pollIntervalMs ?? 2_000;
+  const maxPriorityFeeLamports = opts.maxPriorityFeeLamports ?? 1_000_000n;
+  const retry: RetryOptions = opts.retry ?? {
+    attempts: 3,
+    baseDelayMs: 500,
+    maxDelayMs: 4_000,
+    sleep,
+  };
+  const settlementRpc = settlementRpcFromConnection(opts.connection);
   return {
-    async send({ owner, swapTransaction, lastValidBlockHeight }) {
-      const tx = VersionedTransaction.deserialize(Buffer.from(swapTransaction, 'base64'));
-      const problem = verifySwapTransaction(tx, owner);
-      if (problem) throw new Error(`swap transaction refused: ${problem}`);
-      await opts.signTransaction(owner, tx);
-      const signature = await opts.connection.sendRawTransaction(tx.serialize(), {
-        maxRetries: 3,
+    async send({ owner, swapTransaction, lastValidBlockHeight, expected }) {
+      let tx: VersionedTransaction;
+      try {
+        tx = VersionedTransaction.deserialize(Buffer.from(swapTransaction, 'base64'));
+      } catch {
+        return { status: 'refused', reason: 'undecodable' };
+      }
+      const lookupTables = await loadLookupTables(opts.connection, tx.message);
+      if (!lookupTables) return { status: 'refused', reason: 'lookup_table_missing' };
+      const check = verifySwapTransaction(tx, {
+        owner,
+        lookupTables,
+        expected,
+        maxPriorityFeeLamports,
       });
+      if (!check.ok) return { status: 'refused', reason: check.reason };
+      const simulated = await checkSwapSimulation(opts.connection, tx, {
+        owner,
+        expected,
+        feeBoundLamports: check.feeBoundLamports,
+      });
+      if (simulated) return { status: 'refused', reason: simulated };
+
+      // Expiry bound: Jupiter's, else a height observed now (>= the blockhash's) + a safe margin.
+      const expiry =
+        lastValidBlockHeight ??
+        (await opts.connection.getBlockHeight('confirmed')) + FALLBACK_EXPIRY_BLOCKS;
+      await opts.signTransaction(owner, tx);
+      const first = tx.signatures[0];
+      if (!first || first.length !== 64 || first.every((b) => b === 0)) {
+        throw new Error('swap transaction is not signed');
+      }
+      const signature = base58Encode(first);
+      try {
+        await opts.connection.sendRawTransaction(tx.serialize(), { maxRetries: 3 });
+      } catch {
+        // It may still have reached the network: only the settlement check decides.
+      }
       const deadline = now() + timeoutMs;
-      while (now() < deadline) {
-        const { value } = await opts.connection.getSignatureStatuses([signature]);
-        const status = value[0];
-        if (status) {
-          if (status.err) return { status: 'failed', signature, error: JSON.stringify(status.err) };
-          if (
-            status.confirmationStatus === 'confirmed' ||
-            status.confirmationStatus === 'finalized'
-          ) {
-            return { status: 'confirmed', signature };
-          }
-        } else if (lastValidBlockHeight !== undefined) {
-          const height = await opts.connection.getBlockHeight('confirmed');
-          // Past the validity window and still unknown: the transaction can no longer land.
-          if (height > lastValidBlockHeight) {
-            return { status: 'failed', signature, error: 'blockhash expired' };
-          }
+      for (;;) {
+        const s = await checkSettlement(settlementRpc, signature, expiry, retry);
+        if (s.kind === 'confirmed' || s.kind === 'finalized') {
+          return { status: 'confirmed', signature };
         }
+        if (s.kind === 'failed') return { status: 'failed', signature, error: s.error };
+        if (s.kind === 'expired') return { status: 'failed', signature, error: 'blockhash expired' };
+        if (now() >= deadline) return { status: 'unknown', signature };
         await sleep(pollMs);
       }
-      return { status: 'unknown', signature };
     },
   };
 }

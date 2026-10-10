@@ -17,6 +17,9 @@
  *
  * Results are kept in a per-pool journal (last claim, pending-since, failures); an alert is raised
  * on any failure and when fees above the threshold stay unclaimed for more than 48 h.
+ * Every launchpad is read on every run; at most `maxPerRun` claims are built per run, and the
+ * next run starts where the previous one stopped, so no pool is starved. The kill switch is read
+ * at the start of the run and again before each claim is signed.
  * After graduation, the DBC creator share stays claimable here; the fees of the creator's locked
  * DAMM v2 position are not claimed automatically yet (core has no builder for them): a one-time
  * alert per pool asks for a manual claim.
@@ -32,6 +35,7 @@ import {
   DEFAULT_SETTLE,
   JOB_FLAGS,
   JobError,
+  alertAbnormalPause,
   assertCreatorClaimTx,
   awaitSettlement,
   broadcast,
@@ -56,6 +60,7 @@ import {
   type Journal,
   type KeystoreLike,
   type KeystoreSignerRef,
+  type PauseReason,
   type PostgrestClient,
   type RetryOptions,
   type Settlement,
@@ -115,7 +120,10 @@ export interface ClaimsConfig {
   feePayer: 'payer' | 'creator';
   /** Alert when fees above the threshold stay unclaimed longer than this (default 48 h). */
   unclaimedAlertMs?: number;
-  /** Launchpads processed per run (default 500). */
+  /**
+   * Claims built (and sent) per run, default 500. Every launchpad is still read on every run, and
+   * the next run starts after the last launchpad processed, so the cap never starves a pool.
+   */
   maxPerRun?: number;
   paused?: boolean;
   settle?: Partial<SettleTiming>;
@@ -137,8 +145,11 @@ export interface ClaimsDeps {
   retry?: RetryOptions;
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
-  /** Called with each claim signature right before it is (re)broadcast by this process. */
-  onBeforeSend?: BeforeSendHook;
+  /**
+   * Called with each claim signature right before it is (re)broadcast by this process (the
+   * watcher's expected signatures). Required: wiring the job without it is a startup error.
+   */
+  onBeforeSend: BeforeSendHook;
 }
 
 export type ClaimOutcome = {
@@ -156,6 +167,15 @@ export type ClaimOutcome = {
   | { result: 'skipped'; reason: string }
   | { result: 'error'; error: string }
 );
+
+/** Outcomes that built (and possibly sent) a claim: `maxPerRun` bounds them. */
+const ON_CHAIN_RESULTS = new Set<ClaimOutcome['result']>([
+  'claimed',
+  'in_flight',
+  'expired',
+  'failed',
+  'error',
+]);
 
 export interface ClaimsRunReport {
   status: 'ran' | 'paused' | 'busy' | 'error';
@@ -177,7 +197,14 @@ export function createClaimsJob(deps: ClaimsDeps): ClaimsJob {
   const settleTiming = { ...DEFAULT_SETTLE, ...config.settle };
   const unclaimedAlertMs = config.unclaimedAlertMs ?? DEFAULT_UNCLAIMED_ALERT_MS;
   const maxPerRun = config.maxPerRun ?? 500;
+  if (!Number.isInteger(maxPerRun) || maxPerRun < 1) {
+    throw new JobError('CONFIG', 'maxPerRun must be a positive integer');
+  }
   let running = false;
+  /** Index (in the store order) where the next run starts. */
+  let rotation = 0;
+  /** Set when the kill switch flips during a run: the run stops before the next claim. */
+  let stopReason: PauseReason | null = null;
 
   const iso = () => new Date(now()).toISOString();
   const alert = (
@@ -415,7 +442,15 @@ export function createClaimsJob(deps: ClaimsDeps): ClaimsJob {
       creator,
       feePayer,
       receiver: config.vault,
+      claimedQuoteLamports: built.summary.claimable.quote,
     });
+    // The kill switch may have been turned on since the run started: re-read it before signing.
+    const pause = await checkPaused(deps.flags, JOB_FLAGS.claims, config.paused, log);
+    if (pause.paused) {
+      stopReason = pause.reason;
+      await alertAbnormalPause(alerter, log, 'claims', JOB_FLAGS.claims, pause.reason);
+      return { ...base, result: 'skipped', reason: 'paused' };
+    }
     const signers: KeystoreSignerRef[] = [{ ref: expectedRef, expected: creator }];
     if (payer && !payer.publicKey.equals(creator)) {
       signers.push({ ref: payer.ref, expected: payer.publicKey });
@@ -504,7 +539,14 @@ export function createClaimsJob(deps: ClaimsDeps): ClaimsJob {
     }
     const launchpads = await store.listCreatorLaunchpads();
     const outcomes: ClaimOutcome[] = [];
-    for (const lp of launchpads.slice(0, maxPerRun)) {
+    const total = launchpads.length;
+    const start = total === 0 ? 0 : rotation % total;
+    let attempts = 0;
+    let processed = 0;
+    stopReason = null;
+    for (let i = 0; i < total; i++) {
+      if (attempts >= maxPerRun || stopReason !== null) break;
+      const lp = launchpads[(start + i) % total]!;
       let outcome: ClaimOutcome;
       try {
         outcome = await processLaunchpad(lp, payer);
@@ -526,7 +568,12 @@ export function createClaimsJob(deps: ClaimsDeps): ClaimsJob {
       }
       await checkUnclaimed(lp, outcome.pool);
       outcomes.push(outcome);
+      // A launchpad skipped because the switch flipped is the first one of the next run.
+      if (stopReason === null) processed++;
+      if (ON_CHAIN_RESULTS.has(outcome.result)) attempts++;
     }
+    rotation = total === 0 ? 0 : (start + processed) % total;
+    if (stopReason !== null) return { status: 'paused', reason: stopReason, outcomes };
     return { status: 'ran', outcomes };
   }
 
@@ -538,6 +585,7 @@ export function createClaimsJob(deps: ClaimsDeps): ClaimsJob {
         const pause = await checkPaused(deps.flags, JOB_FLAGS.claims, config.paused, log);
         if (pause.paused) {
           log.info({ reason: pause.reason }, 'claims paused');
+          await alertAbnormalPause(alerter, log, 'claims', JOB_FLAGS.claims, pause.reason);
           return { status: 'paused', reason: pause.reason, outcomes: [] };
         }
         try {

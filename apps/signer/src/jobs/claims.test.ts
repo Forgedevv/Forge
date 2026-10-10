@@ -105,6 +105,7 @@ async function setup(
       logger: silentJobLogger,
       config: { vault, minClaimLamports: MIN, feePayer: 'payer', ...options.config },
       retry,
+      onBeforeSend: () => undefined,
       sleep,
       now: clock.now,
       ...options.deps,
@@ -403,7 +404,7 @@ describe('claims: in-flight idempotency, failures and retries', () => {
     expect(second.outcomes[0]).toMatchObject({ result: 'in_flight', signature: firstSig });
     expect(new Set(t.chain.sendAttempts)).toEqual(new Set([firstSig]));
 
-    t.chain.advance(300);
+    t.chain.advance(400);
     t.chain.defaultBehavior = 'land';
     const third = await t.job().runOnce();
     expect(third.outcomes[0]).toMatchObject({ result: 'claimed' });

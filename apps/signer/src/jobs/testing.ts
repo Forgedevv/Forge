@@ -14,6 +14,7 @@ import {
   getAssociatedTokenAddressSync,
 } from '@solana/spl-token';
 import { PublicKey, SystemProgram, Transaction, TransactionInstruction } from '@solana/web3.js';
+import { MEMO_PROGRAM_ID } from './shared.js';
 import type {
   ClaimTxResult,
   CreatorClaimParams,
@@ -40,7 +41,8 @@ import {
   type FlagsReader,
   type JobAlerter,
   type JobLogger,
-  type SignatureState,
+  type RecentSignature,
+  type SignatureLookup,
   type SolanaRpc,
 } from './shared.js';
 
@@ -77,6 +79,8 @@ export interface Ledger {
   credit(address: PublicKey, lamports: bigint): void;
   /** Program state change applied only when the transaction lands (not on simulation). */
   onCommit(fn: () => void): void;
+  /** Scratch space of one execution (e.g. a temporary token account's balance). */
+  scratch: Map<string, bigint>;
 }
 
 export interface LandedTx {
@@ -84,6 +88,10 @@ export interface LandedTx {
   slot: number;
   height: number;
   err: unknown;
+  /** Account keys of the transaction (base58). */
+  accounts: string[];
+  /** Memo as the RPC reports it (`[len] text`), null when none. */
+  memo: string | null;
 }
 
 type RpcMethod = keyof SolanaRpc;
@@ -105,8 +113,13 @@ export class FakeChain implements SolanaRpc {
   /** Fixed blockhash for every call (to produce identical transactions), when set. */
   fixedBlockhash: string | null = null;
   rentPerByteYear = 3480n;
-  /** Extra program effects (fake DBC). Throw to make the transaction fail. */
-  onLand: ((tx: Transaction, ledger: Ledger) => void) | null = null;
+  /** Slots the node answering `getSignatureStatuses` is behind the tip (lagging RPC node). */
+  statusLag = 0;
+  /** Signatures the status index misses but `getTransaction(finalized)` still returns. */
+  readonly statusIndexGaps = new Set<string>();
+  /** Effects of a non-System instruction (fake DBC, token program), in order. Throw to fail. */
+  onInstruction: ((ix: TransactionInstruction, tx: Transaction, ledger: Ledger) => void) | null =
+    null;
 
   constructor(options: { height?: number; finalityLag?: number } = {}) {
     this.height = options.height ?? 1_000;
@@ -165,15 +178,48 @@ export class FakeChain implements SolanaRpc {
     return commitment === 'finalized' ? this.finalizedHeight : this.height;
   }
 
-  async getSignatureState(signature: string): Promise<SignatureState | null> {
+  /** In this fake, one block per slot: the finalized slot equals the finalized height. */
+  async getSlot() {
+    this.enter('getSlot');
+    return this.finalizedHeight;
+  }
+
+  async getSignatureState(signature: string): Promise<SignatureLookup> {
     this.enter('getSignatureState');
+    const contextSlot = this.height - this.statusLag;
     const t = this.landed.get(signature);
-    if (!t) return null;
+    if (!t || this.statusIndexGaps.has(signature) || t.height > contextSlot) {
+      return { state: null, contextSlot };
+    }
     return {
-      slot: t.slot,
-      confirmationStatus: this.finalizedHeight >= t.height ? 'finalized' : 'confirmed',
-      err: t.err,
+      state: {
+        slot: t.slot,
+        confirmationStatus: this.finalizedHeight >= t.height ? 'finalized' : 'confirmed',
+        err: t.err,
+      },
+      contextSlot,
     };
+  }
+
+  async hasFinalizedTransaction(signature: string): Promise<boolean> {
+    this.enter('hasFinalizedTransaction');
+    const t = this.landed.get(signature);
+    return !!t && this.finalizedHeight >= t.height;
+  }
+
+  async getRecentSignatures(address: PublicKey, limit: number): Promise<RecentSignature[]> {
+    this.enter('getRecentSignatures');
+    const id = address.toBase58();
+    return [...this.landed.values()]
+      .filter((t) => t.accounts.includes(id))
+      .sort((a, b) => b.height - a.height)
+      .slice(0, limit)
+      .map((t) => ({
+        signature: t.signature,
+        confirmationStatus: this.finalizedHeight >= t.height ? 'finalized' : 'confirmed',
+        failed: t.err !== null,
+        memo: t.memo,
+      }));
   }
 
   async getBalance(address: PublicKey, commitment: 'confirmed' | 'finalized') {
@@ -237,6 +283,7 @@ export class FakeChain implements SolanaRpc {
     const touched = new Set<string>();
     const commits: Array<() => void> = [];
     const ledger: Ledger = {
+      scratch: new Map(),
       onCommit: (fn) => void commits.push(fn),
       debit: (address, lamports) => {
         const id = address.toBase58();
@@ -258,9 +305,14 @@ export class FakeChain implements SolanaRpc {
         if (!t) throw new Error('unsupported system instruction');
         ledger.debit(t.from, t.lamports);
         ledger.credit(t.to, t.lamports);
+      } else {
+        this.onInstruction?.(ix, tx, ledger);
       }
     }
-    this.onLand?.(tx, ledger);
+    // Token accounts that were never closed keep what they received.
+    for (const [account, lamports] of ledger.scratch) {
+      if (lamports > 0n) ledger.credit(new PublicKey(account), lamports);
+    }
     const rent = this.rentExempt(0);
     for (const id of touched) {
       const b = next.get(id) ?? 0n;
@@ -306,7 +358,20 @@ export class FakeChain implements SolanaRpc {
       const b = this.balances.get(payer) ?? 0n;
       this.balances.set(payer, b - this.feeOf(tx));
     }
-    this.landed.set(signature, { signature, slot: this.height, height: this.height, err });
+    const memos = tx.instructions
+      .filter((ix) => ix.programId.equals(MEMO_PROGRAM_ID))
+      .map((ix) => {
+        const text = Buffer.from(ix.data).toString('utf8');
+        return `[${text.length}] ${text}`;
+      });
+    this.landed.set(signature, {
+      signature,
+      slot: this.height,
+      height: this.height,
+      err,
+      accounts: tx.compileMessage().accountKeys.map((k) => k.toBase58()),
+      memo: memos.length > 0 ? memos.join('; ') : null,
+    });
     this.height += 1;
   }
 }
@@ -346,14 +411,24 @@ export interface FakePool {
   graduated: boolean;
 }
 
+/**
+ * Quote-side layouts of a creator claim:
+ * - `close_to_receiver`: SDK `claimCreatorTradingFeeToReceiver` (temporary WSOL account of the
+ *   creator, closed to the receiver);
+ * - `forward_from_creator`: temporary WSOL account closed to the creator, then an exact System
+ *   transfer creator -> receiver of the claimed lamports (the creator keeps the account rent).
+ */
+export type FakeClaimShape = 'close_to_receiver' | 'forward_from_creator';
+
 export class FakeDbc {
   readonly programId = randomAddress();
   readonly pools = new Map<string, FakePool>();
   /** Lets a test tamper with the built transaction (policy tests). */
   tamper: ((tx: Transaction, params: CreatorClaimParams) => void) | null = null;
+  claimShape: FakeClaimShape = 'close_to_receiver';
 
   constructor(readonly chain: FakeChain) {
-    chain.onLand = (tx, ledger) => this.execute(tx, ledger);
+    chain.onInstruction = (ix, _tx, ledger) => this.execute(ix, ledger);
   }
 
   poolAddress(config: PublicKey, baseMint: PublicKey): PublicKey {
@@ -369,21 +444,25 @@ export class FakeDbc {
     return address;
   }
 
-  private execute(tx: Transaction, ledger: Ledger): void {
-    for (const ix of tx.instructions) {
-      if (!ix.programId.equals(this.programId)) continue;
-      const pool = this.pools.get(ix.keys[1]!.pubkey.toBase58());
-      if (!pool) throw new Error('pool not found');
-      if (!pool.creator.equals(ix.keys[8]!.pubkey)) throw new Error('not the creator');
-      const close = tx.instructions.find(
-        (c) => c.programId.equals(TOKEN_PROGRAM_ID) && c.data[0] === 9,
-      );
-      const receiver = close ? close.keys[1]!.pubkey : ix.keys[3]!.pubkey;
-      ledger.credit(receiver, pool.claimableQuote);
-      ledger.onCommit(() => {
-        pool.claimableQuote = 0n;
-      });
+  /** Claim: the quote fees go to the token account `tokenB` (kept in the execution scratch). */
+  private execute(ix: TransactionInstruction, ledger: Ledger): void {
+    if (ix.programId.equals(TOKEN_PROGRAM_ID) && ix.data[0] === 9) {
+      // CloseAccount: the temporary account's lamports go to the destination.
+      const account = ix.keys[0]!.pubkey.toBase58();
+      const held = ledger.scratch.get(account) ?? 0n;
+      ledger.scratch.delete(account);
+      if (held > 0n) ledger.credit(ix.keys[1]!.pubkey, held);
+      return;
     }
+    if (!ix.programId.equals(this.programId)) return;
+    const pool = this.pools.get(ix.keys[1]!.pubkey.toBase58());
+    if (!pool) throw new Error('pool not found');
+    if (!pool.creator.equals(ix.keys[8]!.pubkey)) throw new Error('not the creator');
+    const tokenB = ix.keys[3]!.pubkey.toBase58();
+    ledger.scratch.set(tokenB, (ledger.scratch.get(tokenB) ?? 0n) + pool.claimableQuote);
+    ledger.onCommit(() => {
+      pool.claimableQuote = 0n;
+    });
   }
 
   /** `cashbox` is the recipient reported by the default (valid) payment verification. */
@@ -434,6 +513,7 @@ export class FakeDbc {
           params.creator,
           params.receiver,
           payer,
+          this.claimShape === 'forward_from_creator' ? p.claimableQuote : null,
         );
         this.tamper?.(tx, params);
         const { blockhash, lastValidBlockHeight } = await chain.getLatestBlockhash();
@@ -460,7 +540,11 @@ export class FakeDbc {
   }
 }
 
-/** Same layout as `claimCreatorTradingFeeToReceiver` for a SOL-quoted pool (SDK 1.5.13). */
+/**
+ * Same layout as `claimCreatorTradingFeeToReceiver` for a SOL-quoted pool (SDK 1.5.13). With
+ * `forwardLamports`, the temporary account is closed to the creator instead and that many
+ * lamports are then transferred creator -> receiver (`forward_from_creator`).
+ */
 export function buildFakeClaimTx(
   programId: PublicKey,
   pool: PublicKey,
@@ -468,6 +552,7 @@ export function buildFakeClaimTx(
   creator: PublicKey,
   receiver: PublicKey,
   payer: PublicKey,
+  forwardLamports: bigint | null = null,
 ): Transaction {
   const receiverBase = getAssociatedTokenAddressSync(baseMint, receiver, true, TOKEN_PROGRAM_ID);
   const tempWsol = getAssociatedTokenAddressSync(NATIVE_MINT, creator, true, TOKEN_PROGRAM_ID);
@@ -490,11 +575,17 @@ export function buildFakeClaimTx(
   DBC_CREATOR_CLAIM_DISCRIMINATORS[0]!.copy(data, 0);
   data.writeBigUInt64LE((1n << 64n) - 1n, 8);
   data.writeBigUInt64LE((1n << 64n) - 1n, 16);
-  return new Transaction().add(
+  const tx = new Transaction().add(
     createAssociatedTokenAccountIdempotentInstruction(payer, receiverBase, receiver, baseMint),
     createAssociatedTokenAccountIdempotentInstruction(payer, tempWsol, creator, NATIVE_MINT),
     new TransactionInstruction({ programId, keys, data }),
-    createCloseAccountInstruction(tempWsol, receiver, creator),
+  );
+  if (forwardLamports === null) {
+    return tx.add(createCloseAccountInstruction(tempWsol, receiver, creator));
+  }
+  return tx.add(
+    createCloseAccountInstruction(tempWsol, creator, creator),
+    SystemProgram.transfer({ fromPubkey: creator, toPubkey: receiver, lamports: forwardLamports }),
   );
 }
 
@@ -665,12 +756,19 @@ export class MemoryClaimsStore implements ClaimsStore {
 // ---------------------------------------------------------------------------------------
 // Flags, alerts, logs
 
+/** The kill switches seeded by migration 0005 (all off). */
+export const DEFAULT_FLAGS: Readonly<Record<string, boolean>> = {
+  claims_paused: false,
+  cashbox_sweep_paused: false,
+  refunds_paused: false,
+};
+
 export function memoryFlags(values: Record<string, boolean> = {}): FlagsReader & {
   values: Record<string, boolean>;
   fail: boolean;
 } {
   const reader = {
-    values,
+    values: { ...DEFAULT_FLAGS, ...values },
     fail: false,
     async read() {
       if (reader.fail) throw new Error('flags unavailable');

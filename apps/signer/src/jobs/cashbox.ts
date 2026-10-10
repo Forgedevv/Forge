@@ -14,9 +14,11 @@
  *
  * The balance never goes below the floor: the amount is computed from the lowest balance, the
  * transaction is a single policy-checked transfer whose fee is covered by the fee buffer, a sweep
- * in flight blocks the next one until it settles, and the refunds job (the only other spender)
- * can share the same `walletLock`. Dry-run mode computes and logs the plan without signing.
- * Kill switches: env `paused`, flag `cashbox_sweep_paused` (fail closed).
+ * in flight blocks the next one until it is FINALIZED (a confirmed sweep is not recorded yet),
+ * a recent unfinalized `forge:cashbox-sweep` transaction on the cashbox (e.g. sent by another
+ * instance or before a lost journal) blocks planning, and the refunds job (the only other
+ * spender) shares the same, required, `walletLock`. Dry-run mode computes and logs the plan
+ * without signing. Kill switches: env `paused`, flag `cashbox_sweep_paused` (fail closed).
  */
 import { PublicKey } from '@solana/web3.js';
 import { z } from 'zod';
@@ -27,6 +29,7 @@ import {
   DEFAULT_SETTLE,
   JOB_FLAGS,
   JobError,
+  alertAbnormalPause,
   assertSolTransferTx,
   awaitSettlement,
   broadcast,
@@ -70,6 +73,8 @@ export interface CashboxStore {
 export const SWEEP_FEE_BUFFER_LAMPORTS = 10_000n;
 export const SWEEP_MEMO = 'forge:cashbox-sweep';
 export const SWEEP_JOURNAL_KEY = 'sweep';
+/** Recent cashbox signatures scanned for an unfinalized sweep before planning a new one. */
+export const SWEEP_SCAN_LIMIT = 25;
 
 export interface SweepInput {
   balance: bigint;
@@ -154,10 +159,10 @@ export interface CashboxDeps {
   retry?: RetryOptions;
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
-  /** Shared with the refunds job (both spend from the cashbox). */
-  walletLock?: Mutex;
-  /** Called with each sweep signature right before it is (re)broadcast by this process. */
-  onBeforeSend?: BeforeSendHook;
+  /** Shared with the refunds job (both spend from the cashbox). Required. */
+  walletLock: Mutex;
+  /** Called with each sweep signature right before it is (re)broadcast by this process. Required. */
+  onBeforeSend: BeforeSendHook;
 }
 
 export type CashboxOutcome =
@@ -191,6 +196,9 @@ export function createCashboxJob(deps: CashboxDeps): CashboxJob {
   if (config.cashbox.equals(config.vault)) {
     throw new JobError('CONFIG', 'the cashbox and the vault must differ');
   }
+  if (!deps.walletLock || typeof deps.walletLock.runExclusive !== 'function') {
+    throw new JobError('CONFIG', 'walletLock is required (shared with the refunds job)');
+  }
 
   const iso = () => new Date(now()).toISOString();
   const alert = (
@@ -215,7 +223,7 @@ export function createCashboxJob(deps: CashboxDeps): CashboxJob {
       ? await awaitSettlement(rpc, inFlight.signature, {
           lastValidBlockHeight: inFlight.lastValidBlockHeight,
           raw,
-          until: 'confirmed',
+          until: 'finalized',
           ...settleTiming,
           retry,
           sleep,
@@ -223,7 +231,7 @@ export function createCashboxJob(deps: CashboxDeps): CashboxJob {
           logger: log,
         })
       : await checkSettlement(rpc, inFlight.signature, inFlight.lastValidBlockHeight, retry);
-    if (s.kind === 'confirmed' || s.kind === 'finalized') {
+    if (s.kind === 'finalized') {
       const next: SweepJournalEntry = {
         v: 1,
         inFlight: null,
@@ -233,7 +241,7 @@ export function createCashboxJob(deps: CashboxDeps): CashboxJob {
       const lamports = BigInt(inFlight.lamports);
       log.info(
         { signature: inFlight.signature, lamports: inFlight.lamports },
-        'cashbox swept to the vault',
+        'cashbox swept to the vault (finalized)',
       );
       return { entry: next, outcome: { result: 'swept', signature: inFlight.signature, lamports } };
     }
@@ -287,12 +295,33 @@ export function createCashboxJob(deps: CashboxDeps): CashboxJob {
       }
     }
 
-    // 1. A sweep in flight blocks everything until it settles (its amount is not visible yet).
+    // 1. A sweep in flight blocks everything until it is finalized (a confirmed one can still be
+    //    rolled back, and its amount is not visible in the finalized balance yet).
     let entry = (await journal.get(SWEEP_JOURNAL_KEY)) ?? empty();
     if (entry.inFlight) {
       const settled = await settleInFlight(entry, false);
       entry = settled.entry;
       if (settled.outcome) return { status: 'ran', outcome: settled.outcome };
+    }
+
+    // 1b. A sweep this journal does not know about (another instance, a lost journal) that is not
+    //     finalized yet: never plan on top of it.
+    const recent = await withRetry(
+      () => rpc.getRecentSignatures(config.cashbox, SWEEP_SCAN_LIMIT),
+      retry,
+    );
+    const unfinalized = recent.find(
+      (r) => !r.failed && r.confirmationStatus !== 'finalized' && r.memo?.includes(SWEEP_MEMO),
+    );
+    if (unfinalized) {
+      await alert(
+        'high',
+        'cashbox_sweep_unfinalized',
+        'An unfinalized cashbox sweep is on-chain that this signer did not record: no new sweep until it is finalized',
+        { signature: unfinalized.signature },
+        `cashbox_sweep_unfinalized:${unfinalized.signature}`,
+      );
+      return { status: 'ran', outcome: { result: 'skipped', reason: 'unfinalized_sweep' } };
     }
 
     // 2. Floor and excess.
@@ -415,12 +444,11 @@ export function createCashboxJob(deps: CashboxDeps): CashboxJob {
         const pause = await checkPaused(deps.flags, JOB_FLAGS.cashbox, config.paused, log);
         if (pause.paused) {
           log.info({ reason: pause.reason }, 'cashbox sweep paused');
+          await alertAbnormalPause(alerter, log, 'cashbox', JOB_FLAGS.cashbox, pause.reason);
           return { status: 'paused', reason: pause.reason };
         }
         try {
-          return deps.walletLock
-            ? await deps.walletLock.runExclusive(runUnlocked)
-            : await runUnlocked();
+          return await deps.walletLock.runExclusive(runUnlocked);
         } catch (err) {
           const summary = describeError(err);
           const policy =
