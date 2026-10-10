@@ -11,6 +11,7 @@ export const homeContent = {
   dashboard: 'My dashboard',
   disconnect: 'Disconnect',
   scroll: 'SCROLL TO EXPLORE',
+  scrollButton: 'SCROLL',
   next: 'Next chapter',
   previous: 'Previous chapter',
   restart: 'Back to the beginning',
@@ -181,17 +182,28 @@ export const homeContent = {
   },
 } as const;
 
-/** Graphite, paper, brushed metal and copper. Shared with the workshop scene. */
+/** FORGE's established violet palette. */
 export const palette = {
-  ink: '#202426',
-  night: '#292f32',
-  plum: '#424e53',
-  light: '#eae6dc',
-  accent: '#b78970',
-  lilac: '#d0cdbd',
-  magenta: '#c99b7e',
-  faint: '#384247',
-  wire: '#8c9da1',
-  backgrounds: ['#292f32', '#333e42', '#202426', '#2b3337', '#252c30', '#222a2e'],
-  floor: 0x475459,
+  /** Violet black: visor, shards, and the darkest scene surfaces. */
+  ink: '#0b0a12',
+  /** Night surface: dark launchpad screens. */
+  night: '#161426',
+  /** Dim violet for structural pieces that must read against the dark backdrop. */
+  plum: '#2a2347',
+  /** Cool white: light screens, glass, dust, and the light color. */
+  light: '#f2f0ff',
+  /** Electric violet: the main accent, trims, cables, and the liftoff road. */
+  accent: '#9b5cff',
+  /** Soft lilac companion to the accent. */
+  lilac: '#c4a8ff',
+  /** Magenta highlight, used sparingly: eyes, chest light, and a few accents. */
+  magenta: '#ff4fd8',
+  /** Faint violet for background typography and grid lines. */
+  faint: '#2e2654',
+  /** Mid violet for wireframes and the grid center line. */
+  wire: '#5b3fa8',
+  /** Per-chapter backdrop colors, from ignition to liftoff. */
+  backgrounds: ['#161426', '#1b1733', '#0b0a12', '#14112a', '#0b0a12', '#100d1e'],
+  /** Tint of the workshop floor reflection. */
+  floor: 0x524682,
 };

@@ -6,6 +6,9 @@ import type { ExperienceHandle } from './engine';
 import { homeContent as copy } from './content';
 import Link from 'next/link';
 import { useWorkspace } from '../workspace/provider';
+import { ChapterCaption } from './caption';
+import { ScrollCue } from './scroll-cue';
+import { manifestoDelays } from './choreography';
 import './home.css';
 
 export function ForgeMark({ className = '' }: { className?: string }) {
@@ -155,27 +158,39 @@ export function ProductDetails({ onConnect }: { onConnect?: () => void }) {
 }
 
 function Manifesto({ paused }: { paused: boolean }) {
-  const [group, setGroup] = useState(0);
-  useEffect(() => {
-    if (paused) return;
-    const timer = window.setInterval(
-      () => setGroup((previous) => (previous + 1) % copy.manifesto.length),
-      6200,
-    );
-    return () => window.clearInterval(timer);
-  }, [paused]);
+  const delays = manifestoDelays(copy.manifesto);
   return (
-    <div className="forge-manifesto" key={group} aria-hidden="true">
-      {copy.manifesto[group]!.map((line, lineIndex) => (
-        <p key={line} style={{ '--line': lineIndex } as CSSProperties}>
-          {Array.from(line).map((letter, i) => (
-            <span key={i} style={{ '--letter': i } as CSSProperties}>
-              {letter === ' ' ? '\u00a0' : letter}
-            </span>
+    <div className="forge-manifesto" data-paused={paused} aria-hidden="true">
+      {copy.manifesto.map((group, groupIndex) => (
+        <div className="forge-manifesto-group" key={groupIndex}>
+          {group.map((line, lineIndex) => (
+            <p key={line} style={{ '--line-delay': `${delays[groupIndex]![lineIndex]}s` } as CSSProperties}>
+              <span className="forge-manifesto-line">
+                {Array.from(line).map((letter, index) => (
+                  <span key={index} style={{ '--letter': index } as CSSProperties}>
+                    {letter === ' ' ? '\u00a0' : letter}
+                  </span>
+                ))}
+              </span>
+            </p>
           ))}
-        </p>
+        </div>
       ))}
     </div>
+  );
+}
+
+function FinalHeading({ title }: { title: string }) {
+  const split = title.lastIndexOf(' ');
+  return (
+    <h2 aria-label={title}>
+      {title.slice(0, split + 1)}
+      <span className="forge-final-word" aria-hidden="true">
+        {Array.from(title.slice(split + 1)).map((letter, index) => (
+          <span key={index} style={{ '--letter': index } as CSSProperties}>{letter}</span>
+        ))}
+      </span>
+    </h2>
   );
 }
 
@@ -362,8 +377,8 @@ export function ForgeHome({ flags: suppliedFlags }: { flags?: Flags }) {
         <main ref={stage} className="forge-stage" tabIndex={0} aria-label={copy.navigation}>
           <div className="forge-scene-copy" key={chapter}>
             <p className="forge-scene-eyebrow">{content.eyebrow}</p>
-            <div className={`forge-chapter-title forge-title-${chapter}`}>
-              {chapter === 0 ? <h1>{content.title}</h1> : <h2>{content.title}</h2>}
+            <div className={`forge-chapter-title forge-title-${chapter}`} data-visual={chapter === 5}>
+              {chapter === 0 ? <h1>{content.title}</h1> : chapter === 5 ? <FinalHeading title={content.title} /> : <h2>{content.title}</h2>}
               {(chapter === 0 || chapter === 5) && <p>{content.description}</p>}
               {chapter === 5 && (
                 <button
@@ -378,18 +393,9 @@ export function ForgeHome({ flags: suppliedFlags }: { flags?: Flags }) {
             </div>
             {chapter === 4 && <Manifesto paused={paused} />}
           </div>
-          <div className="forge-side-note" aria-hidden="true">
-            <span>{copy.platform}</span>
-            <span>{String(chapter + 1).padStart(2, '0')} — 06</span>
-          </div>
-          <p className="forge-subtitle" key={`subtitle-${chapter}`}>
-            {content.subtitle}
-          </p>
+          <ChapterCaption key={`subtitle-${chapter}`} text={content.subtitle} paused={paused || panel !== null} />
           {chapter === 0 && (
-            <button className="forge-scroll" onClick={() => navigate(1, 1)}>
-              <span>{copy.scroll}</span>
-              <Arrow direction="down" />
-            </button>
+            <ScrollCue onClick={() => navigate(1, 1)} />
           )}
           {chapter > 0 && (
             <div className="forge-chapter-arrows">
@@ -467,6 +473,7 @@ export function ForgeHome({ flags: suppliedFlags }: { flags?: Flags }) {
                 key={name}
                 aria-label={`${String(i + 1).padStart(2, '0')} — ${name}`}
                 aria-current={chapter === i ? 'step' : undefined}
+                data-state={chapter === i ? 'viewing' : chapter > i ? 'passed' : 'ready'}
                 onClick={() => navigate(i)}
               >
                 <span />

@@ -2,11 +2,11 @@ import * as T from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { CABLE_GLOW } from './appearance';
 import { homeContent as copy, palette } from './content';
-import { jumpAt } from './motion';
+import { INTRO_SECONDS, jumpAt, smooth } from './motion';
 
 export type ChapterScenery = {
   group: T.Group;
-  update(time: number, localTime: number, boost: number, pointer: T.Vector2): void;
+  update(time: number, localTime: number, boost: number, pointer: T.Vector2, offset: number): void;
   dispose?: () => void;
 };
 
@@ -23,22 +23,23 @@ export function textPlane(
   width: number,
   color = palette.ink,
   font = '900 170px Arial, sans-serif',
+  square = false,
 ) {
   const canvas = document.createElement('canvas');
-  canvas.width = 2048;
-  canvas.height = 384;
+  canvas.width = square ? 512 : 2048;
+  canvas.height = square ? 512 : 384;
   const ctx = canvas.getContext('2d');
   if (!ctx) throw new Error('Canvas 2D unavailable');
   ctx.font = font;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.fillStyle = color;
-  ctx.fillText(text, 1024, 205, 2000);
+  ctx.fillText(text, canvas.width / 2, canvas.height * .534, canvas.width - 48);
   const texture = new T.CanvasTexture(canvas);
   texture.colorSpace = T.SRGBColorSpace;
   texture.anisotropy = 4;
   const mesh = new T.Mesh(
-    new T.PlaneGeometry(width, (width * 384) / 2048),
+    new T.PlaneGeometry(width, (width * canvas.height) / canvas.width),
     new T.MeshBasicMaterial({
       map: texture,
       transparent: true,
@@ -137,42 +138,69 @@ export function createScenery(origins: T.Vector3[], portrait: boolean): ChapterS
     return group;
   };
 
-  // The spark: a machined portal around the pilot, with a quiet typographic backdrop.
+  // The spark: floating type, crosses, slashes and dotted fields around the pilot.
   {
     const group = make(0);
-    const title = textPlane(
-      copy.scenery.hero,
-      3.15,
-      palette.light,
-      '900 350px Arial Black, Arial, sans-serif',
-    );
-    title.position.set(0, 0.62, -1.1);
-    group.add(title);
-    const dial = new T.Group();
-    dial.position.set(0.12, -0.14, -0.4);
-    const outer = new T.Mesh(new T.TorusGeometry(0.96, 0.035, 10, 100), material(palette.wire, 0.8));
-    const inner = new T.Mesh(new T.TorusGeometry(0.79, 0.008, 6, 100), material(palette.accent, 0.65));
-    dial.add(outer, inner);
-    const ticks = new T.InstancedMesh(new T.BoxGeometry(0.008, 0.045, 0.018), material(palette.lilac, 0.6), 64);
-    const dummy = new T.Object3D();
-    for (let i = 0; i < 64; i++) {
-      const angle = i * Math.PI / 32;
-      dummy.position.set(Math.sin(angle) * 0.89, Math.cos(angle) * 0.89, 0);
-      dummy.rotation.z = -angle;
-      dummy.scale.y = i % 4 === 0 ? 1.7 : 1;
-      dummy.updateMatrix();
-      ticks.setMatrixAt(i, dummy.matrix);
+    const letters = Array.from(copy.scenery.hero).map((letter, index) => {
+      const mesh = textPlane(letter, .66, palette.light, '900 400px Arial Black, Arial, sans-serif', true);
+      const base = new T.Vector3((index - 2) * .57, .62, -1.1);
+      const position = base.clone();
+      const velocity = new T.Vector3();
+      mesh.position.copy(base);
+      group.add(mesh);
+      return { mesh, base, position, velocity };
+    });
+    const crosses = [[-1.48, .94, -.9], [1.35, -.5, -.6], [1.85, .4, -1.8]].map((point, index) => {
+      const cross = new T.Group();
+      const crossMaterial = material(index === 1 ? palette.accent : palette.lilac, .5);
+      cross.add(new T.Mesh(new T.BoxGeometry(.16, .025, .025), crossMaterial));
+      cross.add(new T.Mesh(new T.BoxGeometry(.025, .16, .025), crossMaterial));
+      cross.position.set(point[0]!, point[1]!, point[2]!);
+      group.add(cross);
+      return cross;
+    });
+    const slashMaterial = material(palette.wire, .5);
+    const slashes = new T.Group();
+    slashes.position.set(-1.65, -.72, -1.05);
+    slashes.rotation.z = -.4;
+    for (let index = 0; index < 5; index++) {
+      const slash = new T.Mesh(new T.BoxGeometry(.02, .18, .012), slashMaterial);
+      slash.position.x = index * .075;
+      slashes.add(slash);
     }
-    dial.add(ticks);
-    group.add(dial);
-    const satellite = new T.Mesh(new T.OctahedronGeometry(0.075), material(palette.accent, 0.5));
-    group.add(satellite);
+    group.add(slashes);
+    const dots = new T.InstancedMesh(new T.SphereGeometry(.007, 4, 4), material(palette.lilac), 72);
+    const dummy = new T.Object3D();
+    for (let index = 0; index < 72; index++) {
+      const bank = index < 36 ? -1 : 1;
+      dummy.position.set(bank * 1.7 + (index % 6) * .055, .83 - Math.floor(index % 36 / 6) * .055, -1.7);
+      dummy.updateMatrix();
+      dots.setMatrixAt(index, dummy.matrix);
+    }
+    group.add(dots);
+    const pointerBefore = new T.Vector2();
+    const restoring = new T.Vector3();
+    let previousTime = 0;
     chapters.push({
       group,
-      update(time, _, __, pointer) {
-        dial.rotation.set(0.1 + pointer.y * 0.035, -0.15 + pointer.x * 0.055, time * 0.025);
-        satellite.position.set(Math.cos(time * 0.22) * 1.1 + 0.12, Math.sin(time * 0.22) * 1.1 - 0.14, -0.32);
-        satellite.rotation.y = time * 0.25;
+      update(time, localTime, __, pointer) {
+        const delta = Math.min(.05, Math.max(0, time - previousTime));
+        previousTime = time;
+        letters.forEach(({ mesh, base, position, velocity }, index) => {
+          const reach = Math.max(0, 1 - Math.hypot(pointer.x * 1.7 - base.x, pointer.y - base.y));
+          velocity.x += (pointer.x - pointerBefore.x) * reach * .25;
+          velocity.y += (pointer.y - pointerBefore.y) * reach * .25;
+          velocity.addScaledVector(restoring.subVectors(base, position), delta * 12);
+          velocity.multiplyScalar(Math.exp(-delta * 7));
+          position.addScaledVector(velocity, delta * 8);
+          mesh.position.copy(position);
+          mesh.position.y += Math.sin(time + index * 1.1) * .009;
+          const reveal = smooth((localTime - INTRO_SECONDS - index * .07) / .7);
+          mesh.scale.set(1, Math.max(.001, reveal), 1);
+          mesh.rotation.z = (1 - reveal) * -.45;
+        });
+        pointerBefore.copy(pointer);
+        crosses.forEach((cross, index) => { cross.rotation.z = Math.sin(time * .25 + index) * .15; });
       },
     });
   }
@@ -183,9 +211,14 @@ export function createScenery(origins: T.Vector3[], portrait: boolean): ChapterS
     const field = new T.Group();
     field.rotation.z = -0.3;
     group.add(field);
-    for (let i = -2; i <= 2; i++) {
-      const line = textPlane(copy.scenery.repetition, 11, palette.faint, '900 155px Arial');
-      line.position.set((i % 2) * 0.6, i * 0.6, -1.8);
+    const linePrototype = textPlane(copy.scenery.repetition, 11, palette.faint, '900 155px Arial');
+    const marquee = linePrototype.material.map!;
+    marquee.wrapS = T.RepeatWrapping;
+    marquee.repeat.x = 2;
+    for (let i = -6; i <= 6; i++) {
+      const line = linePrototype.clone();
+      line.position.set((i % 2) * .6, i * .6, -1.8);
+      line.scale.setScalar(.65 + random(i + 30) * .5);
       field.add(line);
     }
     const title = textPlane(copy.scenery.glass, 5, palette.light, '900 150px Arial');
@@ -213,9 +246,10 @@ export function createScenery(origins: T.Vector3[], portrait: boolean): ChapterS
     });
     chapters.push({
       group,
-      update(time, _, __, pointer) {
+      update(time, _, __, pointer, offset) {
         title.rotation.y = pointer.x * 0.025;
-        field.position.x = Math.sin(time * 0.1) * 0.45;
+        title.rotation.x = Math.max(-1, Math.min(1, offset)) * Math.PI / 2;
+        marquee.offset.x = (time * .05 + offset * .2) % 1;
         props.forEach((mesh, i) => {
           mesh.rotation.set(time * 0.12 + i, time * 0.2 + pointer.x * 0.16, time * 0.1 + i);
         });

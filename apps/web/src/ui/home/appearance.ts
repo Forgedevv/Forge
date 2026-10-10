@@ -20,7 +20,7 @@ export const LIGHTING = {
   exposure: 0.66,
   environmentIntensity: 0.32,
   fillIntensity: 0.58,
-  fillGroundColor: '#424e53',
+  fillGroundColor: '#2a2347',
   keyIntensity: 0.96,
   /** Per-chapter intensity of the pointer-following light near the pilot. */
   pointerIntensity: [0.7, 0.7, 1.2, 0.7, 0.7, 0.9],
@@ -30,7 +30,7 @@ export const LIGHTING = {
 
 /** Matte ceramic shell, with enough roughness to keep its contours visible. */
 export const PILOT_SHELL = {
-  color: '#e4e1d5',
+  color: '#d0cedb',
   roughness: 0.55,
   /** Roughness removed while the shell turns to glass. */
   glassSmoothing: 0.45,

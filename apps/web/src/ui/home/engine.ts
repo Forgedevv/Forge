@@ -8,6 +8,7 @@ import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { BLOOM, LIGHTING, PILOT_HALO_OPACITY } from './appearance';
 import { INTRO_WALL_DISTANCE, chapterTransforms } from './camera-path';
+import { createPointerTrail } from './pointer-trail';
 import { createCharacter } from './character';
 import { palette } from './content';
 import {
@@ -173,24 +174,14 @@ function buildExperience(
     }),
   );
   scene.add(cloud);
-  const trail = new T.InstancedMesh(
-    new T.SphereGeometry(1, 8, 6),
-    new T.MeshBasicMaterial({
-      color: palette.accent,
-      transparent: true,
-      opacity: 0.4,
-      depthWrite: false,
-    }),
-    18,
-  );
-  trail.frustumCulled = false;
+  const pointerTrail = createPointerTrail(18, palette.lilac);
+  const trail = pointerTrail.mesh;
   scene.add(trail);
   const trailPoints = Array.from({ length: 18 }, () => new T.Vector3());
   let trailReady = false;
   const raycaster = new T.Raycaster(),
     pointerPlane = new T.Plane(),
     pointerPoint = new T.Vector3();
-  const dummy = new T.Object3D();
   const world = new World({ gravity: new Vec3(0, -2, 0) });
   const shards = new T.Group();
   scene.add(shards);
@@ -329,10 +320,10 @@ function buildExperience(
         boostCamera.shake * 0.12 * chapterWeight(5);
     camera.position.x += Math.sin(time * 49) * shake;
     camera.position.y += Math.cos(time * 57) * shake;
-    camera.fov =
+    camera.fov = Math.min(88.5,
       T.MathUtils.lerp(from.fov, to.fov, blend) +
       T.MathUtils.lerp(from.portraitFov, to.portraitFov, blend) * portrait +
-      boostCamera.fov * 0.45 * chapterWeight(5);
+      boostCamera.fov * 0.45 * chapterWeight(5));
     camera.lookAt(lookAt);
     camera.rotateZ(T.MathUtils.lerp(from.roll, to.roll, blend));
     camera.updateProjectionMatrix();
@@ -368,7 +359,7 @@ function buildExperience(
         material.opacity = original.opacity * weight;
         material.depthWrite = weight < 0.999 ? false : original.depthWrite;
       });
-      chapter.update(time, chapterTimes[i]!, boost, smoothPointer);
+      chapter.update(time, chapterTimes[i]!, boost, smoothPointer, value - i);
     });
     cloud.position.copy(character.root.position);
     cloud.rotation.y = time * 0.025;
@@ -384,13 +375,7 @@ function buildExperience(
         trailPoints[0]!.lerp(pointerPoint, 1 - Math.exp(-72 * dt));
         for (let i = 1; i < trailPoints.length; i++)
           trailPoints[i]!.lerp(trailPoints[i - 1]!, 1 - Math.exp(-23 * dt));
-        trailPoints.forEach((position, i) => {
-          dummy.position.copy(position);
-          dummy.scale.setScalar(distance * 0.004 * (1 - i / 18));
-          dummy.updateMatrix();
-          trail.setMatrixAt(i, dummy.matrix);
-        });
-        trail.instanceMatrix.needsUpdate = true;
+        pointerTrail.update(trailPoints, cameraDirection, distance * .004);
       }
     } else trailReady = false;
     shards.visible = introClock >= INTRO_SECONDS && introClock < INTRO_SECONDS + 0.85 && !wallDone;

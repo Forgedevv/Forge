@@ -1,27 +1,27 @@
 .forge-home,
 .forge-document {
-  /* Keep in sync with the 3D palette in content.ts. */
-  --forge-bg: #202426;
-  --forge-surface: #292f32;
-  --forge-raised: #343d40;
-  --forge-text: #eae6dc;
-  --forge-muted: #b0b8b9;
-  --forge-line: #566267;
+  /* FORGE neon palette. Keep in sync with `palette` in content.ts (the 3D scene). */
+  --forge-bg: #0b0a12;
+  --forge-surface: #161426;
+  --forge-raised: #201c36;
+  --forge-text: #f2f0ff;
+  --forge-muted: #aca6c8;
+  --forge-line: #3a3360;
   /* Accent fills, borders, and the focus ring. */
-  --forge-accent: #b78970;
+  --forge-accent: #9b5cff;
   /* Accent-colored text, lighter than the fill for AA contrast on raised surfaces. */
-  --forge-accent-text: #d5b29b;
-  /* Paper-colored secondary accent. */
-  --forge-accent-2: #c9c19a;
-  --forge-on-accent: #202426;
-  --forge-pilot-shell: #e4e1d5;
+  --forge-accent-text: #b794ff;
+  /* Magenta, used sparingly for highlights and hovers. */
+  --forge-accent-2: #ff4fd8;
+  --forge-on-accent: #0b0a12;
+  --forge-pilot-shell: #d0cedb;
   --forge-pilot-outline: var(--forge-bg);
-  --forge-glow: #b7897028;
-  --forge-backdrop: #141a1ddc;
+  --forge-glow: #9b5cff40;
+  --forge-backdrop: #0b0a12cc;
   --scene-ink: var(--forge-text);
   --forge-mono: 'Courier New', monospace;
   --forge-sans: var(--font-space-grotesk), Arial, Helvetica, sans-serif;
-  --forge-display: Georgia, 'Times New Roman', serif;
+  --forge-display: var(--font-unbounded), var(--forge-sans);
   --forge-serif: Georgia, 'Times New Roman', serif;
   font-family: var(--forge-sans);
   color: var(--forge-text);
@@ -199,7 +199,15 @@
   left: 5.6%;
   font: 10px/1.5 var(--forge-mono);
   letter-spacing: 0.12em;
-  animation: forge-fade-up 1s both;
+  display: none;
+}
+.forge-scene-copy .forge-chapter-title[data-visual='false'] {
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  pointer-events: none;
 }
 .forge-chapter-title {
   position: absolute;
@@ -254,10 +262,12 @@
   animation: forge-final-reveal 1s 1s both;
 }
 .forge-title-5 h2 {
-  font-size: clamp(70px, 8.6vw, 136px);
-  line-height: 0.87;
+  font-size: clamp(32px, 2.5vw, 54px);
+  line-height: 1.25;
   font-weight: 400;
 }
+.forge-final-word { display: inline-block; animation: forge-final-reveal 1s 1.5s both; }
+.forge-final-word > span { display: inline-block; animation: forge-final-color 5s calc(var(--letter) * -.25s) linear infinite; }
 .forge-title-5 > p {
   margin: 31px auto 20px;
   max-width: 36ch;
@@ -304,13 +314,22 @@
   width: max-content;
   max-width: 70%;
   text-align: center;
-  font-size: 11px;
+  font-size: clamp(11px, 1.1vw, 15px);
   letter-spacing: 0.025em;
   line-height: 1.5;
-  animation: forge-caption 1s both;
   pointer-events: none;
   opacity: var(--chapter-copy-opacity, 1);
 }
+.forge-subtitle-visual {
+  padding: 5px 10px;
+  color: var(--forge-text);
+  background: color-mix(in srgb, var(--forge-bg) 94%, transparent);
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+  opacity: 1;
+  transition: opacity .5s;
+}
+.forge-subtitle-visual[data-visible='false'] { opacity: 0; }
 [data-chapter='0'] .forge-subtitle {
   bottom: 128px;
 }
@@ -330,34 +349,41 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 10px;
+  overflow: hidden;
   transition:
-    background 0.3s,
-    color 0.3s;
+    transform .2s,
+    color .2s;
 }
-.forge-scroll::before {
-  content: '';
+.forge-scroll-ring {
   position: absolute;
   inset: 0;
-  border: 1px solid currentColor;
-  border-left-color: transparent;
-  border-bottom-color: transparent;
-  border-radius: 50%;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
   animation: forge-spin 2s linear infinite;
 }
+.forge-scroll-fill {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  left: var(--cue-x, 50%);
+  top: var(--cue-y, 50%);
+  border-radius: 50%;
+  background: var(--forge-text);
+  transform: translate(-50%, -50%) scale(0);
+  transition: transform .2s ease-out;
+  pointer-events: none;
+}
 .forge-scroll span {
-  width: 65px;
-  font: 8px/1.4 var(--forge-mono);
-  letter-spacing: 0.07em;
+  position: relative;
+  font: 11px/1.4 var(--forge-sans);
+  letter-spacing: .2em;
 }
-.forge-scroll .forge-arrow {
-  width: 18px;
-  height: 18px;
+.forge-scroll:is(:hover, :focus-visible) {
+  color: var(--forge-bg);
+  transform: translateX(-50%) scale(.95);
 }
-.forge-scroll:hover {
-  color: var(--forge-on-accent);
-  background: var(--forge-accent);
-}
+.forge-scroll:is(:hover, :focus-visible) .forge-scroll-fill { transform: translate(-50%, -50%) scale(2); }
 .forge-chapter-arrows {
   position: absolute;
   z-index: 4;
@@ -381,25 +407,42 @@
 }
 .forge-manifesto {
   position: absolute;
-  left: 9%;
-  top: 35%;
-  max-width: 85%;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: min(90%, 800px);
+  display: flex;
+  justify-content: space-around;
+  flex-direction: row-reverse;
+  gap: 24px;
 }
+.forge-manifesto-group { display: flex; flex-direction: row-reverse; gap: 12px; }
 .forge-manifesto p {
-  width: fit-content;
-  margin-bottom: 10px;
-  padding: 5px 15px 9px;
-  color: var(--forge-text);
-  background: var(--forge-raised);
-  box-shadow: inset 3px 0 0 var(--forge-accent);
-  font: 400 clamp(24px, 3.4vw, 58px)/1.1 var(--forge-serif);
-  letter-spacing: -0.03em;
-  overflow: hidden;
-  animation: forge-line-reveal 1.5s calc(var(--line) * 0.2s + 0.4s) both;
+  position: relative;
+  margin: 0;
+  height: 50vh;
+  writing-mode: vertical-rl;
+  font: 400 17px/1.5 var(--forge-sans);
+  letter-spacing: .18em;
 }
-.forge-manifesto p span {
+.forge-manifesto-line {
+  position: relative;
   display: inline-block;
-  animation: forge-letter-reveal 2s calc(var(--line) * 0.2s + var(--letter) * 0.06s + 0.6s) both;
+  padding: 10px 8px;
+}
+.forge-manifesto-line::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: color-mix(in srgb, var(--forge-bg) 60%, transparent);
+  transform-origin: top;
+  animation: forge-strip-reveal 1.5s var(--line-delay) both;
+}
+.forge-manifesto-line > span {
+  position: relative;
+  display: inline-block;
+  color: var(--forge-text);
+  animation: forge-strip-letter 2s calc(var(--line-delay) + .2s + var(--letter) * .06s) both;
 }
 
 .forge-footer {
@@ -445,11 +488,12 @@
   width: 5px;
   height: 5px;
   border-radius: 50%;
-  background: var(--forge-muted);
+  background: var(--forge-line);
   transition:
     transform 0.5s,
     background 0.5s;
 }
+.forge-timeline button[data-state='passed'] > span:first-child { background: var(--forge-text); }
 .forge-timeline button[aria-current] > span:first-child {
   background: var(--forge-accent-2);
   transform: scale(1.9);
@@ -491,6 +535,7 @@
   transform: scaleX(var(--journey-progress, 0));
 }
 .forge-footer-chapter {
+  display: none;
   position: absolute;
   left: 50%;
   transform: translateX(-50%);
@@ -1092,6 +1137,18 @@
     opacity: 1;
   }
 }
+@keyframes forge-strip-reveal {
+  from { transform: scaleY(0); }
+  to { transform: scaleY(1); }
+}
+@keyframes forge-strip-letter {
+  from { opacity: 0; translate: 15px 0; }
+  to { opacity: 1; translate: 0 0; }
+}
+@keyframes forge-final-color {
+  0%, 100% { color: var(--forge-accent-text); }
+  50% { color: var(--forge-accent-2); }
+}
 
 @media (max-width: 1000px) {
   .forge-footer-chapter {
@@ -1182,7 +1239,7 @@
     top: 24%;
   }
   .forge-title-5 h2 {
-    font-size: clamp(66px, 13vw, 105px);
+    font-size: clamp(28px, 7vw, 45px);
   }
   .forge-title-5 > p {
     max-width: 29ch;
@@ -1200,7 +1257,7 @@
   .forge-subtitle {
     bottom: 33px;
     max-width: 64%;
-    font-size: 9px;
+    font-size: 13px;
   }
   [data-chapter='0'] .forge-subtitle {
     bottom: 115px;
@@ -1213,9 +1270,10 @@
     gap: 5px;
   }
   .forge-scroll span {
-    font-size: 7px;
-    width: 52px;
+    font-size: 9px;
   }
+  .forge-scroll-fill { display: none; }
+  .forge-scroll:is(:hover, :focus-visible) { color: inherit; }
   .forge-chapter-arrows {
     right: 16px;
     bottom: 25px;
@@ -1227,15 +1285,15 @@
     font-size: 14px;
   }
   .forge-manifesto {
-    left: 24px;
-    top: 43%;
-    max-width: calc(100% - 48px);
+    width: calc(100% - 36px);
+    gap: 8px;
   }
+  .forge-manifesto-group { gap: 3px; }
   .forge-manifesto p {
-    font-size: clamp(25px, 5vw, 38px);
-    padding: 5px 10px 8px;
-    margin-bottom: 7px;
+    font-size: clamp(11px, 2.8vw, 15px);
+    height: 44vh;
   }
+  .forge-manifesto-line { padding-inline: 4px; }
   .forge-footer {
     height: 54px;
     padding: 0 16px;
@@ -1358,7 +1416,7 @@
     top: 19%;
   }
   .forge-title-5 h2 {
-    font-size: 70px;
+    font-size: 32px;
   }
   .forge-title-5 > p {
     margin-top: 14px;
@@ -1379,10 +1437,8 @@
   }
 }
 
-/* Workshop controls share the electric violet identity. */
-.forge-launch-button,
-.forge-solid-button,
-.forge-final-action {
+/* Product sheets retain FORGE controls; the immersive canvas uses restrained scene controls. */
+.forge-solid-button {
   border: 1px solid var(--forge-accent);
   border-radius: 999px;
   background: var(--forge-accent);
@@ -1394,21 +1450,38 @@
   gap: 22px;
   box-shadow: 0 8px 25px var(--forge-glow);
 }
-.forge-launch-button:hover,
-.forge-solid-button:hover,
-.forge-final-action:hover {
+.forge-solid-button:hover {
   background: var(--forge-accent-2);
   border-color: var(--forge-accent-2);
   color: var(--forge-on-accent);
 }
 .forge-details-link {
-  border: 1px solid currentColor;
-  border-radius: 999px;
   min-height: 44px;
-  padding: 10px 18px !important;
+  padding: 10px 0 !important;
   background: transparent;
   color: inherit;
 }
+.forge-launch-button {
+  border-radius: 3px;
+  text-transform: uppercase;
+  letter-spacing: .12em;
+  font-weight: 400;
+  box-shadow: none;
+}
+.forge-launch-button:hover:not(:disabled) { background: var(--forge-text); color: var(--forge-bg); }
+.forge-final-action {
+  font-family: var(--forge-serif) !important;
+  font-size: clamp(18px, 2vw, 28px) !important;
+  font-weight: 400;
+  border: 0;
+  border-bottom: 1px solid currentColor;
+  background: transparent;
+  color: var(--forge-text);
+  padding: 10px 0;
+  box-shadow: none;
+}
+.forge-final-action:hover { background: transparent; color: var(--forge-accent-text); transform: none; }
+.forge-final-action .forge-arrow { width: 26px; height: 26px; }
 .forge-account {
   position: relative;
   font-size: 11px;
@@ -1453,6 +1526,6 @@
     gap: 10px;
   }
   .forge-details-link {
-    padding: 9px 13px !important;
+    padding: 9px 0 !important;
   }
 }
