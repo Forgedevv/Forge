@@ -84,6 +84,13 @@ export function solToLamports(sol: number): bigint {
 export const MIGRATION_THRESHOLD_LAMPORTS = solToLamports(CLIENT_BOUNDS.migrationThresholdSol);
 
 /**
+ * Largest first buy of the launchpad coin, in SOL: the bound of
+ * `LaunchpadSpec.launchpadCoin.firstBuySol` in @forge/shared (above ~10 SOL the first buy cannot
+ * fit in a curve that migrates at 10 SOL).
+ */
+export const MAX_FIRST_BUY_SOL = 10;
+
+/**
  * Client pool creation fee bounds in lamports (0 allowed when `allowZero`).
  * The SDK bounds (`MIN_POOL_CREATION_FEE` / `MAX_POOL_CREATION_FEE`) are checked as well.
  */

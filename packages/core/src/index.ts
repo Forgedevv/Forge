@@ -63,16 +63,30 @@ export type {
 } from './swap.js';
 // Claims, reads, payments, gating.
 export {
+  CLAIM_LAMPORTS_PER_SIGNATURE,
   ClaimError,
+  PARTNER_POOL_CREATION_FEE_CLAIMED_BIT,
   buildCreatorClaimTx,
+  buildForgeCreatorClaimTx,
   buildPartnerClaimTx,
+  buildPartnerPoolCreationFeeClaimTx,
+  isClaimWorthwhile,
+  minimumWorthwhileClaimLamports,
+  partnerPoolCreationFeeShare,
+  type ClaimCosts,
   type ClaimErrorCode,
   type ClaimKind,
   type ClaimOptions,
+  type ClaimSkipReason,
   type ClaimSummary,
   type ClaimTxResult,
   type CreatorClaimParams,
+  type ForgeCreatorClaimParams,
   type PartnerClaimParams,
+  type PartnerPoolCreationFeeClaimParams,
+  type PoolCreationFeeClaimSummary,
+  type PoolCreationFeeClaimTxResult,
+  type PoolCreationFeeSkipReason,
 } from './claims.js';
 export {
   CURVE_PROGRESS_FULL_BPS,
@@ -117,6 +131,7 @@ export {
   type PaymentCluster,
   type PaymentErrorCode,
   type PaymentParams,
+  type PaymentPendingReason,
   type PaymentRejectReason,
   type PaymentTxOptions,
   type PaymentTxResult,

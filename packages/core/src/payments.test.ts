@@ -377,6 +377,8 @@ function verifyConnection(opts: {
   tx?: VersionedTransactionResponse | null;
   genesis?: string;
   getTransaction?: () => Promise<VersionedTransactionResponse | null>;
+  /** `getBlockTime` answer (default null: unknown). */
+  blockTime?: number | null;
 }) {
   const status =
     opts.status === undefined
@@ -389,6 +391,7 @@ function verifyConnection(opts: {
       opts.getTransaction ??
         (async () => (opts.tx === undefined ? txResponse(goodInstructions()) : opts.tx)),
     ),
+    getBlockTime: vi.fn(async () => opts.blockTime ?? null),
   };
   return { connection: connection as unknown as Connection, mocks: connection };
 }
@@ -415,6 +418,7 @@ describe('verifyPayment', () => {
     expect(await verifyPayment(connection, SIGNATURE, expected, { env, retry: noRetry })).toEqual({
       status: 'pending',
       signature: SIGNATURE,
+      reason: 'not_found',
     });
   });
 
@@ -517,6 +521,136 @@ describe('verifyPayment', () => {
       retry: { attempts: 2, baseDelayMs: 0 },
     });
     expect(result.status).toBe('confirmed');
+  });
+
+  describe('quote window (notBefore / expiresAt)', () => {
+    // txResponse lands at 1_760_000_000 (unix seconds).
+    const LANDED = new Date(1_760_000_000 * 1000);
+    const at = (deltaSeconds: number) => new Date(LANDED.getTime() + deltaSeconds * 1000);
+
+    it('confirms a payment that landed inside the window (bounds inclusive)', async () => {
+      const { connection, mocks } = verifyConnection({});
+      for (const window of [
+        { notBefore: at(-60), expiresAt: at(60) },
+        { notBefore: LANDED, expiresAt: LANDED },
+        { expiresAt: at(1) },
+        { notBefore: at(-1) },
+      ]) {
+        const result = await verifyPayment(
+          connection,
+          SIGNATURE,
+          { ...expected, ...window },
+          { env, retry: noRetry },
+        );
+        expect(result.status).toBe('confirmed');
+      }
+      expect(mocks.getBlockTime).not.toHaveBeenCalled();
+    });
+
+    it('rejects a payment that landed after the quote expired', async () => {
+      const { connection } = verifyConnection({});
+      const result = await verifyPayment(
+        connection,
+        SIGNATURE,
+        { ...expected, notBefore: at(-600), expiresAt: at(-1) },
+        { env, retry: noRetry },
+      );
+      expectInvalid(result, 'payment_expired');
+      if (result.status === 'invalid') expect(result.slot).toBe(4242);
+    });
+
+    it('rejects a payment that landed before the quote', async () => {
+      const { connection } = verifyConnection({});
+      const result = await verifyPayment(
+        connection,
+        SIGNATURE,
+        { ...expected, notBefore: at(1), expiresAt: at(600) },
+        { env, retry: noRetry },
+      );
+      expectInvalid(result, 'payment_too_early');
+    });
+
+    it('falls back to getBlockTime, then stays pending while the block time is unknown', async () => {
+      const noTime = { ...txResponse(goodInstructions()), blockTime: null };
+      const known = verifyConnection({ tx: noTime, blockTime: 1_760_000_000 });
+      const inside = await verifyPayment(
+        known.connection,
+        SIGNATURE,
+        { ...expected, expiresAt: at(5) },
+        { env, retry: noRetry },
+      );
+      expect(inside.status).toBe('confirmed');
+      if (inside.status === 'confirmed') expect(inside.blockTime).toBe(1_760_000_000);
+      expect(known.mocks.getBlockTime).toHaveBeenCalledWith(4242);
+
+      const late = await verifyPayment(
+        known.connection,
+        SIGNATURE,
+        { ...expected, expiresAt: at(-5) },
+        { env, retry: noRetry },
+      );
+      expectInvalid(late, 'payment_expired');
+
+      const unknown = verifyConnection({ tx: noTime, blockTime: null });
+      expect(
+        await verifyPayment(
+          unknown.connection,
+          SIGNATURE,
+          { ...expected, expiresAt: at(5) },
+          { env, retry: noRetry },
+        ),
+      ).toEqual({ status: 'pending', signature: SIGNATURE, reason: 'block_time_unknown' });
+    });
+
+    it('does not need the block time without a window', async () => {
+      const noTime = { ...txResponse(goodInstructions()), blockTime: null };
+      const { connection, mocks } = verifyConnection({ tx: noTime });
+      const result = await verifyPayment(connection, SIGNATURE, expected, {
+        env,
+        retry: noRetry,
+      });
+      expect(result.status).toBe('confirmed');
+      if (result.status === 'confirmed') expect(result.blockTime).toBeNull();
+      expect(mocks.getBlockTime).not.toHaveBeenCalled();
+    });
+
+    it('still reports the real defect of an invalid payment outside the window', async () => {
+      const { connection } = verifyConnection({});
+      const result = await verifyPayment(
+        connection,
+        SIGNATURE,
+        { ...expected, jobId: OTHER_JOB_ID, expiresAt: at(-5) },
+        { env, retry: noRetry },
+      );
+      expectInvalid(result, 'memo_mismatch');
+    });
+
+    it('refuses an invalid window', async () => {
+      const { connection } = verifyConnection({});
+      for (const window of [
+        { expiresAt: new Date(Number.NaN) },
+        { notBefore: at(10), expiresAt: at(0) },
+        { notBefore: 1_760_000_000 as unknown as Date },
+      ]) {
+        await expect(
+          verifyPayment(connection, SIGNATURE, { ...expected, ...window }, { env, retry: noRetry }),
+        ).rejects.toThrow(expect.objectContaining({ code: 'invalid_window' }));
+      }
+    });
+
+    it('checkPaymentTransaction applies the window to the fetched block time', () => {
+      const tx = txResponse(goodInstructions());
+      expect(checkPaymentTransaction(tx, SIGNATURE, check({ expiresAt: at(0) })).status).toBe(
+        'confirmed',
+      );
+      expectInvalid(
+        checkPaymentTransaction(tx, SIGNATURE, check({ expiresAt: at(-1) })),
+        'payment_expired',
+      );
+      expect(
+        checkPaymentTransaction({ ...tx, blockTime: null }, SIGNATURE, check({ notBefore: at(0) })),
+      ).toEqual({ status: 'pending', signature: SIGNATURE, reason: 'block_time_unknown' });
+    });
   });
 
   it('propagates a non-transient RPC error', async () => {

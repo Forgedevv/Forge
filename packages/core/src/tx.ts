@@ -55,6 +55,14 @@ export class TransactionExpiredError extends Error {
   }
 }
 
+/** A signature status seen below the requested commitment (it can still change). */
+export interface PendingSignatureStatus {
+  confirmationStatus: 'processed' | 'confirmed' | 'finalized' | null;
+  /** On-chain error at that level, not final yet: the block may still be dropped. */
+  err: TransactionError | null;
+  slot: number;
+}
+
 /**
  * The deadline passed without a confirmation. The transaction may still land (a durable nonce
  * transaction stays valid until its nonce advances): never rebuild it blindly, check its status.
@@ -63,15 +71,28 @@ export class ConfirmationTimeoutError extends Error {
   readonly signature: string;
   /** Last network error seen while polling, if any (message only). */
   readonly lastNetworkError: string | null;
+  /** Last status seen below the requested commitment (e.g. `processed`, maybe failed), if any. */
+  readonly lastSeenStatus: PendingSignatureStatus | null;
 
-  constructor(signature: string, deadlineMs: number, lastNetworkError: string | null) {
+  constructor(
+    signature: string,
+    deadlineMs: number,
+    lastNetworkError: string | null,
+    lastSeenStatus: PendingSignatureStatus | null = null,
+  ) {
+    const seen = lastSeenStatus
+      ? ` (last seen ${lastSeenStatus.confirmationStatus ?? 'unknown'}` +
+        (lastSeenStatus.err ? ', failed at that level' : '') +
+        ')'
+      : '';
     super(
-      `Transaction ${signature} not confirmed within ${deadlineMs} ms` +
+      `Transaction ${signature} not confirmed within ${deadlineMs} ms${seen}` +
         (lastNetworkError ? ` (last RPC error: ${lastNetworkError})` : ''),
     );
     this.name = 'ConfirmationTimeoutError';
     this.signature = signature;
     this.lastNetworkError = lastNetworkError;
+    this.lastSeenStatus = lastSeenStatus;
   }
 }
 
@@ -164,11 +185,14 @@ function errorMessage(error: unknown): string {
 /**
  * Waits until `signature` reaches `commitment`, by polling `getSignatureStatuses`.
  *
- * - On-chain failure: throws `TransactionFailedError` (never swallowed).
+ * - On-chain failure: throws `TransactionFailedError` (never swallowed) once the failed status
+ *   has reached `commitment`. A failure seen only at a lower level (`processed`) is not final
+ *   (that block can be dropped): polling goes on until the deadline.
  * - Network errors while polling: retried with backoff until the deadline; the last one is
  *   reported in the `ConfirmationTimeoutError`.
  * - `lastValidBlockHeight` passed and exceeded: throws `TransactionExpiredError` after a final
- *   status check with the transaction history.
+ *   status check with the transaction history, unless the cluster has seen the transaction (then
+ *   it may still be confirmed: polling goes on until the deadline).
  */
 export async function confirmSignature(
   connection: SignatureStatusReader,
@@ -185,35 +209,55 @@ export async function confirmSignature(
   const sleep = options.sleep ?? defaultSleep;
   const deadline = now() + deadlineMs;
   let lastNetworkError: string | null = null;
+  let lastSeenStatus: PendingSignatureStatus | null = null;
   let backoff = 1;
 
-  const check = async (searchTransactionHistory: boolean): Promise<ConfirmedSignature | null> => {
+  /** `confirmed` once the commitment is reached; `pending` when only seen below it. */
+  const check = async (
+    searchTransactionHistory: boolean,
+  ): Promise<{ confirmed: ConfirmedSignature | null; pending: PendingSignatureStatus | null }> => {
     const status = (
       await connection.getSignatureStatuses([signature], { searchTransactionHistory })
     ).value[0];
-    if (!status) return null;
-    if (status.err) throw new TransactionFailedError(signature, status.err);
+    if (!status) return { confirmed: null, pending: null };
     const reached =
       status.confirmationStatus === 'finalized' ||
       (commitment === 'confirmed' && status.confirmationStatus === 'confirmed');
-    if (!reached || !status.confirmationStatus) return null;
+    if (!reached || !status.confirmationStatus) {
+      // Seen below the requested commitment: success or failure, it can still change.
+      const pending: PendingSignatureStatus = {
+        confirmationStatus: status.confirmationStatus ?? null,
+        err: status.err ?? null,
+        slot: status.slot,
+      };
+      lastSeenStatus = pending;
+      return { confirmed: null, pending };
+    }
+    if (status.err) throw new TransactionFailedError(signature, status.err);
     return {
-      signature,
-      slot: status.slot,
-      confirmationStatus: status.confirmationStatus as 'confirmed' | 'finalized',
+      confirmed: {
+        signature,
+        slot: status.slot,
+        confirmationStatus: status.confirmationStatus as 'confirmed' | 'finalized',
+      },
+      pending: null,
     };
   };
 
   for (;;) {
     try {
-      const confirmed = await check(false);
-      if (confirmed) return confirmed;
-      if (options.lastValidBlockHeight !== undefined) {
+      const current = await check(false);
+      if (current.confirmed) return current.confirmed;
+      if (options.lastValidBlockHeight !== undefined && !current.pending) {
         const height = await connection.getBlockHeight(commitment as Commitment);
         if (height > options.lastValidBlockHeight) {
           const last = await check(true);
-          if (last) return last;
-          throw new TransactionExpiredError(signature, options.lastValidBlockHeight);
+          if (last.confirmed) return last.confirmed;
+          // Unseen after the blockhash expired: it can no longer land. Seen below the
+          // commitment: it may still be confirmed, keep polling.
+          if (!last.pending) {
+            throw new TransactionExpiredError(signature, options.lastValidBlockHeight);
+          }
         }
       }
       backoff = 1;
@@ -233,12 +277,12 @@ export async function confirmSignature(
   // Deadline reached: one last look, including the transaction history.
   try {
     const last = await check(true);
-    if (last) return last;
+    if (last.confirmed) return last.confirmed;
   } catch (error) {
     if (error instanceof TransactionFailedError) throw error;
     lastNetworkError = errorMessage(error);
   }
-  throw new ConfirmationTimeoutError(signature, deadlineMs, lastNetworkError);
+  throw new ConfirmationTimeoutError(signature, deadlineMs, lastNetworkError, lastSeenStatus);
 }
 
 // ---------------------------------------------------------------------------------------------
