@@ -1052,7 +1052,9 @@ export async function buildUserCoinLaunchTx(
  * The summary in the shared `OwnerTransactionSummary` shape (docs/INTERFACES.md §6, decimal
  * strings). `estimatedNetworkFeeLamports` is everything the owner pays besides the first buy
  * (network fee, rents, Metaplex fee and, when the owner pays it, the pool creation fee), so the
- * client is never debited more than first buy + that amount.
+ * client is never debited more than first buy + that amount. `ownerRequiredBalanceLamports` is
+ * what the owner's wallet must hold to sign: that debit plus the temporary WSOL account rent
+ * (refunded within the transaction, but needed while it runs).
  */
 export function toOwnerTransactionSummary(summary: LaunchCoinSummary): OwnerTransactionSummary {
   const { costs } = summary;
@@ -1062,5 +1064,6 @@ export function toOwnerTransactionSummary(summary: LaunchCoinSummary): OwnerTran
     firstBuyLamports: costs.firstBuyLamports.toString(),
     estimatedNetworkFeeLamports: (costs.ownerTotalLamports - costs.firstBuyLamports).toString(),
     ownerWallet: summary.owner.toBase58(),
+    ownerRequiredBalanceLamports: costs.ownerRequiredBalanceLamports.toString(),
   };
 }

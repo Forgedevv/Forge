@@ -181,9 +181,14 @@ describe.each(builders)('%s config: spec field mapping', (_kind, build) => {
     [0.001, 1_000_000n],
     [0.05, 50_000_000n],
     [1, 1_000_000_000n],
-  ])('maps poolCreationFeeSol %d to %s lamports', (sol, lamports) => {
-    expect(numerator(build(makeSpec({ poolCreationFeeSol: sol })).poolCreationFee)).toBe(lamports);
-  });
+  ])(
+    'maps poolCreationFeeSol %d to %s lamports (none on the launchpad coin config)',
+    (sol, lamports) => {
+      expect(numerator(build(makeSpec({ poolCreationFeeSol: sol })).poolCreationFee)).toBe(
+        _kind === 'launchpadCoin' ? 0n : lamports,
+      );
+    },
+  );
 
   it('migrates to DAMM v2 at exactly 10 SOL, immutable metadata, first swap at minimum fee', () => {
     const params = build(makeSpec());
@@ -263,9 +268,9 @@ describe.each(builders)('%s config: bounds', (_kind, build) => {
   it('rejects a pool creation fee with more precision than a lamport', () => {
     // Within the bound (between 0.001 and 1) but not a whole number of lamports: the shared
     // schema refuses it (at most 9 decimals), before core's own lamport check.
-    expect(
-      violationCodes(() => build(makeSpec({ poolCreationFeeSol: 0.0010000000001 }))),
-    ).toEqual(['SPEC_INVALID']);
+    expect(violationCodes(() => build(makeSpec({ poolCreationFeeSol: 0.0010000000001 })))).toEqual([
+      'SPEC_INVALID',
+    ]);
   });
 
   it('rejects an owner wallet that is not a public key', () => {
@@ -523,7 +528,8 @@ describe('buildCreateConfigTx', () => {
         kind === 'launchpadCoin' ? FEES.forgeCreatorSharePct : 10,
       );
       expect(numerator(sent.migrationQuoteThreshold)).toBe(MIGRATION_THRESHOLD_LAMPORTS);
-      expect(numerator(sent.poolCreationFee)).toBe(50_000_000n);
+      // The client's fee on its site's coins; none on its own coin (it would pay itself).
+      expect(numerator(sent.poolCreationFee)).toBe(kind === 'launchpadCoin' ? 0n : 50_000_000n);
       expect(sent.enableFirstSwapWithMinFee).toBe(true);
       expect(toJson(result.params)).toBe(toJson(buildConfigParams(spec, kind)));
     },

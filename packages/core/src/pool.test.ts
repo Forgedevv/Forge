@@ -959,7 +959,26 @@ describe('buildLaunchCoinTx — costs', () => {
         summary.costs.ownerTotalLamports - summary.costs.firstBuyLamports
       ).toString(),
       ownerWallet: OWNER.toBase58(),
+      ownerRequiredBalanceLamports: summary.costs.ownerRequiredBalanceLamports.toString(),
     });
+  });
+
+  it('tells the owner the balance to hold, temporary WSOL rent included', async () => {
+    const { params } = await setup();
+    const { summary } = await buildLaunchCoinTx(params);
+    const shared = toOwnerTransactionSummary(summary);
+    const wsolRent = BigInt(rent(ACCOUNT_SIZE));
+    expect(summary.costs.ownerTemporaryLamports).toBe(wsolRent);
+    // First buy + everything else the owner pays + the WSOL account held during the transaction.
+    expect(BigInt(shared.ownerRequiredBalanceLamports!)).toBe(
+      BigInt(shared.firstBuyLamports) + BigInt(shared.estimatedNetworkFeeLamports) + wsolRent,
+    );
+    // Without a first buy there is no temporary WSOL account.
+    const none = await setup({ firstBuyLamports: 0n });
+    const noBuy = toOwnerTransactionSummary((await buildLaunchCoinTx(none.params)).summary);
+    expect(BigInt(noBuy.ownerRequiredBalanceLamports!)).toBe(
+      BigInt(noBuy.estimatedNetworkFeeLamports),
+    );
   });
 });
 

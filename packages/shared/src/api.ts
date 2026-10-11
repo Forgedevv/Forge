@@ -190,6 +190,12 @@ export const OwnerTransactionSummary = z.object({
   /** Everything the owner pays besides the first buy: network fee, rents, Metaplex fee, pool creation fee. */
   estimatedNetworkFeeLamports: Lamports,
   ownerWallet: SolanaAddress,
+  /**
+   * Balance the owner's wallet must hold before signing: first buy + everything above + the rent
+   * of the temporary WSOL account (created and closed within the transaction, so refunded, but
+   * held while it runs). Optional: absent when the server cannot compute it; older readers ignore it.
+   */
+  ownerRequiredBalanceLamports: Lamports.optional(),
 });
 export type OwnerTransactionSummary = z.infer<typeof OwnerTransactionSummary>;
 

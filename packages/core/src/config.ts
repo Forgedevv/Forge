@@ -9,8 +9,9 @@
  *
  * Both: fee claimer = leftover receiver = the client wallet (`spec.ownerWallet`), quote SOL,
  * trading fee `spec.tradingFeeBps` (with the anti-sniper schedule when `spec.antiSniper`),
- * `enableFirstSwapWithMinFee`, pool creation fee `spec.poolCreationFeeSol`, migration to DAMM v2
- * at exactly 10 SOL, immutable token metadata, all post-graduation liquidity permanently locked.
+ * `enableFirstSwapWithMinFee`, migration to DAMM v2 at exactly 10 SOL, immutable token metadata,
+ * all post-graduation liquidity permanently locked. Pool creation fee: `spec.poolCreationFeeSol`
+ * on the launchpad config, none on the launchpad coin config (the client would pay it to itself).
  *
  * Choices not fixed by the docs (kept as named constants, see the CHANGELOG):
  * - curve: `buildCurve` with 20% of the supply on migration, 1B tokens with 6 decimals (the
@@ -100,6 +101,20 @@ export const FORGE_MIGRATION_SETTINGS = {
 
 /** Fee scheduler periods are counted in seconds. */
 export const FORGE_ACTIVATION_TYPE = ActivationType.Timestamp;
+
+/**
+ * Pool creation fee of the launchpad coin config: none. The only pool ever created on it is the
+ * client's own coin, paid by the client: a fee would only move the client's SOL to its own fee
+ * claimer account, minus the protocol share. 0 is "no fee" for the pinned SDK
+ * (`validatePoolCreationFee`) and was accepted on-chain on devnet (test 1). The launchpad config
+ * keeps `spec.poolCreationFeeSol` (paid to the client by every coin of its site).
+ */
+export const LAUNCHPAD_COIN_POOL_CREATION_FEE_SOL = 0;
+
+/** Pool creation fee of a config kind, in SOL. */
+export function poolCreationFeeSolFor(spec: LaunchpadSpec, kind: ConfigKind): number {
+  return kind === 'launchpadCoin' ? LAUNCHPAD_COIN_POOL_CREATION_FEE_SOL : spec.poolCreationFeeSol;
+}
 
 /** Which of the two configs. */
 export type ConfigKind = 'launchpad' | 'launchpadCoin';
@@ -199,7 +214,7 @@ export function curveParamsFor(spec: LaunchpadSpec, kind: ConfigKind): BuildCurv
       dynamicFeeEnabled: false,
       collectFeeMode: CollectFeeMode.QuoteToken,
       creatorTradingFeePercentage: creatorShare,
-      poolCreationFee: spec.poolCreationFeeSol,
+      poolCreationFee: poolCreationFeeSolFor(spec, kind),
       enableFirstSwapWithMinFee: true,
     },
     migration: {

@@ -160,6 +160,28 @@ describe('API schemas', () => {
     expect(api.ChatRequest.safeParse({ message: '' }).success).toBe(false);
   });
 
+  it('OwnerTransactionSummary carries the balance the owner must hold, optionally', () => {
+    const base = {
+      coinName: 'Moon',
+      coinSymbol: 'MOON',
+      firstBuyLamports: '500000000',
+      estimatedNetworkFeeLamports: '35000000',
+      ownerWallet: WALLET,
+    };
+    // A summary from an older writer (no field) still parses.
+    expect(api.OwnerTransactionSummary.parse(base)).toEqual(base);
+    const withBalance = { ...base, ownerRequiredBalanceLamports: '537039280' };
+    expect(api.OwnerTransactionSummary.parse(withBalance)).toEqual(withBalance);
+    expect(
+      api.OwnerTransactionGetResponse.parse({ transaction: TX, summary: withBalance }).summary
+        .ownerRequiredBalanceLamports,
+    ).toBe('537039280');
+    expect(
+      api.OwnerTransactionSummary.safeParse({ ...base, ownerRequiredBalanceLamports: '1.5' })
+        .success,
+    ).toBe(false);
+  });
+
   it('exposes the signer HMAC constants', () => {
     expect(api.SIGNER_SIGNATURE_HEADER).toBe('X-Forge-Signature');
     expect(api.SIGNER_TIMESTAMP_HEADER).toBe('X-Forge-Timestamp');
