@@ -71,6 +71,10 @@ export async function runDeployStep(
   const branchConfig = typedSiteConfig(parseSiteConfig(branchText));
   const mainText = await deps.github.readFile(repo.name, SITE_CONFIG_PATH, repo.defaultBranch);
   const mainConfig = mainText === null ? null : typedSiteConfig(parseSiteConfig(mainText));
+  // A site cut by FORGE is never brought back by a release (only the team re-enables it).
+  if (mainConfig?.mode === 'disabled' || branchConfig.mode === 'disabled') {
+    throw new PipelineError('the site is disabled by FORGE (forge.config.json mode): no release');
+  }
   const locked: Violation[] = [];
   const lockedField = (field: string): Violation => ({
     rule: 'forge-config-locked-field',
@@ -152,7 +156,12 @@ export async function runDeployStep(
     );
   }
   let releaseSha = merged.sha;
-  if (released.mode !== 'live') {
+  if (released.mode === 'disabled') {
+    // The default branch was cut while the release was merging: never turned back to live.
+    throw new PipelineError('the released site is disabled by FORGE: it stays cut');
+  }
+  if (released.mode === 'sleeping') {
+    // A release wakes a sleeping site (only `sleeping` ever becomes `live` here).
     guard(signal);
     const commit = await deps.github.commitFiles({
       repo: repo.name,

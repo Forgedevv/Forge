@@ -339,6 +339,18 @@ export class FakeGithub extends Recorder implements PipelineGithub, RepoSource {
     return info;
   }
 
+  /**
+   * Commits `files` on top of a branch synchronously, outside the call log (a concurrent push by
+   * someone else, from inside an `onCall` hook). Returns the new head.
+   */
+  forceBranch(repo: string, branch: string, files: Map<string, FakeFile>, message: string): string {
+    const r = this.repo(repo);
+    const parent = r.branches.get(branch);
+    const sha = this.addCommit(new Map(files), parent ? [parent] : [], message);
+    r.branches.set(branch, sha);
+    return sha;
+  }
+
   /** Files of a ref (test assertions). */
   filesAt(repo: string, ref: string): Map<string, FakeFile> {
     const commit = this.resolve(this.repo(repo), ref);

@@ -1,4 +1,6 @@
 /// <reference types="node" />
+import { writeFile } from 'node:fs/promises';
+import path from 'node:path';
 import type { JobRow } from '@forge/shared';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { jobBranch } from './context.js';
@@ -277,6 +279,76 @@ describe('modify: deploying', () => {
     expect(production).toHaveLength(2);
     const merges = [...h.github.commits.values()].filter((c) => c.parents.length === 2);
     expect(merges).toHaveLength(2);
+  });
+
+  async function setMainMode(h: Harness, mode: string, message = 'cut'): Promise<void> {
+    const config = { ...mainConfig(h), mode };
+    await h.github.commitFiles({
+      repo: REPO,
+      branch: 'main',
+      message,
+      files: [{ path: 'forge.config.json', content: `${JSON.stringify(config, null, 2)}\n` }],
+    });
+  }
+
+  it('never releases over a site whose default branch is disabled', async () => {
+    const h = await liveLaunchpad();
+    await run(h, modifyJob());
+    await setMainMode(h, 'disabled');
+    const productionBefore = h.vercel.projectBySlug('moonpad')!.productionDeploymentId;
+    await expect(run(h, modifyJob({ status: 'deploying' }))).rejects.toThrow(/disabled/);
+    expect(h.github.count('mergeBranch')).toBe(1); // the creation release only
+    expect(mainConfig(h).mode).toBe('disabled');
+    expect(h.vercel.projectBySlug('moonpad')!.productionDeploymentId).toBe(productionBefore);
+  });
+
+  it('never releases a job branch whose mode is disabled', async () => {
+    const h = await liveLaunchpad();
+    await run(h, modifyJob());
+    const branch = JSON.parse(h.github.text(REPO, BRANCH, 'forge.config.json')!);
+    await h.github.commitFiles({
+      repo: REPO,
+      branch: BRANCH,
+      message: 'tamper',
+      files: [
+        {
+          path: 'forge.config.json',
+          content: `${JSON.stringify({ ...branch, mode: 'disabled' }, null, 2)}\n`,
+        },
+      ],
+    });
+    await expect(run(h, modifyJob({ status: 'deploying' }))).rejects.toThrow(/disabled/);
+    expect(h.github.count('mergeBranch')).toBe(1);
+  });
+
+  it('never turns a site cut during the merge back to live', async () => {
+    const h = await liveLaunchpad();
+    // A change that leaves forge.config.json alone, so the cut merges without a conflict.
+    h.runner.agent = async (workdir) => {
+      await writeFile(path.join(workdir, 'src', 'theme', 'theme.css'), ':root { --p: #00ff88; }\n');
+    };
+    await run(h, modifyJob());
+    let cut = false;
+    h.github.onCall = (op) => {
+      if (op === 'mergeBranch' && !cut) {
+        cut = true;
+        // The cut lands on the default branch right before the merge.
+        const files = new Map(h.github.filesAt(REPO, 'main'));
+        const config = JSON.parse(files.get('forge.config.json')!.content.toString('utf8'));
+        files.set('forge.config.json', {
+          content: Buffer.from(`${JSON.stringify({ ...config, mode: 'disabled' }, null, 2)}\n`),
+          executable: false,
+        });
+        h.github.forceBranch(REPO, 'main', files, 'cut');
+      }
+    };
+    const productionBefore = h.vercel.projectBySlug('moonpad')!.productionDeploymentId;
+    await expect(run(h, modifyJob({ status: 'deploying' }))).rejects.toThrow(/disabled/);
+    expect(mainConfig(h).mode).toBe('disabled');
+    expect(
+      [...h.github.commits.values()].some((c) => c.message.startsWith('Set the site mode')),
+    ).toBe(false);
+    expect(h.vercel.projectBySlug('moonpad')!.productionDeploymentId).toBe(productionBefore);
   });
 
   it('refuses a disabled launchpad', async () => {
