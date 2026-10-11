@@ -5,8 +5,6 @@ import {
   LaunchpadModificationRequest,
   LaunchpadModificationResponse,
   OwnerTransactionGetResponse,
-  OwnerTransactionSubmitRequest,
-  OwnerTransactionSubmitResponse,
   PaymentsQuoteRequest,
   PaymentsQuoteResponse,
   SpecConfirmRequest,
@@ -26,6 +24,13 @@ import { bytesToBase64 } from './base58';
 import { defaultMessage, errorMessage, isUserRejection } from './errors';
 import { request, route, validateBody } from './http';
 import {
+  getKeptLaunch,
+  isAlreadySigned,
+  keepLaunch,
+  submitKeptLaunch,
+  type KeptLaunch,
+} from './launches';
+import {
   PAYMENT_MESSAGES,
   clearSentPayment,
   confirmSentPayment,
@@ -39,7 +44,6 @@ import {
   isPreflightRejection,
   preflightMessage,
   requireSessionWallet,
-  runTransaction,
   safeReporter,
   sendAndConfirm,
 } from './tx';
@@ -299,37 +303,66 @@ export async function getOwnerTransactionSummary(jobId: string): Promise<LaunchR
   return { ...res.summary, simulation: res.simulation ?? 'unavailable' };
 }
 
+/**
+ * Signs the launch prepared by FORGE and submits it. The signed bytes are kept until the server
+ * settles them: a retry (after a pending confirmation, a network error or a reload of the tab)
+ * re-submits the same bytes without asking the wallet again. An already signed launch (409
+ * ALREADY_SIGNED, or the job is `owner_signed` or later) is a success.
+ */
 export async function signOwnerTransaction(jobId: string, onPhase: OnTxPhase): Promise<TxResult> {
-  const path = route(WEB_API_ROUTES.ownerTransactionGet.path, { id: jobId });
-  let prepared: { tx: VersionedTransaction; wallet: string } | null = null;
-  return runTransaction(onPhase, {
-    prepare: async () => {
-      const { address } = requireSessionWallet();
-      const res = await request(path, OwnerTransactionGetResponse);
-      if (res.summary.ownerWallet !== address) {
-        throw new ClientError('WRONG_WALLET', defaultMessage('WRONG_WALLET'));
-      }
-      const tx = deserializeTransaction(res.transaction);
-      // Paid by the session wallet, already signed by FORGE: only the owner's signature missing.
-      verifyLaunchTransaction(tx, { wallet: address });
-      prepared = { tx, wallet: address };
-      return tx;
-    },
-    submit: async (signed) => {
-      if (!prepared) throw new Error('The launch transaction was not prepared.');
-      // The server only accepts the prepared message, byte for byte.
-      assertSignedByWallet(prepared.tx, signed, prepared.wallet);
-      const body = validateBody(OwnerTransactionSubmitRequest, {
-        signedTransaction: bytesToBase64(signed.serialize()),
-      });
-      const res = await request(
-        route(WEB_API_ROUTES.ownerTransactionSubmit.path, { id: jobId }),
-        OwnerTransactionSubmitResponse,
-        { method: 'POST', body },
+  const report = safeReporter(onPhase);
+  const kept = getKeptLaunch(jobId);
+  if (kept) {
+    report('sending');
+    return submitKeptLaunch(kept, report);
+  }
+  let signed: VersionedTransaction;
+  try {
+    const { address, signTransaction } = requireSessionWallet();
+    let res: OwnerTransactionGetResponse;
+    try {
+      res = await request(
+        route(WEB_API_ROUTES.ownerTransactionGet.path, { id: jobId }),
+        OwnerTransactionGetResponse,
       );
-      return res.signature;
-    },
-  });
+    } catch (err) {
+      if (isAlreadySigned(err)) {
+        report('confirmed');
+        return { phase: 'confirmed' };
+      }
+      throw err;
+    }
+    if (res.summary.ownerWallet !== address) {
+      throw new ClientError('WRONG_WALLET', defaultMessage('WRONG_WALLET'));
+    }
+    const prepared = deserializeTransaction(res.transaction);
+    // Paid by the session wallet, already signed by FORGE: only the owner's signature missing.
+    verifyLaunchTransaction(prepared, { wallet: address });
+    report('awaiting_signature');
+    try {
+      signed = await signTransaction(prepared);
+    } catch (err) {
+      if (isUserRejection(err)) {
+        report('rejected');
+        return { phase: 'rejected' };
+      }
+      throw err;
+    }
+    // The server only accepts the prepared message, byte for byte.
+    assertSignedByWallet(prepared, signed, address);
+  } catch (err) {
+    report('error');
+    if (err instanceof ClientError) throw err;
+    return { phase: 'error', error: errorMessage(err) };
+  }
+  const record: KeptLaunch = {
+    jobId,
+    signedTransaction: bytesToBase64(signed.serialize()),
+    signature: feePayerSignature(signed)!,
+  };
+  keepLaunch(record);
+  report('sending');
+  return submitKeptLaunch(record, report);
 }
 
 // ---------------------------------------------------------------------------------------------

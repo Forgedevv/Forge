@@ -122,6 +122,7 @@ export const galleryCopy = {
         ['send-error', 'Send failure'],
         ['wrong-wallet', 'Wrong wallet'],
         ['simulation-failed', 'Simulation failed'],
+        ['already-signed', 'Already signed elsewhere'],
         ['simulation-unavailable', 'Simulation unavailable'],
       ],
     },

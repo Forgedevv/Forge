@@ -1,7 +1,7 @@
-import { ClientError, type OnTxPhase, type TxPhase, type TxResult } from '@forge/shared';
+import { ClientError, type OnTxPhase, type TxPhase } from '@forge/shared';
 import { SendTransactionError, VersionedTransaction } from '@solana/web3.js';
 import { base58Encode, base64ToBytes, bytesToBase64 } from './base58';
-import { defaultMessage, errorMessage, isUserRejection, networkError } from './errors';
+import { defaultMessage, networkError } from './errors';
 import { getSessionSnapshot } from './session-store';
 import { getWalletBridge } from './wallet-bridge';
 
@@ -108,47 +108,4 @@ export async function sendAndConfirm(signed: VersionedTransaction): Promise<stri
   const signature = await connection.sendRawTransaction(signed.serialize());
   await waitForConfirmation(signature);
   return signature;
-}
-
-export interface TxSteps {
-  /** Fetches the transaction to sign (server side). Errors here happen before any prompt. */
-  prepare(): Promise<VersionedTransaction>;
-  /** Sends the signed transaction and returns its signature once confirmed. */
-  submit(signed: VersionedTransaction): Promise<string>;
-}
-
-/**
- * Runs prepare -> sign -> submit and reports TxPhase. A wallet rejection is the `rejected`
- * phase, not an error. ClientErrors (UNAUTHORIZED, WRONG_WALLET, QUOTE_EXPIRED, ...) are
- * rethrown after reporting `error`; any other failure resolves with `phase: 'error'`.
- */
-export async function runTransaction(onPhase: OnTxPhase, steps: TxSteps): Promise<TxResult> {
-  const report = (p: TxPhase) => {
-    try {
-      onPhase(p);
-    } catch {
-      // a faulty listener must not break the flow
-    }
-  };
-  let stage: 'prepare' | 'sign' | 'send' = 'prepare';
-  try {
-    const { signTransaction } = requireWallet();
-    const tx = await steps.prepare();
-    stage = 'sign';
-    report('awaiting_signature');
-    const signed = await signTransaction(tx);
-    stage = 'send';
-    report('sending');
-    const signature = await steps.submit(signed);
-    report('confirmed');
-    return { phase: 'confirmed', signature };
-  } catch (err) {
-    if (stage === 'sign' && isUserRejection(err)) {
-      report('rejected');
-      return { phase: 'rejected' };
-    }
-    report('error');
-    if (err instanceof ClientError) throw err;
-    return { phase: 'error', error: errorMessage(err) || defaultMessage('NETWORK') };
-  }
 }

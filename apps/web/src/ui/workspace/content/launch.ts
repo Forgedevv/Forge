@@ -24,4 +24,6 @@ export const launchCopy = {
   track: 'Back to tracking',
   retry: 'Retry the same launch transaction',
   retryBody: 'The launch transaction remains valid. You can try sending it again.',
+  retrySigned:
+    'Your signed launch is kept: retrying sends the same transaction again, without a new signature.',
 } as const;

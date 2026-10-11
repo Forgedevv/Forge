@@ -67,3 +67,35 @@ describe('launch review', () => {
     expect(screen.getByText(copy.confirmed)).toBeInTheDocument();
   });
 });
+
+describe('launch already signed', () => {
+  it.each(['launch:already-signed', 'job:owner_signed'])(
+    '%s: shows the confirmed launch and never asks to sign',
+    async (scenario) => {
+      const { sign } = mount(scenario);
+      await advance(500);
+      expect(screen.getByText(copy.confirmed)).toBeInTheDocument();
+      expect(screen.getByRole('link', { name: /Back to tracking/ })).toHaveAttribute(
+        'href',
+        '/jobs/demo-job',
+      );
+      expect(screen.queryByRole('button', { name: /Sign and launch/ })).not.toBeInTheDocument();
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+      expect(sign).not.toHaveBeenCalled();
+    },
+  );
+
+  it('offers to resend the kept signed launch after a failed submission', async () => {
+    const { sign } = mount('launch:ready');
+    sign.mockResolvedValueOnce({
+      phase: 'error',
+      signature: 'demo-launch-signature',
+      error: 'Your signed launch was sent and is still confirming.',
+    });
+    await advance(500);
+    fireEvent.click(screen.getByRole('button', { name: /Sign and launch/ }));
+    await advance(10);
+    expect(screen.getByRole('button', { name: /Retry the same launch transaction/ })).toBeEnabled();
+    expect(screen.getByText(copy.retrySigned)).toBeInTheDocument();
+  });
+});

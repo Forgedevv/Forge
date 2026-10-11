@@ -25,6 +25,7 @@ import {
   ownerSummary,
 } from './fixtures';
 import { formatSol, formatUsd, shortAddress, explorerTxUrl } from '../workspace/format';
+import { ApiError } from '@/client/errors';
 import type { ForgeClientInput, LaunchpadSummaryView, PendingPayment } from '@/client/types';
 
 type ChatState = Omit<UseChatResult, 'send'> & { turns: number };
@@ -504,6 +505,14 @@ export function createMockController(scenario = 'journey') {
     async getOwnerTransactionSummary(id) {
       await wait();
       if (!state.jobs[id]) throw new Error('Job not found.');
+      if (scenario === 'launch:already-signed') {
+        throw new ApiError('NETWORK', 'This launch has already been signed.', {
+          status: 409,
+          serverCode: 'ALREADY_SIGNED',
+          details: { status: 'owner_signed' },
+          retryAfterMs: null,
+        });
+      }
       return {
         ...ownerSummary,
         simulation:
