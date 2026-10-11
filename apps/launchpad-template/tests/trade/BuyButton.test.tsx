@@ -14,9 +14,13 @@ vi.mock('@jup-ag/wallet-adapter', async () => {
   };
 });
 
-vi.mock('@solana/spl-token', async () => {
+vi.mock('@solana/spl-token', async (importOriginal) => {
   const h = await import('./harness');
-  return { getAssociatedTokenAddressSync: () => h.keys.user };
+  // Keep the other exports: `@forge/core` (imported by the swap adapter) needs them at load time.
+  return {
+    ...(await importOriginal<typeof import('@solana/spl-token')>()),
+    getAssociatedTokenAddressSync: () => h.keys.user,
+  };
 });
 
 vi.mock('../../src/forge/config', async () => {

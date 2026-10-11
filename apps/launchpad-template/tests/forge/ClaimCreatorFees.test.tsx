@@ -179,10 +179,10 @@ describe('ClaimCreatorFees', () => {
     expect(screen.getByRole('button', { name: 'Sign and claim' })).toBeDisabled();
   });
 
-  it('fails loudly with the default adapter instead of showing fake data', async () => {
+  it('fails loudly with the default adapter when the relay is not configured', async () => {
     const s = setup([]);
     render(<ClaimCreatorFees mode="live" chain={s.chain} />);
-    expect(await screen.findByRole('alert')).toHaveTextContent(/not available yet/);
+    expect(await screen.findByRole('alert')).toHaveTextContent(/not configured/);
   });
 
   it.each(['sleeping', 'disabled'] as const)('is unavailable in %s mode', (mode) => {
