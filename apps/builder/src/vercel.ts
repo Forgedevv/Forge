@@ -468,6 +468,10 @@ export interface VercelClient {
   pruneEnv(projectId: string): Promise<{ removed: string[] }>;
   /** Restricts deployments to the REST API (no git webhook deployment) and verifies it. */
   disableGitDeployments(projectId: string): Promise<VercelProject>;
+  /**
+   * Creates a deployment from a git ref. A production one is staged: it never takes the
+   * production domains by itself, only `promoteToProduction` does (after the caller's checks).
+   */
   createDeployment(input: CreateDeploymentInput): Promise<VercelDeployment>;
   getDeployment(idOrUrl: string): Promise<VercelDeployment>;
   /** Polls until READY; throws `deployment_failed` on ERROR/CANCELED and `timeout` past the deadline. */
@@ -528,6 +532,8 @@ const DeploymentSchema = z.object({
   projectId: z.string().optional(),
   gitSource: z.object({ sha: z.string().optional() }).nullish(),
   meta: z.object({ githubCommitSha: z.string().optional() }).nullish(),
+  /** Echo of the create option ("applies to custom domains only, defaults to `true`"). */
+  autoAssignCustomDomains: z.boolean().nullish(),
 });
 
 const COMMIT_SHA_RE = /^[0-9a-f]{40}$/;
@@ -548,6 +554,9 @@ function parseBody<S extends z.ZodType>(schema: S, res: HttpResponse, what: stri
   }
   return parsed.data;
 }
+
+/** States after which a deployment never changes (READY already got whatever it was assigned). */
+const FINAL_STATES = new Set<string>(['READY', 'ERROR', 'CANCELED', 'DELETED']);
 
 const READY_STATES = new Set<string>([
   'QUEUED',
@@ -868,6 +877,7 @@ export function createVercelClient(opts: VercelClientOptions): VercelClient {
     if (input.sha !== undefined && !/^[0-9a-f]{40}$/.test(input.sha)) {
       throw new ServiceError('vercel', 'invalid_input', 'invalid commit sha');
     }
+    const production = input.target === 'production';
     const res = await call({
       method: 'POST',
       path: '/v13/deployments',
@@ -876,7 +886,11 @@ export function createVercelClient(opts: VercelClientOptions): VercelClient {
       body: {
         name: input.project.name,
         project: input.project.id,
-        ...(input.target === 'production' ? { target: 'production' } : {}),
+        // A staged production deployment: built for production, but the production domains are
+        // only assigned by the explicit promotion, after the caller's post-READY checks (the
+        // launchpad may have been disabled, or deploys paused, while it was building). Same
+        // field as `vercel deploy --prod --skip-domain` (the Vercel CLI sends it in this body).
+        ...(production ? { target: 'production', autoAssignCustomDomains: false } : {}),
         gitSource: {
           type: 'github',
           org: githubOrg,
@@ -887,7 +901,28 @@ export function createVercelClient(opts: VercelClientOptions): VercelClient {
       },
       idempotent: true,
     });
-    return toDeployment(parseBody(DeploymentSchema, res, 'deployment'));
+    const body = parseBody(DeploymentSchema, res, 'deployment');
+    const deployment = toDeployment(body);
+    if (
+      production &&
+      body.autoAssignCustomDomains === true &&
+      !FINAL_STATES.has(deployment.readyState)
+    ) {
+      // Vercel did not stage it: once READY it would take the production domains before the
+      // checks. Cancel it (best effort) and fail; the caller alerts.
+      await call({
+        method: 'PATCH',
+        path: `/v12/deployments/${seg(deployment.id, 'deployment')}/cancel`,
+        idempotent: true,
+        allowStatus: [400, 404, 409],
+      }).catch(() => undefined);
+      throw new ServiceError(
+        'vercel',
+        'unexpected',
+        `production deployment ${deployment.id} was not staged (domains would be assigned automatically)`,
+      );
+    }
+    return deployment;
   }
 
   async function getDeployment(idOrUrl: string): Promise<VercelDeployment> {

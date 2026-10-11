@@ -759,6 +759,75 @@ describe('deployments', () => {
     expect((stub.calls[0]?.body as Record<string, unknown>)['target']).toBe('production');
   });
 
+  it('regression: stages production deployments (domains only move with the explicit promotion)', async () => {
+    const sha = 'b'.repeat(40);
+    const { client, stub } = make([
+      {
+        method: 'POST',
+        path: '/v13/deployments',
+        handler: () =>
+          json(deploymentJson('QUEUED', { target: 'production', autoAssignCustomDomains: false })),
+      },
+    ]);
+    await client.createDeployment({
+      project: { id: 'prj_123', name: 'lp-moonpad' },
+      repo: 'lp-moonpad',
+      ref: 'main',
+      sha,
+      target: 'production',
+    });
+    expect(stub.calls[0]?.body).toEqual({
+      name: 'lp-moonpad',
+      project: 'prj_123',
+      target: 'production',
+      autoAssignCustomDomains: false,
+      gitSource: { type: 'github', org: ORG, repo: 'lp-moonpad', ref: 'main', sha },
+    });
+    // Nothing else: no alias or promotion is requested by the creation.
+    expect(stub.calls).toHaveLength(1);
+  });
+
+  it('cancels and refuses a production deployment that Vercel did not stage', async () => {
+    const { client, stub } = make([
+      {
+        method: 'POST',
+        path: '/v13/deployments',
+        handler: () =>
+          json(deploymentJson('BUILDING', { target: 'production', autoAssignCustomDomains: true })),
+      },
+      { method: 'PATCH', path: '/v12/deployments/dpl_1/cancel', handler: () => json({}) },
+    ]);
+    await expect(
+      client.createDeployment({
+        project: { id: 'prj_123', name: 'lp-moonpad' },
+        repo: 'lp-moonpad',
+        ref: 'main',
+        target: 'production',
+      }),
+    ).rejects.toMatchObject({ kind: 'unexpected', message: expect.stringMatching(/not staged/) });
+    expect(stub.find('PATCH', '/v12/deployments/dpl_1/cancel')).toHaveLength(1);
+  });
+
+  it('accepts the existing finished deployment of a commit on a replay', async () => {
+    // Created before staging was used: already READY, nothing more can happen to it.
+    const { client, stub } = make([
+      {
+        method: 'POST',
+        path: '/v13/deployments',
+        handler: () =>
+          json(deploymentJson('READY', { target: 'production', autoAssignCustomDomains: true })),
+      },
+    ]);
+    const d = await client.createDeployment({
+      project: { id: 'prj_123', name: 'lp-moonpad' },
+      repo: 'lp-moonpad',
+      ref: 'main',
+      target: 'production',
+    });
+    expect(d.readyState).toBe('READY');
+    expect(stub.calls).toHaveLength(1);
+  });
+
   it('validates inputs', async () => {
     const { client, stub } = make([]);
     const project = { id: 'prj_123', name: 'lp-moonpad' };

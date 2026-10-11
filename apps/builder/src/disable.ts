@@ -176,7 +176,8 @@ async function deployMaintenance(
   const ready = await deps.vercel.waitForDeployment(deployment.id, {
     timeoutMs: deps.deploymentTimeoutMs ?? 15 * 60_000,
   });
-  // The team may have re-enabled the launchpad while the maintenance page was building.
+  // The team may have re-enabled the launchpad while the maintenance page was building. The
+  // deployment is staged (vercel.ts): production only changes with the promotion below.
   const current = await deps.store.getLaunchpad(lp.id);
   if (!current || current.status !== 'disabled') return 'not-disabled';
   await assertNotPaused(deps);
