@@ -23,6 +23,7 @@ import {
 import { TEST_PROJECT_ENV } from './pipeline/test-harness.js';
 import type { SiteMode } from '@forge/shared';
 import {
+  DeploysPausedError,
   runSleepCycle,
   setLaunchpadMode,
   sleepLaunchpad,
@@ -152,6 +153,23 @@ describe('sleep mode', () => {
     expect(b.vercel.deployments.size).toBe(0);
   });
 
+  it('does not promote when the launchpad is disabled while the deployment builds', async () => {
+    const { vercel, store, deps } = await setup();
+    vercel.onCall = (op) => {
+      if (op === 'waitForDeployment') store.setStatus(LAUNCHPAD_ID, 'disabled');
+    };
+    await expect(sleepLaunchpad(deps, LAUNCHPAD_ID)).rejects.toThrow(/disabled/);
+    expect(vercel.count('promoteToProduction')).toBe(0);
+    expect(store.get(LAUNCHPAD_ID).status).toBe('disabled');
+  });
+
+  it('never overwrites a disabled status set right before the status write', async () => {
+    const { store, deps } = await setup();
+    store.beforeWrite = () => store.setStatus(LAUNCHPAD_ID, 'disabled');
+    await expect(sleepLaunchpad(deps, LAUNCHPAD_ID)).rejects.toThrow(/status changed/);
+    expect(store.get(LAUNCHPAD_ID).status).toBe('disabled');
+  });
+
   it('wakes a sleeping launchpad that traded again', async () => {
     const { github, store, deps } = await setup({ mode: 'sleeping', lastTradeDaysAgo: 1 });
     const result = await runSleepCycle(deps);
@@ -189,6 +207,155 @@ describe('sleep mode', () => {
     ]);
     expect(alerts).toEqual(['sleep_failed:ghostpad']);
     expect(mode(github)).toBe('sleeping');
+  });
+
+  /** A second launchpad with its repo and project (ids sort after LAUNCHPAD_ID). */
+  async function addLaunchpad(
+    h: Awaited<ReturnType<typeof setup>>,
+    id: string,
+    slug: string,
+    mode: SiteMode = 'live',
+  ): Promise<void> {
+    const files = templateFiles();
+    files.set('forge.config.json', {
+      content: Buffer.from(siteConfig(mode, slug, `Pad ${slug}`)),
+      executable: false,
+    });
+    h.github.seedRepo(slug, files);
+    await h.vercel.ensureProject({ slug });
+    h.store.add(
+      launchpadFixture({
+        id,
+        slug,
+        spec: { ...specFixture(), slug, name: `Pad ${slug}` },
+        status: mode === 'sleeping' ? 'sleeping' : 'live',
+        github_repo: `lp-${slug}`,
+        last_trade_at: new Date(NOW - (mode === 'sleeping' ? 1 : 40) * DAY).toISOString(),
+        created_at: new Date(NOW - 90 * DAY).toISOString(),
+      }),
+    );
+  }
+
+  describe('deploys_paused is re-read before every deployment step', () => {
+    it('stops the cycle as soon as the switch is set', async () => {
+      const h = await setup();
+      await addLaunchpad(h, '22222222-2222-4333-8444-555555555555', 'secondpad');
+      // The first launchpad was promoted before the switch: the next one is never touched.
+      h.vercel.onCall = (op) => {
+        if (op === 'promoteToProduction' && h.vercel.count('promoteToProduction') === 1) h.pause();
+      };
+      const result = await runSleepCycle(h.deps);
+      expect(result.paused).toBe(true);
+      expect(result.slept).toEqual(['moonpad']);
+      expect(result.failed).toEqual([]);
+      expect(h.store.get('22222222-2222-4333-8444-555555555555').status).toBe('live');
+      expect(h.vercel.count('createDeployment')).toBe(1);
+    });
+
+    for (const [op, expectCommit, expectDeployment] of [
+      ['getBranchHead', false, false],
+      ['setEnv', true, false],
+      ['waitForDeployment', true, true],
+    ] as const) {
+      it(`refuses to go on when deploys are paused at ${op}`, async () => {
+        const h = await setup();
+        h.github.onCall = (o) => {
+          if (o === op) h.pause();
+        };
+        h.vercel.onCall = (o) => {
+          if (o === op) h.pause();
+        };
+        await expect(sleepLaunchpad(h.deps, LAUNCHPAD_ID)).rejects.toBeInstanceOf(
+          DeploysPausedError,
+        );
+        expect(h.github.count('commitFiles')).toBe(expectCommit ? 1 : 0);
+        expect(h.vercel.count('createDeployment')).toBe(expectDeployment ? 1 : 0);
+        expect(h.vercel.count('promoteToProduction')).toBe(0);
+        expect(h.store.get(LAUNCHPAD_ID).status).toBe('live');
+      });
+    }
+
+    it('fails closed when the switch cannot be read', async () => {
+      const h = await setup();
+      let reads = 0;
+      h.deps.isPaused = async () => {
+        reads += 1;
+        if (reads > 1) throw new Error('flags unreadable');
+        return false;
+      };
+      const result = await runSleepCycle(h.deps);
+      expect(result).toMatchObject({ paused: true, slept: [], failed: [] });
+      expect(h.vercel.count('createDeployment')).toBe(0);
+      // Unreadable from the start: nothing at all.
+      h.deps.isPaused = async () => {
+        throw new Error('flags unreadable');
+      };
+      expect(await runSleepCycle(h.deps)).toMatchObject({ paused: true, slept: [] });
+      expect(h.store.count('listDormant')).toBe(1);
+    });
+  });
+
+  it('never redeploys around a job that failed after approval', async () => {
+    for (const failedStage of ['onchain', 'deploy']) {
+      const { github, vercel, store, deps } = await setup();
+      store.jobs.push({
+        launchpadId: LAUNCHPAD_ID,
+        status: 'failed',
+        failedStage,
+        updatedAt: new Date(NOW - 300 * DAY).toISOString(),
+      });
+      expect(await runSleepCycle(deps)).toMatchObject({ slept: [], skipped: ['moonpad'] });
+      expect(mode(github)).toBe('live');
+      expect(vercel.deployments.size).toBe(0);
+    }
+    // Same for a wake-up.
+    const woken = await setup({ mode: 'sleeping', lastTradeDaysAgo: 1 });
+    woken.store.jobs.push({
+      launchpadId: LAUNCHPAD_ID,
+      status: 'failed',
+      failedStage: 'deploy',
+      updatedAt: new Date(NOW - 300 * DAY).toISOString(),
+    });
+    expect(await runSleepCycle(woken.deps)).toMatchObject({ woken: [], skipped: ['moonpad'] });
+    // An old build failure (refunded or not) does not block anything.
+    const build = await setup();
+    build.store.jobs.push({
+      launchpadId: LAUNCHPAD_ID,
+      status: 'failed',
+      failedStage: 'build',
+      updatedAt: new Date(NOW - 300 * DAY).toISOString(),
+    });
+    expect((await runSleepCycle(build.deps)).slept).toEqual(['moonpad']);
+  });
+
+  it('pages through every candidate: skipped launchpads cannot starve the others', async () => {
+    const h = await setup();
+    const second = '22222222-2222-4333-8444-555555555555';
+    const third = '33333333-2222-4333-8444-555555555555';
+    await addLaunchpad(h, second, 'secondpad');
+    await addLaunchpad(h, third, 'thirdpad');
+    // The first two have a job in flight, every cycle.
+    for (const id of [LAUNCHPAD_ID, second]) {
+      h.store.jobs.push({ launchpadId: id, status: 'preview_ready', updatedAt: '2026-01-01' });
+    }
+    h.deps.batchSize = 1;
+    const result = await runSleepCycle(h.deps);
+    expect(result.skipped).toEqual(['moonpad', 'secondpad']);
+    expect(result.slept).toEqual(['thirdpad']);
+    expect(h.store.get(third).status).toBe('sleeping');
+    // Pages of one row until a short page: three rows, then an empty page.
+    expect(h.store.count('listDormant')).toBe(4);
+  });
+
+  it('pages through failing launchpads too', async () => {
+    const h = await setup();
+    const second = '22222222-2222-4333-8444-555555555555';
+    await addLaunchpad(h, second, 'secondpad');
+    h.github.repos.delete(REPO); // the first one always fails
+    h.deps.batchSize = 1;
+    const result = await runSleepCycle(h.deps);
+    expect(result.failed.map((f) => f.slug)).toEqual(['moonpad']);
+    expect(result.slept).toEqual(['secondpad']);
   });
 
   describe('re-run after a crash at each step', () => {

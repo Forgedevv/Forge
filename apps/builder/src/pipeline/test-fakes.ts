@@ -398,6 +398,11 @@ export class FakeGithub extends Recorder implements PipelineGithub, RepoSource {
     return this.around('commitFiles', () => {
       const r = this.repo(input.repo);
       const branchHead = r.branches.get(input.branch) ?? null;
+      if (input.expectedHeadSha !== undefined && branchHead !== input.expectedHeadSha) {
+        throw new ServiceError('github', 'conflict', `branch ${input.branch} moved`, {
+          status: 409,
+        });
+      }
       const parentSha = branchHead ?? r.branches.get(input.baseBranch ?? r.info.defaultBranch);
       if (!parentSha) throw new ServiceError('github', 'not_found', 'base branch not found');
       const parent = this.commits.get(parentSha)!;
