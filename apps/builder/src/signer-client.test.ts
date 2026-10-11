@@ -72,6 +72,68 @@ describe('createSignerClient', () => {
     );
   });
 
+  it('keeps the optional summary and details of the prepare answer', async () => {
+    const summary = {
+      coinName: 'Moon',
+      coinSymbol: 'MOON',
+      firstBuyLamports: '500000000',
+      estimatedNetworkFeeLamports: '25000000',
+      ownerWallet: ADDR,
+    };
+    const fetchMock = vi.fn(async () =>
+      json({
+        partiallySignedTx: 'AAAA',
+        mint: ADDR,
+        summary,
+        details: { nonce: 'n', rebuilds: 1 },
+        extra: 'dropped',
+      }),
+    );
+    const res = await make(fetchMock).prepareLaunchCoin(JOB);
+    expect(res).toEqual({
+      partiallySignedTx: 'AAAA',
+      mint: ADDR,
+      summary,
+      details: { nonce: 'n', rebuilds: 1 },
+    });
+  });
+
+  it('drops a malformed summary or details instead of failing the launch', async () => {
+    const fetchMock = vi.fn(async () =>
+      json({
+        partiallySignedTx: 'AAAA',
+        mint: ADDR,
+        summary: { coinName: 'Moon', firstBuyLamports: 12 },
+        details: 'not an object',
+      }),
+    );
+    expect(await make(fetchMock).prepareLaunchCoin(JOB)).toEqual({
+      partiallySignedTx: 'AAAA',
+      mint: ADDR,
+    });
+  });
+
+  it('still refuses a prepare answer without a valid transaction or mint', async () => {
+    for (const body of [
+      { mint: ADDR, summary: {} },
+      { partiallySignedTx: 'AAAA', mint: 'not-an-address' },
+    ]) {
+      const fetchMock = vi.fn(async () => json(body));
+      await expect(make(fetchMock).prepareLaunchCoin(JOB)).rejects.toBeInstanceOf(
+        SignerClientError,
+      );
+    }
+  });
+
+  it('tolerates the optional health fields, well formed or not', async () => {
+    const full = { ok: true, cluster: 'devnet', uptimeSeconds: 12, jobs: { claims: 'idle' } };
+    expect(await make(vi.fn(async () => json(full))).health()).toEqual(full);
+    expect(
+      await make(vi.fn(async () => json({ ok: false, cluster: 3, uptimeSeconds: 'x' }))).health(),
+    ).toEqual({ ok: false });
+    await expect(make(vi.fn(async () => json({ cluster: 'devnet' }))).health()).rejects.toThrow();
+  });
+
   it('rejects responses that fail schema validation', async () => {
     const fetchMock = vi.fn(async () => json({ launchpadConfig: 'nope' }));
     await expect(make(fetchMock).createConfigs(JOB)).rejects.toBeInstanceOf(SignerClientError);
