@@ -25,9 +25,14 @@ import {
  * - RPC_RELAY_TOKEN_SECRET    optional, at least 32 bytes. Enables the server-to-server tier
  *                             (header X-Forge-Relay-Token, see server-token.ts).
  * - RPC_RELAY_ANONYMOUS       `on` (default) or `off`. Requests with neither an Origin header nor
- *                             a server token (non-browser callers) get the strict anonymous tier,
- *                             or are refused when `off`.
+ *                             a server token (non-browser callers) are served with the same per-IP
+ *                             limits as browsers, or refused when `off`. Not a security boundary:
+ *                             any client can send an Origin header.
  * - RPC_RELAY_*_PER_MINUTE    optional numeric overrides of the default limits (limits.ts).
+ *                             RPC_RELAY_ORIGIN_UNITS_PER_MINUTE and RPC_RELAY_ANONYMOUS_UNITS_PER_MINUTE
+ *                             are alert thresholds (logged, never refused).
+ *                             RPC_RELAY_ANONYMOUS_IP_UNITS_PER_MINUTE is no longer read: anonymous
+ *                             callers share the per-IP limit (RPC_RELAY_IP_UNITS_PER_MINUTE).
  */
 
 export type Env = Readonly<Record<string, string | undefined>>;
@@ -184,7 +189,6 @@ export function readLimits(env: Env): RelayLimits {
     ip: units('RPC_RELAY_IP_UNITS_PER_MINUTE', d.ip),
     origin: units('RPC_RELAY_ORIGIN_UNITS_PER_MINUTE', d.origin),
     server: units('RPC_RELAY_SERVER_UNITS_PER_MINUTE', d.server),
-    anonymousIp: units('RPC_RELAY_ANONYMOUS_IP_UNITS_PER_MINUTE', d.anonymousIp),
     anonymousGlobal: units('RPC_RELAY_ANONYMOUS_UNITS_PER_MINUTE', d.anonymousGlobal),
     sendPerCaller: sends('RPC_RELAY_SENDS_PER_MINUTE', d.sendPerCaller),
     sendServer: sends('RPC_RELAY_SERVER_SENDS_PER_MINUTE', d.sendServer),

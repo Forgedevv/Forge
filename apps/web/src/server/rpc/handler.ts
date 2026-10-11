@@ -59,7 +59,12 @@ export interface RelayDeps {
   upstream: Upstream;
   logger: RelayLogger;
   clientIp?: (request: Request) => string;
+  now?: () => number;
 }
+
+/** A dry alert-only bucket is logged at most this often. */
+const ALERT_INTERVAL_MS = 60_000;
+const MAX_ALERT_KEYS = 1_000;
 
 export interface RelayHandler {
   post(request: Request): Promise<Response>;
@@ -227,6 +232,7 @@ function upstreamFailure(result: Exclude<UpstreamResult, { kind: 'ok' }>): {
 export function createRelayHandler(deps: RelayDeps): RelayHandler {
   const { config, directory, limiter, upstream, logger } = deps;
   const ipOf = deps.clientIp ?? defaultClientIp;
+  const now = deps.now ?? Date.now;
   const limits = config.limits;
   const policy = {
     appOrigin: config.appOrigin,
@@ -300,13 +306,16 @@ export function createRelayHandler(deps: RelayDeps): RelayHandler {
     return { ok: true, caller: { tier: 'anonymous', ip: ipOf(request) }, corsOrigin: null };
   }
 
-  /** Buckets drawn for `units` (all calls) and `sends` (sendTransaction calls). */
+  /**
+   * Enforced buckets drawn for `units` (all calls) and `sends` (sendTransaction calls). Browser and
+   * anonymous callers share the per-IP buckets: an Origin header buys no extra budget.
+   */
   function draws(caller: CallerTier, units: number, sends: number): BucketDraw[] {
     const out: BucketDraw[] = [{ key: 'global', cost: units, rule: limits.global }];
     switch (caller.tier) {
       case 'browser':
+      case 'anonymous':
         out.push({ key: `ip:${caller.ip}`, cost: units, rule: limits.ip });
-        out.push({ key: `origin:${caller.origin}`, cost: units, rule: limits.origin });
         if (sends > 0) {
           out.push({ key: `send:${caller.ip}`, cost: sends, rule: limits.sendPerCaller });
         }
@@ -317,15 +326,36 @@ export function createRelayHandler(deps: RelayDeps): RelayHandler {
           out.push({ key: `send-server:${caller.slug}`, cost: sends, rule: limits.sendServer });
         }
         break;
-      case 'anonymous':
-        out.push({ key: `anon-ip:${caller.ip}`, cost: units, rule: limits.anonymousIp });
-        out.push({ key: 'anon', cost: units, rule: limits.anonymousGlobal });
-        if (sends > 0) {
-          out.push({ key: `send:${caller.ip}`, cost: sends, rule: limits.sendPerCaller });
-        }
-        break;
     }
     return out;
+  }
+
+  /** Alert-only bucket of a caller (never refuses: anyone can claim an origin). */
+  function alertDraw(caller: CallerTier, units: number): BucketDraw | null {
+    switch (caller.tier) {
+      case 'browser':
+        return { key: `origin:${caller.origin}`, cost: units, rule: limits.origin };
+      case 'anonymous':
+        return { key: 'anon', cost: units, rule: limits.anonymousGlobal };
+      case 'server':
+        return null;
+    }
+  }
+
+  const lastAlertAt = new Map<string, number>();
+
+  /** Meters the alert-only bucket; logs (at most once a minute per bucket) when it runs dry. */
+  async function meter(caller: CallerTier, units: number, fields: Record<string, string>) {
+    const draw = alertDraw(caller, units);
+    if (draw === null) return;
+    const decision = await limiter.take([draw]);
+    if (decision.allowed) return;
+    const t = now();
+    const last = lastAlertAt.get(draw.key);
+    if (last !== undefined && t - last < ALERT_INTERVAL_MS) return;
+    if (lastAlertAt.size >= MAX_ALERT_KEYS) lastAlertAt.clear();
+    lastAlertAt.set(draw.key, t);
+    logger.log('warn', 'budget_alert', { ...fields, bucket: bucketName(draw.key) });
   }
 
   function tierFields(caller: CallerTier): Record<string, string> {
@@ -472,6 +502,7 @@ export function createRelayHandler(deps: RelayDeps): RelayHandler {
       }
 
       const decision = await limiter.take(draws(caller, units, sends));
+      if (decision.allowed) await meter(caller, units, fields);
       if (!decision.allowed) {
         logger.log('warn', 'rate_limited', {
           ...fields,

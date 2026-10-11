@@ -4,11 +4,15 @@
  * Every HTTP request costs REQUEST_OVERHEAD unit, then each JSON-RPC call costs its method weight
  * (methods.ts). `sendTransaction` additionally draws from a dedicated, much smaller bucket.
  *
- * Buckets per caller tier (handler.ts):
- * - browser (allowed Origin): per client IP + per origin + global;
+ * Buckets per caller tier (handler.ts). An Origin header is not an identity (any non-browser
+ * client can send one), so it never buys a larger per-IP budget:
+ * - browser (allowed Origin) and anonymous (no Origin, no token): the SAME per-client-IP bucket
+ *   (`ip:<ip>`, IPv6 by /64) + global;
  * - server (valid X-Forge-Relay-Token): per launchpad slug + global (Vercel egress IPs are shared
- *   by every client project, so the client IP is not a meaningful key there);
- * - anonymous (no Origin, no token): per client IP (strict) + one shared anonymous bucket + global.
+ *   by every client project, so the client IP is not a meaningful key there).
+ * Alert-only buckets (never refuse, only log when exceeded): per origin, and all anonymous
+ * traffic. Enforcing them would let anyone drain a site's origin bucket (or the anonymous one)
+ * by sending its Origin header, and deny service to its real visitors.
  *
  * `RelayRateLimitStore` is the seam for a shared store (Redis / Upstash with a Lua script doing the
  * same all-or-nothing draw). The in-memory store below is per server instance: on Vercel each
@@ -24,10 +28,12 @@ export interface BucketRule {
 }
 
 export interface RelayLimits {
+  /** Per client IP, browser and anonymous tiers alike. */
   ip: BucketRule;
+  /** Alert-only: logged when one origin exceeds it, never refused. */
   origin: BucketRule;
   server: BucketRule;
-  anonymousIp: BucketRule;
+  /** Alert-only: logged when all anonymous traffic together exceeds it, never refused. */
   anonymousGlobal: BucketRule;
   /** sendTransaction calls per browser / anonymous caller (client IP). */
   sendPerCaller: BucketRule;
@@ -62,7 +68,6 @@ export const DEFAULT_LIMITS: RelayLimits = {
   ip: perMinute(600, 30),
   origin: perMinute(12_000, 30),
   server: perMinute(1_200, 30),
-  anonymousIp: perMinute(60, 60),
   anonymousGlobal: perMinute(600, 30),
   sendPerCaller: sendsPerMinute(6, 6),
   sendServer: sendsPerMinute(30, 10),

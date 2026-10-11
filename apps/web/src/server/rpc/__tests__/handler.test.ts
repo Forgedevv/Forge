@@ -620,12 +620,16 @@ describe('rate limits', () => {
     expect(JSON.stringify(relay.logger.entries)).not.toContain('198.51.100.1');
   });
 
-  it('limits per origin across IPs', async () => {
-    const relay = makeRelay({ limits: { origin: rule(4) } });
-    expect((await send(relay, call('getSlot'), { ip: '203.0.113.1' })).res.status).toBe(200);
-    expect((await send(relay, call('getSlot'), { ip: '203.0.113.2' })).res.status).toBe(200);
-    expect((await send(relay, call('getSlot'), { ip: '203.0.113.3' })).res.status).toBe(429);
-    expect((await send(relay, call('getSlot'), { origin: FORGE })).res.status).toBe(200);
+  it('never refuses per origin (anyone can send it): the origin bucket only alerts', async () => {
+    const relay = makeRelay({ limits: { origin: rule(2) } });
+    for (let i = 1; i <= 5; i++) {
+      expect((await send(relay, call('getSlot'), { ip: `203.0.113.${i}` })).res.status).toBe(200);
+    }
+    // One alert per bucket per minute, naming the bucket family only.
+    const alerts = relay.logger.entries.filter((e) => e.event === 'budget_alert');
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0]?.fields).toMatchObject({ bucket: 'origin', tier: 'browser', origin: CLIENT });
+    expect(relay.logger.events()).not.toContain('rate_limited');
   });
 
   it('is stricter for sendTransaction than for reads', async () => {
@@ -649,17 +653,42 @@ describe('rate limits', () => {
     expect((await viaServer(sun, '76.76.21.1')).res.status).toBe(200);
   });
 
-  it('gives anonymous callers a strict per-IP and a shared bucket', async () => {
-    const relay = makeRelay({ limits: { anonymousIp: rule(4), anonymousGlobal: rule(6) } });
-    const anon = (ip: string) => send(relay, call('getSlot'), { origin: null, ip });
-    expect((await anon('192.0.2.1')).res.status).toBe(200);
-    expect((await anon('192.0.2.1')).res.status).toBe(200);
-    expect((await anon('192.0.2.1')).res.status).toBe(429);
-    expect((await anon('192.0.2.2')).res.status).toBe(200);
-    // Shared anonymous bucket exhausted (6 units used): another IP is refused too.
-    expect((await anon('192.0.2.3')).res.status).toBe(429);
-    // Browsers are not affected by the anonymous buckets.
-    expect((await send(relay, call('getSlot'), { ip: '192.0.2.3' })).res.status).toBe(200);
+  it('gives browser and anonymous callers the same per-IP bucket', async () => {
+    const relay = makeRelay({ limits: { ip: rule(6) } });
+    const ip = '192.0.2.1';
+    // 2 units per getSlot: anonymous, then with an Origin header, then anonymous again.
+    expect((await send(relay, call('getSlot'), { origin: null, ip })).res.status).toBe(200);
+    expect((await send(relay, call('getSlot'), { ip })).res.status).toBe(200);
+    expect((await send(relay, call('getSlot'), { origin: null, ip })).res.status).toBe(200);
+    // The budget is spent whatever the caller claims to be.
+    expect((await send(relay, call('getSlot'), { ip })).res.status).toBe(429);
+    expect((await send(relay, call('getSlot'), { origin: null, ip })).res.status).toBe(429);
+    expect((await send(relay, call('getSlot'), { origin: null, ip: '192.0.2.2' })).res.status).toBe(
+      200,
+    );
+  });
+
+  it('only alerts on the shared anonymous bucket', async () => {
+    const relay = makeRelay({ limits: { anonymousGlobal: rule(2) } });
+    for (let i = 1; i <= 4; i++) {
+      const anon = await send(relay, call('getSlot'), { origin: null, ip: `192.0.2.${i}` });
+      expect(anon.res.status).toBe(200);
+    }
+    const alerts = relay.logger.entries.filter((e) => e.event === 'budget_alert');
+    expect(alerts.map((e) => e.fields.bucket)).toEqual(['anon']);
+  });
+
+  it('keeps the global cost ceiling for every tier', async () => {
+    const relay = makeRelay({ limits: { global: rule(4) } });
+    expect((await send(relay, call('getSlot'), { ip: '192.0.2.1' })).res.status).toBe(200);
+    expect((await send(relay, call('getSlot'), { origin: null, ip: '192.0.2.2' })).res.status).toBe(
+      200,
+    );
+    expect((await send(relay, call('getSlot'), { ip: '192.0.2.3' })).res.status).toBe(429);
+    const token = deriveRelayToken(SECRET, 'moonpad');
+    expect(
+      (await send(relay, call('getSlot'), { origin: null, token, ip: '76.76.21.1' })).res.status,
+    ).toBe(429);
   });
 
   it('charges invalid requests too', async () => {
