@@ -58,7 +58,7 @@ const DENIED_FIXTURES: Record<string, string> = {
   'src/.env.development': 'X=1\n',
   'server.pem': 'certificate\n',
   'certs/signer.key': 'key\n',
-  'id_ed25519': 'key\n',
+  id_ed25519: 'key\n',
   'id_rsa.pub': 'key\n',
   'wallet-keypair.json': '[]\n',
   'keys/keypair.json': '[]\n',
@@ -147,31 +147,38 @@ describe('prepare-template-repo: git ls-files', () => {
     }
   }
 
-  it.skipIf(!hasGit())('lists the tracked files of a real repository, not the untracked ones', () => {
-    const repo = tempDir('forge-template-git-');
-    execFileSync('git', ['-C', repo, 'init', '-q'], { stdio: 'ignore' });
-    writeFiles(repo, {
-      'app/package.json': PACKAGE_JSON,
-      'app/src/index.ts': 'export {};\n',
-      'app/src/untracked.ts': 'export {};\n',
-      'other/file.ts': 'export {};\n',
-    });
-    execFileSync('git', ['-C', repo, 'add', 'app/package.json', 'app/src/index.ts', 'other/file.ts'], {
-      stdio: 'ignore',
-    });
-    const sourceDir = join(repo, 'app');
-    expect(listTrackedFiles(sourceDir).sort()).toEqual(['package.json', 'src/index.ts']);
+  it.skipIf(!hasGit())(
+    'lists the tracked files of a real repository, not the untracked ones',
+    () => {
+      const repo = tempDir('forge-template-git-');
+      execFileSync('git', ['-C', repo, 'init', '-q'], { stdio: 'ignore' });
+      writeFiles(repo, {
+        'app/package.json': PACKAGE_JSON,
+        'app/src/index.ts': 'export {};\n',
+        'app/src/untracked.ts': 'export {};\n',
+        'other/file.ts': 'export {};\n',
+      });
+      execFileSync(
+        'git',
+        ['-C', repo, 'add', 'app/package.json', 'app/src/index.ts', 'other/file.ts'],
+        {
+          stdio: 'ignore',
+        },
+      );
+      const sourceDir = join(repo, 'app');
+      expect(listTrackedFiles(sourceDir).sort()).toEqual(['package.json', 'src/index.ts']);
 
-    const out = join(tempDir('forge-template-out-'), 'out');
-    const result = prepareTemplateRepo({
-      out,
-      pins: PINS,
-      typescriptVersion: TYPESCRIPT,
-      sourceDir,
-    });
-    expect(result.files).toEqual(['package.json', 'src/index.ts', 'vercel.json']);
-    expect(existsSync(join(out, 'src', 'untracked.ts'))).toBe(false);
-  });
+      const out = join(tempDir('forge-template-out-'), 'out');
+      const result = prepareTemplateRepo({
+        out,
+        pins: PINS,
+        typescriptVersion: TYPESCRIPT,
+        sourceDir,
+      });
+      expect(result.files).toEqual(['package.json', 'src/index.ts', 'vercel.json']);
+      expect(existsSync(join(out, 'src', 'untracked.ts'))).toBe(false);
+    },
+  );
 
   it('fails outside a git work tree', () => {
     const dir = tempDir('forge-template-nogit-');
@@ -193,7 +200,8 @@ describe('prepare-template-repo: git ls-files', () => {
 });
 
 /** One sample per secret shape, built at runtime so this file never holds a literal secret. */
-const r = (chars: string, length: number) => chars.repeat(Math.ceil(length / chars.length)).slice(0, length);
+const r = (chars: string, length: number) =>
+  chars.repeat(Math.ceil(length / chars.length)).slice(0, length);
 const SECRET_SAMPLES: Record<string, string> = {
   'npm auth token': `//npm.pkg.github.com/:_${'authToken'}=abc\n`,
   'npm token': `const t = 'npm_${r('aB3', 36)}';\n`,
@@ -240,7 +248,11 @@ describe('prepare-template-repo: secret scan', () => {
   it('keeps the real template clean', () => {
     const out = join(tempDir('forge-template-out-'), 'out');
     expect(() =>
-      prepareTemplateRepo({ out, pins: { '@forge/core': '1.0.0', '@forge/shared': '1.0.0' }, dryRun: true }),
+      prepareTemplateRepo({
+        out,
+        pins: { '@forge/core': '1.0.0', '@forge/shared': '1.0.0' },
+        dryRun: true,
+      }),
     ).not.toThrow();
   });
 

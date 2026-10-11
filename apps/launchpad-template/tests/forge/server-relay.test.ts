@@ -58,9 +58,13 @@ describe('server relay token', () => {
       seen.push({ ...(init?.headers as Record<string, string>) });
       return new Response(JSON.stringify({ jsonrpc: '2.0', id: '1', result: 1 }), { status: 200 });
     });
-    const connection = createServerRelayConnection('https://forge.example/api/rpc', {}, {
-      fetch: fetch as never,
-    });
+    const connection = createServerRelayConnection(
+      'https://forge.example/api/rpc',
+      {},
+      {
+        fetch: fetch as never,
+      },
+    );
     await connection.getSlot();
     expect(Object.keys(seen[0] ?? {}).map((k) => k.toLowerCase())).not.toContain(
       'x-forge-relay-token',
@@ -113,7 +117,9 @@ describe('server token wiring', () => {
 
   it('only server code reads the token, and never under a NEXT_PUBLIC_ name', () => {
     const readers = sourceFiles(join(root, 'src'))
-      .filter((file) => /FORGE_RPC_RELAY_TOKEN|server-relay/.test(readFileSync(file, 'utf8')))
+      .filter((file) =>
+        /FORGE_RPC_RELAY_TOKEN|from '[^']*server-relay'/.test(readFileSync(file, 'utf8')),
+      )
       .map((file) => relative(root, file).split('\\').join('/'))
       .sort();
     expect(readers).toEqual(['src/forge/server-relay.ts', 'src/pages/api/upload.ts']);

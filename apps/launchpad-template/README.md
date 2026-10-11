@@ -52,7 +52,8 @@ explicitly, from the public `NEXT_PUBLIC_*` variables below.
 
 ## Environment
 
-See `.env.example`. The site holds no secret: every variable is public and injected by FORGE.
+See `.env.example`. The site holds no secret: every variable is injected by FORGE and public, except
+the optional server-only `FORGE_RPC_RELAY_TOKEN` (a rate limit tier, nothing more).
 `NEXT_PUBLIC_*` values are inlined in the browser bundle at build time.
 
 | Variable | Use |

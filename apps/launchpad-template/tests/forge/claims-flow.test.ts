@@ -1,9 +1,4 @@
-import {
-  Keypair,
-  SystemProgram,
-  TransactionMessage,
-  VersionedTransaction,
-} from '@solana/web3.js';
+import { Keypair, SystemProgram, TransactionMessage, VersionedTransaction } from '@solana/web3.js';
 import { describe, expect, it, vi } from 'vitest';
 import { MOCK_CLAIM_COSTS, createMockClaimsCore, mockCoin } from '@/forge/claims/mock-core';
 import { claimCosts, executeClaim, prepareClaim, type ClaimDeps } from '@/forge/claims/flow';

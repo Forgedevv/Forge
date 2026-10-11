@@ -35,7 +35,8 @@ export function accountsByAddress(
   others: (address: string) => unknown = () => null,
   mint: unknown = mintAccount(6),
 ) {
-  return async (address: PublicKey) => (address.toBase58() === keys.mint ? mint : others(address.toBase58()));
+  return async (address: PublicKey) =>
+    address.toBase58() === keys.mint ? mint : others(address.toBase58());
 }
 
 export function createFakeConnection(): FakeConnection {
