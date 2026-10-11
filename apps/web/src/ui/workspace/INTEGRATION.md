@@ -1,34 +1,24 @@
 # Operational interface handoff
 
-Checked on 2026-10-10. The frontend branch connects the real `WebClient` and its configured wallet provider. Development previews remain isolated mocks; production always uses the real client.
+Updated on 2026-10-11 (wave 4 review fixes). The screens use the real client (`src/client`) through `WorkspaceProvider`; development previews remain isolated mocks and production always uses the real client.
 
-## Backend route availability
+## Client contract
 
-The paths below come from `WEB_API_ROUTES` in `@forge/shared`. The frontend does not implement them or substitute financial behavior when they are missing.
+Screens are typed with `ForgeWebClient` (`src/client/types.ts`): the shared `WebClient` contract with richer, optional results (payment outcome, launch simulation, claim summary, launchpad load errors and on-chain availability) and three extensions (`useBetaAccess`, `getPendingPayment`, `resumePayment`). `withClientExtensions` gives a plain `WebClient` (the mocks) neutral defaults, so mocks only implement what a scenario needs.
 
-| Client operation | Frontend branch | Consolidated `w3/integration` branch |
-| --- | --- | --- |
-| Login nonce, verification, session, logout and Supabase token | Routes present | Routes present |
-| Chat and specification confirmation | Routes absent | Routes present |
-| Payment quote and confirmation | Routes absent | Routes present |
-| `GET /api/flags`, `GET /api/gating` | Routes absent | Routes absent |
-| `POST /api/rpc` | Route absent | Route absent |
-| Job approval and owner transaction GET/POST | Routes absent | Routes absent |
-| Launchpad modification, reactivation and claim transaction | Routes absent | Routes absent |
+## Money flows
 
-Job and launchpad data come through the real client's authenticated Supabase reads and subscriptions. Their availability depends on public Supabase configuration, the token endpoint, schema migrations, RLS, and running backend services. None of these is proved merely by rendering the interface.
+- **Payment.** Before the wallet signs, the transaction must be exactly one System transfer of the quoted lamports from the session wallet, exactly one memo `forge:job:<jobId>` and optional bounded compute budget, paid and signed by the session wallet only; the recipient is pinned to `NEXT_PUBLIC_FORGE_CASHBOX_WALLET` when it is set. Right after sending, `{ jobId, paymentId, signature }` is saved in sessionStorage. Confirmation is retried with the same signature (202, 429 with `Retry-After`, 5xx, network errors, timeouts) for about 90 s, then the screen shows "still confirming" with a check that re-confirms. While a sent payment is unresolved no new quote is requested. A 410 after sending explains the manual refund and never offers a second payment.
+- **Partner fee claims.** Each claim transaction is checked (fee payer and receivers are the session wallet; only DBC, token, associated token, System for wrapped SOL and compute budget programs), then its summary (amount collected by this transaction, owner cost, pools left) is reviewed before signing. Claims continue pool by pool, each one reviewed and signed separately.
+- **Launch.** The prepared transaction must be paid by the session wallet with only its signature missing, and the wallet must return the same message. The screen shows the first buy, the fees and account deposits, and their total; when the server did not simulate the exact transaction successfully, a warning and an explicit confirmation are required. The signed bytes are kept until settled: a pending confirmation or a retry re-submits them without a new signature, and an already signed launch is shown as confirmed.
 
-The lead still needs to assemble the backend routes and services, integrate the backend branch, and run the complete devnet journey. The UI checks below do not establish an operational deployed payment flow.
+## Data and access
 
-## Client behavior requiring backend follow-up
-
-- `useFlags()` currently starts with `signupsPaused: false` and silently retains that value on a failed flag read. Its contract has no loading or error state. The backend owner should provide fail-closed behavior and enforce paused creation server-side.
-- `useSession().connect()` can return after opening the wallet picker without creating a session. The UI offers a continuation step. The hook cannot distinguish a cancelled picker or declined login from idle; it must not be reported as successful authentication.
-- The job and launchpad hooks keep `loading: true` when Supabase is unavailable and suppress data-read errors. A failed list read can appear as an empty list. Their shared result types have no error channel; the backend owner needs to expose these failures so the interface can distinguish unavailable data from an empty workshop.
-- The shared contract still lacks claim history, an official token acquisition link and token display metadata. The interface retains its existing unavailable/raw-unit states rather than making these values up.
+- Dashboard and detail data come from `GET /api/launchpads` and `GET /api/launchpads/:id` (site URL, coin count, claimable fees and whether the chain could be read). Supabase Realtime only triggers debounced re-reads. A failed read is shown with a retry instead of an empty workshop; unknown on-chain figures are shown as unavailable, not zero.
+- Job tracking still reads Supabase directly (`useJob`), with Realtime updates.
+- A `BETA_NOT_INVITED` answer from any call clears the local session and shows the private beta notice (session gate and login).
+- `useFlags()` keeps an open default on a failed read; paused creation must stay enforced server-side.
 
 ## Validation
 
-Frontend integration tests use the real client hooks against mocked HTTP responses and a simulated wallet adapter. They cover authenticated session gating, login errors and retry, picker delegation and focus handoff, keyboard focus restoration, failed access checks and retry, logout, signup flags, production rejection of injected mocks, and development isolation from wallet/API access.
-
-No test here uses a private key, creates a transaction, or sends one to a chain. Local typechecking, linting and builds do not replace deployed-service, database-policy, sandbox or devnet tests.
+Client tests run the real client against mocked HTTP and a simulated wallet (no private key, no chain): payment persistence and retries, transaction checks, claim review and loop, launch resubmission, beta handling and API-backed launchpad hooks. Screen tests use the mocks. Local typechecks, lint, tests and builds do not replace deployed-service, database-policy or devnet tests.

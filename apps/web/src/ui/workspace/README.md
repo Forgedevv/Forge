@@ -1,6 +1,6 @@
 # FORGE workshop interface
 
-Screens A2 through A11 use the `WebClient` type from `@forge/shared`. Components never build transactions, connect wallet extensions directly, or calculate payment/claim amounts. English copy is grouped by screen in `content/`. Common interface copy and job status labels are shared.
+Screens A2 through A11 use `ForgeWebClient` (`src/client/types.ts`), the `WebClient` contract from `@forge/shared` with richer optional results; see `INTEGRATION.md`. Components never build transactions, connect wallet extensions directly, or calculate payment/claim amounts. English copy is grouped by screen in `content/`. Common interface copy and job status labels are shared.
 
 ## Routes
 
