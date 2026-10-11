@@ -7,7 +7,13 @@ import { getSupabaseJwtSecret } from './config';
  * (ES256/RS256 with a private JWK): only this module would change.
  */
 
-export const SUPABASE_TOKEN_TTL_SECONDS = 60 * 60;
+/**
+ * Short on purpose: the token is not revocable, so its lifetime bounds how long a wallet removed
+ * from the private beta (or a stolen token) keeps database and Realtime access. The browser
+ * refreshes it through GET /api/auth/supabase-token about a minute before expiry, and that route
+ * re-checks the session and the beta every time.
+ */
+export const SUPABASE_TOKEN_TTL_SECONDS = 10 * 60;
 
 export interface SupabaseAccessTokenClaims {
   role: 'authenticated';
