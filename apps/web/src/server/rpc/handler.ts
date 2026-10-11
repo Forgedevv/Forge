@@ -471,18 +471,16 @@ export function createRelayHandler(deps: RelayDeps): RelayHandler {
         );
       }
 
-      if (units > 0) {
-        const decision = await limiter.take(draws(caller, units, sends));
-        if (!decision.allowed) {
-          logger.log('warn', 'rate_limited', {
-            ...fields,
-            bucket: bucketName(decision.refusedBy),
-            methods: methodList(calls),
-          });
-          return json(errorForAll(calls, batch, RPC_ERRORS.rateLimited), 429, corsOrigin, {
-            'retry-after': String(decision.retryAfterSeconds),
-          });
-        }
+      const decision = await limiter.take(draws(caller, units, sends));
+      if (!decision.allowed) {
+        logger.log('warn', 'rate_limited', {
+          ...fields,
+          bucket: bucketName(decision.refusedBy),
+          methods: methodList(calls),
+        });
+        return json(errorForAll(calls, batch, RPC_ERRORS.rateLimited), 429, corsOrigin, {
+          'retry-after': String(decision.retryAfterSeconds),
+        });
       }
 
       const refused = calls.filter((c) => !c.ok);
@@ -522,8 +520,9 @@ export function createRelayHandler(deps: RelayDeps): RelayHandler {
               failure.retryAfter !== null ? { 'retry-after': String(failure.retryAfter) } : {},
             );
           }
-          for (const call of valid)
+          for (const call of valid) {
             responses.set(call.index, errorResponse(call.id, failure.error));
+          }
         } else {
           for (const [index, response] of forwarded.byIndex) responses.set(index, response);
         }
