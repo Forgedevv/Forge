@@ -11,6 +11,7 @@ import { describeError } from '../jobs/shared.js';
 import { handleCreateConfigs } from './configs.js';
 import { createRouteRuntime, type RouteRuntime, type SignerRoutesDeps } from './context.js';
 import { classifyError } from './errors.js';
+import { handlePrepareLaunch } from './launch.js';
 import type { SignerHealthReport } from './schemas.js';
 
 export type { SignerRoutesDeps, SignerRoutesConfig, RouteKeystore } from './context.js';
@@ -61,8 +62,8 @@ export function createSignerRoutes(
   const rt = createRouteRuntime(deps);
   return {
     configs: (input) => run(rt, 'configs', input.jobId, () => handleCreateConfigs(rt, input.jobId)),
-    // Wired by the launch preparation commit.
-    launchCoinPrepare: async () => ({ ok: false, status: 501, error: 'not_implemented' }),
+    launchCoinPrepare: (input) =>
+      run(rt, 'launch_coin_prepare', input.jobId, () => handlePrepareLaunch(rt, input.jobId)),
     health: async () => {
       try {
         return { ok: true, body: options.health ? await options.health() : { ok: true } };
