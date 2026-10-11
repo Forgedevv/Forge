@@ -76,6 +76,32 @@ describe('creation payment verified on-chain', () => {
     expect(h.chain.built.config).toBe(0);
   });
 
+  it('refuses a job whose payment has a refund signature, whatever its status', async () => {
+    const h = await setup(ks.keystore);
+    h.store.payments[0]!.refundSignature = randomSignature();
+    expect(refused(await h.routes.configs({ jobId: h.jobId }))).toEqual({
+      status: 409,
+      error: 'payment_refunded',
+    });
+    expect(h.chain.calls).not.toContain('verifyPayment');
+    expect(h.chain.built.config).toBe(0);
+    // Also once the configs exist: no launch is prepared for a refunded job.
+    h.store.payments[0]!.refundSignature = null;
+    ok(await h.routes.configs({ jobId: h.jobId }));
+    h.store.payments.push({
+      ...h.store.payments[0]!,
+      id: 'other-payment',
+      kind: 'modification',
+      status: 'quoted',
+      refundSignature: randomSignature(),
+    });
+    expect(refused(await h.routes.launchCoinPrepare({ jobId: h.jobId }))).toEqual({
+      status: 409,
+      error: 'payment_refunded',
+    });
+    expect(h.chain.built.nonce).toBe(0);
+  });
+
   it('refuses a confirmed payment row without a transaction signature', async () => {
     const h = await setup(ks.keystore);
     h.store.payments[0]!.txSignature = null;

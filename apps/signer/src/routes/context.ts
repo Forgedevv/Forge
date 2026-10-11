@@ -243,7 +243,7 @@ export interface OnchainSetup {
  * Re-reads and checks everything a signing route acts on (INTERFACES §7): a `create_launchpad`
  * job in `onchain_setup`, its `draft` launchpad, the spec re-validated by core with the owner
  * wallet of the row, at least one confirmed creation payment by that wallet (with its
- * transaction signature) and none refunded, and the `deploys_paused` kill switch (fail closed).
+ * transaction signature) and none refunded (status `refunded` or a `refund_signature`), and the `deploys_paused` kill switch (fail closed).
  * The payment rows are only the database's word: `assertCreationPaid` (payment.ts) proves them
  * on-chain before anything is spent.
  */
@@ -262,7 +262,10 @@ export async function loadOnchainSetup(rt: RouteRuntime, jobId: string): Promise
   if (!owner || spec.ownerWallet !== launchpad.ownerWallet) fail(422, 'spec_owner_mismatch');
 
   const payments = await rt.store.listPayments(jobId);
-  if (payments.some((p) => p.status === 'refunded')) fail(409, 'payment_refunded');
+  // A refund sent (refund_signature set) counts as refunded even if the status lags behind.
+  if (payments.some((p) => p.status === 'refunded' || p.refundSignature !== null)) {
+    fail(409, 'payment_refunded');
+  }
   const confirmed = payments.filter((p) => p.status === 'confirmed' && p.kind === 'creation');
   if (confirmed.length === 0) fail(409, 'payment_not_confirmed');
   if (confirmed.some((p) => p.payerWallet !== launchpad.ownerWallet || p.lamports <= 0n)) {

@@ -803,6 +803,7 @@ export class MemoryRouteStore implements RouteStore {
       payerWallet: input.spec.ownerWallet,
       lamports: input.paymentLamports ?? 300_000_000n,
       txSignature: input.txSignature ?? randomSignature(),
+      refundSignature: null,
     };
     this.payments.push(payment);
     return { ...payment };
