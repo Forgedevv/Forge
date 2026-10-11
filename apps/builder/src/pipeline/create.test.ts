@@ -522,6 +522,20 @@ describe('create: onchain_setup', () => {
     expect(h.github.count('commitFiles')).toBe(commitsBefore);
   });
 
+  it('refuses to re-enter once the launch was prepared and recorded', async () => {
+    const h = harness();
+    await prepareOnchain(h);
+    const signerCalls = h.signer.calls.length;
+    const commits = h.github.commits.size;
+    // The team put a creation whose release failed back to `approved` instead of `owner_signed`.
+    await expect(runStep(h, onchainJob({ owner_tx: OWNER_TX }))).rejects.toThrow(/owner_signed/);
+    expect(h.signer.calls.length).toBe(signerCalls);
+    expect(h.github.commits.size).toBe(commits);
+    // A crash before owner_tx was stored is still resumed (addresses recorded, no owner_tx).
+    const { outcome } = await runStep(h, onchainJob({ owner_tx: null }));
+    expect(outcome).toEqual({ patch: { owner_tx: OWNER_TX } });
+  });
+
   it('fails before any signer call when the preview branch is missing', async () => {
     const h = harness();
     await expect(runStep(h, onchainJob())).rejects.toThrow();
@@ -906,6 +920,38 @@ describe('create: through the worker', () => {
     expect(h.signer.count('createConfigs')).toBe(1);
     expect(h.signer.count('prepareLaunchCoin')).toBe(1);
     expect(db.get(CREATE_JOB_ID).status).toBe('failed');
+  });
+
+  it('retries a failed release from owner_signed, never from approved', async () => {
+    const h = harness();
+    const db = new FakeJobsDb();
+    db.addJob({ id: CREATE_JOB_ID, launchpad_id: LAUNCHPAD_ID, status: 'paid' });
+    const { worker } = workerFor(h, db);
+    const step = async () => {
+      await worker.tick();
+      await worker.idle();
+    };
+    await step();
+    db.get(CREATE_JOB_ID).status = 'approved';
+    await step();
+    db.get(CREATE_JOB_ID).status = 'owner_signed';
+    h.vercel.fail('createDeployment');
+    await step();
+    expect(db.get(CREATE_JOB_ID)).toMatchObject({ status: 'failed', failed_stage: 'deploy' });
+    const prepares = h.signer.count('prepareLaunchCoin');
+
+    // Wrong retry status: the on-chain step refuses to prepare another launch.
+    db.get(CREATE_JOB_ID).status = 'approved';
+    await step();
+    expect(db.get(CREATE_JOB_ID)).toMatchObject({ status: 'failed', failed_stage: 'onchain' });
+    expect(db.get(CREATE_JOB_ID).error).toMatch(/owner_signed/);
+    expect(h.signer.count('prepareLaunchCoin')).toBe(prepares);
+
+    // Documented retry status for a creation release: owner_signed.
+    db.get(CREATE_JOB_ID).status = 'owner_signed';
+    await step();
+    expect(db.get(CREATE_JOB_ID)).toMatchObject({ status: 'live' });
+    expect(h.store.get(LAUNCHPAD_ID).status).toBe('live');
   });
 
   it('retries a scan rejection once, from a clean checkout, then gives up', async () => {

@@ -53,6 +53,19 @@ export async function runOnchainStep(
   const config = parseSiteConfig(text);
   const typed = typedSiteConfig(config);
   if (typed.slug !== spec.slug) throw new PipelineError('forge.config.json slug does not match');
+  // Re-entry guard: this step already completed for the job (addresses on the branch and on the
+  // launchpad, launch transaction handed out). The client may have signed it: never prepare
+  // another one. A failed release is retried from `owner_signed`; rebuilding a launch transaction
+  // that was never signed is a deliberate team action (clear `jobs.owner_tx` first).
+  if (
+    typed.onchain !== undefined &&
+    launchpad.launchpad_coin_mint !== null &&
+    job.owner_tx !== null
+  ) {
+    throw new PipelineError(
+      'the on-chain step already completed for this job: retry a failed release from owner_signed (or clear owner_tx to rebuild an unsigned launch transaction)',
+    );
+  }
 
   await say(jobCtx, STEP_EVENTS.createConfigs);
   guard(signal);
