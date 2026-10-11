@@ -6,8 +6,8 @@
  *    configs must be created (journal) and the coin config must still match the spec.
  * 2. The launchpad's durable nonce account is created once (accounts.ts), paid by the payer
  *    wallet, with the creator wallet as nonce authority (it already signs: no extra signature).
- * 3. core builds the launch transaction (pool + the client's first buy, durable nonce, FORGE
- *    referral by default); the launch policy checks it; a one-time mint key and the creator
+ * 3. core builds the launch transaction (pool + the client's first buy, durable nonce, no
+ *    referral: core refuses one on the first buy); the launch policy checks it; a one-time mint key and the creator
  *    wallet sign; the client (fee payer, buyer) is the only signature left.
  * 4. The partially signed transaction is journaled per job, the mint is written to the launchpad
  *    row (compare-and-set), and the transaction is returned with the owner summary.
@@ -382,20 +382,10 @@ export async function handlePrepareLaunch(
           pool: next.details.pool,
           nonceAccount: next.details.nonceAccount,
           referral: summary.referralSource,
-          referralOmittedForSize: summary.referralOmittedForSize,
           txBytes: summary.txBytes,
         },
         'launch transaction prepared',
       );
-      if (summary.referralOmittedForSize) {
-        await rt.alert(
-          'normal',
-          'launch_referral_omitted',
-          'The FORGE referral was left out of a launch transaction to fit the size limit',
-          { launchpadId, jobId },
-          `launch_referral_omitted:${jobId}`,
-        );
-      }
       return resultOf(next);
     } finally {
       mintKey.destroy();
