@@ -6,10 +6,15 @@
  * SIGNER_CASHBOX_*, SIGNER_REFUNDS_*, WATCH_*, CONVERT_*, BUYBACK_*) are parsed by the jobs' own
  * `...FromEnv` functions, also at startup. FORGE addresses are read by `requireAddresses` of
  * @forge/core, the HMAC server settings by `loadSignerServerEnv` (server.ts).
+ *
+ * On mainnet-beta, and in production (NODE_ENV other than `development` / `test`), the signer
+ * refuses to start without TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID: an alert that only reaches
+ * the log is an alert nobody reads.
  */
 import path from 'node:path';
 import { z } from 'zod';
 import { DEFAULT_KEYSTORE_DIR } from '../keystore.js';
+import { isProductionEnv } from '../server.js';
 import { DEFAULT_JOURNAL_DIR, MAX_COMPUTE_UNIT_PRICE } from '../jobs/shared.js';
 import { DEFAULT_MAX_LAUNCHPADS_PER_DAY, MAX_LAUNCHPADS_PER_DAY } from '../routes/budget.js';
 
@@ -146,15 +151,38 @@ function parseConvertRoles(value: string | undefined): ConvertRole[] {
   return out;
 }
 
+/** The Telegram variables the operator alerts depend on (alerts.ts). */
+export const ALERTING_VARIABLES = ['TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_ID'] as const;
+
+/**
+ * True when alerts MUST reach the operator: on mainnet-beta, and whenever NODE_ENV is not
+ * `development` or `test` (same fail-closed rule as the HMAC server's IP allowlist).
+ */
+export function alertingRequired(env: EnvSource): boolean {
+  return env.SOLANA_CLUSTER === 'mainnet-beta' || isProductionEnv(env.NODE_ENV);
+}
+
+/** Problems (variable names only) when alerting is required but not configured. */
+function alertingProblems(env: EnvSource): string[] {
+  if (!alertingRequired(env)) return [];
+  return ALERTING_VARIABLES.filter((name) => (env[name] ?? '').trim() === '').map(
+    (name) =>
+      `${name} is required on mainnet-beta and in production (alerts would only be logged without it)`,
+  );
+}
+
 /** Parses the process-level variables. Throws RuntimeConfigError listing every problem. */
 export function parseRuntimeEnv(env: EnvSource): RuntimeEnv {
   const parsed = RuntimeEnvSchema.safeParse(env);
-  if (!parsed.success) {
-    // Messages are ours (variable names, rules); zod never echoes the values here.
-    const problems = parsed.error.issues.map((issue) => {
-      const name = issue.path.map(String).join('.') || 'environment';
-      return issue.message.includes(name) ? issue.message : `${name} ${issue.message}`;
-    });
+  // Messages are ours (variable names, rules); zod never echoes the values here.
+  const problems: string[] = parsed.success
+    ? []
+    : parsed.error.issues.map((issue) => {
+        const name = issue.path.map(String).join('.') || 'environment';
+        return issue.message.includes(name) ? issue.message : `${name} ${issue.message}`;
+      });
+  problems.push(...alertingProblems(env));
+  if (!parsed.success || problems.length > 0) {
     throw new RuntimeConfigError([...new Set(problems)]);
   }
   const p = parsed.data;

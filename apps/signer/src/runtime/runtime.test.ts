@@ -199,6 +199,50 @@ describe('runtime environment', () => {
     expect(() => parseRuntimeEnv({ ...env, SOLANA_CLUSTER: 'testnet' })).toThrow(/SOLANA_CLUSTER/);
   });
 
+  it('refuses mainnet-beta or production without Telegram alerting, naming no value', () => {
+    const telegram = { TELEGRAM_BOT_TOKEN: 'bot-token-SECRETVALUE', TELEGRAM_CHAT_ID: '-100123' };
+    // development / test on devnet: alerts may stay in the log.
+    expect(() => parseRuntimeEnv(baseEnv())).not.toThrow();
+    expect(() => parseRuntimeEnv(baseEnv({ NODE_ENV: 'development' }))).not.toThrow();
+    for (const overrides of [
+      { NODE_ENV: 'production' },
+      { NODE_ENV: undefined }, // unset = production (fail closed)
+      { NODE_ENV: 'staging' },
+      { SOLANA_CLUSTER: 'mainnet-beta', NODE_ENV: 'test' },
+    ]) {
+      let error: unknown;
+      try {
+        parseRuntimeEnv(baseEnv(overrides));
+      } catch (e) {
+        error = e;
+      }
+      expect(error, JSON.stringify(overrides)).toBeInstanceOf(RuntimeConfigError);
+      const text = (error as RuntimeConfigError).problems.join('\n');
+      expect(text).toContain('TELEGRAM_BOT_TOKEN');
+      expect(text).toContain('TELEGRAM_CHAT_ID');
+      // One of the two set: only the other is reported, never the value.
+      expect(() =>
+        parseRuntimeEnv(baseEnv({ ...overrides, TELEGRAM_BOT_TOKEN: telegram.TELEGRAM_BOT_TOKEN })),
+      ).toThrow(/TELEGRAM_CHAT_ID/);
+      try {
+        parseRuntimeEnv(baseEnv({ ...overrides, TELEGRAM_BOT_TOKEN: telegram.TELEGRAM_BOT_TOKEN }));
+      } catch (e) {
+        expect((e as Error).message).not.toContain('SECRETVALUE');
+        expect((e as Error).message).not.toMatch(/TELEGRAM_BOT_TOKEN is required/);
+      }
+      expect(() => parseRuntimeEnv(baseEnv({ ...overrides, ...telegram }))).not.toThrow();
+      // Blank values are unset.
+      expect(() =>
+        parseRuntimeEnv(baseEnv({ ...overrides, TELEGRAM_BOT_TOKEN: ' ', TELEGRAM_CHAT_ID: '' })),
+      ).toThrow(/TELEGRAM_BOT_TOKEN/);
+    }
+  });
+
+  it('fails to start in production without Telegram, before opening the keystore', async () => {
+    await expect(create({ NODE_ENV: 'production' })).rejects.toThrow(/TELEGRAM_BOT_TOKEN/);
+    await expect(create({ SOLANA_CLUSTER: 'mainnet-beta' })).rejects.toThrow(/TELEGRAM_CHAT_ID/);
+  });
+
   it('caps the new launchpads per day: 20 by default, bounded, never unlimited', () => {
     const env = baseEnv();
     expect(parseRuntimeEnv(env).maxLaunchpadsPerDay).toBe(20);

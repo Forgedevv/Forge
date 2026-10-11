@@ -19,7 +19,9 @@
  *   keys cannot be told from transaction signatures (both ~88 chars) and signatures must stay
  *   readable, so those are never scrubbed by pattern: no code path may put one in an alert.
  *
- * Without TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID the alerter only logs.
+ * Without TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID the alerter only logs: allowed in development
+ * and tests on devnet only, the runtime refuses to start without them on mainnet-beta and in
+ * production (runtime/env.ts).
  */
 
 export type AlertLevel = 'immediate' | 'high' | 'normal';
@@ -202,7 +204,10 @@ export function createAlerter(opts: AlerterOptions): QueueingAlerter {
       return true;
     } catch (err) {
       // Log only the error name: network errors can embed the request URL (which has the token).
-      safeLog({ code, errorName: err instanceof Error ? err.name : 'unknown' }, 'telegram alert failed');
+      safeLog(
+        { code, errorName: err instanceof Error ? err.name : 'unknown' },
+        'telegram alert failed',
+      );
       return false;
     }
   };
