@@ -1,7 +1,7 @@
 import type { JobHandler } from '../worker.js';
 import type { PipelineDeps } from './context.js';
 import { handleCreateJob } from './create.js';
-import { PipelineError } from './errors.js';
+import { handleModifyJob } from './modify.js';
 
 export { AGENT_DEFAULTS, agentCommand, interpretAgentRun, runAgent } from './agent.js';
 export type { AgentConfig, AgentGateway, AgentOutcome } from './agent.js';
@@ -29,14 +29,13 @@ export type {
 } from './store.js';
 export { removeStaleWorkdirs } from './workdir.js';
 
-/** The builder's job handler: routes a claimed job to its pipeline. */
+/** The builder's job handler: routes a claimed job to the creation or modification pipeline. */
 export function createPipelineHandler(deps: PipelineDeps): JobHandler {
   return {
-    async handle(job, ctx) {
-      if (job.type !== 'create_launchpad') {
-        throw new PipelineError('modification jobs are not handled yet');
-      }
-      return handleCreateJob(deps, job, ctx);
+    handle(job, ctx) {
+      return job.type === 'create_launchpad'
+        ? handleCreateJob(deps, job, ctx)
+        : handleModifyJob(deps, job, ctx);
     },
   };
 }
