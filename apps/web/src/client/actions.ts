@@ -12,6 +12,7 @@ import {
   SpecConfirmRequest,
   SpecConfirmResponse,
   WEB_API_ROUTES,
+  type ClaimTransactionSummary,
   type LaunchpadSpec,
   type OnTxPhase,
   type OwnerTransactionSummary,
@@ -44,7 +45,7 @@ import {
   safeReporter,
   sendAndConfirm,
 } from './tx';
-import type { PaymentResult, PendingPayment } from './types';
+import type { ClaimOptions, ClaimResult, PaymentResult, PendingPayment } from './types';
 import { getWalletBridge } from './wallet-bridge';
 
 /**
@@ -301,18 +302,54 @@ export async function signOwnerTransaction(jobId: string, onPhase: OnTxPhase): P
 // Launchpads
 // ---------------------------------------------------------------------------------------------
 
-export async function claimPartnerFees(launchpadId: string, onPhase: OnTxPhase): Promise<TxResult> {
-  return runTransaction(onPhase, {
-    prepare: async () => {
-      requireWallet();
-      const res = await request(
-        route(WEB_API_ROUTES.claimTransaction.path, { id: launchpadId }),
-        ClaimTransactionResponse,
-      );
-      return deserializeTransaction(res.transaction);
-    },
-    submit: (signed) => sendAndConfirm(signed),
-  });
+/**
+ * Claims the owner's partner fees of ONE pool (the server picks the richest one). The summary of
+ * the claim transaction (amount claimed by this transaction, owner cost, pools left) is handed to
+ * `options.review` before the wallet is asked to sign; call again while `remainingPools > 0`.
+ */
+export async function claimPartnerFees(
+  launchpadId: string,
+  onPhase: OnTxPhase,
+  options: ClaimOptions = {},
+): Promise<ClaimResult> {
+  const report = safeReporter(onPhase);
+  let summary: ClaimTransactionSummary | null = null;
+  let signed: VersionedTransaction;
+  try {
+    const { signTransaction } = requireSessionWallet();
+    const res = await request(
+      route(WEB_API_ROUTES.claimTransaction.path, { id: launchpadId }),
+      ClaimTransactionResponse,
+    );
+    summary = res.summary ?? null;
+    const tx = deserializeTransaction(res.transaction);
+    if (options.review && !(await options.review(summary))) return { phase: 'idle', summary };
+    report('awaiting_signature');
+    try {
+      signed = await signTransaction(tx);
+    } catch (err) {
+      if (isUserRejection(err)) {
+        report('rejected');
+        return { phase: 'rejected', summary };
+      }
+      throw err;
+    }
+  } catch (err) {
+    report('error');
+    if (err instanceof ClientError) throw err;
+    return { phase: 'error', error: errorMessage(err), summary };
+  }
+  report('sending');
+  const signature = feePayerSignature(signed) ?? undefined;
+  try {
+    const sent = await sendAndConfirm(signed);
+    report('confirmed');
+    return { phase: 'confirmed', signature: sent, summary };
+  } catch (err) {
+    report('error');
+    const error = isPreflightRejection(err) ? preflightMessage(err) : errorMessage(err);
+    return { phase: 'error', error, summary, ...(signature ? { signature } : {}) };
+  }
 }
 
 /** Wakes a sleeping launchpad (`POST /api/launchpads/:id/reactivate`). */

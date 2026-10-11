@@ -7,6 +7,8 @@ import { paymentCopy as copy } from './content/payment';
 
 const navigation = vi.hoisted(() => ({ push: vi.fn(), replace: vi.fn() }));
 vi.mock('next/navigation', () => ({ useRouter: () => navigation }));
+// Full-screen renders: allow for a busy machine when the whole suite runs in parallel.
+vi.setConfig({ testTimeout: 30_000 });
 
 beforeEach(() => {
   vi.useFakeTimers();

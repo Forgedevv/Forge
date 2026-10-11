@@ -297,6 +297,7 @@ export function createMockController(scenario = 'journey') {
         }
       : null;
   let confirmChecks = 0;
+  let claimRound = 0;
   const client: ForgeClientInput = {
     useSession() {
       const s = useSnapshot();
@@ -533,17 +534,31 @@ export function createMockController(scenario = 'journey') {
         loading: s.loading,
       };
     },
-    async claimPartnerFees(id, onPhase) {
+    async claimPartnerFees(id, onPhase, options) {
       const pad = state.pads.find((p) => p.id === id);
       if (!pad || pad.claimablePartnerFeesLamports === '0') return { phase: 'idle' };
+      // `dashboard:claim-multi`: the fees sit in two pools, claimed one transaction each.
+      const pools = scenario === 'dashboard:claim-multi' ? 2 : 1;
+      const total = BigInt(pad.claimablePartnerFeesLamports);
+      const share = claimRound + 1 < pools ? total / BigInt(pools) : total;
+      const summary = {
+        pool: `demo-pool-${claimRound + 1}`,
+        tradingFeesLamports: share.toString(),
+        poolCreationFeeLamports: '0',
+        ownerCostLamports: '2044280',
+        remainingPools: pools - claimRound - 1,
+      };
+      if (options?.review && !(await options.review(summary))) return { phase: 'idle', summary };
       const result = await transaction(onPhase);
-      if (result.phase === 'confirmed')
+      if (result.phase === 'confirmed') {
+        claimRound++;
         notify({
           pads: state.pads.map((p) =>
-            p.id === id ? { ...p, claimablePartnerFeesLamports: '0' } : p,
+            p.id === id ? { ...p, claimablePartnerFeesLamports: (total - share).toString() } : p,
           ),
         });
-      return result;
+      }
+      return { ...result, summary };
     },
     async reactivateLaunchpad(id) {
       await wait(700);

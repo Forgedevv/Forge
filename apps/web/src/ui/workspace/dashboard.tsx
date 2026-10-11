@@ -337,6 +337,7 @@ function LaunchpadCard({
         <ClaimButton
           launchpadId={pad.id}
           lamports={pad.claimablePartnerFeesLamports}
+          amountKnown={onchainKnown}
           initialPhase={claimPhase}
           onSuccess={() => {
             refresh();

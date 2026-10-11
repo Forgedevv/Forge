@@ -131,6 +131,7 @@ export const galleryCopy = {
         ['draft', 'Draft launchpad'],
         ['active-job', 'Current job'],
         ['claim-signing', 'Claim signature'],
+        ['claim-multi', 'Claim two pools, one by one'],
         ['claim-sending', 'Claim sending'],
         ['claim-confirmed', 'Claim successful'],
         ['claim-rejected', 'Claim rejected'],

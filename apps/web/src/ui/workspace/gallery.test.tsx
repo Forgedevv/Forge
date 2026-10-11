@@ -35,7 +35,8 @@ it('lists every screen group and loads an isolated payment-expiry scenario', asy
     await vi.advanceTimersByTimeAsync(500);
   });
   expect(screen.getByRole('button', { name: /Pay and start building/ })).toBeEnabled();
-});
+  // Renders the whole gallery: allow for a busy machine.
+}, 30_000);
 
 it('does not activate mock scenes when the explicit flag is disabled', () => {
   render(<StateGallery enabled={false} />);

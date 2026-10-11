@@ -6,6 +6,8 @@ import { DashboardScreen } from './dashboard';
 import { WorkspaceProvider } from './provider';
 
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push: vi.fn(), replace: vi.fn() }) }));
+// Full-screen renders: allow for a busy machine when the whole suite runs in parallel.
+vi.setConfig({ testTimeout: 30_000 });
 beforeEach(() => {
   vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null);
 });

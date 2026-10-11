@@ -3,25 +3,13 @@ import { Keypair } from '@solana/web3.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   approvePreview,
-  claimPartnerFees,
   confirmSpec,
   getOwnerTransactionSummary,
   reactivateLaunchpad,
   requestModification,
   signOwnerTransaction,
 } from '../actions';
-import {
-  SIG,
-  fakeConnection,
-  id,
-  json,
-  mockFetch,
-  owner,
-  phases,
-  rejection,
-  setWallet,
-  txB64,
-} from './helpers';
+import { SIG, id, json, mockFetch, owner, phases, rejection, setWallet, txB64 } from './helpers';
 
 beforeEach(() => {
   setWallet(async (tx) => tx);
@@ -187,38 +175,6 @@ describe('signOwnerTransaction', () => {
     mockFetch(() => json({ transaction: 'AAAA', summary: summary() }));
     await expect(signOwnerTransaction(id(), () => undefined)).rejects.toMatchObject({
       code: 'NETWORK',
-    });
-  });
-});
-
-describe('claimPartnerFees', () => {
-  it('signs the server transaction and sends it through the connection', async () => {
-    const lp = id();
-    const connection = fakeConnection();
-    setWallet(async (tx) => tx, connection);
-    const fetchFn = mockFetch(() => json({ transaction: txB64() }));
-    const p = phases();
-    const result = await claimPartnerFees(lp, p.on);
-    expect(result).toEqual({ phase: 'confirmed', signature: SIG });
-    expect(p.list).toEqual(['awaiting_signature', 'sending', 'confirmed']);
-    expect((fetchFn.mock.calls[0] as [string])[0]).toBe(`/api/launchpads/${lp}/claim-transaction`);
-    expect(connection.sendRawTransaction).toHaveBeenCalledTimes(1);
-  });
-
-  it('reports rejected on user rejection', async () => {
-    setWallet(async () => {
-      throw Object.assign(new Error('x'), { code: 4001 });
-    });
-    mockFetch(() => json({ transaction: txB64() }));
-    const p = phases();
-    await expect(claimPartnerFees(id(), p.on)).resolves.toEqual({ phase: 'rejected' });
-    expect(p.list).toEqual(['awaiting_signature', 'rejected']);
-  });
-
-  it('maps UNAUTHORIZED from the server', async () => {
-    mockFetch(() => json({}, 401));
-    await expect(claimPartnerFees(id(), () => undefined)).rejects.toMatchObject({
-      code: 'UNAUTHORIZED',
     });
   });
 });

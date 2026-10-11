@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, expect, it, vi } from 'vitest';
 import { WEB_API_ROUTES } from '@forge/shared';
 import { base58Encode } from '@/client/base58';
 import { setSession } from '@/client/session-store';
@@ -48,6 +48,12 @@ let fetchApi: ReturnType<typeof vi.fn<(path: string) => Promise<Response>>>;
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
+
+// The live provider is loaded lazily; compile it once up front (slow on a busy machine) so the
+// tests below measure behaviour, not module loading.
+beforeAll(async () => {
+  await import('./live-provider');
+}, 120_000);
 
 beforeEach(() => {
   vi.clearAllMocks();

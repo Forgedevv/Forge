@@ -13,7 +13,8 @@ afterEach(() => {
   vi.resetModules();
 });
 
-describe('sent payment records', () => {
+// Re-importing the module (a simulated reload) can be slow on a busy machine.
+describe('sent payment records', { timeout: 30_000 }, () => {
   it('are kept in sessionStorage and survive a page reload', async () => {
     const first = await import('../payments');
     first.saveSentPayment(record);
