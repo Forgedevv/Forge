@@ -59,6 +59,9 @@ export const WEB_API_ROUTES = {
   jobApprove: { method: 'POST', path: '/api/jobs/:id/approve' },
   ownerTransactionGet: { method: 'GET', path: '/api/jobs/:id/owner-transaction' },
   ownerTransactionSubmit: { method: 'POST', path: '/api/jobs/:id/owner-transaction' },
+  jobGet: { method: 'GET', path: '/api/jobs/:id' },
+  launchpadsList: { method: 'GET', path: '/api/launchpads' },
+  launchpadGet: { method: 'GET', path: '/api/launchpads/:id' },
   claimTransaction: { method: 'GET', path: '/api/launchpads/:id/claim-transaction' },
   launchpadReactivate: { method: 'POST', path: '/api/launchpads/:id/reactivate' },
   rpc: { method: 'POST', path: '/api/rpc' },
@@ -184,6 +187,7 @@ export const OwnerTransactionSummary = z.object({
   coinName: z.string(),
   coinSymbol: z.string(),
   firstBuyLamports: Lamports,
+  /** Everything the owner pays besides the first buy: network fee, rents, Metaplex fee, pool creation fee. */
   estimatedNetworkFeeLamports: Lamports,
   ownerWallet: SolanaAddress,
 });
@@ -194,6 +198,8 @@ export const OwnerTransactionGetResponse = z.object({
   transaction: Base64Transaction,
   /** Shown to the client before signing (INTERFACES §6). */
   summary: OwnerTransactionSummary,
+  /** Whether the summary comes from a simulation of the exact message; when not `ok`, it is a lower bound. */
+  simulation: z.enum(['ok', 'failed', 'unavailable']).optional(),
 });
 export type OwnerTransactionGetResponse = z.infer<typeof OwnerTransactionGetResponse>;
 
@@ -206,7 +212,23 @@ export const OwnerTransactionSubmitResponse = z.object({ signature: Base58Signat
 export type OwnerTransactionSubmitResponse = z.infer<typeof OwnerTransactionSubmitResponse>;
 
 // GET /api/launchpads/:id/claim-transaction — client partner fee claim
-export const ClaimTransactionResponse = z.object({ transaction: Base64Transaction });
+export const ClaimTransactionSummary = z.object({
+  /** The pool this transaction claims (one pool per transaction). */
+  pool: SolanaAddress,
+  /** Partner trading fees claimed by this transaction. */
+  tradingFeesLamports: Lamports,
+  /** Partner pool creation fee claimed by this transaction (0 when none). */
+  poolCreationFeeLamports: Lamports,
+  /** What the owner pays to claim: network fee and any account rent. */
+  ownerCostLamports: Lamports,
+  /** Pools still holding claimable fees after this one. */
+  remainingPools: z.number().int().nonnegative(),
+});
+export type ClaimTransactionSummary = z.infer<typeof ClaimTransactionSummary>;
+export const ClaimTransactionResponse = z.object({
+  transaction: Base64Transaction,
+  summary: ClaimTransactionSummary.optional(),
+});
 export type ClaimTransactionResponse = z.infer<typeof ClaimTransactionResponse>;
 
 // POST /api/rpc — Helius relay (method allow-list and per-IP rate limit enforced by apps/web)
@@ -273,9 +295,16 @@ export type SignerLaunchPrepareRequest = z.infer<typeof SignerLaunchPrepareReque
 export const SignerLaunchPrepareResponse = z.object({
   partiallySignedTx: Base64Transaction,
   mint: SolanaAddress,
+  summary: OwnerTransactionSummary.optional(),
+  details: z.record(z.string(), z.unknown()).optional(),
 });
 export type SignerLaunchPrepareResponse = z.infer<typeof SignerLaunchPrepareResponse>;
 
 // GET /v1/health
-export const SignerHealthResponse = z.object({ ok: z.boolean() });
+export const SignerHealthResponse = z.object({
+  ok: z.boolean(),
+  cluster: z.string().optional(),
+  uptimeSeconds: z.number().optional(),
+  jobs: z.record(z.string(), z.unknown()).optional(),
+});
 export type SignerHealthResponse = z.infer<typeof SignerHealthResponse>;

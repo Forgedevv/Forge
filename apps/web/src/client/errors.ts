@@ -13,6 +13,7 @@ const DEFAULT_MESSAGES: Record<ClientErrorCode, string> = {
   SIGNUPS_PAUSED: 'New signups are temporarily paused.',
   QUOTE_EXPIRED: 'This quote has expired. Please request a new one.',
   WRONG_WALLET: 'This action must be signed with the wallet that owns the launchpad.',
+  BETA_NOT_INVITED: 'FORGE is in private beta. This wallet is not invited yet.',
   NETWORK: 'Network error. Please check your connection and try again.',
 };
 
