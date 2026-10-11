@@ -41,6 +41,7 @@ import {
 import {
   deserializeTransaction,
   feePayerSignature,
+  isNodeAnswer,
   isPreflightRejection,
   preflightMessage,
   requireSessionWallet,
@@ -274,8 +275,8 @@ export async function payQuote(quote: Quote, onPhase: OnTxPhase): Promise<Paymen
       await connection.sendRawTransaction(bytes);
       delivered = true;
     } catch (err) {
-      // Refused by preflight now: already processed, or it will never land.
-      if (isPreflightRejection(err)) delivered = true;
+      // The node answered (already processed, or refused): nothing more to re-broadcast.
+      if (isNodeAnswer(err)) delivered = true;
     }
   };
   return settle(record, await confirmSentPayment(record, { resend }), report);

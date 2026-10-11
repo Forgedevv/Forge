@@ -56,7 +56,20 @@ export function feePayerSignature(tx: VersionedTransaction): string | null {
  * failure (network error, timeout, 5xx from the relay) may hide a transaction that did go out.
  */
 export function isPreflightRejection(err: unknown): err is SendTransactionError {
+  return err instanceof SendTransactionError && !wasAlreadyProcessed(err);
+}
+
+/** The RPC node answered the send with an error (as opposed to a network failure). */
+export function isNodeAnswer(err: unknown): err is SendTransactionError {
   return err instanceof SendTransactionError;
+}
+
+/** The node already knows this exact transaction (it went out before): it counts as sent. */
+export function wasAlreadyProcessed(err: unknown): boolean {
+  return (
+    err instanceof SendTransactionError &&
+    /already been processed|AlreadyProcessed/i.test(err.transactionError.message ?? '')
+  );
 }
 
 /** Readable reason of a preflight rejection (the node's message, without the debugging hints). */

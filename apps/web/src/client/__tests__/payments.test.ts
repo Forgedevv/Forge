@@ -421,3 +421,27 @@ describe('payment transaction checks', () => {
     expect(confirms).toHaveLength(0);
   });
 });
+
+describe('payment sends the node already processed', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    resetSentPayments();
+  });
+
+  it('counts "already processed" as sent and confirms it, never as a refusal', async () => {
+    const jobId = id();
+    const processed = new SendTransactionError({
+      action: 'simulate',
+      signature: '',
+      transactionMessage:
+        'Transaction simulation failed: This transaction has already been processed',
+      logs: [],
+    });
+    signIn(fakeConnection({ sendRawTransaction: vi.fn().mockRejectedValue(processed) }));
+    const { confirms } = scriptedServer(jobId, [json({ status: 'confirmed' })]);
+    const q = await getQuote(jobId, 'creation');
+    const result = await settle(payQuote(q, () => undefined));
+    expect(result).toMatchObject({ phase: 'confirmed', signature: SIG });
+    expect(confirms).toHaveLength(1);
+  });
+});
