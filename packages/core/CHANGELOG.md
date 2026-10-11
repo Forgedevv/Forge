@@ -55,6 +55,10 @@ publish:packages`, which runs typecheck, lint, tests and build first). Not publi
   `poolCreationFeeStatus(state)`; `PROTOCOL_POOL_CREATION_FEE_CLAIMED_BIT` (`0b01`) added.
   `PARTNER_POOL_CREATION_FEE_CLAIMED_BIT` and `partnerPoolCreationFeeShare` moved to `reads.ts`
   (still exported, same values).
+- `package.json`: `"sideEffects": false`, so bundlers can drop the modules a site does not use.
+  Verified: no module has a side effect when loaded (only constant definitions, a WeakMap cache
+  and a guard on the SDK IDL in `swap.ts`); `src/side-effects.test.ts` loads every module and
+  checks that no global is added and `process.env` is neither read nor written.
 
 ### Added
 
