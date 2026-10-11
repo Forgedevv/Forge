@@ -1,11 +1,9 @@
 import type { Connection, PublicKey } from '@solana/web3.js';
 import { useCallback, useEffect, useState } from 'react';
+import { TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from '../tx/programs';
 
 /** SPL Token and Token-2022 program ids: the only owners a coin mint may have. */
-export const TOKEN_PROGRAM_IDS = [
-  'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
-  'TokenzQdBNbLqP5VEhdkAS6EPFLC1PE5ZG5JSmhMvbW',
-] as const;
+export const TOKEN_PROGRAM_IDS = [TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID] as const;
 
 /** SPL mint layout: `decimals` (u8) at offset 44, `isInitialized` (bool) at 45, 82 bytes. */
 const MINT_SIZE = 82;
