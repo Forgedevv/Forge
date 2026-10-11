@@ -7,7 +7,8 @@ This zone contains all the logic that touches money, the network or the chain:
 
 - `config.ts`: reads and validates `forge.config.json`.
 - `security-headers.ts`: Content-Security-Policy allowlist, used by `next.config.ts`.
-- `JupiterTrade.tsx`: Jupiter Plugin (loads the external plugin script).
+- `JupiterTrade.tsx`: Jupiter Plugin (loads the external plugin script). Only rendered by `TradePanel` once a coin graduated.
+- `CoinTradePanel.tsx`: trade panel of a coin page. Derives the pool from this launchpad's config and the mint, then renders `TradePanel` (FORGE buy/sell with the 0.3% platform fee on the curve, Jupiter after graduation).
 - `CreateCoin.tsx`: coin creation: form, server preparation (`/api/upload`), full cost summary shown BEFORE signing, send through the RPC relay, confirmation by polling.
 - `create/`: pure helpers of the creation flow (`validation`, `amounts`, `api`, `verify`, `chain`, `flow`).
 - `ClaimCreatorFees.tsx` and `claims/`: creator fee claims for the connected wallet (adapter to `@forge/core` in `claims/core-adapter.ts`).
