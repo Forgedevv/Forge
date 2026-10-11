@@ -382,7 +382,9 @@ export class FakeGithub extends Recorder implements PipelineGithub, RepoSource {
   /** Repos whose default branch protection was applied. */
   readonly protectedRepos = new Set<string>();
 
-  protectDefaultBranch(repo: string): Promise<{ applied: boolean; reason?: 'plan' | 'permission' }> {
+  protectDefaultBranch(
+    repo: string,
+  ): Promise<{ applied: boolean; reason?: 'plan' | 'permission' }> {
     return this.around('protectDefaultBranch', () => {
       this.repo(repo);
       if (this.protection.applied) this.protectedRepos.add(repo);
@@ -477,7 +479,8 @@ export class FakeGithub extends Recorder implements PipelineGithub, RepoSource {
     return this.around('mergeBranch', () => {
       const r = this.repo(repo);
       const baseSha = r.branches.get(input.base);
-      const headSha = r.branches.get(input.head);
+      // The head may be a branch or a commit sha (the release merges the scanned commit).
+      const headSha = this.resolve(r, input.head)?.sha;
       if (!baseSha || !headSha) throw new ServiceError('github', 'not_found', 'branch not found');
       if (this.ancestors(baseSha).has(headSha)) return { merged: false, sha: baseSha };
       const mergeBase = this.mergeBase(baseSha, headSha);
@@ -529,15 +532,43 @@ export class FakeGithub extends Recorder implements PipelineGithub, RepoSource {
       const headSha = this.commitOf(repo, head).sha;
       const mergeBaseSha = this.mergeBase(baseSha, headSha);
       if (!mergeBaseSha) throw new ServiceError('github', 'not_found', 'no common ancestor');
+      const fromBase = this.ancestors(baseSha);
+      const fromHead = this.ancestors(headSha);
+      const aheadBy = [...fromHead].filter((c) => !fromBase.has(c)).length;
+      const behindBy = [...fromBase].filter((c) => !fromHead.has(c)).length;
+      // Like GitHub: the files of the merge base -> head diff.
+      const before = this.commits.get(mergeBaseSha)!.files;
+      const after = this.commits.get(headSha)!.files;
+      const files: CompareResult['files'] = [];
+      for (const p of [...new Set([...before.keys(), ...after.keys()])].sort()) {
+        const a = before.get(p);
+        const b = after.get(p);
+        if (a && b && a.executable === b.executable && a.content.equals(b.content)) continue;
+        files.push({
+          path: p,
+          status: !a ? 'added' : !b ? 'removed' : 'modified',
+          previousPath: undefined,
+          additions: 0,
+          deletions: 0,
+          patch: undefined,
+          sha: gitBlobSha((b ?? a)!.content),
+        });
+      }
       return {
         status:
-          mergeBaseSha === headSha ? 'behind' : mergeBaseSha === baseSha ? 'ahead' : 'diverged',
-        aheadBy: 0,
-        behindBy: 0,
-        totalCommits: 0,
+          headSha === baseSha
+            ? 'identical'
+            : mergeBaseSha === headSha
+              ? 'behind'
+              : mergeBaseSha === baseSha
+                ? 'ahead'
+                : 'diverged',
+        aheadBy,
+        behindBy,
+        totalCommits: aheadBy,
         mergeBaseSha,
         headSha,
-        files: [],
+        files,
         source: 'tree',
       } satisfies CompareResult;
     });
@@ -590,6 +621,7 @@ interface FakeProject {
   name: string;
   linkedRepo: string;
   productionDeploymentId: string | undefined;
+  paused: boolean;
   env: Map<string, string>;
   domains: Set<string>;
 }
@@ -622,7 +654,7 @@ export class FakeVercel extends Recorder implements PipelineVercel {
       name: p.name,
       linkedRepo: p.linkedRepo,
       productionDeploymentId: p.productionDeploymentId,
-      paused: false,
+      paused: p.paused,
       gitDeploymentsDisabled: true,
     };
   }
@@ -644,6 +676,7 @@ export class FakeVercel extends Recorder implements PipelineVercel {
         name: projectNameForSlug(input.slug),
         linkedRepo: `forge-org/${repoNameForSlug(input.slug)}`,
         productionDeploymentId: undefined,
+        paused: false,
         env: new Map(),
         domains: new Set(),
       };
@@ -689,6 +722,7 @@ export class FakeVercel extends Recorder implements PipelineVercel {
         target,
         errorCode: undefined,
         errorMessage: undefined,
+        commitSha: input.sha,
         projectId: p.id,
         ref: input.ref,
         sha: input.sha,
@@ -696,6 +730,33 @@ export class FakeVercel extends Recorder implements PipelineVercel {
       };
       this.deployments.set(d.id, d);
       return { ...d };
+    });
+  }
+
+  /** By id or by URL (with or without the scheme), like the API. */
+  getDeployment(idOrUrl: string): Promise<VercelDeployment> {
+    return this.around('getDeployment', () => {
+      const host = idOrUrl.replace(/^https?:\/\//, '');
+      const d =
+        this.deployments.get(idOrUrl) ??
+        [...this.deployments.values()].find((x) => x.url.replace(/^https:\/\//, '') === host);
+      if (!d)
+        throw new ServiceError('vercel', 'not_found', 'deployment not found', { status: 404 });
+      return { ...d };
+    });
+  }
+
+  getProject(nameOrId: string): Promise<VercelProject | null> {
+    return this.around('getProject', () => {
+      const p =
+        this.projects.get(nameOrId) ?? [...this.projects.values()].find((x) => x.name === nameOrId);
+      return p ? this.view(p) : null;
+    });
+  }
+
+  pauseProject(projectId: string): Promise<void> {
+    return this.around('pauseProject', () => {
+      this.project(projectId).paused = true;
     });
   }
 

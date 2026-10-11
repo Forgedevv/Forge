@@ -311,7 +311,11 @@ export async function runSleepCycle(
     return true;
   };
 
-  const goOn = await pass((after) => deps.store.listDormant(cutoff, batch, after), 'sleeping', cutoff);
+  const goOn = await pass(
+    (after) => deps.store.listDormant(cutoff, batch, after),
+    'sleeping',
+    cutoff,
+  );
   // Only a job in flight (or a failed release) blocks a wake-up: a modification release wakes the
   // site itself.
   if (goOn) await pass((after) => deps.store.listWoken(cutoff, batch, after), 'live', nowIso);

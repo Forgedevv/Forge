@@ -32,6 +32,7 @@ export type PipelineVercel = Pick<
   | 'setEnv'
   | 'pruneEnv'
   | 'createDeployment'
+  | 'getDeployment'
   | 'waitForDeployment'
   | 'promoteToProduction'
   | 'attachSubdomain'

@@ -349,6 +349,10 @@ export interface VercelDeployment {
   target: 'production' | 'preview';
   errorCode: string | undefined;
   errorMessage: string | undefined;
+  /** Git commit the deployment was built from (`gitSource.sha`, else `meta.githubCommitSha`). */
+  commitSha: string | undefined;
+  /** Project the deployment belongs to, when Vercel reports it. */
+  projectId: string | undefined;
 }
 
 /**
@@ -463,7 +467,12 @@ const DeploymentSchema = z.object({
   target: z.string().nullish(),
   errorCode: z.string().optional(),
   errorMessage: z.string().optional(),
+  projectId: z.string().optional(),
+  gitSource: z.object({ sha: z.string().optional() }).nullish(),
+  meta: z.object({ githubCommitSha: z.string().optional() }).nullish(),
 });
+
+const COMMIT_SHA_RE = /^[0-9a-f]{40}$/;
 const DomainSchema = z.object({
   name: z.string(),
   verified: z.boolean(),
@@ -532,6 +541,7 @@ function apiOnlyPolicyHolds(
 function toDeployment(d: z.infer<typeof DeploymentSchema>): VercelDeployment {
   const state = d.readyState.toUpperCase();
   const url = d.url.startsWith('http') ? d.url : d.url ? `https://${d.url}` : '';
+  const sha = d.gitSource?.sha ?? d.meta?.githubCommitSha;
   return {
     id: d.id,
     url,
@@ -539,6 +549,8 @@ function toDeployment(d: z.infer<typeof DeploymentSchema>): VercelDeployment {
     target: d.target === 'production' ? 'production' : 'preview',
     errorCode: d.errorCode,
     errorMessage: d.errorMessage,
+    commitSha: sha !== undefined && COMMIT_SHA_RE.test(sha) ? sha : undefined,
+    projectId: d.projectId,
   };
 }
 

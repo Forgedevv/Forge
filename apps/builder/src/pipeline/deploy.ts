@@ -15,6 +15,7 @@ import {
 import { PipelineError, PolicyViolationError } from './errors.js';
 import { STEP_EVENTS } from './messages.js';
 import { scanRelease } from './release-scan.js';
+import { deepEqual } from '../scan/manifest.js';
 import {
   parseSiteConfig,
   sameOnchain,
@@ -22,6 +23,8 @@ import {
   SITE_CONFIG_PATH,
   typedSiteConfig,
   withMode,
+  withOnchain,
+  type RawSiteConfig,
 } from './site-config.js';
 import type { BuildKind } from './build.js';
 
@@ -50,9 +53,10 @@ export async function runDeployStep(
   const repo = await deps.github.getRepo(repoName);
   if (!repo) throw new PipelineError('the launchpad repository does not exist');
   const branch = jobBranch(job.id);
-  if ((await deps.github.getBranchHead(repo.name, branch)) === null) {
-    throw new PipelineError('the job branch does not exist');
-  }
+  // Pin the job branch: everything below is checked, scanned and merged at this exact commit,
+  // whatever is pushed to the branch meanwhile.
+  const headSha = await deps.github.getBranchHead(repo.name, branch);
+  if (headSha === null) throw new PipelineError('the job branch does not exist');
 
   guard(signal);
   const { project } = await deps.vercel.ensureProject({ slug: spec.slug });
@@ -64,11 +68,15 @@ export async function runDeployStep(
     await deps.store.updateLaunchpad(launchpad.id, { vercel_project_id: project.id });
   }
 
-  // What is about to be released: the job branch, checked against the default branch.
-  const branchText = await deps.github.readFile(repo.name, SITE_CONFIG_PATH, branch);
+  // What the client approved: the commit of the preview deployment they were shown.
+  const previewSha = await approvedPreviewCommit(deps, job, project.id);
+
+  // What is about to be released: the pinned commit, checked against the default branch.
+  const branchText = await deps.github.readFile(repo.name, SITE_CONFIG_PATH, headSha);
   if (branchText === null)
     throw new PipelineError('forge.config.json is missing from the job branch');
-  const branchConfig = typedSiteConfig(parseSiteConfig(branchText));
+  const branchRaw = parseSiteConfig(branchText);
+  const branchConfig = typedSiteConfig(branchRaw);
   const mainText = await deps.github.readFile(repo.name, SITE_CONFIG_PATH, repo.defaultBranch);
   const mainConfig = mainText === null ? null : typedSiteConfig(parseSiteConfig(mainText));
   // A site cut by FORGE is never brought back by a release (only the team re-enables it).
@@ -109,8 +117,8 @@ export async function runDeployStep(
     if (!sameOnchain(branchConfig.onchain, mainConfig.onchain)) locked.push(lockedField('onchain'));
     if (branchConfig.name !== mainConfig.name) locked.push(lockedField('name'));
   }
-  // Second scan: exactly what the merge brings in, as stored on GitHub (merge base -> branch).
-  const release = await scanRelease(deps, repo.name, repo.defaultBranch, branch);
+  // Second scan: exactly what the merge brings in, as stored on GitHub (merge base -> commit).
+  const release = await scanRelease(deps, repo.name, repo.defaultBranch, headSha);
   const blocked = [...locked, ...release.violations];
   if (blocked.length > 0) {
     await safeAlert(
@@ -136,13 +144,15 @@ export async function runDeployStep(
     }),
     'release scan passed',
   );
+  // Nothing but the approved preview (plus, for a creation, the builder's on-chain commit).
+  await checkApprovedHead(deps, job, repo.name, kind, previewSha, headSha, branchRaw);
 
   // Merge (answers "already merged" on a re-run).
   await say(jobCtx, STEP_EVENTS.release);
   guard(signal);
   const merged = await deps.github.mergeBranch(repo.name, {
     base: repo.defaultBranch,
-    head: branch,
+    head: headSha,
     message: `Release job ${job.id}`,
   });
   const releasedText = await deps.github.readFile(repo.name, SITE_CONFIG_PATH, merged.sha);
@@ -220,4 +230,79 @@ export async function runDeployStep(
     'launchpad released',
   );
   return { message: STEP_EVENTS.live(domain.domain) };
+}
+
+/** `https://<deployment host>` as stored by the build step. */
+const PREVIEW_URL_RE = /^https:\/\/[A-Za-z0-9.-]+\/?$/;
+
+/**
+ * Commit of the preview the client approved: `jobs.preview_url` points to the immutable Vercel
+ * deployment the build step created for the scanned commit, and Vercel reports its git commit.
+ * Fails closed when any of it is missing.
+ */
+async function approvedPreviewCommit(
+  deps: PipelineDeps,
+  job: JobRow,
+  projectId: string,
+): Promise<string> {
+  const url = job.preview_url;
+  if (url === null || !PREVIEW_URL_RE.test(url)) {
+    throw new PipelineError('the job has no preview deployment: nothing was approved');
+  }
+  const preview = await deps.vercel.getDeployment(url);
+  if (preview.projectId !== undefined && preview.projectId !== projectId) {
+    throw new PipelineError('the preview deployment belongs to another Vercel project');
+  }
+  if (preview.target !== 'preview') {
+    throw new PipelineError('the approved deployment is not a preview deployment');
+  }
+  if (preview.commitSha === undefined) {
+    throw new PipelineError('the preview deployment does not report its commit');
+  }
+  return preview.commitSha;
+}
+
+/**
+ * The release must be exactly the commit the client approved. A creation may carry one more
+ * commit on top of it: the builder's own, which only adds `onchain` to forge.config.json (the
+ * on-chain step runs after the approval). Anything else pushed to the branch is refused.
+ */
+async function checkApprovedHead(
+  deps: PipelineDeps,
+  job: JobRow,
+  repo: string,
+  kind: BuildKind,
+  previewSha: string,
+  headSha: string,
+  headConfig: RawSiteConfig,
+): Promise<void> {
+  if (headSha === previewSha) return;
+  const refuse = async (detail: string): Promise<never> => {
+    await safeAlert(
+      deps,
+      'high',
+      `release_unapproved:${job.id}`,
+      'Release blocked: the job branch is not the approved preview',
+      { jobId: job.id, detail, previewSha, headSha },
+    );
+    throw new PipelineError(`the job branch is not the approved preview: ${detail}`);
+  };
+  if (kind === 'modify') return refuse('the branch changed after the preview');
+  const cmp = await deps.github.compareCommits(repo, previewSha, headSha);
+  if (cmp.mergeBaseSha !== previewSha || cmp.behindBy !== 0 || cmp.aheadBy !== 1) {
+    return refuse('more than the on-chain commit on top of the preview');
+  }
+  if (cmp.files.length !== 1 || cmp.files[0]?.path !== SITE_CONFIG_PATH) {
+    return refuse('the commit after the preview changes more than forge.config.json');
+  }
+  const previewText = await deps.github.readFile(repo, SITE_CONFIG_PATH, previewSha);
+  if (previewText === null) return refuse('the preview has no forge.config.json');
+  const previewConfig = parseSiteConfig(previewText);
+  const onchain = typedSiteConfig(headConfig).onchain;
+  if (previewConfig.onchain !== undefined || onchain === undefined) {
+    return refuse('the commit after the preview is not the on-chain commit');
+  }
+  if (!deepEqual(withOnchain(previewConfig, onchain), headConfig)) {
+    return refuse('the commit after the preview changes more than the on-chain section');
+  }
 }

@@ -17,7 +17,14 @@ import {
   makeJobsRoot,
   MODIFY_JOB_ID,
 } from './test-fakes.js';
-import { agents, designAgent, makeHarness, modifyAgent, type Harness } from './test-harness.js';
+import {
+  agents,
+  designAgent,
+  makeHarness,
+  modifyAgent,
+  withPreviewUrl,
+  type Harness,
+} from './test-harness.js';
 
 const REPO = 'lp-moonpad';
 const BRANCH = jobBranch(MODIFY_JOB_ID);
@@ -36,7 +43,7 @@ afterEach(async () => {
 
 async function run(h: Harness, job: JobRow) {
   const { ctx, events } = jobContext();
-  const outcome = await createPipelineHandler(h.deps).handle(job, ctx);
+  const outcome = await createPipelineHandler(h.deps).handle(withPreviewUrl(h, job), ctx);
   return { outcome, events };
 }
 
@@ -274,6 +281,22 @@ describe('modify: deploying', () => {
     expect(h.github.repos.get(REPO)!.branches.get('main')).toBe(mainBefore);
     expect(h.alerts).toContainEqual(
       expect.objectContaining({ level: 'high', code: `release_blocked:${MODIFY_JOB_ID}` }),
+    );
+  });
+
+  it('releases exactly the approved preview: any later commit is refused', async () => {
+    const h = await liveLaunchpad();
+    await run(h, modifyJob());
+    await h.github.commitFiles({
+      repo: REPO,
+      branch: BRANCH,
+      message: 'late but clean',
+      files: [{ path: 'src/content/extra.ts', content: 'export const extra = 1;\n' }],
+    });
+    await expect(run(h, modifyJob({ status: 'deploying' }))).rejects.toThrow(/approved preview/);
+    expect(h.github.count('mergeBranch')).toBe(1); // the creation release only
+    expect(h.alerts).toContainEqual(
+      expect.objectContaining({ level: 'high', code: `release_unapproved:${MODIFY_JOB_ID}` }),
     );
   });
 

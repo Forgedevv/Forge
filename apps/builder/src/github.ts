@@ -351,6 +351,7 @@ export interface GithubClient {
   compareCommits(repo: string, base: string, head: string): Promise<CompareResult>;
   /** Reads a text file at a ref; null when absent. */
   readFile(repo: string, path: string, ref: string): Promise<string | null>;
+  /** Merges `head` (a branch or a full commit sha) into the `base` branch. */
   mergeBranch(
     repo: string,
     input: { base: string; head: string; message: string },
@@ -1202,7 +1203,8 @@ export function createGithubClient(opts: GithubClientOptions): GithubClient {
     input: { base: string; head: string; message: string },
   ): Promise<MergeResult> {
     encodeBranch(input.base);
-    encodeBranch(input.head);
+    // The head may be a commit sha: the release merges exactly the commit it scanned.
+    encodeBranchOrSha(input.head);
     const res = await withFreshTokenRetry(() =>
       http.request({
         method: 'POST',

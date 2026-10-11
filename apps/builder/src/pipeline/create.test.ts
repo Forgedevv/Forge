@@ -22,7 +22,7 @@ import {
   OWNER_TX,
   silentLogger,
 } from './test-fakes.js';
-import { agents, designAgent, makeHarness, type Harness } from './test-harness.js';
+import { agents, designAgent, makeHarness, withPreviewUrl, type Harness } from './test-harness.js';
 
 const REPO = 'lp-moonpad';
 const BRANCH = jobBranch(CREATE_JOB_ID);
@@ -51,7 +51,7 @@ function harness(): Harness {
 
 async function runStep(h: Harness, job: JobRow, signal?: AbortSignal) {
   const { ctx, events } = jobContext(signal);
-  const outcome = await createPipelineHandler(h.deps).handle(job, ctx);
+  const outcome = await createPipelineHandler(h.deps).handle(withPreviewUrl(h, job), ctx);
   return { outcome, events };
 }
 
@@ -664,6 +664,92 @@ describe('create: deploying', () => {
     };
     await expect(runStep(h, deployingJob())).rejects.toThrow(/status changed/);
     expect(h.store.get(LAUNCHPAD_ID).status).toBe('disabled');
+  });
+
+  it('merges the commit it checked, not what the branch points to by then', async () => {
+    const h = harness();
+    await prepareOnchain(h);
+    const checked = h.github.repos.get(REPO)!.branches.get(BRANCH)!;
+    h.github.onCall = (op) => {
+      if (op !== 'mergeBranch') return;
+      // A push lands on the job branch between the checks and the merge.
+      const files = new Map(h.github.filesAt(REPO, BRANCH));
+      files.set('src/components/Late.tsx', {
+        content: Buffer.from('export const Late = () => null;\n'),
+        executable: false,
+      });
+      h.github.forceBranch(REPO, BRANCH, files, 'late push');
+    };
+    await runStep(h, deployingJob());
+    expect(h.github.text(REPO, 'main', 'src/components/Late.tsx')).toBeUndefined();
+    const merge = h.github.commits.get(h.github.repos.get(REPO)!.branches.get('main')!)!;
+    expect(merge.parents).toContain(checked);
+  });
+
+  it('refuses a clean commit pushed to the job branch after the approved preview', async () => {
+    const h = harness();
+    await prepareOnchain(h);
+    await h.github.commitFiles({
+      repo: REPO,
+      branch: BRANCH,
+      message: 'late change',
+      files: [{ path: 'src/components/Note.tsx', content: 'export const Note = () => null;\n' }],
+    });
+    await expect(runStep(h, deployingJob())).rejects.toThrow(/approved preview/);
+    expect(h.github.count('mergeBranch')).toBe(0);
+    expect(h.alerts).toContainEqual(
+      expect.objectContaining({ level: 'high', code: `release_unapproved:${CREATE_JOB_ID}` }),
+    );
+  });
+
+  it('accepts only the on-chain section in the commit after the preview', async () => {
+    const h = harness();
+    await buildPreview(h);
+    // A commit that adds the on-chain block and changes the theme too.
+    const config = JSON.parse(h.github.text(REPO, BRANCH, 'forge.config.json')!);
+    const onchain = {
+      cluster: 'devnet',
+      launchpadConfig: LAUNCHPAD_CONFIG,
+      launchpadCoinConfig: LAUNCHPAD_COIN_CONFIG,
+      launchpadCoinMint: LAUNCHPAD_COIN_MINT,
+      ownerWallet: OWNER,
+      poolCreationFeeSol: 0.01,
+    };
+    await h.github.commitFiles({
+      repo: REPO,
+      branch: BRANCH,
+      message: 'onchain and more',
+      files: [
+        {
+          path: 'forge.config.json',
+          content: `${JSON.stringify({ ...config, onchain, theme: { ...config.theme, darkMode: false } }, null, 2)}\n`,
+        },
+      ],
+    });
+    await expect(runStep(h, deployingJob())).rejects.toThrow(/approved preview/);
+    expect(h.github.count('mergeBranch')).toBe(0);
+  });
+
+  it('refuses a release without an approved preview deployment', async () => {
+    const h = harness();
+    await prepareOnchain(h);
+    const handler = createPipelineHandler(h.deps);
+    const noPreview = deployingJob({ preview_url: null });
+    await expect(handler.handle(noPreview, jobContext().ctx)).rejects.toThrow(/no preview/);
+    const unknown = deployingJob({ preview_url: 'https://lp-other-1.vercel.test' });
+    await expect(handler.handle(unknown, jobContext().ctx)).rejects.toThrow(/not found/);
+    // A production deployment is not an approved preview.
+    const project = h.vercel.projectBySlug('moonpad')!;
+    const prod = await h.vercel.createDeployment({
+      project: { id: project.id, name: project.name },
+      repo: REPO,
+      ref: BRANCH,
+      sha: h.github.repos.get(REPO)!.branches.get(BRANCH)!,
+      target: 'production',
+    });
+    const asProduction = deployingJob({ preview_url: prod.url });
+    await expect(handler.handle(asProduction, jobContext().ctx)).rejects.toThrow(/not a preview/);
+    expect(h.github.count('mergeBranch')).toBe(0);
   });
 
   it('refuses to release on-chain addresses of another cluster', async () => {

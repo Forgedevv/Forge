@@ -793,6 +793,45 @@ describe('deployments', () => {
     await client.getDeployment('https://lp-moonpad-abc123-forge.vercel.app');
     expect(stub.calls[0]?.path).toBe('/v13/deployments/lp-moonpad-abc123-forge.vercel.app');
   });
+
+  it('reports the commit and the project of a deployment', async () => {
+    const sha = 'a'.repeat(40);
+    const other = 'b'.repeat(40);
+    const { client } = make([
+      {
+        method: 'GET',
+        path: '/v13/deployments/dpl_1',
+        handler: () =>
+          json(
+            deploymentJson('READY', {
+              projectId: 'prj_123',
+              gitSource: { type: 'github', ref: 'main', sha },
+              meta: { githubCommitSha: other },
+            }),
+          ),
+      },
+      {
+        method: 'GET',
+        path: '/v13/deployments/dpl_2',
+        handler: () => json(deploymentJson('READY', { meta: { githubCommitSha: other } })),
+      },
+      {
+        method: 'GET',
+        path: '/v13/deployments/dpl_3',
+        handler: () => json(deploymentJson('READY', { gitSource: { sha: 'main' } })),
+      },
+    ]);
+    // gitSource first, then the git metadata; anything that is not a full sha is ignored.
+    expect(await client.getDeployment('dpl_1')).toMatchObject({
+      commitSha: sha,
+      projectId: 'prj_123',
+    });
+    expect(await client.getDeployment('dpl_2')).toMatchObject({
+      commitSha: other,
+      projectId: undefined,
+    });
+    expect((await client.getDeployment('dpl_3')).commitSha).toBeUndefined();
+  });
 });
 
 describe('promoteToProduction', () => {

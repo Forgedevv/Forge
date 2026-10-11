@@ -2,6 +2,7 @@
 /** Test helper: a full pipeline wired to the fakes of test-fakes.ts. */
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import path from 'node:path';
+import type { JobRow } from '@forge/shared';
 import { buildSite } from '../sandbox/index.js';
 import { scanDiff } from '../scan/index.js';
 import type { AgentConfig } from './agent.js';
@@ -199,3 +200,16 @@ export const agents = {
     });
   }) satisfies AgentBehaviour,
 };
+
+/**
+ * `jobs.preview_url` as the worker would have stored it: the URL of the job's latest preview
+ * deployment. Fills it in for a `deploying` job built by the test, like the claimed DB row.
+ */
+export function withPreviewUrl(h: Harness, job: JobRow): JobRow {
+  if (job.status !== 'deploying' || job.preview_url !== null) return job;
+  const branch = `forge/${job.id}`;
+  const preview = [...h.vercel.deployments.values()]
+    .filter((d) => d.target === 'preview' && d.ref === branch)
+    .at(-1);
+  return preview ? { ...job, preview_url: preview.url } : job;
+}
