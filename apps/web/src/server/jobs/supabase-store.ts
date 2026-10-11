@@ -52,14 +52,14 @@ export class SupabaseRoutesStore implements RoutesStore {
   async getOwnedJob(jobId: string, wallet: string): Promise<OwnedJob | null> {
     const res = await this.db
       .from('jobs')
-      .select(`${JOB_COLUMNS}, launchpad:launchpads!inner(${LAUNCHPAD_COLUMNS})`)
+      .select(`${JOB_COLUMNS}, launchpads!inner(${LAUNCHPAD_COLUMNS})`)
       .eq('id', jobId)
-      .eq('launchpad.owner_wallet', wallet)
+      .eq('launchpads.owner_wallet', wallet)
       .maybeSingle();
     if (res.error) fail('read job', res.error);
     if (!res.data) return null;
     const row = res.data as Record<string, unknown>;
-    const launchpad = parseLaunchpadRow(row.launchpad);
+    const launchpad = parseLaunchpadRow(row.launchpads);
     // Defense in depth: the inner join already filtered on the owner.
     if (launchpad.ownerWallet !== wallet) return null;
     return { job: parseJobRow(row), launchpad };
@@ -68,11 +68,9 @@ export class SupabaseRoutesStore implements RoutesStore {
   async listJobEvents(jobId: string, wallet: string): Promise<JobEventRecord[]> {
     const res = await this.db
       .from('job_events')
-      .select(
-        'id, job_id, message, created_at, job:jobs!inner(launchpad:launchpads!inner(owner_wallet))',
-      )
+      .select('id, job_id, message, created_at, jobs!inner(launchpads!inner(owner_wallet))')
       .eq('job_id', jobId)
-      .eq('job.launchpad.owner_wallet', wallet)
+      .eq('jobs.launchpads.owner_wallet', wallet)
       .order('id', { ascending: true })
       .limit(500);
     if (res.error) fail('read job events', res.error);
@@ -137,9 +135,9 @@ export class SupabaseRoutesStore implements RoutesStore {
     if (ids.length === 0) return [];
     const res = await this.db
       .from('jobs')
-      .select(`${JOB_COLUMNS}, launchpad:launchpads!inner(owner_wallet)`)
+      .select(`${JOB_COLUMNS}, launchpads!inner(owner_wallet)`)
       .in('launchpad_id', ids)
-      .eq('launchpad.owner_wallet', wallet)
+      .eq('launchpads.owner_wallet', wallet)
       .order('created_at', { ascending: false })
       .limit(1000);
     if (res.error) fail('read jobs', res.error);

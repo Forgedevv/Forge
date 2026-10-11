@@ -77,20 +77,20 @@ function ownerFilters(ops: [string, unknown[]][]): unknown[][] {
 
 describe('SupabaseRoutesStore owner filters', () => {
   it('reads a job through an inner join filtered on the owner', async () => {
-    const { store, calls } = fakeDb([{ data: { ...JOB, launchpad: LP } }]);
+    const { store, calls } = fakeDb([{ data: { ...JOB, launchpads: LP } }]);
     const owned = await store.getOwnedJob('j1', W);
     expect(owned?.job.ownerTx).toBe('AQ==');
     expect(owned?.launchpad.ownerWallet).toBe(W);
     const select = calls[0]!.ops.find(([op]) => op === 'select')![1][0] as string;
-    expect(select).toContain('launchpad:launchpads!inner(');
+    expect(select).toContain('launchpads!inner(');
     expect(ownerFilters(calls[0]!.ops)).toEqual([
       ['id', 'j1'],
-      ['launchpad.owner_wallet', W],
+      ['launchpads.owner_wallet', W],
     ]);
   });
 
   it('drops a row whose launchpad belongs to someone else (defense in depth)', async () => {
-    const { store } = fakeDb([{ data: { ...JOB, launchpad: { ...LP, owner_wallet: 'other' } } }]);
+    const { store } = fakeDb([{ data: { ...JOB, launchpads: { ...LP, owner_wallet: 'other' } } }]);
     expect(await store.getOwnedJob('j1', W)).toBeNull();
   });
 
@@ -123,8 +123,8 @@ describe('SupabaseRoutesStore owner filters', () => {
       { jobId: 'j1', lamports: 5n, signature: 'rs' },
     ]);
 
-    expect(ownerFilters(calls[0]!.ops)).toContainEqual(['job.launchpad.owner_wallet', W]);
-    expect(ownerFilters(calls[1]!.ops)).toContainEqual(['launchpad.owner_wallet', W]);
+    expect(ownerFilters(calls[0]!.ops)).toContainEqual(['jobs.launchpads.owner_wallet', W]);
+    expect(ownerFilters(calls[1]!.ops)).toContainEqual(['launchpads.owner_wallet', W]);
     expect(calls[1]!.ops).toContainEqual(['in', ['launchpad_id', ['lp1']]]);
     expect(ownerFilters(calls[2]!.ops)).toContainEqual(['owner_wallet', W]);
     expect(ownerFilters(calls[3]!.ops)).toContainEqual(['owner_wallet', W]);
@@ -198,7 +198,7 @@ describe('SupabaseRoutesStore owner filters', () => {
   });
 
   it('rejects unexpected rows', async () => {
-    const { store } = fakeDb([{ data: { ...JOB, status: 'bogus', launchpad: LP } }]);
+    const { store } = fakeDb([{ data: { ...JOB, status: 'bogus', launchpads: LP } }]);
     await expect(store.getOwnedJob('j1', W)).rejects.toBeInstanceOf(StoreError);
   });
 });
