@@ -11,15 +11,16 @@ import { EXPLORE_FIXED_TIMEFRAME, useExplore } from '@/contexts/ExploreProvider'
 import { Pool } from '@/contexts/types';
 import { isHoverableDevice, useBreakpoint } from '@/lib/device';
 import { PausedIndicator } from './PausedIndicator';
+import { content } from '@/content';
 
 type ExploreColumnProps = {
   tab: ExploreTab;
 };
 
 export const ExploreTabTitleMap: Record<ExploreTab, string> = {
-  [ExploreTab.NEW]: `New`,
-  [ExploreTab.GRADUATING]: `Soon`,
-  [ExploreTab.GRADUATED]: `Bonded`,
+  [ExploreTab.NEW]: content.strings.columns.new,
+  [ExploreTab.GRADUATING]: content.strings.columns.soon,
+  [ExploreTab.GRADUATED]: content.strings.columns.bonded,
 };
 
 export const ExploreColumn: React.FC<ExploreColumnProps> = ({ tab }) => {
@@ -31,15 +32,14 @@ export const ExploreColumn: React.FC<ExploreColumnProps> = ({ tab }) => {
   );
 
   return (
-    // Fill the viewport below the header + page gutters on desktop
-    // (64px header + 12px top gutter + 32px bottom gutter + 2px borders)
-    <div className="flex flex-col h-full lg:h-[calc(100vh-110px)]">
+    <div className="launchpad-market-column flex flex-col h-full">
       {/* Desktop Column Header */}
-      <div className="flex items-center justify-between p-3 max-lg:hidden">
+      <div className="launchpad-column-heading flex items-center justify-between max-lg:hidden">
         <div className="flex items-center gap-x-2">
           <h2 className="font-bold text-neutral-300">{ExploreTabTitleMap[tab]}</h2>
           {isPaused && <PausedIndicator />}
         </div>
+        <span className="launchpad-column-number" aria-hidden="true">{tab === ExploreTab.NEW ? '01' : tab === ExploreTab.GRADUATING ? '02' : '03'}</span>
       </div>
 
       {/* List */}

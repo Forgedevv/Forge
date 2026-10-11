@@ -1,6 +1,7 @@
 import { useTheme } from 'next-themes';
 import { useEffect, useState } from 'react';
 import { cn } from '@/lib/utils';
+import { content } from '@/content';
 
 type ThemeToggleProps = {
   className?: string;
@@ -18,7 +19,7 @@ export const ThemeToggle = ({ className }: ThemeToggleProps) => {
   return (
     <button
       type="button"
-      aria-label={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
+      aria-label={isDark ? content.strings.lightMode : content.strings.darkMode}
       onClick={() => setTheme(isDark ? 'light' : 'dark')}
       className={cn(
         'flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-full border border-neutral-800 text-neutral-300 transition-colors',

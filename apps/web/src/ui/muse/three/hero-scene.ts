@@ -1,9 +1,10 @@
 import * as T from 'three';
 import { acquireMuseTextures, createMuseOrb, releaseMuseTextures, type MuseOrb } from './orb';
 import { createMuseFigure, type FigureAction } from './figure';
+import { FORGE_PRIMARY, FORGE_ACCENT } from '../engine';
 
 /**
- * The dashboard hero: the full-body FORGE Muse on a dark violet floor, with a light pool, a
+ * The dashboard hero: the full-body FORGE Muse on a violet drafting table, with a light pool, a
  * contact shadow, a few floating sparks, and the user's own launchpad Muses hovering around
  * it in their theme colors. One canvas; it pauses offscreen and in hidden tabs, and draws a
  * single static pose under reduced motion.
@@ -114,7 +115,7 @@ function build(container: HTMLElement, options: HeroOptions, renderer: T.WebGLRe
   shadow.renderOrder = -1;
   scene.add(shadow);
 
-  const figure = createMuseFigure({ still: reduced });
+  const figure = createMuseFigure({ still: reduced, primary: FORGE_PRIMARY, accent: FORGE_ACCENT });
   figure.setAction(options.action);
   scene.add(figure.root);
 
@@ -137,6 +138,29 @@ function build(container: HTMLElement, options: HeroOptions, renderer: T.WebGLRe
     scene.add(sprite);
     return { sprite, material, base, phase: i * 1.7, size: 0.1 + (i % 3) * 0.04 };
   });
+
+  // An engraved drafting dial anchors the scene instead of an unbounded glow.
+  const dial = new T.Group();
+  dial.position.y = 0.012;
+  const dialMaterial = new T.MeshBasicMaterial({ color: FORGE_PRIMARY, transparent: true, opacity: 0.24, side: T.DoubleSide });
+  const dialGeometries: T.BufferGeometry[] = [];
+  for (const radius of [0.8, 1.48, 2.05]) {
+    const geometry = new T.RingGeometry(radius, radius + 0.007, 100);
+    dialGeometries.push(geometry);
+    const ring = new T.Mesh(geometry, dialMaterial);
+    ring.rotation.x = -Math.PI / 2;
+    dial.add(ring);
+  }
+  const tickGeometry = new T.PlaneGeometry(0.009, 0.08);
+  dialGeometries.push(tickGeometry);
+  for (let i = 0; i < 64; i++) {
+    const angle = i * Math.PI / 32;
+    const tick = new T.Mesh(tickGeometry, dialMaterial);
+    tick.position.set(Math.sin(angle) * 2.05, 0.001, Math.cos(angle) * 2.05);
+    tick.rotation.set(-Math.PI / 2, 0, -angle);
+    dial.add(tick);
+  }
+  scene.add(dial);
 
   // The user's own Muses, hovering around the FORGE Muse.
   let satellites: Satellite[] = [];
@@ -330,6 +354,8 @@ function build(container: HTMLElement, options: HeroOptions, renderer: T.WebGLRe
       floorMaterial.dispose();
       shadow.geometry.dispose();
       shadowMaterial.dispose();
+      dialGeometries.forEach((geometry) => geometry.dispose());
+      dialMaterial.dispose();
       releaseMuseTextures();
       renderer.dispose();
       renderer.forceContextLoss();

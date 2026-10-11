@@ -4,11 +4,11 @@ import * as T from 'three';
 export type Vec3Tuple = readonly [number, number, number];
 
 /**
- * One chapter of the original FORGE camera journey.
+ * One chapter of the measured reference camera choreography.
  *
- * The path starts low in front of the pilot, slides to the right for the glass chapter,
- * drops down to the launchpad wall, rises over it onto a distant drafting table, climbs
- * into orbit, and finally banks away behind the pilot for liftoff.
+ * Technical camera landmarks were inspected from the public scene metadata. The sequence
+ * pulls back from the hero, descends to the display wall, pulls far above the workshop,
+ * moves into the orbit, and finishes on a diagonal flight view. All scene artwork is local.
  */
 export interface ChapterFrame {
   camera: {
@@ -33,47 +33,48 @@ export interface ChapterFrame {
 }
 
 export const CAMERA_PATH: readonly ChapterFrame[] = [
-  // Ignition: a low, slightly off-axis hero view of the pilot in front of the title.
+  // The hero and glass scene share a focus; the first move is a dolly backwards.
   {
-    camera: { position: [0.55, -0.25, 3.1], roll: 0, fov: 40 },
-    target: [0, 0, 0],
-    character: { position: [-0.18, -0.12, 0.55], rotationDegrees: [-5, 24, 3], scale: 1.9 },
-    mobileFovOffset: 22,
+    camera: { position: [0, 1.047, 2.525], roll: 0, fov: 37.3 },
+    target: [0, 1.05, .189],
+    character: { position: [-.057, 1.110, -.143], rotationDegrees: [-12.79, -39.19, -4.36], scale: 2.07 },
+    mobileFovOffset: 25,
   },
-  // Your world: the camera slides right; the glass pilot sits left of the title.
+  // Glass: a larger pilot and a wider view of the moving type field.
   {
-    camera: { position: [4.8, 1.25, 1.3], roll: -0.025, fov: 42 },
-    target: [3.4, 0.9, -3],
-    character: { position: [2.65, 0.6, -2.1], rotationDegrees: [8, -32, -6], scale: 3.1 },
-    mobileFovOffset: 26,
+    camera: { position: [0, .910, 5.945], roll: 0, fov: 37.3 },
+    target: [0, 1.05, 1.377],
+    character: { position: [-.293, 1.031, 1.210], rotationDegrees: [-33.13, 60.82, .32], scale: 4.144 },
+    mobileFovOffset: 30,
   },
-  // The workshop: a raised view over the pilot's shoulder towards the display wall.
+  // Display wall: descend into the dark scene and look past the pilot at the screens.
   {
-    camera: { position: [-0.5, -5.05, -2.3], roll: 0.02, fov: 40 },
-    target: [0.4, -6, -6.5],
-    character: { position: [0.65, -6.55, -5.6], rotationDegrees: [-4, 162, 2], scale: 2.2 },
-    mobileFovOffset: 16,
+    camera: { position: [0, -11.603, 5.758], roll: 0, fov: 36.975 },
+    target: [0, -10.705, 1.185],
+    character: { position: [.06, -11.285, .712], rotationDegrees: [0, 180, 0], scale: 2.548 },
+    mobileFovOffset: 18,
   },
-  // Built together: a high three-quarter view of the drafting table; the pilot stands on it.
+  // Workshop: a distant, narrow-lens view opens the drafting table below the camera.
   {
-    camera: { position: [0.1, 0.4, -23.6], roll: 0, fov: 34 },
-    target: [-3.5, -4.2, -31],
-    character: { position: [-3.3, -4.46, -30.4], rotationDegrees: [0, 34, 0], scale: 3.4 },
-    mobileFovOffset: 12,
+    camera: { position: [3.807, 5.960, 40.957], roll: 0, fov: 11.563 },
+    target: [-.904, -10.264, 13.898],
+    // Lift the local pilot so its boots rest on the drafting grid at target.y - 1.18.
+    character: { position: [-1.149, -10.012, 13.740], rotationDegrees: [0, -54.42, 0], scale: 5.265 },
+    mobileFovOffset: 5,
   },
-  // Your rules: a slightly low view of the pilot centered in the orbiting manifesto.
+  // Orbit: move close again, with the pilot and text ring seen from the side.
   {
-    camera: { position: [3.7, 2.9, -32.7], roll: 0.035, fov: 50 },
-    target: [4.5, 3.8, -38],
-    character: { position: [4.6, 3.7, -37.6], rotationDegrees: [6, -18, 8], scale: 2.9 },
-    mobileFovOffset: 22,
+    camera: { position: [-2.633, -6.775, 18.023], roll: 0, fov: 58.715 },
+    target: [-.515, -6.709, 15.164],
+    character: { position: [-1.130, -6.458, 15.835], rotationDegrees: [-18.43, -131.5, -3.37], scale: 3.149 },
+    mobileFovOffset: 30,
   },
-  // Liftoff: a banked chase view behind the pilot, looking down the flight path.
+  // Flight: a diagonal view along the launch direction.
   {
-    camera: { position: [-6.6, 10.3, -44.8], roll: -0.05, fov: 52 },
-    target: [-5, 9, -50],
-    character: { position: [-4.6, 8.8, -49.2], rotationDegrees: [-6, 205, -12], scale: 3.2 },
-    mobileFovOffset: 24,
+    camera: { position: [-5.978, -6.090, 13.965], roll: 0, fov: 58.715 },
+    target: [-8.328, -3.752, 7.121],
+    character: { position: [-8.833, -3.570, 7.270], rotationDegrees: [-20.33, -119.23, -12.63], scale: 5.659 },
+    mobileFovOffset: 30,
   },
 ];
 
@@ -93,7 +94,7 @@ export interface ChapterTransform {
 
 const toRadians = T.MathUtils.degToRad;
 
-/** Converts the authored path into the Three.js values the renderer interpolates. */
+/** Converts the measured landmarks into the Three.js values the renderer interpolates. */
 export function chapterTransforms(path: readonly ChapterFrame[] = CAMERA_PATH): ChapterTransform[] {
   return path.map((frame) => {
     const [pitch, yaw, roll] = frame.character.rotationDegrees;

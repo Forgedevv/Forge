@@ -1,6 +1,6 @@
 export const homeContent = {
   brand: 'FORGE',
-  title: 'FORGE — Ideas in. Worlds out.',
+  title: 'FORGE — Build your corner.',
   description:
     'Describe your idea. Build your own Solana launchpad with FORGE. Your world, your community, your rules.',
   navigation: 'Explore the FORGE journey',
@@ -11,6 +11,7 @@ export const homeContent = {
   dashboard: 'My dashboard',
   disconnect: 'Disconnect',
   scroll: 'SCROLL TO EXPLORE',
+  scrollButton: 'SCROLL',
   next: 'Next chapter',
   previous: 'Previous chapter',
   restart: 'Back to the beginning',
@@ -39,45 +40,39 @@ export const homeContent = {
   chapters: [
     {
       eyebrow: '01 / THE SPARK',
-      title: 'Ideas in.\nWorlds out.',
-      subtitle: 'A launchpad that starts with you.',
-      description:
-        'Turn an idea into your own Solana launchpad. Describe it. Shape it. Make it real.',
+      title: 'Your own corner\nof the chain.',
+      subtitle: 'A home for your community.',
+      description: 'A Solana launchpad built around your community.',
     },
     {
       eyebrow: '02 / YOUR WORLD',
-      title: 'Make it\nunmistakably yours.',
-      subtitle: 'Your name. Your colors. Your corner of the internet.',
-      description:
-        'Give your launchpad a name, a look, and a reason to exist. FORGE builds around your vision.',
+      title: 'Give it a look\nthat feels like you.',
+      subtitle: 'Name. Color. Character.',
+      description: 'Your identity runs through every page.',
     },
     {
       eyebrow: '03 / THE WORKSHOP',
-      title: 'From a spark\nto a working world.',
-      subtitle: 'Describe. Build. Preview. Launch.',
-      description:
-        'Follow the build, explore your preview, and approve it before your launchpad goes live.',
+      title: 'From idea\nto launchpad.',
+      subtitle: 'Build. Preview. Launch.',
+      description: 'See the site before it goes live.',
     },
     {
       eyebrow: '04 / BUILT TOGETHER',
-      title: 'Small spark.\nBig possibilities.',
-      subtitle: 'Bring your people. Give them a place to build.',
-      description:
-        'A home for your community to create and trade coins, with the trading infrastructure connected for you.',
+      title: 'Bring your\npeople together.',
+      subtitle: 'A shared place to create and trade.',
+      description: 'Your community owns the culture.',
     },
     {
       eyebrow: '05 / YOUR RULES',
-      title: 'Make something\nworth gathering around.',
-      subtitle: 'A world with your name on it.',
-      description:
-        'Choose your identity and fee settings. Claim your partner fees from your dashboard. Keep shaping the experience.',
+      title: 'Set the rules\nfor your world.',
+      subtitle: 'Your site. Your settings.',
+      description: 'Manage the launch from your dashboard.',
     },
     {
       eyebrow: '06 / LIFTOFF',
-      title: 'Ready for\nliftoff?',
-      subtitle: 'Your next world starts with one idea.',
-      description:
-        'Launchpad creation is $33 in SOL, with two changes included. Preview and approve your site before launch.',
+      title: 'Make it live.',
+      subtitle: 'Start with one idea.',
+      description: 'One launchpad. Two changes included.',
     },
   ],
   scenery: {
@@ -187,7 +182,7 @@ export const homeContent = {
   },
 } as const;
 
-/** FORGE neon palette for the 3D scene. Keep in sync with the tokens in home.css. */
+/** FORGE's established violet palette. */
 export const palette = {
   /** Violet black: visor, shards, and the darkest scene surfaces. */
   ink: '#0b0a12',

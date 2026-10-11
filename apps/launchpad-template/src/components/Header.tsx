@@ -18,23 +18,32 @@ export const Header = () => {
   };
 
   return (
-    <header className="w-full border-b border-neutral-850 bg-background/80 backdrop-blur-md">
-      <div className="flex h-14 w-full items-center justify-between gap-2 px-3 md:h-16 md:px-4">
+    <header className="launchpad-header sticky top-0 z-40 w-full border-b backdrop-blur-md">
+      <div className="launchpad-header-inner flex min-h-14 items-center justify-between gap-3 py-2 md:min-h-16">
         {/* Logo Section */}
         <Link
           href="/"
-          className="flex min-w-0 items-center gap-2 rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
+          className="flex min-w-0 items-center gap-2 rounded-lg focus-visible:outline-none"
         >
-          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary/15 text-primary">
+          <span className="launchpad-brand-mark flex h-8 w-8 shrink-0 items-center justify-center">
             <span className="iconify h-5 w-5 ph--rocket-launch-bold" />
           </span>
-          <span className="truncate whitespace-nowrap text-base font-bold tracking-tight md:text-xl">
-            {content.name}
+          <span className="min-w-0">
+            <span className="block truncate whitespace-nowrap text-base font-bold tracking-tight md:text-lg">
+              {content.name}
+            </span>
+            <span className="launchpad-tagline hidden truncate text-xs sm:block">{content.tagline}</span>
           </span>
         </Link>
 
         {/* Navigation and Actions */}
         <div className="flex items-center gap-1.5 md:gap-3">
+          <Link href="/" className="launchpad-nav-link hidden px-3 py-2 text-sm font-medium md:inline-flex">
+            {content.strings.explore}
+          </Link>
+          <Link href="/about" className="launchpad-nav-link hidden px-3 py-2 text-sm font-medium md:inline-flex">
+            {content.strings.aboutTitle}
+          </Link>
           <CreatePoolButton />
           {address ? (
             <Button variant="secondary" onClick={() => disconnect()}>
@@ -47,8 +56,8 @@ export const Header = () => {
                 handleConnectWallet();
               }}
             >
-              <span className="hidden md:block">Connect Wallet</span>
-              <span className="block md:hidden">Connect</span>
+              <span className="hidden md:block">{content.strings.connectWallet}</span>
+              <span className="block md:hidden">{content.strings.connectShort}</span>
             </Button>
           )}
           <ThemeToggle />

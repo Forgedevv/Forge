@@ -77,3 +77,18 @@ Agents write here when they need a change outside their folder (shared contract,
 - Proposal: Deliver the existing WebClient exports and configured wallet selector; add backend-owned claim history (amount, date, signature), official token acquisition URL and display metadata. Define a reliable rejected-login result and a streamed-chat error channel; current session status and UseChatResult do not distinguish these states fully.
 - Current workaround: Exact-signature mocks are enabled only with NEXT_PUBLIC_USE_MOCKS=1 outside production. Claim history displays an unavailable state; access amounts are labelled as raw units and the acquisition link opens explanatory FAQ content. Mock signatures/addresses are deliberately non-chain identifiers. No real connection, payment, claim, transaction construction, or external endpoint has been invented.
 - Decision (lead): Pending.
+
+### [open] Provide client-site trading and creator-fee components
+- Agent: Agent 6 — Frontend
+- Need: The template contract requires a buy/sell `TradePanel` for B2 and a `ClaimCreatorFees` component for B4. The template has `CreateCoin` and `JupiterTrade`, but the two named contract components are absent. The route contract also specifies `/coin/[mint]`, while the template currently has `/token/[tokenId]`.
+- Proposal: Agent 3 or the lead should export the two backend-owned components with their supported props and confirm whether the public coin route should be `/coin/[mint]` or `/token/[tokenId]`.
+- Current workaround: The template provides the visual shell and existing token route; no trading or fee-claim UI is fabricated and no transaction behavior is added.
+- Decision (lead): Pending.
+
+### [open] Complete the route handoff for the connected real frontend
+- Agent: Agent 6 — Frontend
+- Need: The real WebClient and configured wallet provider have now been delivered and connected on `agent/frontend`, resolving the client-absence portion of the earlier requests. The frontend branch still lacks chat, specification and payment routes present on `w3/integration`. Both branches lack flags, gating, the RPC relay, job approval, owner-transaction, modification, reactivation and partner-claim routes defined by `WEB_API_ROUTES`.
+- Proposal: The backend owner should integrate and assemble these existing contract routes and services, then verify the complete devnet flow. Make flag reads fail closed and retain server-side paused-creation enforcement. Expose Supabase initialization/read failures through the shared job/list/detail contract: current hooks can wait indefinitely or show an empty list after a failed read, without an error channel.
+- Current workaround: Production uses the real client and never enables preview mocks after an error. Development previews remain isolated exact-signature mocks. The interface offers the wallet-login continuation step and an access-check retry, and retains unavailable claim history and raw access units. No backend endpoint, transaction behavior or financial fallback is implemented by the frontend.
+- Details: `apps/web/src/ui/workspace/INTEGRATION.md` records the checked route matrix and remaining contract limitations as of 2026-10-10. Official acquisition/display metadata, claim history, rejected-login status and streamed-chat error requests remain open.
+- Decision (lead): Pending.

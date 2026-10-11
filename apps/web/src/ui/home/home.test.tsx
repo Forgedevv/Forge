@@ -55,7 +55,9 @@ describe('FORGE experience controls', () => {
   it('shows the promise and all six accessible chapter targets', async () => {
     render(<ForgeHome />);
     await ready();
-    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Ideas in. Worlds out.');
+    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent(
+      copy.chapters[0].title.replace('\n', ' '),
+    );
     for (const name of copy.chapterNames)
       expect(screen.getByRole('button', { name: new RegExp(name, 'i') })).toBeInTheDocument();
   });
@@ -69,7 +71,12 @@ describe('FORGE experience controls', () => {
       'aria-current',
       'step',
     );
-    expect(screen.getByRole('heading', { level: 2, name: /From a spark/ })).toBeInTheDocument();
+    expect(
+      screen.getByRole('heading', {
+        level: 2,
+        name: new RegExp(copy.chapters[2].title.replace('\n', '\\s+')),
+      }),
+    ).toBeInTheDocument();
   });
 
   it('announces the chapter the continuous scene progress reaches', async () => {

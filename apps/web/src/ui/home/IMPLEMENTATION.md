@@ -1,16 +1,16 @@
 # FORGE immersive homepage
 
-Implemented on 2026-10-07 in the `agent/frontend` worktree. This replaces the original placeholder homepage with a six-chapter, full-viewport Three.js experience. The earlier rejected Helion implementation remains removed.
+Implemented on 2026-10-07 in the `agent/frontend` worktree. This replaces the original placeholder homepage with a six-chapter, full-viewport Three.js experience. The earlier rejected Helion implementation remains removed. Historical checks below are dated; the latest reference pass is documented at the end and in `REFERENCE_REVIEW.md`.
 
 ## Included
 
 - An original articulated workshop pilot, created from geometry in `character.ts`, with a matching original SVG illustration for the simple view. No downloaded character, scene model, animation track, font, or reference bundle is used.
-- Six scenes: ignition and floating hardware; glass and moving typography; eight launchpad displays with a planar reflection; a drafting grid with 26 instanced makers and jumping type; an orbital manifesto; a luminous flight path with accelerating wind.
-- An original FORGE camera journey in `camera-path.ts`: per-chapter camera position, roll and field of view, look-at target, character transform, and portrait field-of-view offset, all authored for this scene composition. The path starts low in front of the pilot, slides right for the glass chapter, drops to the launchpad wall, rises over it onto the drafting table, climbs into orbit, and banks away behind the pilot for liftoff. Camera movement and character orientation interpolate continuously across chapters.
+- Six scenes: ignition and floating letters; glass and moving typography; eight launchpad displays above a matte floor; a drafting grid with 26 instanced makers and jumping type; an orbital manifesto; distant flight gates with accelerating wind.
+- A source-informed camera journey in `camera-path.ts`: rounded technical landmarks from the public reference, including camera positions, field of view, look-at targets, character transforms, and portrait offsets. The opening dolly leads to a descent, a distant narrow-lens workshop, orbit, and diagonal flight. Character facing and workshop height adapt the landmarks to FORGE's local geometry. Camera movement and character orientation interpolate continuously across chapters.
 - Continuous scroll navigation (see "Continuous scrolling" below): wheel, trackpad, and touch move one continuous progress value that the scene follows smoothly; nothing locks or snaps. Keyboard, timeline dots, and arrow buttons tween to exact chapters and yield to new input.
 - A 0.85-second ignition sequence; a physics-based wall reveal; one-second material transitions; independent particle, FOV, and shake timing for the final boost; the 3.5-second jump cycle and 0.7-second word switch.
 - Newly authored character poses using the inspected loop durations and playback rates. The poses themselves are not the reference's authored skeletal animation.
-- Glass transmission, wire overlays, lighting, environment reflections, a reflective floor, bloom, vignette, chromatic separation during acceleration, particle fields, and a desktop pointer trail.
+- Glass transmission, wire overlays, lighting, environment reflections, bloom, vignette, chromatic separation during acceleration, particle fields, and a desktop pointer trail. The floor is matte to avoid an additional full-scene reflection render.
 - Keyboard, wheel, and touch navigation; chapter announcements; visible focus; reduced-motion preferences; a pause control; modal focus restoration; suspension in hidden tabs; disposal on unmount; and a readable fallback after a rendering failure.
 - Responsive styles at the reference's 800 px breakpoint, portrait camera offsets, lower mobile render resolution, and a mobile omission of the pointer trail.
 - Centralized English copy in `content.ts`: promise, four creation steps, the approved marketing prices, an illustrative launchpad, FAQ, and provisional product information at `/terms`.
@@ -21,7 +21,7 @@ Implemented on 2026-10-07 in the `agent/frontend` worktree. This replaces the or
 
 The associated A2–A11 interface, contract mocks, gallery, validation and integration limits are documented in `../workspace/README.md`. The real backend client and client template remain outstanding.
 
-## Verification
+## Historical verification (2026-10-07)
 
 - The app's production build, TypeScript check, and lint pass.
 - Twenty-six new tests pass, covering navigation timing, wheel/touch boundaries, continuous high-refresh presentation, wheel reversal, touch takeover, rotation after prolonged idle, independent boost timing, jump timing, chapter controls, reduced motion, paused signups, availability messaging, modal dismissal/focus, and rendering-failure cleanup.
@@ -31,17 +31,17 @@ The associated A2–A11 interface, contract mocks, gallery, validation and integ
 
 ## Fidelity limits
 
-The user's subsequent comfort feedback takes precedence over the original effect amplitudes. The current palette uses midnight ink, cool stone, and periwinkle, shared with the workshop controls. The latest feedback also shortened the intro, replaced momentum-driven wheel input with complete chapter transitions, and moved a thinner final flight path behind the subject to avoid near-camera clipping. Exposure, emission, bloom, specular highlights, wind streaks, camera shake, boost FOV, and chromatic separation have been reduced. Chapter lighting and postprocessing now blend continuously instead of switching when the selected chapter changes. The six scenes and interaction timing remain; the camera path has since been replaced by the original FORGE path described above.
+The user's subsequent comfort feedback takes precedence over the original effect amplitudes. The current palette restores FORGE's preceding violet/magenta identity across the homepage, dashboard, and Muse. Earlier feedback shortened the intro and reduced exposure, emission, bloom, specular highlights, wind streaks, camera shake, boost FOV, and chromatic separation. Chapter lighting and postprocessing blend continuously. Continuous scroll now uses a speed cap and chapter dwell, as described below; the camera path follows the measured reference landmarks with local character adaptations. Flight geometry stays away from the final action.
 
 Character yaw/bank integrate elapsed frame time instead of multiplying chapter weights by total session time. Chapter animation clocks survive overlapping transitions, cloud drift no longer wraps abruptly, and the pointer trail starts at the pointer with time-based smoothing. Scenery keeps a stable transparent shader variant during fades; duplicate size notifications no longer reallocate targets. Transmission renders at 50% viewport resolution on smaller screens and 75% on desktop, using Three's documented `transmissionResolutionScale` option. These changes are code-level improvements, not a measured GPU performance claim.
 
 Static UI token contrast checks give 7.19:1 for the first light scene, 7.74:1 for the brightest dark-scene background, 6.58:1 for the primary action, and 4.79:1 for muted text on the details panel. These checks do not certify every animated/background combination.
 
-This is a source-informed reconstruction with a new art direction, not a certified identical reproduction. The new geometric character and scene artwork intentionally differ. Its procedural poses preserve measured cadence but do not reproduce every limb trajectory. Modern Three physical materials replace the reference's custom glass and outline shaders. `UnrealBloomPass` uses five bloom levels, and renderer antialiasing replaces the reference's seven-level bloom/SMAA pipeline. Lighting and mobile framing still require a rendered comparison.
+This is a source-informed reconstruction in FORGE's existing identity, not a certified identical reproduction. The new geometric character and scene artwork differ. Its procedural poses preserve measured cadence but do not reproduce every limb trajectory. Modern Three physical materials replace the reference's custom glass and outline shaders. `UnrealBloomPass` uses five bloom levels, and renderer antialiasing replaces the reference's seven-level bloom/SMAA pipeline. Lighting and mobile framing still require a rendered comparison.
 
 The implementation can be reviewed locally now. Pixel accuracy and motion equivalence must remain open until a browser can render both sites for comparison. No push, deployment, Git configuration change, or backend modification was performed.
 
-The retained upstream notice is in `THIRD_PARTY_NOTICES.md`. No third-party camera, scene, or character data is stored in the repository.
+The dependency and source-inspection notice is in `THIRD_PARTY_NOTICES.md`. Rounded camera landmarks are included as technical measurements; no reference artwork, GLB file, skeletal animation track, or downloaded script is stored in the application.
 
 ## Workshop integration and review refinements
 
@@ -68,3 +68,17 @@ On 2026-10-08 the fixed per-gesture wheel transition was replaced, because it ma
 - The current chapter (dots, copy, announcement) is the nearest chapter to the progress and is reported only when it changes. Reduced motion and the simple view keep their immediate chapter jumps; the intro is unchanged.
 
 All tuning values are named constants at the top of `motion.ts`.
+
+## Reference detail pass (2026-10-10)
+
+The owner rejected the graphite/copper direction. The preceding violet/magenta homepage and workshop tokens are restored; Muse uses its preceding default colors again. Gallery search, filters, and operational screens remain available.
+
+The metallic portal is replaced by independently floating FORGE letters with spring return, crosses, slashes, and dotted fields. The glass chapter uses a continuous repeated-text marquee and progress-driven title rotation. Camera landmarks follow the inspected opening dolly, dark descent, distant narrow-lens workshop, orbit, and diagonal flight. The local pilot's boots are aligned to the drafting grid before the jump animation.
+
+The scroll cue uses a rotating gradient ring and pointer-origin fill. Captions decode over one second, hold for 3.5 seconds, and fade over half a second. The manifesto reveals all groups in sequence instead of cycling a single group. The final word animates its letters within FORGE's palette, and the final action uses underlined text and a moving arrow. Timeline dots distinguish passed, current, and remaining chapters. A continuous tapered tube replaces the pointer beads, reusing geometry buffers.
+
+Invented corner headings and the redundant chapter label are visually hidden in the immersive scenes; semantic headings and chapter announcements remain accessible. Mobile captions use 13 px type. The simple view remains readable and includes every chapter.
+
+Web typecheck, lint, production build, and all 204 tests pass. Coverage includes caption timing/pause/hidden-tab cleanup, grouped manifesto cadence, camera landmarks, pilot grounding, and finite pointer-trail geometry for stationary and parallel histories. A face-winding check verifies that the cursor tube renders from its exterior. Local HTTP checks return 200 for the homepage, workshop design preview, and state gallery on port 3000. The existing metadata-base build warning remains outside this change.
+
+No browser rendering comparison or GPU profiling was possible. Exact visual and motion equivalence remain open. `REFERENCE_REVIEW.md` records the inspected sources, implemented details, comfort overrides, and material/artwork differences.

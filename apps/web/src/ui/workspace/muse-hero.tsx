@@ -34,17 +34,25 @@ export function MuseHero({
   action,
   muses,
   forceFallback = false,
+  layout = 'card',
+  heading,
   title,
   body,
+  footer,
   children,
 }: {
   action: HeroAction;
   muses: HeroMuse[];
   /** Development gallery: show the 2D fallback. */
   forceFallback?: boolean;
+  /** Open composition for the dashboard; session screens retain their panel. */
+  layout?: 'card' | 'open';
+  /** Page heading integrated with the scene rather than a separate banner. */
+  heading?: ReactNode;
   /** Overrides the copy of the action, for screens other than the dashboard. */
   title?: string;
   body?: ReactNode;
+  footer?: ReactNode;
   children?: ReactNode;
 }) {
   const stage = useRef<HTMLDivElement>(null);
@@ -54,6 +62,7 @@ export function MuseHero({
   const latest = useRef({ action, muses });
   latest.current = { action, muses };
   const museKey = muses.map((m) => `${m.id}:${m.primary}:${m.accent}`).join('|');
+  const description = body === undefined ? copy.hero[action].body : body;
 
   useEffect(() => {
     const media = window.matchMedia?.('(prefers-reduced-motion: reduce)');
@@ -94,7 +103,12 @@ export function MuseHero({
   }, [museKey]);
 
   return (
-    <section className="fw-card fw-muse-hero" data-action={action} aria-label={copy.hero.label}>
+    <section
+      className={layout === 'open' ? 'fw-muse-hero' : 'fw-card fw-muse-hero'}
+      data-layout={layout}
+      data-action={action}
+      aria-label={copy.hero.label}
+    >
       <div
         ref={stage}
         className="fw-muse-hero-stage"
@@ -103,11 +117,17 @@ export function MuseHero({
       >
         {fallback && (
           <div className="fw-muse-hero-fallback">
-            <Muse size={170} mood={FALLBACK_MOOD[action]} />
+            <Muse size={layout === 'open' ? 120 : 170} mood={FALLBACK_MOOD[action]} />
             {muses.length > 0 && (
               <div className="fw-muse-hero-family">
                 {muses.slice(0, 6).map((m) => (
-                  <Muse key={m.id} size={36} primary={m.primary} accent={m.accent} gaze="none" />
+                  <Muse
+                    key={m.id}
+                    size={layout === 'open' ? 24 : 36}
+                    primary={m.primary}
+                    accent={m.accent}
+                    gaze="none"
+                  />
                 ))}
               </div>
             )}
@@ -115,11 +135,12 @@ export function MuseHero({
         )}
       </div>
       <div className="fw-muse-hero-copy">
-        <p className="fw-eyebrow">{copy.hero.eyebrow}</p>
+        {heading ?? <p className="fw-eyebrow">{copy.hero.eyebrow}</p>}
         <h2>{title ?? copy.hero[action].title}</h2>
-        <p>{body ?? copy.hero[action].body}</p>
+        {description && <p>{description}</p>}
         {children}
       </div>
+      {footer}
     </section>
   );
 }
