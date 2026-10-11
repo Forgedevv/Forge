@@ -1,5 +1,13 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -12,6 +20,7 @@ import {
   isIncluded,
   listTrackedFiles,
   prepareTemplateRepo,
+  readIndexFiles,
   // @ts-expect-error plain ES module without type declarations
 } from '../../scripts/prepare-template-repo.mjs';
 
@@ -85,6 +94,16 @@ function fixture(extra: Record<string, string> = {}) {
   return { sourceDir, tracked, out };
 }
 
+/** Working-tree reader for the fixtures (plain folders, not git repositories). */
+function readFromDisk(sourceDir: string, rels: string[]): Map<string, Buffer> {
+  const contents = new Map<string, Buffer>();
+  for (const rel of rels) {
+    const full = join(sourceDir, ...rel.split('/'));
+    if (existsSync(full) && lstatSync(full).isFile()) contents.set(rel, readFileSync(full));
+  }
+  return contents;
+}
+
 function run(f: ReturnType<typeof fixture>, options: Record<string, unknown> = {}) {
   return prepareTemplateRepo({
     out: f.out,
@@ -92,6 +111,7 @@ function run(f: ReturnType<typeof fixture>, options: Record<string, unknown> = {
     typescriptVersion: TYPESCRIPT,
     sourceDir: f.sourceDir,
     listFiles: () => f.tracked,
+    readFiles: readFromDisk,
     ...options,
   });
 }
@@ -180,6 +200,42 @@ describe('prepare-template-repo: git ls-files', () => {
     },
   );
 
+  it.skipIf(!hasGit())('reads contents from the git index, never the working tree', () => {
+    const repo = tempDir('forge-template-index-');
+    execFileSync('git', ['-C', repo, 'init', '-q'], { stdio: 'ignore' });
+    const leak = `const key = '${'5'.repeat(44)}${'K'.repeat(44)}';\n`;
+    writeFiles(repo, {
+      'app/package.json': PACKAGE_JSON,
+      'app/src/index.ts': 'export const staged = 1;\n',
+      'app/src/leak.ts': leak,
+    });
+    execFileSync('git', ['-C', repo, 'add', 'app'], { stdio: 'ignore' });
+    const sourceDir = join(repo, 'app');
+    const prepare = () =>
+      prepareTemplateRepo({
+        out: join(tempDir('forge-template-out-'), 'out'),
+        pins: PINS,
+        typescriptVersion: TYPESCRIPT,
+        sourceDir,
+      });
+
+    // A secret staged in the index is found even when the working-tree copy was cleaned.
+    writeFiles(repo, { 'app/src/leak.ts': 'export {};\n' });
+    expect(prepare).toThrow(/src\/leak\.ts \(base58 secret key\)/);
+
+    // An unstaged working-tree edit (here a secret) never reaches the output.
+    writeFiles(repo, { 'app/src/leak.ts': 'export {};\n' });
+    execFileSync('git', ['-C', repo, 'add', 'app/src/leak.ts'], { stdio: 'ignore' });
+    writeFiles(repo, { 'app/src/index.ts': leak });
+    const result = prepare();
+    expect(readFileSync(join(result.outDir, 'src', 'index.ts'), 'utf8')).toBe(
+      'export const staged = 1;\n',
+    );
+    expect(readIndexFiles(sourceDir, ['src/index.ts', 'src/missing.ts'])).toEqual(
+      new Map([['src/index.ts', Buffer.from('export const staged = 1;\n')]]),
+    );
+  });
+
   it('fails outside a git work tree', () => {
     const dir = tempDir('forge-template-nogit-');
     // A temp folder may sit inside a repository on some machines; only assert when it does not.
@@ -215,6 +271,12 @@ const SECRET_SAMPLES: Record<string, string> = {
   'R2 access key id': `id = '${r('a1b2c3', 32)}'\n`,
   'R2 secret': `secret = '${r('9f8e', 64)}'\n`,
   'storage secret assignment': `R2_SECRET_ACCESS_KEY=${r('Ab/9+', 40)}\n`,
+  'base58 secret key (88)': `const SECRET = '${r('3xQ9kLmP', 88)}';\n`,
+  'base58 secret key (87)': `secret: "${r('Zt7Hw2', 87)}"\n`,
+  JWT: `const jwt = '${'ey'}J${r('hbGciOiJIUzI1', 20)}.${'ey'}J${r('zdWIiOiIx', 30)}.${r('Sf1KxwRJ_ab', 43)}';\n`,
+  'provider URL with api-key': `const RPC = 'https://mainnet.helius-rpc.com/?${'api'}-key=${r('a1b2c3d4', 24)}';\n`,
+  'provider URL with apikey': `fetch('https://rpc.example/v1?${'api'}key=${r('Q7w', 32)}');\n`,
+  'provider URL with a UUID': `const url = 'https://rpc.example/?id=${['2f1b6c3a', '9d4e', '4b7a', '8c21', '0e5f6a7b8c9d'].join('-')}';\n`,
 };
 
 describe('prepare-template-repo: secret scan', () => {
@@ -243,6 +305,12 @@ describe('prepare-template-repo: secret scan', () => {
     expect(findSecrets("const P = 'dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN';")).toEqual([]);
     expect(findSecrets('const DISC = [1, 2, 3, 4, 5, 6, 7, 8];')).toEqual([]);
     expect(findSecrets('R2_PUBLIC_URL=https://your-public-bucket-url.example')).toEqual([]);
+    // Signature-length base58 is 87-88 characters too, but addresses (32-44) are not flagged.
+    expect(findSecrets(`const A = '${'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb'}';`)).toEqual(
+      [],
+    );
+    expect(findSecrets('const url = `https://rpc.example/?cluster=devnet`;')).toEqual([]);
+    expect(findSecrets('NEXT_PUBLIC_FORGE_RPC_RELAY_URL=https://forge.example')).toEqual([]);
   });
 
   it('keeps the real template clean', () => {
