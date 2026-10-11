@@ -2,13 +2,25 @@ import { getAssociatedTokenAddressSync, NATIVE_MINT, TOKEN_PROGRAM_ID } from '@s
 import { Keypair, PublicKey, TransactionInstruction, TransactionMessage, VersionedTransaction } from '@solana/web3.js';
 import { FIXTURE_LAUNCHPAD_CONFIG } from '../create/test-fixtures';
 import { DBC_DISCRIMINATORS, DBC_PROGRAM_ID, WSOL_MINT, dbcEventAuthority, dbcPoolAddress, dbcPoolAuthority, dbcVaultAddress } from '../tx/programs';
-import type { ClaimsCore, CreatorCoin } from './core-adapter';
+import type { ClaimsCore, CreatorClaimCosts, CreatorCoin } from './core-adapter';
+
+/** Realistic first-claim costs: one signature, the coin account rent and the temporary WSOL rent. */
+export const MOCK_CLAIM_COSTS: CreatorClaimCosts = {
+  networkFeeLamports: BigInt(5000),
+  receiverTokenAccountRentLamports: BigInt(2039280),
+  temporaryLamports: BigInt(2039280),
+  payerTotalLamports: BigInt(2044280),
+  payerRequiredBalanceLamports: BigInt(4083560),
+};
 
 /**
  * Mock of the `@forge/core` claim functions, for tests and local previews only.
  * SWITCH TO @forge/core AT MERGE: production code uses `claimsCore` from `core-adapter.ts`.
  */
-export function createMockClaimsCore(coins: CreatorCoin[]): ClaimsCore & {
+export function createMockClaimsCore(
+  coins: CreatorCoin[],
+  costs: CreatorClaimCosts = MOCK_CLAIM_COSTS,
+): ClaimsCore & {
   built: { pool: string; creator: string; receiver: string }[];
 } {
   const built: { pool: string; creator: string; receiver: string }[] = [];
@@ -41,7 +53,7 @@ export function createMockClaimsCore(coins: CreatorCoin[]): ClaimsCore & {
         data,
       });
       const message = new TransactionMessage({ payerKey: creator, recentBlockhash: PublicKey.default.toBase58(), instructions: [instruction] }).compileToV0Message();
-      return new VersionedTransaction(message);
+      return { tx: new VersionedTransaction(message), costs: { ...costs } };
     },
   };
 }

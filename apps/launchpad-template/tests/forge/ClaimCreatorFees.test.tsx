@@ -3,9 +3,9 @@ import '../helpers/dom-setup';
 import { Keypair, type VersionedTransaction } from '@solana/web3.js';
 import { fireEvent, render, screen, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { createMockClaimsCore, mockCoin } from '@/forge/claims/mock-core';
+import { MOCK_CLAIM_COSTS, createMockClaimsCore, mockCoin } from '@/forge/claims/mock-core';
 import { FIXTURE_LAUNCHPAD_CONFIG } from '@/forge/create/test-fixtures';
-import type { CreatorCoin } from '@/forge/claims/core-adapter';
+import type { CreatorClaimCosts, CreatorCoin } from '@/forge/claims/core-adapter';
 
 const walletKp = Keypair.generate();
 const wallet = vi.hoisted(() => ({
@@ -24,8 +24,12 @@ vi.mock('@jup-ag/wallet-adapter', () => ({
 
 import { ClaimCreatorFees } from '@/forge/ClaimCreatorFees';
 
-function setup(coins: CreatorCoin[], balance = BigInt(1000000000)) {
-  const core = createMockClaimsCore(coins);
+function setup(
+  coins: CreatorCoin[],
+  balance = BigInt(1000000000),
+  costs: CreatorClaimCosts = MOCK_CLAIM_COSTS,
+) {
+  const core = createMockClaimsCore(coins, costs);
   const chain = {
     getBalanceLamports: vi.fn().mockResolvedValue(balance),
     sendRawTransaction: vi.fn().mockResolvedValue('ClaimSig'),
@@ -105,6 +109,13 @@ describe('ClaimCreatorFees', () => {
     expect(summary.getByText('1.5 SOL')).toBeInTheDocument();
     expect(summary.getByText(/Network fee/)).toBeInTheDocument();
     expect(summary.getByText('0.000005 SOL')).toBeInTheDocument();
+    // The core's costs: one-time coin account rent, total, temporary WSOL rent, required balance.
+    expect(summary.getByText(/Coin account rent/)).toBeInTheDocument();
+    expect(summary.getAllByText('0.00203928 SOL')).toHaveLength(2);
+    expect(summary.getByText(/Total cost/)).toBeInTheDocument();
+    expect(summary.getByText('0.00204428 SOL')).toBeInTheDocument();
+    expect(summary.getByText(/Temporary deposit/)).toBeInTheDocument();
+    expect(summary.getByText('0.00408356 SOL')).toBeInTheDocument();
     expect(summary.getByText(new RegExp(walletKp.publicKey.toBase58()))).toBeInTheDocument();
     expect(s.core.built).toEqual([
       {
@@ -177,6 +188,34 @@ describe('ClaimCreatorFees', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Claim fees for Moon Coin' }));
     await screen.findByLabelText('Claim summary');
     expect(screen.getByRole('button', { name: 'Sign and claim' })).toBeDisabled();
+  });
+
+  it('blocks the claim when the wallet pays the fee but not the coin account rent', async () => {
+    // Enough for the network fee and the one-time rent, not for the temporary WSOL rent.
+    const s = setup([mockCoin({ name: 'Moon Coin' })], BigInt(2044280));
+    renderClaims(s);
+    fireEvent.click(await screen.findByRole('button', { name: 'Claim fees for Moon Coin' }));
+    const review = await screen.findByLabelText('Claim summary');
+    expect(within(review).getByRole('alert')).toHaveTextContent(/at least 0.00408356 SOL/);
+    expect(screen.getByRole('button', { name: 'Sign and claim' })).toBeDisabled();
+  });
+
+  it('hides the rent rows when the accounts already exist', async () => {
+    const fee = BigInt(5000);
+    const zero = BigInt(0);
+    const s = setup([mockCoin({ name: 'Moon Coin' })], BigInt(6000), {
+      networkFeeLamports: fee,
+      receiverTokenAccountRentLamports: zero,
+      temporaryLamports: zero,
+      payerTotalLamports: fee,
+      payerRequiredBalanceLamports: fee,
+    });
+    renderClaims(s);
+    fireEvent.click(await screen.findByRole('button', { name: 'Claim fees for Moon Coin' }));
+    const review = within(await screen.findByLabelText('Claim summary'));
+    expect(review.queryByText(/Coin account rent/)).not.toBeInTheDocument();
+    expect(review.queryByText(/Temporary deposit/)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Sign and claim' })).toBeEnabled();
   });
 
   it('fails loudly with the default adapter when the relay is not configured', async () => {

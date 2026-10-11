@@ -21,7 +21,8 @@ import {
  *
  * The connected wallet sees the coins it created and what each has earned for it. A claim goes to
  * the wallet itself (receiver = creator). Sequence: choose a coin -> review (amount, receiver,
- * network fee) -> sign -> send -> poll for confirmation. The launchpad owner's partner fees are
+ * the core's costs: network fee, one-time coin account rent, temporary WSOL rent) -> sign -> send
+ * -> poll for confirmation. The launchpad owner's partner fees are
  * claimed on the FORGE dashboard, not here.
  */
 
@@ -337,13 +338,31 @@ function ClaimCreatorFeesList(props: ClaimCreatorFeesProps) {
               label="Network fee (at least)"
               value={`${formatSol(review.estimatedNetworkFeeLamports)} SOL`}
             />
+            {review.coinAccountRentLamports > BigInt(0) && (
+              <ReviewRow
+                label="Coin account rent (first claim, one time)"
+                value={`${formatSol(review.coinAccountRentLamports)} SOL`}
+              />
+            )}
+            <ReviewRow label="Total cost" value={`${formatSol(review.totalCostLamports)} SOL`} />
+            {review.temporaryLamports > BigInt(0) && (
+              <ReviewRow
+                label="Temporary deposit (refunded in the same transaction)"
+                value={`${formatSol(review.temporaryLamports)} SOL`}
+              />
+            )}
+            <ReviewRow
+              label="Needed in your wallet"
+              value={`${formatSol(review.requiredBalanceLamports)} SOL`}
+            />
           </dl>
           <p className="mt-2 break-all text-xs text-neutral-500">
             Sent to your wallet: {review.receiver}
           </p>
-          {review.insufficientForFee && (
+          {review.insufficientBalance && (
             <p role="alert" className="mt-2 text-sm text-rose">
-              Your wallet needs a little SOL to pay the network fee.
+              Your wallet needs at least {formatSol(review.requiredBalanceLamports)} SOL to sign
+              this claim.
             </p>
           )}
           {message && (
@@ -389,7 +408,7 @@ function ClaimCreatorFeesList(props: ClaimCreatorFeesProps) {
                   type="button"
                   className={primaryButtonClassName}
                   onClick={() => void onSign()}
-                  disabled={working || review.insufficientForFee}
+                  disabled={working || review.insufficientBalance}
                 >
                   Sign and claim
                 </button>

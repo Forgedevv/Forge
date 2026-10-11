@@ -17,8 +17,10 @@ export interface TradePanelProps {
   pool: string;
   /** Ticker shown in labels. */
   symbol?: string;
-  /** Token decimals (DBC coins use 6). */
-  tokenDecimals?: number;
+  /**
+   * Decimals from a data API, display fallback only: amounts use the on-chain mint decimals.
+   */
+  displayDecimals?: number;
   className?: string;
   /** Called with the signature once a trade is confirmed. */
   onTradeConfirmed?: (signature: string) => void;
@@ -70,7 +72,7 @@ export function TradePanel(props: TradePanelProps) {
 }
 
 function LiveTradePanel(props: TradePanelProps) {
-  const { mint, pool, symbol = 'TOKEN', tokenDecimals, className } = props;
+  const { mint, pool, symbol = 'TOKEN', displayDecimals, className } = props;
   const connection = useMemo(() => getRelayConnection(), []);
   const poolKey = useMemo(() => {
     try {
@@ -124,7 +126,7 @@ function LiveTradePanel(props: TradePanelProps) {
         mint={mint}
         pool={pool}
         symbol={symbol}
-        tokenDecimals={tokenDecimals}
+        displayDecimals={displayDecimals}
         onConfirmed={props.onTradeConfirmed}
         onGraduated={markGraduated}
         quoteDebounceMs={props.quoteDebounceMs}
