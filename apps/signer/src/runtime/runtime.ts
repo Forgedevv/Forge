@@ -37,6 +37,7 @@ import {
   rpcFromConnection,
   sendAlert,
 } from '../jobs/shared.js';
+import { PayerReservations } from '../jobs/reservations.js';
 import { createExpectedSignatures } from '../jobs/watch.js';
 import {
   createFileRouteJournals,
@@ -206,6 +207,7 @@ export async function createSignerRuntime(options: SignerRuntimeOptions): Promis
       jobLogger: (name) => createJobLogger(logger, name),
       walletLock: new Mutex(),
       payerLock: new Mutex(),
+      payerReservations: new PayerReservations(),
       expected,
       onBeforeSend: (signature) => expected.expect(signature),
       journalDir: config.journalDir,
@@ -254,6 +256,7 @@ export async function createSignerRuntime(options: SignerRuntimeOptions): Promis
         },
         onBeforeSend: context.onBeforeSend,
         payerLock: context.payerLock,
+        payerReservations: context.payerReservations,
         now,
       },
       { health },

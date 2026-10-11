@@ -34,6 +34,11 @@ export const CreationAttempt = z.object({
   recordedAt: IsoTime,
   /** Last broadcast refusal (preflight), if any. */
   lastError: z.string().nullable(),
+  /** Payer lamports reserved while in flight (rent + fee buffer); absent in older entries. */
+  reservedLamports: z
+    .string()
+    .regex(/^[0-9]+$/)
+    .optional(),
 });
 export type CreationAttempt = z.infer<typeof CreationAttempt>;
 

@@ -272,6 +272,7 @@ describe('signer runtime wiring', () => {
     const ctx = seen[0]!;
     expect(ctx).toBe(runtime.context);
     expect(ctx.walletLock).not.toBe(ctx.payerLock);
+    expect(ctx.payerReservations.size).toBe(0);
     // One expected-signature set: what a job announces, the watcher knows.
     ctx.onBeforeSend('5'.repeat(88));
     expect(ctx.expected.has('5'.repeat(88))).toBe(true);

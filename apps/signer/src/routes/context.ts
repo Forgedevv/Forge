@@ -25,6 +25,7 @@ import {
   type SettleTiming,
   type SolanaRpc,
 } from '../jobs/shared.js';
+import { PayerReservations } from '../jobs/reservations.js';
 import type { AlertFn, CreationEnv } from './accounts.js';
 import { DEFAULT_MAX_LAUNCHPADS_PER_DAY, MAX_LAUNCHPADS_PER_DAY } from './budget.js';
 import { fail } from './errors.js';
@@ -85,6 +86,11 @@ export interface SignerRoutesDeps {
   onBeforeSend: BeforeSendHook;
   /** Serializes every spend of the payer wallet by the routes (created when absent). */
   payerLock?: Mutex;
+  /**
+   * Payer lamports promised to creations in flight, shared with the jobs that check the payer
+   * balance (created when absent).
+   */
+  payerReservations?: PayerReservations;
   retry?: RetryOptions;
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
@@ -139,6 +145,7 @@ export interface RouteRuntime {
   sleep: (ms: number) => Promise<void>;
   now: () => number;
   payerLock: Mutex;
+  reservations: PayerReservations;
   locks: KeyedMutex;
   /** Serializes the daily admissions of new launchpads (budget.ts). */
   admissionLock: Mutex;
@@ -185,6 +192,7 @@ export function createRouteRuntime(deps: SignerRoutesDeps): RouteRuntime {
     sleep: deps.sleep ?? realSleep,
     now: deps.now ?? Date.now,
     payerLock: deps.payerLock ?? new Mutex(),
+    reservations: deps.payerReservations ?? new PayerReservations(),
     locks: new KeyedMutex(),
     admissionLock: new Mutex(),
     maxLaunchpadsPerDay,
@@ -341,6 +349,7 @@ export function creationEnv(rt: RouteRuntime, payer: KeyRefWithAddress): Creatio
     keystore: rt.keystore,
     payer,
     payerLock: rt.payerLock,
+    reservations: rt.reservations,
     announce: rt.announce,
     assertNotPaused: () => assertRoutesNotPaused(rt),
     retry: rt.retry,

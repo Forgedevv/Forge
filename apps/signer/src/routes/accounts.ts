@@ -11,7 +11,8 @@
  *   was ever recorded. The account of an attempt is checked on-chain first: if it exists, that
  *   attempt created it, whatever the signature index says (only its one-time key could sign it);
  * - the payer balance check, the signatures, the journal write and the broadcast run under the
- *   payer lock, so two creations never race on the payer wallet;
+ *   payer lock, so two creations never race on the payer wallet; the rent of the creations still
+ *   in flight (signed, not landed) is reserved and subtracted from the balance (reservations.ts);
  * - the kill switch is read again right before a FORGE key signs;
  * - failed attempts are bounded (`maxAttempts`), each one alerted.
  */
@@ -33,6 +34,7 @@ import {
   type SettleTiming,
   type SolanaRpc,
 } from '../jobs/shared.js';
+import type { PayerReservations } from '../jobs/reservations.js';
 import { createEphemeralKey } from './ephemeral.js';
 import { fail } from './errors.js';
 import type { AccountCreation, CreationAttempt } from './journal.js';
@@ -50,6 +52,8 @@ export interface CreationEnv {
   keystore: KeystoreLike;
   payer: { ref: string; publicKey: PublicKey };
   payerLock: Mutex;
+  /** Payer lamports promised to transactions in flight (shared with the payer jobs). */
+  reservations: PayerReservations;
   /** Pre-registration with the outflow watcher; false = do not broadcast (see createAnnouncer). */
   announce: (signature: string) => boolean;
   /** Re-reads the kill switch; throws a RouteError when the routes are paused. */
@@ -161,7 +165,10 @@ async function sendNewAttempt(
     return await env.payerLock.runExclusive(async () => {
       const needed = built.rentLamports + env.payerFeeBufferLamports;
       const balance = await spendableBalance(env.rpc, env.payer.publicKey, env.retry);
-      if (balance < needed) {
+      // Creations signed and sent but not landed yet are not in the balance: subtract them.
+      const reserved = await env.reservations.outstanding(env.rpc, env.retry);
+      const available = balance > reserved ? balance - reserved : 0n;
+      if (available < needed) {
         await env.alert(
           'high',
           'payer_low_balance',
@@ -169,6 +176,7 @@ async function sendNewAttempt(
           {
             address: env.payer.publicKey.toBase58(),
             balance: formatSol(balance),
+            reservedInFlight: formatSol(reserved),
             needed: formatSol(needed),
             account: target.label,
           },
@@ -190,9 +198,11 @@ async function sendNewAttempt(
         lastValidBlockHeight: built.lastValidBlockHeight,
         recordedAt: new Date(env.now()).toISOString(),
         lastError: null,
+        reservedLamports: needed.toString(),
       };
       let next: AccountCreation = { ...record, status: 'in_flight', current: attempt };
       await save(next); // journaled BEFORE the first broadcast
+      env.reservations.reserve(signature, needed, built.lastValidBlockHeight);
       env.logger.info(
         {
           launchpadId: target.launchpadId,
@@ -275,7 +285,16 @@ export async function ensureAccountCreated(
   for (;;) {
     if (record.status === 'in_flight' && record.current) {
       const attempt = record.current;
+      // After a restart the registry is empty: the journaled attempt may still land.
+      if (attempt.reservedLamports !== undefined && !env.reservations.has(attempt.signature)) {
+        env.reservations.reserve(
+          attempt.signature,
+          BigInt(attempt.reservedLamports),
+          attempt.lastValidBlockHeight,
+        );
+      }
       const state = await settleAttempt(env, target, attempt);
+      if (state.kind !== 'pending') env.reservations.release(attempt.signature);
       const at = new Date(env.now()).toISOString();
       if (state.kind === 'created') {
         record = {
