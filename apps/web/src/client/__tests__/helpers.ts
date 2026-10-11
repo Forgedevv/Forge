@@ -279,3 +279,31 @@ export function partnerClaimTx(
     ...(o.extra ?? []),
   ]);
 }
+
+// ---------------------------------------------------------------------------------------------
+// Launch transactions (paid by the owner, pre-signed by FORGE's creator wallet and the mint)
+// ---------------------------------------------------------------------------------------------
+
+export const FORGE_SIGNATURE = new Uint8Array(64).fill(9);
+
+export function launchTx(o: { payer?: PublicKey; presign?: boolean } = {}) {
+  const payer = o.payer ?? owner;
+  const ix = new TransactionInstruction({
+    programId: DBC_PROGRAM,
+    keys: [
+      { pubkey: Keypair.generate().publicKey, isSigner: true, isWritable: false },
+      { pubkey: Keypair.generate().publicKey, isSigner: true, isWritable: true },
+      { pubkey: payer, isSigner: true, isWritable: true },
+    ],
+    data: Buffer.from([1, 2, 3]),
+  });
+  const tx = compile(payer, [ix]);
+  if (o.presign !== false) {
+    tx.message.staticAccountKeys.forEach((key, i) => {
+      if (i < tx.message.header.numRequiredSignatures && !key.equals(owner)) {
+        tx.signatures[i] = FORGE_SIGNATURE;
+      }
+    });
+  }
+  return tx;
+}

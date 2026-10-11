@@ -118,3 +118,38 @@ describe('claimPartnerFees', () => {
     });
   });
 });
+
+describe('partner claim transaction checks', () => {
+  it('refuses a claim that pays someone else, before review and signing', async () => {
+    const sign = vi.fn();
+    setWallet(sign);
+    const review = vi.fn().mockResolvedValue(true);
+    mockFetch(() =>
+      json({
+        transaction: encode(
+          partnerClaimTx({ claim: { quoteReceiver: Keypair.generate().publicKey } }),
+        ),
+        summary: summary(),
+      }),
+    );
+    const result = await claimPartnerFees(id(), () => undefined, { review });
+    expect(result.phase).toBe('error');
+    expect(result.error).toMatch(/not paid to your own wallet/);
+    expect(review).not.toHaveBeenCalled();
+    expect(sign).not.toHaveBeenCalled();
+  });
+
+  it('refuses a claim paid by another wallet', async () => {
+    const sign = vi.fn();
+    setWallet(sign);
+    mockFetch(() =>
+      json({
+        transaction: encode(partnerClaimTx({ payer: Keypair.generate().publicKey })),
+        summary: summary(),
+      }),
+    );
+    const result = await claimPartnerFees(id(), () => undefined);
+    expect(result.error).toMatch(/fee payer is not your wallet/);
+    expect(sign).not.toHaveBeenCalled();
+  });
+});

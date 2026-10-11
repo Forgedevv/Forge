@@ -1,6 +1,6 @@
 // @vitest-environment node
 import type { Quote } from '@forge/shared';
-import { SendTransactionError } from '@solana/web3.js';
+import { Keypair, SendTransactionError } from '@solana/web3.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PaymentPendingError, getQuote, payQuote, resumePayment } from '../actions';
 import { PAYMENT_CONFIRM_TIMING, getSentPayment, resetSentPayments } from '../payments';
@@ -356,5 +356,68 @@ describe('payQuote', () => {
     setSession({ wallet: 'SomeOtherWallet1111111111111111111111111111' });
     await expect(payQuote(quote, () => undefined)).rejects.toMatchObject({ code: 'WRONG_WALLET' });
     expect(owner).toBeDefined();
+  });
+});
+
+describe('payment transaction checks', () => {
+  it('refuses a transaction that is not exactly the quoted payment, before signing', async () => {
+    const jobId = id();
+    const sign = vi.fn();
+    setWallet(sign);
+    const tampered = quoteResponse(jobId, {
+      transaction: encode(paymentTx({ lamports: '250000001', jobId })),
+    });
+    const { confirms } = scriptedServer(jobId, [json({ status: 'confirmed' })], tampered);
+    const q = await getQuote(jobId, 'creation');
+    const result = await settle(payQuote(q, () => undefined));
+    expect(result.phase).toBe('error');
+    expect(result.error).toMatch(/amount does not match the quote/);
+    expect(sign).not.toHaveBeenCalled();
+    expect(confirms).toHaveLength(0);
+    expect(getSentPayment(jobId)).toBeNull();
+  });
+
+  it('pins the recipient to NEXT_PUBLIC_FORGE_CASHBOX_WALLET when it is set', async () => {
+    const cashbox = Keypair.generate().publicKey;
+    vi.stubEnv('NEXT_PUBLIC_FORGE_CASHBOX_WALLET', cashbox.toBase58());
+    try {
+      const jobId = id();
+      const sign = vi.fn(fakeSign());
+      setWallet(sign);
+      scriptedServer(jobId, [json({ status: 'confirmed' })]);
+      const elsewhere = await getQuote(jobId, 'creation');
+      const refused = await settle(payQuote(elsewhere, () => undefined));
+      expect(refused.error).toMatch(/not the FORGE cashbox/);
+      expect(sign).not.toHaveBeenCalled();
+
+      const okJob = id();
+      scriptedServer(
+        okJob,
+        [json({ status: 'confirmed' })],
+        quoteResponse(okJob, {
+          transaction: encode(paymentTx({ lamports: LAMPORTS, jobId: okJob, cashbox })),
+        }),
+      );
+      const good = await getQuote(okJob, 'creation');
+      await expect(settle(payQuote(good, () => undefined))).resolves.toMatchObject({
+        phase: 'confirmed',
+      });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('refuses what the wallet returns when it moved funds elsewhere', async () => {
+    const jobId = id();
+    setWallet(async () => {
+      const changed = paymentTx({ lamports: '999', jobId });
+      changed.signatures[0] = new Uint8Array(64).fill(7);
+      return changed;
+    });
+    const { confirms } = scriptedServer(jobId, [json({ status: 'confirmed' })]);
+    const q = await getQuote(jobId, 'creation');
+    const result = await settle(payQuote(q, () => undefined));
+    expect(result.error).toMatch(/Your wallet changed the transaction/);
+    expect(confirms).toHaveLength(0);
   });
 });

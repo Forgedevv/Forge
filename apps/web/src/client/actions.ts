@@ -39,11 +39,18 @@ import {
   isPreflightRejection,
   preflightMessage,
   requireSessionWallet,
-  requireWallet,
   runTransaction,
   safeReporter,
   sendAndConfirm,
 } from './tx';
+import {
+  assertSignedByWallet,
+  assertSignedCopy,
+  configuredCashbox,
+  verifyLaunchTransaction,
+  verifyPartnerClaimTransaction,
+  verifyPaymentTransaction,
+} from './verify';
 import type {
   ClaimOptions,
   ClaimResult,
@@ -197,8 +204,17 @@ export async function payQuote(quote: Quote, onPhase: OnTxPhase): Promise<Paymen
 
   let signed: VersionedTransaction;
   try {
-    const { signTransaction } = requireSessionWallet();
+    const { signTransaction, address } = requireSessionWallet();
     const tx = deserializeTransaction(transaction);
+    // Exactly the quoted transfer to FORGE plus this job's memo, paid by the session wallet.
+    const check = (t: VersionedTransaction) =>
+      verifyPaymentTransaction(t, {
+        wallet: address,
+        lamports: BigInt(quote.lamports),
+        jobId,
+        cashbox: configuredCashbox(),
+      });
+    check(tx);
     report('awaiting_signature');
     try {
       signed = await signTransaction(tx);
@@ -209,6 +225,7 @@ export async function payQuote(quote: Quote, onPhase: OnTxPhase): Promise<Paymen
       }
       throw err;
     }
+    assertSignedCopy(signed, address, check);
   } catch (err) {
     report('error');
     if (err instanceof ClientError) throw err;
@@ -284,16 +301,24 @@ export async function getOwnerTransactionSummary(jobId: string): Promise<LaunchR
 
 export async function signOwnerTransaction(jobId: string, onPhase: OnTxPhase): Promise<TxResult> {
   const path = route(WEB_API_ROUTES.ownerTransactionGet.path, { id: jobId });
+  let prepared: { tx: VersionedTransaction; wallet: string } | null = null;
   return runTransaction(onPhase, {
     prepare: async () => {
-      const { publicKey } = requireWallet();
+      const { address } = requireSessionWallet();
       const res = await request(path, OwnerTransactionGetResponse);
-      if (res.summary.ownerWallet !== publicKey.toBase58()) {
+      if (res.summary.ownerWallet !== address) {
         throw new ClientError('WRONG_WALLET', defaultMessage('WRONG_WALLET'));
       }
-      return deserializeTransaction(res.transaction);
+      const tx = deserializeTransaction(res.transaction);
+      // Paid by the session wallet, already signed by FORGE: only the owner's signature missing.
+      verifyLaunchTransaction(tx, { wallet: address });
+      prepared = { tx, wallet: address };
+      return tx;
     },
     submit: async (signed) => {
+      if (!prepared) throw new Error('The launch transaction was not prepared.');
+      // The server only accepts the prepared message, byte for byte.
+      assertSignedByWallet(prepared.tx, signed, prepared.wallet);
       const body = validateBody(OwnerTransactionSubmitRequest, {
         signedTransaction: bytesToBase64(signed.serialize()),
       });
@@ -325,13 +350,17 @@ export async function claimPartnerFees(
   let summary: ClaimTransactionSummary | null = null;
   let signed: VersionedTransaction;
   try {
-    const { signTransaction } = requireSessionWallet();
+    const { signTransaction, address } = requireSessionWallet();
     const res = await request(
       route(WEB_API_ROUTES.claimTransaction.path, { id: launchpadId }),
       ClaimTransactionResponse,
     );
     summary = res.summary ?? null;
     const tx = deserializeTransaction(res.transaction);
+    // Fees paid to the session wallet only, through the expected programs only.
+    const check = (t: VersionedTransaction) =>
+      verifyPartnerClaimTransaction(t, { wallet: address });
+    check(tx);
     if (options.review && !(await options.review(summary))) return { phase: 'idle', summary };
     report('awaiting_signature');
     try {
@@ -343,6 +372,7 @@ export async function claimPartnerFees(
       }
       throw err;
     }
+    assertSignedCopy(signed, address, check);
   } catch (err) {
     report('error');
     if (err instanceof ClientError) throw err;
