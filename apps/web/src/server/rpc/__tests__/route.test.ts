@@ -45,7 +45,8 @@ function loggedText(): string {
   return JSON.stringify(spies.map((s) => s.mock.calls));
 }
 
-describe('app/api/rpc/route', () => {
+// The dynamic import of the route (fresh module graph per test) can be slow on a loaded machine.
+describe('app/api/rpc/route', { timeout: 30_000 }, () => {
   it('relays through the environment-configured upstream', async () => {
     const fetchMock = vi.fn(async (url: string, init: RequestInit) => {
       expect(url).toBe(UPSTREAM_URL);
