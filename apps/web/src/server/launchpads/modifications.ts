@@ -1,7 +1,7 @@
 import { NOT_FOUND_MESSAGES, RouteError } from '../jobs/http';
 import type { RoutesLogger } from '../jobs/log';
 import { addJobEventSafe } from '../jobs/service';
-import type { JobRecord, LaunchpadRecord, RoutesStore } from '../jobs/store';
+import { StoreError, type JobRecord, type LaunchpadRecord, type RoutesStore } from '../jobs/store';
 import { LAUNCHPAD_QUOTAS, launchpadQuotas, openModificationJobs } from './quotas';
 
 /*
@@ -16,9 +16,12 @@ import { LAUNCHPAD_QUOTAS, launchpadQuotas, openModificationJobs } from './quota
  * progress. A modification still awaiting payment is rewritten instead of duplicated, so a retry
  * or a changed request never creates a second job.
  *
- * There is no database constraint on open modification jobs: after inserting, the job checks
- * that it is the oldest open one; otherwise it deletes itself (still `spec_ready`, never paid)
- * and the older one wins. Every request applies the same ordering, so exactly one survives.
+ * The database allows one open modification job per launchpad (partial unique index
+ * `jobs_one_open_modification_idx`, migration 0007): a concurrent insert fails with a unique
+ * violation (23505), answered as MODIFICATION_IN_PROGRESS (or with the winner's job id when it
+ * still awaits payment, like an idempotent retry). The app-level checks stay as a second line:
+ * after inserting, the job checks that it is the oldest open one; otherwise it deletes itself
+ * (still `spec_ready`, never paid) and the older one wins.
  */
 
 export interface GatingResult {
@@ -48,12 +51,15 @@ export interface ModificationsService {
   }): Promise<ModificationResult>;
 }
 
-function inProgress(jobId: string): RouteError {
+/** Postgres unique violation (the one-open-modification index of migration 0007). */
+const UNIQUE_VIOLATION = '23505';
+
+function inProgress(jobId?: string): RouteError {
   return new RouteError(
     409,
     'MODIFICATION_IN_PROGRESS',
     'A modification of this launchpad is already in progress.',
-    { jobId },
+    jobId === undefined ? undefined : { jobId },
   );
 }
 
@@ -152,7 +158,22 @@ export function createModificationsService(deps: ModificationsServiceDeps): Modi
     const stillOpen = openModificationJobs(jobs, launchpad.id)[0];
     if (stillOpen) throw inProgress(stillOpen.id);
 
-    const job = await store.insertModificationJob(launchpad.id, text);
+    let job: JobRecord;
+    try {
+      job = await store.insertModificationJob(launchpad.id, text);
+    } catch (error) {
+      if (!(error instanceof StoreError) || error.dbCode !== UNIQUE_VIOLATION) throw error;
+      // Another request opened a modification first (database-enforced): same answer as the
+      // app-level race below.
+      const current = await store.listOwnedJobs(input.wallet, [launchpad.id]);
+      const open = openModificationJobs(current, launchpad.id)[0];
+      logger.log('info', 'modification.insert_conflict', {
+        launchpadId: launchpad.id,
+        keptJobId: open?.id,
+      });
+      if (!open || open.status !== 'spec_ready') throw inProgress(open?.id);
+      return result(launchpad, current, open.id, false);
+    }
     const after = await store.listOwnedJobs(input.wallet, [launchpad.id]);
     const winner = openModificationJobs(after, launchpad.id)[0];
     if (winner && winner.id !== job.id) {

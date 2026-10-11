@@ -53,6 +53,7 @@ const TICKET: TicketRecord = {
   contentType: 'image/png',
   imageSize: 1024,
   imageSha256: 'b'.repeat(64),
+  uploadKey: 'pending/moonpad/So11111111111111111111111111111111111111112.png',
   imageKey: 'launchpads/moonpad/images/So11111111111111111111111111111111111111112.png',
   metadataKey: 'launchpads/moonpad/metadata/So11111111111111111111111111111111111111112.json',
   coinName: 'Moon Coin',
@@ -65,6 +66,7 @@ const TICKET: TicketRecord = {
   issuedAt: new Date('2026-10-11T12:00:00.000Z'),
   expiresAt: new Date('2026-10-11T12:10:00.000Z'),
   completedAt: null,
+  sweptAt: null,
 };
 
 /** A row as PostgREST returns it (timestamps with an explicit offset). */
@@ -176,6 +178,57 @@ describe('SupabaseUploadStore', () => {
     const { store } = fakeDb([{ data: [] }, { data: [{ id: 'lp' }] }, { data: [{ id: 't' }] }]);
     await expect(store.isMintTaken(TICKET.mint)).resolves.toBe(true);
     await expect(store.isMintTaken(TICKET.mint)).resolves.toBe(true);
+  });
+
+  it('expires only an issued ticket and records the sweep', async () => {
+    const expired = { ...ROW, status: 'expired' };
+    const { store, calls } = fakeDb([{ data: [expired] }, {}]);
+    await expect(store.markExpired(TICKET.id)).resolves.toMatchObject({ status: 'expired' });
+    expect(calls[0]!.ops).toEqual([
+      ['update', [{ status: 'expired' }]],
+      ['eq', ['id', TICKET.id]],
+      ['eq', ['status', 'issued']],
+      ['select', ['*']],
+    ]);
+    const at = new Date('2026-10-11T14:00:00.000Z');
+    await store.markSwept(TICKET.id, at);
+    expect(calls[1]!.ops).toEqual([
+      ['update', [{ swept_at: at.toISOString() }]],
+      ['eq', ['id', TICKET.id]],
+    ]);
+    expect(parseTicketRow({ ...ROW, swept_at: '2026-10-11T14:00:00+00:00' }).sweptAt).toEqual(at);
+  });
+
+  it('lists sweepable tickets with two indexed reads, merged oldest first', async () => {
+    const later = {
+      ...ROW,
+      id: 'BBBBBBBBBBBBBBBBBBBBBB',
+      status: 'completed',
+      metadata_sha256: 'c'.repeat(64),
+      completed_at: '2026-10-11T12:05:00+00:00',
+      issued_at: '2026-10-11T12:01:00+00:00',
+    };
+    const { store, calls } = fakeDb([{ data: [ROW] }, { data: [later] }]);
+    const issuedBefore = new Date('2026-10-11T13:00:00.000Z');
+    const urlExpiredBefore = new Date('2026-10-11T13:50:00.000Z');
+    const listed = await store.listSweepable({ issuedBefore, urlExpiredBefore, limit: 1 });
+    expect(listed.map((t) => t.id)).toEqual([TICKET.id]);
+    expect(calls[0]!.ops).toEqual([
+      ['select', ['*']],
+      ['is', ['swept_at', null]],
+      ['eq', ['status', 'issued']],
+      ['lt', ['issued_at', issuedBefore.toISOString()]],
+      ['order', ['issued_at', { ascending: true }]],
+      ['limit', [1]],
+    ]);
+    expect(calls[1]!.ops).toEqual([
+      ['select', ['*']],
+      ['is', ['swept_at', null]],
+      ['neq', ['status', 'issued']],
+      ['lt', ['expires_at', urlExpiredBefore.toISOString()]],
+      ['order', ['issued_at', { ascending: true }]],
+      ['limit', [1]],
+    ]);
   });
 
   it('completes only an issued ticket', async () => {

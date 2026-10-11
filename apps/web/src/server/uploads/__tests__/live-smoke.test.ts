@@ -10,8 +10,9 @@ import { LIVE, pngBytes, sha256Hex, signedRequest } from './helpers';
 /*
  * Opt-in live smoke against the dev R2 bucket: FORGE_R2_SMOKE=1 plus the R2_* variables.
  * Everything lives under a dedicated `forge-smoke/<run>/` prefix and is deleted at the end.
- * Steps: ticket -> PUT a 1 KB PNG through the presigned URL -> write-once and checksum checks
- * -> complete (read back + metadata) -> delete. Never logs a URL or a credential.
+ * Steps: ticket -> PUT a 1 KB PNG through the presigned URL to the staging key -> checksum,
+ * signed size and write-once checks -> complete (read back, public image and metadata written)
+ * -> delete. Never logs a URL or a credential.
  */
 
 const enabled = process.env.FORGE_R2_SMOKE === '1';
@@ -41,14 +42,16 @@ describeLive('live R2 smoke (dev bucket, forge-smoke/ prefix)', () => {
       issuedAt: new Date().toISOString(),
     });
     const keys = [
+      `pending/moonpad/${request.mint}.png`,
       `launchpads/moonpad/images/${request.mint}.png`,
       `launchpads/moonpad/metadata/${request.mint}.json`,
     ];
     const outcome: Record<string, unknown> = {};
     try {
-      const ticket = await service.issue('moonpad', request);
+      const caller = { serverSlug: 'moonpad' };
+      const ticket = await service.issue('moonpad', request, caller);
       // Booleans only: a presigned URL is never printed.
-      const path = `/${options.bucket}/${keyPrefix}launchpads/moonpad/images/`;
+      const path = `/${options.bucket}/${keyPrefix}pending/moonpad/`;
       expect(new URL(ticket.image.uploadUrl).pathname.startsWith(path)).toBe(true);
 
       const put = (bytes: Uint8Array) =>
@@ -63,6 +66,11 @@ describeLive('live R2 smoke (dev bucket, forge-smoke/ prefix)', () => {
       outcome.checksumMismatchStatus = wrong.status;
       expect(wrong.ok).toBe(false);
 
+      // Another size than the signed Content-Length: refused, nothing stored.
+      const bigger = await put(pngBytes(2048));
+      outcome.sizeMismatchStatus = bigger.status;
+      expect(bigger.ok).toBe(false);
+
       const first = await put(image);
       outcome.putStatus = first.status;
       expect(first.ok).toBe(true);
@@ -72,9 +80,15 @@ describeLive('live R2 smoke (dev bucket, forge-smoke/ prefix)', () => {
       outcome.secondPutStatus = second.status;
       expect(second.status).toBe(412);
 
-      const receipt = await service.complete('moonpad', ticket.uploadId, { mint: request.mint });
+      const receipt = await service.complete(
+        'moonpad',
+        ticket.uploadId,
+        { mint: request.mint },
+        caller,
+      );
       expect(receipt.image.sha256).toBe(sha256Hex(image));
-      const metadata = await storage.get(keys[1]!, 16 * 1024);
+      outcome.stagedGone = (await storage.get(keys[0]!, 4096)) === null;
+      const metadata = await storage.get(keys[2]!, 16 * 1024);
       expect(metadata).not.toBeNull();
       expect(sha256Hex(metadata!.bytes)).toBe(receipt.metadata.sha256);
       expect(JSON.parse(Buffer.from(metadata!.bytes).toString('utf8'))).toMatchObject({
@@ -92,9 +106,10 @@ describeLive('live R2 smoke (dev bucket, forge-smoke/ prefix)', () => {
     } finally {
       for (const key of keys) await storage.delete(key);
       for (const key of keys)
-        outcome[`gone:${key.split('/')[2]}`] = (await storage.get(key, 4096)) === null;
+        outcome[`gone:${key.split('/').at(-2)}`] = (await storage.get(key, 4096)) === null;
       console.info(`[smoke] ${JSON.stringify(outcome)}`);
     }
+    expect(outcome['gone:moonpad']).toBe(true);
     expect(outcome['gone:images']).toBe(true);
     expect(outcome['gone:metadata']).toBe(true);
   });

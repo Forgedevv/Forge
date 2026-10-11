@@ -37,13 +37,16 @@ export interface StoredObject {
 export interface ObjectStorage {
   /**
    * Presigned write-once PUT: signed with `Content-Type`, `If-None-Match: *` and
-   * `x-amz-checksum-sha256`, which the uploader must send exactly. Deterministic for a given
-   * `date`, so an identical retry gets an identical URL.
+   * `x-amz-checksum-sha256`, returned in `headers` for the uploader to send exactly, and with
+   * `Content-Length` = `contentLength`, which is NOT returned: HTTP clients set it from the body,
+   * so R2 refuses any body of another size (or a chunked one) before storing it. Deterministic
+   * for a given `date`, so an identical retry gets an identical URL.
    */
   presignPut(input: {
     key: string;
     contentType: string;
     sha256Base64: string;
+    contentLength: number;
     date: Date;
     expiresSeconds: number;
   }): PresignedPut;
@@ -181,18 +184,23 @@ export function createR2Storage(options: R2StorageOptions): ObjectStorage {
   }
 
   return {
-    presignPut({ key, contentType, sha256Base64, date, expiresSeconds }) {
-      return sign(
+    presignPut({ key, contentType, sha256Base64, contentLength, date, expiresSeconds }) {
+      if (!Number.isSafeInteger(contentLength) || contentLength < 1) {
+        throw new Error('presignPut: invalid content length');
+      }
+      const headers = {
+        'Content-Type': contentType,
+        'If-None-Match': '*',
+        'x-amz-checksum-sha256': sha256Base64,
+      };
+      const signed = sign(
         'PUT',
         key,
-        {
-          'Content-Type': contentType,
-          'If-None-Match': '*',
-          'x-amz-checksum-sha256': sha256Base64,
-        },
+        { ...headers, 'Content-Length': String(contentLength) },
         date,
         expiresSeconds,
       );
+      return { url: signed.url, headers };
     },
 
     async get(key, maxBytes) {

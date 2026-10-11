@@ -79,21 +79,19 @@ describe('limits configuration', () => {
     expect(DEFAULT_LIMITS.sendPerCaller.refillPerSecond).toBeLessThan(
       DEFAULT_LIMITS.ip.refillPerSecond / 50,
     );
-    // Anonymous callers are stricter than browsers.
-    expect(DEFAULT_LIMITS.anonymousIp.refillPerSecond).toBeLessThan(
-      DEFAULT_LIMITS.ip.refillPerSecond,
-    );
+    // No separate (and larger) per-IP budget for callers sending an Origin header.
+    expect(Object.keys(DEFAULT_LIMITS)).not.toContain('anonymousIp');
   });
 
   it('reads per-minute overrides and scales the burst, never below one request', () => {
     const limits = readLimits({
       RPC_RELAY_IP_UNITS_PER_MINUTE: '1200',
-      RPC_RELAY_ANONYMOUS_IP_UNITS_PER_MINUTE: '1',
+      RPC_RELAY_ANONYMOUS_UNITS_PER_MINUTE: '1',
       RPC_RELAY_SENDS_PER_MINUTE: '0.5',
     });
     expect(limits.ip.refillPerSecond).toBeCloseTo(20);
     expect(limits.ip.capacity).toBe(DEFAULT_LIMITS.ip.capacity * 2);
-    expect(limits.anonymousIp.capacity).toBe(MAX_REQUEST_COST);
+    expect(limits.anonymousGlobal.capacity).toBe(MAX_REQUEST_COST);
     expect(limits.sendPerCaller.capacity).toBe(MAX_SENDS_PER_REQUEST);
     expect(limits.origin).toEqual(DEFAULT_LIMITS.origin);
   });

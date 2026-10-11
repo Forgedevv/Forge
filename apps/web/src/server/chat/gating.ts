@@ -20,7 +20,16 @@ export interface GatingResult {
   ok: boolean;
 }
 
+/** Full gate state, as returned by GET /api/gating (raw units). */
+export interface GatingStatus extends GatingResult {
+  /** Required raw amount (FORGE_GATING_AMOUNT); 0 when gating is disabled. */
+  required: bigint;
+  /** The wallet's raw balance; 0 when gating is disabled or nothing is required (no RPC read). */
+  balance: bigint;
+}
+
 export type GatingCheck = (wallet: string) => Promise<GatingResult>;
+export type GatingStatusCheck = (wallet: string) => Promise<GatingStatus>;
 
 export class GatingError extends Error {
   constructor(message: string) {
@@ -33,6 +42,8 @@ export class GatingError extends Error {
 export type BalanceReader = (wallet: PublicKey, env: AddressEnv) => Promise<ForgeBalance>;
 
 const CACHE_TTL_MS = 30_000;
+/** Bounds the balance cache (oldest entry dropped first). */
+const MAX_CACHED_WALLETS = 10_000;
 const RAW_AMOUNT = /^\d{1,30}$/;
 
 function defaultReader(env: AddressEnv): BalanceReader {
@@ -49,24 +60,30 @@ export function createGatingCheck(
   env: AddressEnv = process.env,
   readBalance: BalanceReader = defaultReader(env),
   now: () => number = Date.now,
-): GatingCheck {
+): GatingStatusCheck {
   const cache = new Map<string, { at: number; balance: ForgeBalance }>();
+  const status = (balance: ForgeBalance, required: bigint): GatingStatus => ({
+    enabled: true,
+    ok: passesForgeGate(balance, required),
+    required,
+    balance: balance.enabled ? balance.balance : 0n,
+  });
 
   return async (wallet) => {
     const mint = env.FORGE_MINT;
-    if (mint === undefined || mint === '') return { enabled: false, ok: true };
+    if (mint === undefined || mint === '') {
+      return { enabled: false, ok: true, required: 0n, balance: 0n };
+    }
 
     const requiredRaw = env.FORGE_GATING_AMOUNT;
     if (requiredRaw === undefined || !RAW_AMOUNT.test(requiredRaw)) {
       throw new GatingError('FORGE_GATING_AMOUNT is not configured');
     }
     const required = BigInt(requiredRaw);
-    if (required === 0n) return { enabled: true, ok: true };
+    if (required === 0n) return { enabled: true, ok: true, required, balance: 0n };
 
     const hit = cache.get(wallet);
-    if (hit && now() - hit.at < CACHE_TTL_MS) {
-      return { enabled: true, ok: passesForgeGate(hit.balance, required) };
-    }
+    if (hit && now() - hit.at < CACHE_TTL_MS) return status(hit.balance, required);
 
     let balance: ForgeBalance;
     try {
@@ -78,7 +95,24 @@ export function createGatingCheck(
       if (error instanceof CoreGatingError) throw new GatingError(`FORGE_MINT: ${error.code}`);
       throw new GatingError('RPC request failed');
     }
+    if (cache.size >= MAX_CACHED_WALLETS) cache.delete(cache.keys().next().value as string);
     cache.set(wallet, { at: now(), balance });
-    return { enabled: true, ok: passesForgeGate(balance, required) };
+    return status(balance, required);
   };
+}
+
+const DEFAULT_KEY = Symbol.for('forge.web.gating.check');
+
+/**
+ * Process-wide gate built from the environment (one balance cache shared by the chat, the spec
+ * confirmation, the modifications and GET /api/gating; survives dev hot reloads).
+ */
+export function getDefaultGatingCheck(): GatingStatusCheck {
+  const g = globalThis as unknown as Record<symbol, GatingStatusCheck | undefined>;
+  let check = g[DEFAULT_KEY];
+  if (!check) {
+    check = createGatingCheck();
+    g[DEFAULT_KEY] = check;
+  }
+  return check;
 }

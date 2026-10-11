@@ -1,4 +1,4 @@
-import { createGatingCheck } from '../chat/gating';
+import { getDefaultGatingCheck } from '../chat/gating';
 import { errorToResponse, type IdRouteContext } from '../jobs/handlers';
 import { getRoutesRuntime, launchpadsLogger } from '../jobs/runtime';
 import { createCoreClaimsChain } from './chain';
@@ -29,7 +29,11 @@ function getLaunchpadsHandlers(): LaunchpadsHandlers {
       clientsDomain: runtime.config.clientsDomain,
     }),
     claims: createClaimsService({ store, chain, logger }),
-    modifications: createModificationsService({ store, logger, gating: createGatingCheck() }),
+    modifications: createModificationsService({
+      store,
+      logger,
+      gating: (wallet) => getDefaultGatingCheck()(wallet),
+    }),
     reactivation: createReactivateService({ store, logger }),
     rateLimiter: runtime.rateLimiter,
     logger,

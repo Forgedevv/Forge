@@ -3,7 +3,7 @@ import { CLUSTER_GENESIS_HASH } from '@forge/core';
 import { describe, expect, it } from 'vitest';
 import { readRelayConfig, RelayConfigError } from '../config';
 import { containsSecret, secretFragments } from '../redact';
-import { deriveRelayToken, verifyRelayToken } from '../server-token';
+import { deriveRelayToken, readServerTokenSecret, verifyRelayToken } from '../server-token';
 import { GENESIS_HASH } from '../upstream';
 import { FAKE_KEY, UPSTREAM_URL } from './helpers';
 
@@ -131,5 +131,14 @@ describe('server tokens', () => {
     expect(verifyRelayToken(secret, `v1.MOON.${'0'.repeat(64)}`)).toBeNull();
     expect(verifyRelayToken(secret, 'x'.repeat(500))).toBeNull();
     expect(() => deriveRelayToken(secret, 'Bad Slug')).toThrow();
+  });
+
+  it('reads the shared secret once for every route that takes the token', () => {
+    expect(readServerTokenSecret({})).toBeNull();
+    expect(readServerTokenSecret({ RPC_RELAY_TOKEN_SECRET: '' })).toBeNull();
+    expect(readServerTokenSecret({ RPC_RELAY_TOKEN_SECRET: 'x'.repeat(31) })).toBe('invalid');
+    expect(readServerTokenSecret({ RPC_RELAY_TOKEN_SECRET: 'x'.repeat(32) })).toEqual(
+      Buffer.from('x'.repeat(32)),
+    );
   });
 });

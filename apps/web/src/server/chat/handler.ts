@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { checkOrigin, requireSession } from '@/server/auth';
 import { createAnthropicStreamer, type ModelStreamer } from './anthropic';
 import { ChatConfigError, loadChatConfig, type ChatConfig } from './config';
-import { createGatingCheck, GatingError, type GatingCheck } from './gating';
+import { GatingError, getDefaultGatingCheck, type GatingCheck } from './gating';
 import { buildModelMessages } from './history';
 import { apiError, readBoundedJson } from './http';
 import { clientIp, getDefaultRateLimiter, type RateLimiter } from './rate-limit';
@@ -26,13 +26,11 @@ export interface ChatDeps {
   now?: () => number;
 }
 
-let defaultGating: GatingCheck | null = null;
-
 export function defaultChatDeps(): ChatDeps {
   return {
     store: getDefaultStore,
     limiter: getDefaultRateLimiter,
-    gating: (wallet) => (defaultGating ??= createGatingCheck())(wallet),
+    gating: (wallet) => getDefaultGatingCheck()(wallet),
     loadConfig: () => loadChatConfig(),
     streamerFor: (config) =>
       createAnthropicStreamer({ apiKey: config.apiKey, apiUrl: config.apiUrl }),

@@ -67,7 +67,7 @@ function assertClientAccepts(ticket: UploadTicket, mint: string, sha256: string,
 }
 
 describe('issue a ticket', () => {
-  it('returns a presigned write-once PUT on the launchpad image key', async () => {
+  it('returns a presigned write-once PUT, size signed, on the staging key', async () => {
     const h = harness();
     const request = signedRequest();
     const ticket = await h.service.issue('moonpad', request);
@@ -82,11 +82,12 @@ describe('issue a ticket', () => {
     });
     const url = new URL(ticket.image.uploadUrl);
     expect(`${url.origin}${url.pathname}`).toBe(
-      `${ENDPOINT}/${BUCKET}/launchpads/moonpad/images/${request.mint}.png`,
+      `${ENDPOINT}/${BUCKET}/pending/moonpad/${request.mint}.png`,
     );
     expect(url.searchParams.get('X-Amz-Expires')).toBe(String(TICKET_TTL_SECONDS));
+    // Content-Length is signed (R2 refuses another size) but not listed: the body sets it.
     expect(url.searchParams.get('X-Amz-SignedHeaders')).toBe(
-      'content-type;host;if-none-match;x-amz-checksum-sha256',
+      'content-length;content-type;host;if-none-match;x-amz-checksum-sha256',
     );
     expect(ticket.image.publicUrl).toBe(
       `${PUBLIC_BASE}/launchpads/moonpad/images/${request.mint}.png`,
@@ -175,7 +176,9 @@ describe('issue a ticket', () => {
         mintChecker: null,
         now: () => h.clock.now,
       });
-      const error = await issueError(other.issue('moonpad', signedRequest({ wallet, nonce })));
+      const error = await issueError(
+        other.issue('moonpad', signedRequest({ wallet, nonce }), { serverSlug: 'moonpad' }),
+      );
       expect(error.code).toBe('NONCE_USED');
     });
   });
@@ -382,6 +385,7 @@ describe('issue a ticket', () => {
         contentType: 'image/png',
         imageSize: 1,
         imageSha256: 'e'.repeat(64),
+        uploadKey: 'pending/k',
         imageKey: 'k',
         metadataKey: 'm',
         coinName: 'x',
@@ -394,6 +398,7 @@ describe('issue a ticket', () => {
         issuedAt: new Date(T0 - 60_000),
         expiresAt: new Date(T0),
         completedAt: null,
+        sweptAt: null,
       };
       for (let i = 0; i < UPLOAD_RATE_LIMITS.launchpad.limit; i++) {
         const id = `seed${String(i).padStart(18, '0')}`;
@@ -446,6 +451,9 @@ describe('presigned PUT (R2 rules)', () => {
 
     // Other bytes than the declared SHA-256: refused by storage.
     expect(await putImage(h, ticket, pngBytes(1024, 9))).toBe(400);
+    // Another size: the signed Content-Length no longer matches.
+    expect(await putImage(h, ticket, pngBytes(2048))).toBe(403);
+    expect(await putImage(h, ticket, pngBytes(1023))).toBe(403);
     // Missing or altered signed header: signature mismatch.
     const { 'If-None-Match': _omit, ...withoutIfNoneMatch } = ticket.image.headers;
     void _omit;
@@ -498,6 +506,47 @@ describe('complete', () => {
       status: 'completed',
       metadataSha256: receipt.metadata.sha256,
     });
+    // FORGE wrote the verified bytes to the public key itself and dropped the staged copy.
+    const image = h.r2.objects.get(`launchpads/moonpad/images/${request.mint}.png`)!;
+    expect(sha256Hex(image.bytes)).toBe(request.image.sha256);
+    expect(image.contentType).toBe('image/png');
+    expect(h.r2.objects.has(`pending/moonpad/${request.mint}.png`)).toBe(false);
+  });
+
+  it('never exposes staged bytes at the public key before verification', async () => {
+    const h = harness();
+    const { request } = await issueAndPut(h);
+    expect(h.r2.objects.has(`pending/moonpad/${request.mint}.png`)).toBe(true);
+    expect(h.r2.objects.has(`launchpads/moonpad/images/${request.mint}.png`)).toBe(false);
+  });
+
+  it('refuses a public image already holding other bytes (409 IMAGE_CONFLICT)', async () => {
+    const h = harness();
+    const { request, ticket } = await issueAndPut(h);
+    h.r2.objects.set(`launchpads/moonpad/images/${request.mint}.png`, {
+      bytes: pngBytes(1024, 4),
+      contentType: 'image/png',
+    });
+    const error = await issueError(
+      h.service.complete('moonpad', ticket.uploadId, { mint: request.mint }),
+    );
+    expect([error.status, error.code]).toEqual([409, 'IMAGE_CONFLICT']);
+    expect(h.store.tickets.get(ticket.uploadId)!.status).toBe('issued');
+  });
+
+  it('only serves the site whose server token names the launchpad', async () => {
+    const h = harness();
+    const { request, ticket } = await issueAndPut(h);
+    const other = { serverSlug: 'rugpad' };
+    for (const param of ['moonpad', LIVE.id]) {
+      const error = await issueError(
+        h.service.complete(param, ticket.uploadId, { mint: request.mint }, other),
+      );
+      expect([error.status, error.code]).toEqual([403, 'SERVER_TOKEN_MISMATCH']);
+      const issued = await issueError(h.service.issue(param, signedRequest(), other));
+      expect([issued.status, issued.code]).toEqual([403, 'SERVER_TOKEN_MISMATCH']);
+    }
+    expect(h.store.tickets.size).toBe(1);
   });
 
   it('is idempotent: a retry returns the same receipt without touching storage', async () => {
@@ -522,6 +571,20 @@ describe('complete', () => {
     const again = await h.service.complete('moonpad', ticket.uploadId, { mint: request.mint });
     expect(again).toEqual(first);
     expect(h.r2.calls.some((c) => c.method === 'PUT' && c.status === 412)).toBe(true);
+  });
+
+  it('recovers when an earlier attempt wrote the public image but nothing else', async () => {
+    const h = harness();
+    const image = pngBytes();
+    const { request, ticket } = await issueAndPut(h, image);
+    // The staged copy is gone, the public image is there: the retry reuses it.
+    h.r2.objects.delete(`pending/moonpad/${request.mint}.png`);
+    h.r2.objects.set(`launchpads/moonpad/images/${request.mint}.png`, {
+      bytes: image,
+      contentType: 'image/png',
+    });
+    const receipt = await h.service.complete('moonpad', ticket.uploadId, { mint: request.mint });
+    expect(receipt.image.sha256).toBe(request.image.sha256);
   });
 
   it('refuses metadata already written with other content (409)', async () => {
@@ -558,9 +621,9 @@ describe('complete', () => {
       expect(h.r2.objects.has(key)).toBe(false);
       expect(h.r2.calls.some((c) => c.method === 'DELETE' && c.key === key)).toBe(true);
       expect(h.store.tickets.get(uploadId)!.status).toBe('rejected');
-      expect(
-        h.r2.objects.has(key.replace('/images/', '/metadata/').replace(/\.\w+$/, '.json')),
-      ).toBe(false);
+      // Nothing was written to the public keys.
+      expect(h.r2.objects.has(`launchpads/moonpad/images/${mint}.png`)).toBe(false);
+      expect(h.r2.objects.has(`launchpads/moonpad/metadata/${mint}.json`)).toBe(false);
       // Final: a retry is refused the same way, without reading storage again.
       const calls = h.r2.calls.length;
       const again = await issueError(h.service.complete('moonpad', uploadId, { mint }));
@@ -572,7 +635,7 @@ describe('complete', () => {
       const h = harness();
       const request = signedRequest();
       const ticket = await h.service.issue('moonpad', request);
-      const key = `launchpads/moonpad/images/${request.mint}.png`;
+      const key = `pending/moonpad/${request.mint}.png`;
       h.r2.objects.set(key, { bytes: pngBytes(1024, 3), contentType: 'image/png' });
       await expectRejected(h, ticket.uploadId, request.mint, key);
     });
@@ -581,7 +644,7 @@ describe('complete', () => {
       const h = harness();
       const request = signedRequest();
       const ticket = await h.service.issue('moonpad', request);
-      const key = `launchpads/moonpad/images/${request.mint}.png`;
+      const key = `pending/moonpad/${request.mint}.png`;
       h.r2.objects.set(key, { bytes: pngBytes(1000), contentType: 'image/png' });
       await expectRejected(h, ticket.uploadId, request.mint, key);
     });
@@ -593,12 +656,7 @@ describe('complete', () => {
       const ticket = await h.service.issue('moonpad', request);
       // The checksum matches, so storage accepts the PUT; FORGE refuses it afterwards.
       expect(await putImage(h, ticket, html)).toBe(200);
-      await expectRejected(
-        h,
-        ticket.uploadId,
-        request.mint,
-        `launchpads/moonpad/images/${request.mint}.png`,
-      );
+      await expectRejected(h, ticket.uploadId, request.mint, `pending/moonpad/${request.mint}.png`);
     });
 
     it('a JPEG declared as PNG', async () => {
@@ -608,19 +666,32 @@ describe('complete', () => {
       const request = signedRequest({ image: jpeg, contentType: 'image/png' });
       const ticket = await h.service.issue('moonpad', request);
       expect(await putImage(h, ticket, jpeg)).toBe(200);
-      await expectRejected(
-        h,
-        ticket.uploadId,
-        request.mint,
-        `launchpads/moonpad/images/${request.mint}.png`,
+      await expectRejected(h, ticket.uploadId, request.mint, `pending/moonpad/${request.mint}.png`);
+    });
+
+    it('a re-PUT after the rejection stays staged and never reaches the public key', async () => {
+      const h = harness();
+      const html = Buffer.from('<html></html>'.padEnd(1024, ' '));
+      const request = signedRequest({ image: html });
+      const ticket = await h.service.issue('moonpad', request);
+      expect(await putImage(h, ticket, html)).toBe(200);
+      await expectRejected(h, ticket.uploadId, request.mint, `pending/moonpad/${request.mint}.png`);
+      // The URL is still valid for a few minutes: the bytes land in staging again...
+      expect(await putImage(h, ticket, html)).toBe(200);
+      const again = await issueError(
+        h.service.complete('moonpad', ticket.uploadId, { mint: request.mint }),
       );
+      expect(again.code).toBe('IMAGE_REJECTED');
+      // ...where only the sweep (and the lifecycle rule) will find them.
+      expect(h.r2.objects.has(`pending/moonpad/${request.mint}.png`)).toBe(true);
+      expect(h.r2.objects.has(`launchpads/moonpad/images/${request.mint}.png`)).toBe(false);
     });
 
     it('an object larger than 2 MB', async () => {
       const h = harness();
       const request = signedRequest();
       const ticket = await h.service.issue('moonpad', request);
-      const key = `launchpads/moonpad/images/${request.mint}.png`;
+      const key = `pending/moonpad/${request.mint}.png`;
       h.r2.objects.set(key, { bytes: pngBytes(2 * 1024 * 1024 + 1), contentType: 'image/png' });
       await expectRejected(h, ticket.uploadId, request.mint, key);
     });
@@ -652,6 +723,16 @@ describe('complete', () => {
     const h = harness();
     const { request, ticket } = await issueAndPut(h);
     h.clock.now += COMPLETE_WINDOW_SECONDS * 1000 + 1000;
+    const error = await issueError(
+      h.service.complete('moonpad', ticket.uploadId, { mint: request.mint }),
+    );
+    expect([error.status, error.code]).toEqual([410, 'UPLOAD_EXPIRED']);
+  });
+
+  it('refuses an upload the sweep marked expired', async () => {
+    const h = harness();
+    const { request, ticket } = await issueAndPut(h);
+    h.store.tickets.get(ticket.uploadId)!.status = 'expired';
     const error = await issueError(
       h.service.complete('moonpad', ticket.uploadId, { mint: request.mint }),
     );

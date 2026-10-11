@@ -521,3 +521,136 @@ describeDb('job functions', () => {
     }
   });
 });
+
+describeDb('upload_tickets (0006)', () => {
+  // Skipped (not failed) on a database where migration 0006 is not applied yet.
+  let present = false;
+  beforeAll(async () => {
+    const r = await admin.query(`select to_regclass('public.upload_tickets') is not null as ok`);
+    present = r.rows[0].ok === true;
+  });
+
+  let seq = 0;
+  /** A valid ticket row; `over` replaces columns. */
+  function ticket(over: Record<string, unknown> = {}): Record<string, unknown> {
+    seq += 1;
+    const n = String(seq).padStart(4, '1');
+    // Base58 has no 0: the mint (and the hex nonce) stay valid whatever the counter.
+    const mint = `So1111111111111111111111111111111111111${n.replace(/0/g, 'z')}`;
+    return {
+      id: `t${run}${n}`.padEnd(22, 'x').slice(0, 22),
+      launchpad_id: ids.lpA,
+      wallet: '9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin',
+      nonce: `${run}${n}`.padEnd(32, '0').replace(/[^0-9a-f]/g, 'a'),
+      request_sha256: 'a'.repeat(64),
+      mint,
+      host: 'moonpad.forge-sites.app',
+      content_type: 'image/png',
+      image_size: 1024,
+      image_sha256: 'b'.repeat(64),
+      upload_key: `pending/moonpad/${mint}.png`,
+      image_key: `launchpads/moonpad/images/${mint}.png`,
+      metadata_key: `launchpads/moonpad/metadata/${mint}.json`,
+      coin_name: 'Moon Coin',
+      coin_symbol: 'MOON',
+      coin_description: '',
+      first_buy_lamports: '0',
+      issued_at: new Date().toISOString(),
+      expires_at: new Date(Date.now() + 600_000).toISOString(),
+      ...over,
+    };
+  }
+
+  async function insert(c: pg.Client, row: Record<string, unknown>): Promise<void> {
+    const keys = Object.keys(row);
+    await c.query(
+      `insert into upload_tickets (${keys.join(',')}) values (${keys.map((_, i) => `$${i + 1}`).join(',')})`,
+      Object.values(row),
+    );
+  }
+
+  /** Runs fn as the service owner in a transaction that is always rolled back. */
+  async function inTx(fn: (c: pg.Client) => Promise<void>): Promise<void> {
+    const c = await connect();
+    try {
+      await c.query('begin');
+      await fn(c);
+    } finally {
+      await c.query('rollback').catch(() => undefined);
+      await c.end();
+    }
+  }
+
+  async function rejects(c: pg.Client, row: Record<string, unknown>, pattern: RegExp) {
+    await c.query('savepoint s');
+    await expect(insert(c, row)).rejects.toThrow(pattern);
+    await c.query('rollback to savepoint s');
+  }
+
+  it('accepts a valid ticket and every status, including expired', async (ctx) => {
+    if (!present) ctx.skip();
+    await inTx(async (c) => {
+      for (const status of ['issued', 'rejected', 'expired']) await insert(c, ticket({ status }));
+      await insert(
+        c,
+        ticket({
+          status: 'completed',
+          metadata_sha256: 'c'.repeat(64),
+          completed_at: new Date().toISOString(),
+          swept_at: new Date().toISOString(),
+        }),
+      );
+      await rejects(c, ticket({ status: 'nope' }), /violates check constraint/);
+      // A completed ticket must carry its metadata hash and completion time.
+      await rejects(c, ticket({ status: 'completed' }), /upload_tickets_completed_check/);
+    });
+  });
+
+  it('enforces single use of (wallet, nonce) and of the mint', async (ctx) => {
+    if (!present) ctx.skip();
+    await inTx(async (c) => {
+      const first = ticket();
+      await insert(c, first);
+      await rejects(
+        c,
+        ticket({ wallet: first.wallet, nonce: first.nonce }),
+        /upload_tickets_wallet_nonce_key/,
+      );
+      await rejects(c, ticket({ mint: first.mint }), /upload_tickets_mint_key/);
+    });
+  });
+
+  it('keeps presigned PUTs on staging keys and checks the declared image', async (ctx) => {
+    if (!present) ctx.skip();
+    await inTx(async (c) => {
+      await rejects(
+        c,
+        ticket({ upload_key: 'launchpads/moonpad/images/x.png' }),
+        /upload_tickets_upload_key_check/,
+      );
+      await rejects(c, ticket({ image_size: 2097153 }), /upload_tickets_image_size_check/);
+      await rejects(c, ticket({ content_type: 'image/svg+xml' }), /violates check constraint/);
+      await rejects(c, ticket({ id: 'short' }), /upload_tickets_id_check/);
+    });
+  });
+
+  it('has the sweep index on unswept tickets', async (ctx) => {
+    if (!present) ctx.skip();
+    const r = await admin.query(
+      `select indexdef from pg_indexes where tablename = 'upload_tickets' and indexname = 'upload_tickets_unswept_idx'`,
+    );
+    expect(r.rows[0]?.indexdef).toMatch(/WHERE \(swept_at IS NULL\)/);
+  });
+
+  it('is invisible to anon and authenticated clients', async (ctx) => {
+    if (!present) ctx.skip();
+    for (const role of ['anon', 'authenticated'] as const) {
+      await as(role, role === 'authenticated' ? A : null, async (c) => {
+        await c.query('savepoint s');
+        await expect(c.query('select 1 from upload_tickets')).rejects.toThrow(/permission denied/);
+        await c.query('rollback to savepoint s');
+        await expect(insert(c, ticket())).rejects.toThrow(/permission denied/);
+      });
+    }
+  });
+});

@@ -14,7 +14,7 @@ import { ConsumedNonceStore, consumedNonces, type NonceStore } from './replay';
 import { createSessionToken, getSession, requireSession, SESSION_TTL_SECONDS } from './session';
 import { deriveKey, signToken } from './signed-token';
 import { buildSignInMessage, issueChallenge, verifySignIn } from './sign-in';
-import { mintSupabaseAccessToken } from './supabase-token';
+import { mintSupabaseAccessToken, SUPABASE_TOKEN_TTL_SECONDS } from './supabase-token';
 
 const SESSION_SECRET = 'test-session-secret-0123456789-abcdefghij';
 const SUPABASE_JWT_SECRET = 'test-supabase-jwt-secret-0123456789-abcdef';
@@ -452,13 +452,14 @@ describe('supabase token', () => {
       sub: wallet,
       wallet,
       iat: now,
-      exp: now + 3600,
+      exp: now + 600,
     });
     const expected = createHmac('sha256', SUPABASE_JWT_SECRET)
       .update(`${header}.${claims}`)
       .digest('base64url');
     expect(signature).toBe(expected);
-    expect(expiresAt).toBe(new Date((now + 3600) * 1000).toISOString());
+    expect(expiresAt).toBe(new Date((now + 600) * 1000).toISOString());
+    expect(SUPABASE_TOKEN_TTL_SECONDS).toBe(10 * 60);
   });
 
   it('is only served to a signed-in wallet', async () => {
