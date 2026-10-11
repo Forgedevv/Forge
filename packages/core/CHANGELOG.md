@@ -59,6 +59,15 @@ publish:packages`, which runs typecheck, lint, tests and build first). Not publi
   Verified: no module has a side effect when loaded (only constant definitions, a WeakMap cache
   and a guard on the SDK IDL in `swap.ts`); `src/side-effects.test.ts` loads every module and
   checks that no global is added and `process.env` is neither read nor written.
+- Deterministic durable nonce accounts: `buildCreateNonceAccountWithSeedTx({ connection, base,
+  seed, authority, payer?, computeUnitPriceMicroLamports? })` creates and initializes the nonce
+  account at `createWithSeed(base, seed, SystemProgram)` (`createAccountWithSeed` +
+  `nonceInitialize`, rent read from the cluster). No nonce keypair to store: after a lost journal
+  the signer re-derives the address with `deriveSeededNonceAccount(base, seed)` and reads it with
+  `readNonce`. Signers: the payer (default: the base) and the base when distinct. Seeds are 1 to
+  32 UTF-8 bytes (`assertNonceSeed`, `MAX_NONCE_SEED_BYTES`); a launchpad UUID without its dashes
+  is exactly 32 characters. Like `buildCreateNonceAccountTx`, it does not check that the account
+  is free.
 
 ### Added
 
