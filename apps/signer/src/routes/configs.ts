@@ -4,6 +4,8 @@
  *
  * 1. Re-reads and checks the job, the launchpad, the spec (core validation) and the payment, and
  *    the `deploys_paused` kill switch (context.ts). Nothing from the request but the job id.
+ *    The creation payment is then proven on-chain at finalized commitment (payment.ts), and a
+ *    launchpad the routes never created anything for must fit in the daily cap (budget.ts).
  * 2. Creates the launchpad's creator wallet in the keystore if absent (`creator:<launchpadId>`).
  * 3. Creates the launchpad config, then the launchpad coin config, each built by core from the
  *    spec, checked by the config policy, signed by a one-time config key and the payer wallet,
@@ -20,6 +22,7 @@ import type { ConfigKind } from '@forge/core';
 import type { SignerConfigsResponse } from '@forge/shared';
 import { configCreationTarget } from './targets.js';
 import { ensureAccountCreated } from './accounts.js';
+import { admitLaunchpad } from './budget.js';
 import {
   creationEnv,
   ensureCreatorWallet,
@@ -30,6 +33,7 @@ import {
 } from './context.js';
 import { fail } from './errors.js';
 import type { ConfigsJournalEntry } from './journal.js';
+import { assertCreationPaid } from './payment.js';
 
 const KINDS: ReadonlyArray<{ kind: ConfigKind; field: 'launchpad' | 'launchpadCoin' }> = [
   { kind: 'launchpad', field: 'launchpad' },
@@ -43,12 +47,13 @@ export async function handleCreateConfigs(
   // Cheap refusal before queuing on the launchpad lock; everything is re-read inside it.
   const outside = await loadOnchainSetup(rt, jobId);
   return rt.locks.run(outside.launchpad.id, async () => {
-    const { launchpad, spec, owner } = await loadOnchainSetup(rt, jobId);
-    const creator = await ensureCreatorWallet(rt, launchpad);
+    const setup = await loadOnchainSetup(rt, jobId);
+    const { launchpad, spec, owner } = setup;
     const key = launchpad.id;
+    await assertCreationPaid(rt, setup);
 
-    let entry = await rt.journals.configs.get(key);
-    if (!entry) {
+    const journaled = await rt.journals.configs.get(key);
+    if (!journaled) {
       if (launchpad.launchpadConfig !== null || launchpad.launchpadCoinConfig !== null) {
         await rt.alert(
           'high',
@@ -59,6 +64,13 @@ export async function handleCreateConfigs(
         );
         fail(409, 'configs_journal_missing');
       }
+      // A launchpad the routes never created anything for: counted in today's cap.
+      await admitLaunchpad(rt, key);
+    }
+    const creator = await ensureCreatorWallet(rt, launchpad);
+
+    let entry: ConfigsJournalEntry;
+    if (!journaled) {
       entry = {
         v: 1,
         launchpadId: key,
@@ -71,6 +83,7 @@ export async function handleCreateConfigs(
         recordedAt: null,
       };
     } else {
+      entry = journaled;
       assertEntryMatches(entry, { launchpadId: key, jobId, owner, creator });
     }
 

@@ -38,6 +38,8 @@ export interface RoutePayment {
   status: PaymentStatus;
   payerWallet: string;
   lamports: bigint;
+  /** Signature of the client's payment transaction (set when the web confirmed it). */
+  txSignature: string | null;
 }
 
 /** Launchpad columns written by the signer. */
@@ -93,6 +95,7 @@ const PaymentRowSchema = z.object({
   status: PaymentStatus,
   payer_wallet: z.string(),
   lamports: z.union([z.string(), z.number()]),
+  tx_signature: z.string().nullable(),
 });
 
 function one<T>(schema: z.ZodType<T>, rows: unknown[], what: string): T | null {
@@ -147,7 +150,7 @@ export function createPostgrestRouteStore(db: PostgrestClient): RouteStore {
 
     async listPayments(jobId) {
       const rows = await db.select('payments', {
-        select: 'id,job_id,kind,status,payer_wallet,lamports::text',
+        select: 'id,job_id,kind,status,payer_wallet,lamports::text,tx_signature',
         job_id: eq(jobId),
         order: 'created_at.asc,id.asc',
       });
@@ -160,6 +163,7 @@ export function createPostgrestRouteStore(db: PostgrestClient): RouteStore {
         status: r.status,
         payerWallet: r.payer_wallet,
         lamports: parseLamports(r.lamports),
+        txSignature: r.tx_signature,
       }));
     },
 

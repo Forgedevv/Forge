@@ -2,8 +2,8 @@
  * POST /v1/launch-coin/prepare { jobId } -> { partiallySignedTx, mint, summary, details }
  * (docs/INTERFACES.md §7; devnet test 3; core pool.ts).
  *
- * 1. Same checks as /v1/configs (context.ts); the two configs must be created (journal) and the
- *    coin config must still match the spec.
+ * 1. Same checks as /v1/configs (context.ts, the payment proven on-chain by payment.ts); the two
+ *    configs must be created (journal) and the coin config must still match the spec.
  * 2. The launchpad's durable nonce account is created once (accounts.ts), paid by the payer
  *    wallet, with the creator wallet as nonce authority (it already signs: no extra signature).
  * 3. core builds the launch transaction (pool + the client's first buy, durable nonce, FORGE
@@ -44,6 +44,7 @@ import { createEphemeralKey } from './ephemeral.js';
 import { fail } from './errors.js';
 import type { LaunchJournalEntry, NonceJournalEntry } from './journal.js';
 import { canonicalJson, sha256Hex } from './onchain.js';
+import { assertCreationPaid } from './payment.js';
 import { assertLaunchCoinTx } from './policy.js';
 import type { SignerLaunchPrepareResult } from './schemas.js';
 import { nonceCreationTarget, nonceParamsHash } from './targets.js';
@@ -96,9 +97,11 @@ export async function handlePrepareLaunch(
 ): Promise<SignerLaunchPrepareResult> {
   const outside = await loadOnchainSetup(rt, jobId);
   return rt.locks.run(outside.launchpad.id, async () => {
-    const { launchpad, spec, owner } = await loadOnchainSetup(rt, jobId);
+    const setup = await loadOnchainSetup(rt, jobId);
+    const { launchpad, spec, owner } = setup;
     const launchpadId = launchpad.id;
     const { core } = rt;
+    await assertCreationPaid(rt, setup);
 
     // 1. The configs this launch depends on.
     const configs = await rt.journals.configs.get(launchpadId);

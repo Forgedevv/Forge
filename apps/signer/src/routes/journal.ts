@@ -4,7 +4,10 @@
  *
  * - `configs.<launchpadId>`: the two config creations of a launchpad;
  * - `nonce.<launchpadId>`: the durable nonce account creation of a launchpad;
- * - `launch.<jobId>`: the prepared launch transaction of a creation job.
+ * - `launch.<jobId>`: the prepared launch transaction of a creation job;
+ * - `route-payment.<paymentId>`: a creation payment verified on-chain (payment.ts);
+ * - `route-admission.<YYYY-MM-DD>`: the launchpads admitted for account creations that UTC day
+ *   (budget.ts, SIGNER_MAX_LAUNCHPADS_PER_DAY).
  *
  * An account creation records every transaction BEFORE it is first broadcast (signature, signed
  * bytes, last valid block height): after a crash the same bytes are re-sent or settled, and a new
@@ -115,10 +118,35 @@ export const LaunchJournalEntry = z.object({
 });
 export type LaunchJournalEntry = z.infer<typeof LaunchJournalEntry>;
 
+/** A creation payment proven on-chain at finalized commitment (payment.ts). */
+export const VerifiedPaymentEntry = z.object({
+  v: z.literal(1),
+  paymentId: z.string(),
+  jobId: z.string(),
+  signature: Signature,
+  payer: Address,
+  recipient: Address,
+  lamports: z.string().regex(/^[0-9]+$/),
+  memo: z.string(),
+  slot: z.number().int().nonnegative(),
+  verifiedAt: IsoTime,
+});
+export type VerifiedPaymentEntry = z.infer<typeof VerifiedPaymentEntry>;
+
+/** Launchpads admitted for account creations on one UTC day (budget.ts). */
+export const DailyAdmissionsEntry = z.object({
+  v: z.literal(1),
+  day: z.string().regex(/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/),
+  launchpads: z.array(z.string()).max(1_000),
+});
+export type DailyAdmissionsEntry = z.infer<typeof DailyAdmissionsEntry>;
+
 export interface RouteJournals {
   configs: Journal<ConfigsJournalEntry>;
   nonces: Journal<NonceJournalEntry>;
   launches: Journal<LaunchJournalEntry>;
+  payments: Journal<VerifiedPaymentEntry>;
+  admissions: Journal<DailyAdmissionsEntry>;
 }
 
 export function createFileRouteJournals(dir: string): RouteJournals {
@@ -126,6 +154,12 @@ export function createFileRouteJournals(dir: string): RouteJournals {
     configs: createFileJournal({ dir, namespace: 'configs', schema: ConfigsJournalEntry }),
     nonces: createFileJournal({ dir, namespace: 'nonce', schema: NonceJournalEntry }),
     launches: createFileJournal({ dir, namespace: 'launch', schema: LaunchJournalEntry }),
+    payments: createFileJournal({ dir, namespace: 'route-payment', schema: VerifiedPaymentEntry }),
+    admissions: createFileJournal({
+      dir,
+      namespace: 'route-admission',
+      schema: DailyAdmissionsEntry,
+    }),
   };
 }
 
@@ -134,5 +168,7 @@ export function createMemoryRouteJournals(): RouteJournals {
     configs: createMemoryJournal(ConfigsJournalEntry),
     nonces: createMemoryJournal(NonceJournalEntry),
     launches: createMemoryJournal(LaunchJournalEntry),
+    payments: createMemoryJournal(VerifiedPaymentEntry),
+    admissions: createMemoryJournal(DailyAdmissionsEntry),
   };
 }

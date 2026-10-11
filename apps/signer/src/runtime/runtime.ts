@@ -237,6 +237,11 @@ export async function createSignerRuntime(options: SignerRuntimeOptions): Promis
           options.routeCore ?? createForgeRouteCore({ connection }),
         rpc,
         keystore,
+        // The creation payment is proven on-chain (finalized) before any payer spend.
+        payments: {
+          cashbox: addresses.cashbox,
+          verifyPayment: (signature, expected) => context.core.verifyPayment(signature, expected),
+        },
         flags,
         journals: createFileRouteJournals(config.journalDir),
         alerter,
@@ -245,6 +250,7 @@ export async function createSignerRuntime(options: SignerRuntimeOptions): Promis
           metadataUriTemplate: config.coinMetadataUrl,
           computeUnitPriceMicroLamports: config.priorityFeeMicroLamports,
           paused: config.routesPaused,
+          maxLaunchpadsPerDay: config.maxLaunchpadsPerDay,
         },
         onBeforeSend: context.onBeforeSend,
         payerLock: context.payerLock,

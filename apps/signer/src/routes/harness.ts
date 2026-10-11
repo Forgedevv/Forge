@@ -56,6 +56,26 @@ export interface Harness {
   routes: SignerRouteHandlers;
   /** A new routes instance over the same chain, store, journals and keystore (a restart). */
   restart(overrides?: Partial<SignerRoutesDeps>): SignerRouteHandlers;
+  /** Seeds another paid creation job (another launchpad, same client wallet). */
+  addJob(): { jobId: string; launchpadId: string };
+}
+
+/** Seeds a creation job whose confirmed payment row is also a finalized payment on the chain. */
+export function seedPaidJob(
+  chain: FakeRouteChain,
+  store: MemoryRouteStore,
+  owner: PublicKey,
+  slug = 'moonpad',
+): { jobId: string; launchpadId: string } {
+  const jobId = uuid();
+  const launchpadId = uuid();
+  const payment = store.seed({
+    jobId,
+    launchpadId,
+    spec: testSpec(owner.toBase58(), { slug }),
+  });
+  chain.recordPayment(payment.txSignature!, { payer: owner, lamports: payment.lamports, jobId });
+  return { jobId, launchpadId };
 }
 
 export async function setup(
@@ -65,9 +85,7 @@ export async function setup(
   const chain = new FakeRouteChain();
   const store = new MemoryRouteStore();
   const owner = Keypair.generate(); // the client wallet (test only)
-  const jobId = uuid();
-  const launchpadId = uuid();
-  store.seed({ jobId, launchpadId, spec: testSpec(owner.publicKey.toBase58()) });
+  const { jobId, launchpadId } = seedPaidJob(chain, store, owner.publicKey);
   const payer = (await keystore.createKey('payer')).publicKey;
   chain.setBalance(payer, 1_000_000_000n);
   chain.setBalance(owner.publicKey, 1_000_000_000n);
@@ -82,6 +100,7 @@ export async function setup(
     core: chain,
     rpc: chain,
     keystore,
+    payments: chain,
     flags,
     journals,
     alerter,
@@ -97,6 +116,7 @@ export async function setup(
     ...overrides,
   };
   const routes = createSignerRoutes(deps);
+  let jobs = 0;
   return {
     chain,
     store,
@@ -112,6 +132,10 @@ export async function setup(
     deps,
     routes,
     restart: (more = {}) => createSignerRoutes({ ...deps, ...more }),
+    addJob: () => {
+      jobs++;
+      return seedPaidJob(chain, store, owner.publicKey, `moonpad-${jobs}`);
+    },
   };
 }
 

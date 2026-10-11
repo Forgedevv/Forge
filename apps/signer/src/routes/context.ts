@@ -26,10 +26,18 @@ import {
   type SolanaRpc,
 } from '../jobs/shared.js';
 import type { AlertFn, CreationEnv } from './accounts.js';
+import { DEFAULT_MAX_LAUNCHPADS_PER_DAY, MAX_LAUNCHPADS_PER_DAY } from './budget.js';
 import { fail } from './errors.js';
 import type { RouteJournals } from './journal.js';
 import type { RouteCore } from './onchain.js';
-import type { LaunchpadAddressColumn, RouteJob, RouteLaunchpad, RouteStore } from './store.js';
+import type { RoutePaymentVerifier } from './payment.js';
+import type {
+  LaunchpadAddressColumn,
+  RouteJob,
+  RouteLaunchpad,
+  RoutePayment,
+  RouteStore,
+} from './store.js';
 
 /** Kill switch of the signing routes (docs/OPERATIONS.md): the deploy pipeline is stopped. */
 export const ROUTES_FLAG = 'deploys_paused' as const;
@@ -54,6 +62,11 @@ export interface SignerRoutesConfig {
   payerFeeBufferLamports?: bigint;
   /** Local kill switch (SIGNER_ROUTES_PAUSED). */
   paused?: boolean;
+  /**
+   * New launchpads the routes create accounts for per UTC day (SIGNER_MAX_LAUNCHPADS_PER_DAY,
+   * default 20, budget.ts). Past it, new launchpads are refused (503, alerted).
+   */
+  maxLaunchpadsPerDay?: number;
 }
 
 export interface SignerRoutesDeps {
@@ -61,6 +74,8 @@ export interface SignerRoutesDeps {
   core: RouteCore;
   rpc: SolanaRpc;
   keystore: RouteKeystore;
+  /** On-chain proof of the creation payment (core verifyPayment, finalized). */
+  payments: RoutePaymentVerifier;
   flags: FlagsReader;
   journals: RouteJournals;
   alerter: JobAlerter;
@@ -114,6 +129,7 @@ export interface RouteRuntime {
   core: RouteCore;
   rpc: SolanaRpc;
   keystore: RouteKeystore;
+  payments: RoutePaymentVerifier;
   journals: RouteJournals;
   log: JobLogger;
   alert: AlertFn;
@@ -124,6 +140,9 @@ export interface RouteRuntime {
   now: () => number;
   payerLock: Mutex;
   locks: KeyedMutex;
+  /** Serializes the daily admissions of new launchpads (budget.ts). */
+  admissionLock: Mutex;
+  maxLaunchpadsPerDay: number;
   maxCreateAttempts: number;
   maxLaunchBuilds: number;
   payerFeeBufferLamports: bigint;
@@ -138,6 +157,16 @@ export function createRouteRuntime(deps: SignerRoutesDeps): RouteRuntime {
     throw new Error('computeUnitPriceMicroLamports must be a non-negative integer');
   }
   assertMetadataTemplate(config.metadataUriTemplate);
+  const maxLaunchpadsPerDay = config.maxLaunchpadsPerDay ?? DEFAULT_MAX_LAUNCHPADS_PER_DAY;
+  if (
+    !Number.isSafeInteger(maxLaunchpadsPerDay) ||
+    maxLaunchpadsPerDay < 1 ||
+    maxLaunchpadsPerDay > MAX_LAUNCHPADS_PER_DAY
+  ) {
+    throw new Error(
+      `maxLaunchpadsPerDay must be an integer between 1 and ${MAX_LAUNCHPADS_PER_DAY}`,
+    );
+  }
   const log = deps.logger;
   return {
     deps,
@@ -145,6 +174,7 @@ export function createRouteRuntime(deps: SignerRoutesDeps): RouteRuntime {
     core: deps.core,
     rpc: deps.rpc,
     keystore: deps.keystore,
+    payments: deps.payments,
     journals: deps.journals,
     log,
     alert: (level, code, message, details, dedupKey) =>
@@ -156,6 +186,8 @@ export function createRouteRuntime(deps: SignerRoutesDeps): RouteRuntime {
     now: deps.now ?? Date.now,
     payerLock: deps.payerLock ?? new Mutex(),
     locks: new KeyedMutex(),
+    admissionLock: new Mutex(),
+    maxLaunchpadsPerDay,
     maxCreateAttempts: config.maxCreateAttempts ?? DEFAULT_MAX_CREATE_ATTEMPTS,
     maxLaunchBuilds: config.maxLaunchBuilds ?? DEFAULT_MAX_LAUNCH_BUILDS,
     payerFeeBufferLamports: config.payerFeeBufferLamports ?? DEFAULT_PAYER_FEE_BUFFER_LAMPORTS,
@@ -195,13 +227,17 @@ export interface OnchainSetup {
   launchpad: RouteLaunchpad;
   spec: LaunchpadSpec;
   owner: PublicKey;
+  /** The confirmed creation payments of the job (each one proven on-chain by payment.ts). */
+  payments: RoutePayment[];
 }
 
 /**
  * Re-reads and checks everything a signing route acts on (INTERFACES §7): a `create_launchpad`
  * job in `onchain_setup`, its `draft` launchpad, the spec re-validated by core with the owner
- * wallet of the row, at least one confirmed creation payment by that wallet and none refunded,
- * and the `deploys_paused` kill switch (fail closed).
+ * wallet of the row, at least one confirmed creation payment by that wallet (with its
+ * transaction signature) and none refunded, and the `deploys_paused` kill switch (fail closed).
+ * The payment rows are only the database's word: `assertCreationPaid` (payment.ts) proves them
+ * on-chain before anything is spent.
  */
 export async function loadOnchainSetup(rt: RouteRuntime, jobId: string): Promise<OnchainSetup> {
   const job = await rt.store.getJob(jobId);
@@ -224,9 +260,10 @@ export async function loadOnchainSetup(rt: RouteRuntime, jobId: string): Promise
   if (confirmed.some((p) => p.payerWallet !== launchpad.ownerWallet || p.lamports <= 0n)) {
     fail(409, 'payment_mismatch');
   }
+  if (confirmed.some((p) => !p.txSignature)) fail(409, 'payment_signature_missing');
 
   await assertRoutesNotPaused(rt);
-  return { job, launchpad, spec, owner };
+  return { job, launchpad, spec, owner, payments: confirmed };
 }
 
 // ---------------------------------------------------------------------------------------

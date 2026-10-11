@@ -198,6 +198,19 @@ describe('runtime environment', () => {
     );
     expect(() => parseRuntimeEnv({ ...env, SOLANA_CLUSTER: 'testnet' })).toThrow(/SOLANA_CLUSTER/);
   });
+
+  it('caps the new launchpads per day: 20 by default, bounded, never unlimited', () => {
+    const env = baseEnv();
+    expect(parseRuntimeEnv(env).maxLaunchpadsPerDay).toBe(20);
+    expect(
+      parseRuntimeEnv({ ...env, SIGNER_MAX_LAUNCHPADS_PER_DAY: '5' }).maxLaunchpadsPerDay,
+    ).toBe(5);
+    for (const value of ['0', '1001', '-1', 'many']) {
+      expect(() => parseRuntimeEnv({ ...env, SIGNER_MAX_LAUNCHPADS_PER_DAY: value })).toThrow(
+        /SIGNER_MAX_LAUNCHPADS_PER_DAY/,
+      );
+    }
+  });
 });
 
 describe('signer runtime wiring', () => {

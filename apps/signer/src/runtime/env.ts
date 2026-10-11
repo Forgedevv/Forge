@@ -11,6 +11,7 @@ import path from 'node:path';
 import { z } from 'zod';
 import { DEFAULT_KEYSTORE_DIR } from '../keystore.js';
 import { DEFAULT_JOURNAL_DIR, MAX_COMPUTE_UNIT_PRICE } from '../jobs/shared.js';
+import { DEFAULT_MAX_LAUNCHPADS_PER_DAY, MAX_LAUNCHPADS_PER_DAY } from '../routes/budget.js';
 
 export type EnvSource = Readonly<Record<string, string | undefined>>;
 
@@ -87,6 +88,7 @@ const RuntimeEnvSchema = z.object({
   }),
   SIGNER_PRIORITY_FEE_MICRO_LAMPORTS: integer(0, 0, Number(MAX_COMPUTE_UNIT_PRICE)),
   SIGNER_ROUTES_PAUSED: bool(false),
+  SIGNER_MAX_LAUNCHPADS_PER_DAY: integer(DEFAULT_MAX_LAUNCHPADS_PER_DAY, 1, MAX_LAUNCHPADS_PER_DAY),
   SIGNER_CONVERT_ROLES: optionalString,
   SIGNER_CONVERT_INTERVAL_HOURS: integer(24, 1, 24 * 30),
   SIGNER_SHUTDOWN_TIMEOUT_SECONDS: integer(120, 1, 3_600),
@@ -109,6 +111,8 @@ export interface RuntimeEnv {
   coinMetadataUrl: string;
   priorityFeeMicroLamports: number;
   routesPaused: boolean;
+  /** New launchpads the signing routes create accounts for per UTC day (default 20). */
+  maxLaunchpadsPerDay: number;
   convertRoles: ConvertRole[];
   convertIntervalMs: number;
   shutdownTimeoutMs: number;
@@ -166,6 +170,7 @@ export function parseRuntimeEnv(env: EnvSource): RuntimeEnv {
     coinMetadataUrl: p.SIGNER_COIN_METADATA_URL,
     priorityFeeMicroLamports: p.SIGNER_PRIORITY_FEE_MICRO_LAMPORTS,
     routesPaused: p.SIGNER_ROUTES_PAUSED,
+    maxLaunchpadsPerDay: p.SIGNER_MAX_LAUNCHPADS_PER_DAY,
     convertRoles: parseConvertRoles(p.SIGNER_CONVERT_ROLES),
     convertIntervalMs: p.SIGNER_CONVERT_INTERVAL_HOURS * 60 * 60_000,
     shutdownTimeoutMs: p.SIGNER_SHUTDOWN_TIMEOUT_SECONDS * 1_000,

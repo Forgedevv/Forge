@@ -9,6 +9,7 @@ import {
   DurableNonceError,
   ForgeAddressError,
   LaunchCoinError,
+  PaymentError,
   RentExemptionError,
   TransactionEncodingError,
   ValidationError,
@@ -77,6 +78,12 @@ export function classifyError(err: unknown): ClassifiedError {
     return { status: 500, code: 'tx_encoding_failed', alert: true };
   }
   if (err instanceof ForgeAddressError) return { status: 500, code: 'address_config', alert: true };
+  if (err instanceof PaymentError) {
+    // Input refused by core (job id, amount): the payment cannot be the one of this job.
+    return err.code === 'invalid_job_id' || err.code === 'invalid_amount'
+      ? { status: 409, code: 'payment_not_verified', alert: true }
+      : { status: 500, code: 'payment_verifier_error', alert: true };
+  }
   if (isKeystoreError(err)) return { status: 500, code: 'keystore_error', alert: true };
   if (isJobError(err)) {
     switch (err.code) {

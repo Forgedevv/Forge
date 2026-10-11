@@ -2,6 +2,10 @@
  * Devnet run of the signer signing routes (apps/signer/src/routes), in process (no HTTP server:
  * the HMAC layer is covered by the unit tests), on the real cluster, through the real keystore:
  *
+ *   0. The client pays the creation (0.001 SOL to a stand-in cashbox, the `multisigStandIn`
+ *      wallet, memo `forge:job:<jobId>`, built by @forge/core). The route proves that payment
+ *      on-chain at finalized commitment before the payer spends anything; the same transaction
+ *      claimed for another amount is refused (409, nothing spent).
  *   1. POST /v1/configs: the route creates the launchpad's creator wallet and both configs (paid
  *      by the keystore payer), then a second call returns the same configs and sends nothing.
  *   2. POST /v1/launch-coin/prepare: the route creates the durable nonce account once (authority =
@@ -19,7 +23,7 @@
  *
  * Devnet only: refuses to run unless RPC_URL contains "devnet" (lib/env.ts). Spend: about
  * 0.02 SOL (payer: config and nonce rents) + 0.04 SOL (client: pool accounts, Metaplex fee, first
- * buy of 0.01 SOL); the run stops if the total would exceed 0.1 SOL.
+ * buy of 0.01 SOL) + the 0.001 SOL payment; the run fails if the total exceeds 0.1 SOL.
  *
  *   node --env-file=<secrets file> --import tsx src/signer-routes.ts   (from scripts/devnet-tests)
  *
@@ -32,11 +36,15 @@ import { DynamicBondingCurveClient } from '@meteora-ag/dynamic-bonding-curve-sdk
 import { TOKEN_PROGRAM_ID, getAssociatedTokenAddressSync } from '@solana/spl-token';
 import { Keypair, PublicKey, Transaction, VersionedTransaction } from '@solana/web3.js';
 import type { LaunchpadSpec } from '@forge/shared';
+import { buildPaymentTx } from '../../../packages/core/src/index.js';
+import { createForgeSignerCore } from '../../../apps/signer/src/core-adapter.js';
 import { openKeystore, creatorRole } from '../../../apps/signer/src/keystore.js';
 import {
   createFileRouteJournals,
   createForgeRouteCore,
+  createMemoryRouteJournals,
   createSignerRoutes,
+  type RoutePaymentVerifier,
 } from '../../../apps/signer/src/routes/index.js';
 import { MemoryRouteStore } from '../../../apps/signer/src/routes/testing.js';
 import {
@@ -62,6 +70,8 @@ const MAX_TOTAL_SPEND = 100_000_000n;
 /** Meteora referral WSOL account created by devnet test 1 (stand-in for the FORGE one). */
 const DEVNET_REFERRAL = new PublicKey('6xGTA1UBAMUdBuVEV83QT7aygR4nWyN329ntQAiEDdJ1');
 const METADATA_TEMPLATE = 'https://example.com/forge/devnet/{slug}.json';
+/** The creation payment of the run (the real price is far higher: only the proof matters here). */
+const PAYMENT_LAMPORTS = 1_000_000n;
 /** A prepared launch discarded by hand from the devnet journal (see the report note). */
 const DISCARDED_FILE = resolve(WORK_DIR, 'discarded-launch.json');
 
@@ -70,6 +80,8 @@ interface RunState {
   launchpadId: string;
   slug: string;
   launchSignature: string | null;
+  /** The client's creation payment to the stand-in cashbox. */
+  paymentSignature?: string;
   done: boolean;
   /** Results of the fresh run, reported again by resumed runs. */
   prepareIdempotent?: boolean;
@@ -155,19 +167,37 @@ function spec(owner: PublicKey, slug: string): LaunchpadSpec {
   };
 }
 
-async function confirmByPolling(signature: string, deadlineMs = 90_000): Promise<number> {
+async function confirmByPolling(
+  signature: string,
+  deadlineMs = 90_000,
+  what = 'launch',
+): Promise<number> {
   const connection = getConnection();
   const deadline = Date.now() + deadlineMs;
   for (;;) {
     const status = (
       await connection.getSignatureStatuses([signature], { searchTransactionHistory: true })
     ).value[0];
-    if (status?.err) throw new Error(`launch failed on-chain: ${JSON.stringify(status.err)}`);
+    if (status?.err) throw new Error(`${what} failed on-chain: ${JSON.stringify(status.err)}`);
     if (status?.confirmationStatus === 'confirmed' || status?.confirmationStatus === 'finalized') {
       return status.slot;
     }
-    if (Date.now() > deadline) throw new Error(`launch ${signature} not confirmed in time`);
+    if (Date.now() > deadline) throw new Error(`${what} ${signature} not confirmed in time`);
     await sleep(2_000);
+  }
+}
+
+type RouteReply<T> = { ok: true; body: T } | { ok: false; status: number; error: string };
+
+/** Repeats a route call while it answers the retryable `code` (finality, settling). */
+async function untilNot<T>(
+  code: string,
+  call: () => Promise<RouteReply<T>>,
+): Promise<RouteReply<T>> {
+  for (let i = 0; ; i++) {
+    const r = await call();
+    if (r.ok || r.error !== code || i >= 40) return r;
+    await sleep(3_000);
   }
 }
 
@@ -216,29 +246,89 @@ async function main(): Promise<void> {
       );
     }
 
+    // 0. The creation payment (client -> stand-in cashbox, memo forge:job:<jobId>).
+    console.log('\n=== 0. creation payment ===');
+    const cashbox = wallets.multisigStandIn.publicKey;
+    if (!run.paymentSignature) {
+      const built = await buildPaymentTx(
+        connection,
+        { payer: client.publicKey, lamports: PAYMENT_LAMPORTS, jobId: run.jobId },
+        { env: { FORGE_CASHBOX_WALLET: cashbox.toBase58() } },
+      );
+      built.transaction.sign(client);
+      run.paymentSignature = await connection.sendRawTransaction(built.transaction.serialize(), {
+        skipPreflight: false,
+        preflightCommitment: 'confirmed',
+      });
+      saveRun(run);
+      await confirmByPolling(run.paymentSignature, 90_000, 'payment');
+    }
+    const paymentSignature = run.paymentSignature;
+    console.log(`  payment ${paymentSignature} (${formatSol(PAYMENT_LAMPORTS)})`);
+    const signerCore = createForgeSignerCore({ connection, cashbox, cluster: 'devnet' });
+    const verifier: RoutePaymentVerifier = {
+      cashbox,
+      verifyPayment: (signature, expected) => signerCore.verifyPayment(signature, expected),
+    };
+
     const store = new MemoryRouteStore();
-    store.seed({
+    const payment = store.seed({
       jobId: run.jobId,
       launchpadId: run.launchpadId,
       spec: spec(client.publicKey, run.slug),
+      paymentLamports: PAYMENT_LAMPORTS,
+      txSignature: paymentSignature,
     });
     const journals = createFileRouteJournals(resolve(WORK_DIR, 'journal'));
-    const routes = createSignerRoutes({
+    const routeDeps = {
       store,
       core: createForgeRouteCore({ connection }),
       rpc: rpcFromConnection(connection),
       keystore,
+      payments: verifier,
       flags: memoryFlags({ deploys_paused: false }),
       journals,
       alerter: consoleAlerter(alerts),
       logger: consoleLogger(),
       config: { metadataUriTemplate: METADATA_TEMPLATE },
-      onBeforeSend: (signature) => void announced.push(signature),
-    });
+      onBeforeSend: (signature: string) => void announced.push(signature),
+    };
+    const routes = createSignerRoutes(routeDeps);
 
-    // 1. Configs, twice.
+    // 0b. The same real payment claimed for another amount: refused before any spend.
+    const forged = new MemoryRouteStore();
+    forged.seed({
+      jobId: run.jobId,
+      launchpadId: randomUUID(),
+      spec: spec(client.publicKey, `${run.slug}-x`),
+      paymentLamports: PAYMENT_LAMPORTS + 1n,
+      txSignature: paymentSignature,
+    });
+    const announcedBefore = announced.length;
+    const forgedResult = await untilNot('payment_not_final', () =>
+      createSignerRoutes({
+        ...routeDeps,
+        store: forged,
+        journals: createMemoryRouteJournals(),
+        alerter: consoleAlerter([]),
+      }).configs({ jobId: run.jobId }),
+    );
+    const forgedRefused =
+      !forgedResult.ok &&
+      forgedResult.status === 409 &&
+      forgedResult.error === 'payment_not_verified' &&
+      announced.length === announcedBefore;
+    console.log(
+      `  same payment, another amount: ${forgedResult.ok ? 'accepted (unexpected)' : forgedResult.error}`,
+    );
+
+    // 1. Configs, twice (the first call waits for the payment to be finalized).
     console.log('\n=== 1. POST /v1/configs ===');
-    const configs = expectOk('configs', await routes.configs({ jobId: run.jobId }));
+    const configs = expectOk(
+      'configs',
+      await untilNot('payment_not_final', () => routes.configs({ jobId: run.jobId })),
+    );
+    const paymentVerified = (await journals.payments.get(payment.id)) !== undefined;
     console.log(`  launchpad config      ${configs.launchpadConfig}`);
     console.log(`  launchpad coin config ${configs.launchpadCoinConfig}`);
     const sendsAfterConfigs = announced.length;
@@ -389,7 +479,8 @@ async function main(): Promise<void> {
     ]) {
       payerSpent += await feePayerDebit(signature);
     }
-    const clientSpent = await feePayerDebit(launchSignature);
+    const clientSpent =
+      (await feePayerDebit(launchSignature)) + (await feePayerDebit(paymentSignature));
     const total = payerSpent + clientSpent;
     const launchedOk =
       !!mintInfo &&
@@ -399,6 +490,8 @@ async function main(): Promise<void> {
       poolState.poolState.creator.equals(creator) &&
       poolState.poolState.config.equals(new PublicKey(configs.launchpadCoinConfig));
     const ok =
+      paymentVerified &&
+      forgedRefused &&
       configsIdempotent &&
       configsOk &&
       (prepared === null ? run.prepareIdempotent !== false : prepareIdempotent) &&
@@ -428,6 +521,7 @@ async function main(): Promise<void> {
     report.h2('Transactions');
     const rows: string[][] = [];
     const creationRows = [
+      ['Creation payment (client -> stand-in cashbox, memo forge:job:<jobId>)', paymentSignature],
       ['Launchpad config creation', configsEntry.launchpad?.current?.signature],
       ['Launchpad coin config creation', configsEntry.launchpadCoin?.current?.signature],
       ['Nonce account creation', nonceEntry.creation?.current?.signature],
@@ -470,6 +564,14 @@ async function main(): Promise<void> {
       ['Check', 'Result'],
       [
         [
+          'Creation payment proven on-chain (finalized) and journaled before the first payer spend',
+          String(paymentVerified),
+        ],
+        [
+          'Same payment claimed for another amount refused (409 payment_not_verified, nothing sent)',
+          String(forgedRefused),
+        ],
+        [
           'Configs: fee claimer = client, creator share 25% (coin config) / spec (launchpad)',
           String(configsOk),
         ],
@@ -498,7 +600,7 @@ async function main(): Promise<void> {
       ['Wallet', 'Spent'],
       [
         ['Payer (two config rents, the nonce rent, fees)', sol(payerSpent)],
-        ['Client (pool accounts, Metaplex fee, first buy, fees)', sol(clientSpent)],
+        ['Client (payment, pool accounts, Metaplex fee, first buy, fees)', sol(clientSpent)],
         ['Total (limit 0.1 SOL)', sol(total)],
       ],
     );
