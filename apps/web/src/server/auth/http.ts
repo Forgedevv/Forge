@@ -6,7 +6,12 @@ import { AuthConfigError, isAllowedHost } from './config';
  */
 
 export type AuthErrorCode =
-  'UNAUTHORIZED' | 'WRONG_WALLET' | 'BAD_REQUEST' | 'FORBIDDEN_ORIGIN' | 'SERVER_ERROR';
+  | 'UNAUTHORIZED'
+  | 'WRONG_WALLET'
+  | 'BAD_REQUEST'
+  | 'FORBIDDEN_ORIGIN'
+  | 'BETA_NOT_INVITED'
+  | 'SERVER_ERROR';
 
 const NO_STORE = { 'Cache-Control': 'no-store' };
 

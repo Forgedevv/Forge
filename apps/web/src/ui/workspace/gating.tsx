@@ -53,7 +53,7 @@ export function GatingScreen({ children }: { children?: ReactNode }) {
           </>
         ) : (
           <ErrorNotice
-            message={copy.checking}
+            message={copy.unavailable}
             onRetry={() => void recheck().catch((e) => setError(readableError(e)))}
           />
         )}

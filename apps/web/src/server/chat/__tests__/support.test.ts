@@ -51,7 +51,7 @@ describe('clientIp', () => {
           'x-forwarded-for': '1.2.3.4',
         }),
       ),
-    ).toBe('2001:db8::1');
+    ).toBe('2001:db8:0:0::/64');
     expect(clientIp(req({ 'x-real-ip': '9.9.9.9', 'x-forwarded-for': '1.2.3.4' }))).toBe('9.9.9.9');
     expect(clientIp(req({ 'x-forwarded-for': '1.2.3.4, 5.6.7.8' }))).toBe('5.6.7.8');
     expect(clientIp(req({}))).toBe('unknown');
@@ -64,7 +64,29 @@ describe('clientIp', () => {
     expect(b).toBe(a);
   });
 
+  it('buckets IPv6 clients by /64 and IPv4-mapped addresses as IPv4', () => {
+    const v6 = (value: string) => clientIp(req({ 'x-real-ip': value }));
+    expect(v6('2001:db8:aa:bb:1:2:3:4')).toBe('2001:db8:aa:bb::/64');
+    // Any address of the same /64 shares the bucket, whatever its spelling.
+    expect(v6('2001:0DB8:00aa:00bb:ffff:ffff:ffff:ffff')).toBe('2001:db8:aa:bb::/64');
+    expect(v6('2001:db8:aa:bb::9')).toBe('2001:db8:aa:bb::/64');
+    expect(v6('2001:db8:aa:bc::9')).toBe('2001:db8:aa:bc::/64');
+    expect(v6('::1')).toBe('0:0:0:0::/64');
+    expect(v6('::')).toBe('0:0:0:0::/64');
+    expect(v6('fe80::1:2:3:4')).toBe('fe80:0:0:0::/64');
+    expect(v6('::ffff:203.0.113.7')).toBe('203.0.113.7');
+    expect(v6('::FFFF:cb00:7107')).toBe('203.0.113.7');
+    expect(v6('64:ff9b::203.0.113.7')).toBe('64:ff9b:0:0::/64');
+    expect(clientIp(req({ 'x-forwarded-for': '1.1.1.1, 2001:db8::1:2' }))).toBe(
+      '2001:db8:0:0::/64',
+    );
+  });
+
   it('ignores values that are not IP addresses', () => {
+    expect(clientIp(req({ 'x-real-ip': '2001:db8::1::2' }))).toBe('unknown');
+    expect(clientIp(req({ 'x-real-ip': '1.2.3.256' }))).toBe('unknown');
+    expect(clientIp(req({ 'x-real-ip': 'fe80::1%eth0' }))).toBe('unknown');
+    expect(clientIp(req({ 'x-real-ip': '::ffff:1.2.3' }))).toBe('unknown');
     expect(clientIp(req({ 'x-real-ip': 'evil<script>' }))).toBe('unknown');
     expect(clientIp(req({ 'x-real-ip': 'x'.repeat(100), 'x-forwarded-for': '7.7.7.7' }))).toBe(
       '7.7.7.7',
@@ -144,7 +166,7 @@ describe('createGatingCheck', () => {
   it('is disabled without FORGE_MINT', async () => {
     const read = balanceOf(0n);
     const check = createGatingCheck({}, read);
-    expect(await check(WALLET)).toEqual({ enabled: false, ok: true });
+    expect(await check(WALLET)).toEqual({ enabled: false, ok: true, required: 0n, balance: 0n });
     expect(read).not.toHaveBeenCalled();
   });
 
@@ -158,7 +180,12 @@ describe('createGatingCheck', () => {
     let now = 0;
     const read = balanceOf(1000n);
     const check = createGatingCheck(env, read, () => now);
-    expect(await check(WALLET)).toEqual({ enabled: true, ok: true });
+    expect(await check(WALLET)).toEqual({
+      enabled: true,
+      ok: true,
+      required: 1000n,
+      balance: 1000n,
+    });
     await check(WALLET);
     expect(read).toHaveBeenCalledTimes(1);
     expect(read.mock.calls[0]?.[0]).toEqual(new PublicKey(WALLET));
@@ -169,7 +196,24 @@ describe('createGatingCheck', () => {
 
   it('refuses a short balance', async () => {
     const check = createGatingCheck(env, balanceOf(999n));
-    expect(await check(WALLET)).toEqual({ enabled: true, ok: false });
+    expect(await check(WALLET)).toEqual({
+      enabled: true,
+      ok: false,
+      required: 1000n,
+      balance: 999n,
+    });
+  });
+
+  it('requires nothing (and reads nothing) when FORGE_GATING_AMOUNT is 0', async () => {
+    const read = balanceOf(0n);
+    const check = createGatingCheck({ ...env, FORGE_GATING_AMOUNT: '0' }, read);
+    expect(await check(WALLET)).toEqual({ enabled: true, ok: true, required: 0n, balance: 0n });
+    expect(read).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when FORGE_GATING_AMOUNT is missing', async () => {
+    const check = createGatingCheck({ ...env, FORGE_GATING_AMOUNT: undefined }, balanceOf(1n));
+    await expect(check(WALLET)).rejects.toThrow('FORGE_GATING_AMOUNT is not configured');
   });
 
   it('fails closed when the RPC fails, without echoing the error', async () => {

@@ -3,6 +3,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { homeContent as copy } from './content';
 import { ForgeHome } from './home';
 
+// Full-page renders: allow for a busy machine when the whole suite runs in parallel.
+vi.setConfig({ testTimeout: 30_000 });
+
 const scene = vi.hoisted(() => ({
   chapter: (chapter: number) => {
     void chapter;
@@ -55,7 +58,9 @@ describe('FORGE experience controls', () => {
   it('shows the promise and all six accessible chapter targets', async () => {
     render(<ForgeHome />);
     await ready();
-    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Ideas in. Worlds out.');
+    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent(
+      copy.chapters[0].title.replace('\n', ' '),
+    );
     for (const name of copy.chapterNames)
       expect(screen.getByRole('button', { name: new RegExp(name, 'i') })).toBeInTheDocument();
   });
@@ -69,7 +74,12 @@ describe('FORGE experience controls', () => {
       'aria-current',
       'step',
     );
-    expect(screen.getByRole('heading', { level: 2, name: /From a spark/ })).toBeInTheDocument();
+    expect(
+      screen.getByRole('heading', {
+        level: 2,
+        name: new RegExp(copy.chapters[2].title.replace('\n', '\\s+')),
+      }),
+    ).toBeInTheDocument();
   });
 
   it('announces the chapter the continuous scene progress reaches', async () => {

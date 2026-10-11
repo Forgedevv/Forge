@@ -1,12 +1,15 @@
 /// <reference types="node" />
+import { createHmac } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { empty, json, stubFetch, type Route } from './http-mock.js';
 import {
   assertClientsDomain,
   createVercelClient,
   API_ONLY_DEPLOYMENT_POLICY,
+  clientProjectVars,
   envTypeFor,
   pickProjectEnv,
+  PROJECT_SERVER_SECRETS,
   PROJECT_ENV_ALLOWLIST,
   PROJECT_ENV_FORBIDDEN,
   PROJECT_ENV_REQUIRED,
@@ -18,6 +21,10 @@ import {
 } from './vercel.js';
 
 const ORG = 'forge-org';
+const RELAY_SECRET = 'relay-secret-for-tests-0123456789abcdef';
+/** The formula, computed independently of relay-token.ts. */
+const expectedToken = (slug: string): string =>
+  `v1.${slug}.${createHmac('sha256', RELAY_SECRET).update(`forge-rpc-relay:v1:${slug}`).digest('hex')}`;
 const DOMAIN = 'forge-sites.app';
 const TOKEN = 'vcp_secrettoken0123456789';
 const TEAM = 'team_abcdefgh12345678';
@@ -98,13 +105,24 @@ describe('names, domain and env selection', () => {
       'R2_BUCKET',
       'GITHUB_PACKAGES_TOKEN',
       'NODE_AUTH_TOKEN',
+      'RPC_RELAY_TOKEN_SECRET',
     ]) {
       expect(PROJECT_ENV_ALLOWLIST.has(key)).toBe(false);
       expect(PROJECT_ENV_FORBIDDEN.has(key)).toBe(true);
     }
     for (const key of PROJECT_ENV_ALLOWLIST) {
-      // Only the public pool config key may carry a credential-like word in its name.
-      if (/KEY|SECRET|TOKEN|PRIVATE|PASSWORD/.test(key)) expect(key).toMatch(/POOL_CONFIG_KEY$/);
+      // Only the public pool config key, and the single server-only relay token, may carry a
+      // credential-like word in their name.
+      if (/KEY|SECRET|TOKEN|PRIVATE|PASSWORD/.test(key)) {
+        expect(key).toMatch(/^(NEXT_PUBLIC_)?POOL_CONFIG_KEY$|^FORGE_RPC_RELAY_TOKEN$/);
+      }
+    }
+    // The single allowed server-only secret: sensitive, never NEXT_PUBLIC.
+    expect([...PROJECT_SERVER_SECRETS]).toEqual(['FORGE_RPC_RELAY_TOKEN']);
+    for (const key of PROJECT_ENV_ALLOWLIST) {
+      const secret = PROJECT_SERVER_SECRETS.has(key);
+      expect(envTypeFor(key), key).toBe(secret ? 'sensitive' : 'plain');
+      if (secret) expect(key.startsWith('NEXT_PUBLIC_')).toBe(false);
     }
     for (const key of PROJECT_ENV_REQUIRED) expect(PROJECT_ENV_ALLOWLIST.has(key)).toBe(true);
   });
@@ -529,6 +547,39 @@ describe('setEnv', () => {
     { method: 'POST', path: '/v10/projects/prj_123/env', handler },
   ];
 
+  it('sends the relay token as a sensitive server-only variable, never NEXT_PUBLIC', async () => {
+    const { client, stub } = make(route(() => json({ created: [], failed: [] })));
+    const vars = clientProjectVars(
+      { SOLANA_CLUSTER: 'devnet', FORGE_RPC_RELAY_TOKEN: 'v1.otherpad.copied' },
+      { slug: 'moonpad', relayTokenSecret: RELAY_SECRET },
+    );
+    await client.setEnv('prj_123', vars);
+    const body = stub.calls[0]?.body as Array<{ key: string; value: string; type: string }>;
+    const token = body.find((e) => e.key === 'FORGE_RPC_RELAY_TOKEN');
+    expect(token).toMatchObject({ type: 'sensitive', value: expectedToken('moonpad') });
+    expect(body.find((e) => e.key === 'SOLANA_CLUSTER')?.type).toBe('plain');
+    expect(body.some((e) => e.key.startsWith('NEXT_PUBLIC_') && e.value === token?.value)).toBe(
+      false,
+    );
+    expect(
+      body.some((e) => /RPC_RELAY_TOKEN/.test(e.key) && e.key !== 'FORGE_RPC_RELAY_TOKEN'),
+    ).toBe(false);
+  });
+
+  it('refuses a malformed relay token, a NEXT_PUBLIC twin of it, or its secret', async () => {
+    const { client, stub } = make(route(() => json({})));
+    for (const vars of [
+      { FORGE_RPC_RELAY_TOKEN: 'not-a-token' } as Record<string, string>,
+      { NEXT_PUBLIC_FORGE_RPC_RELAY_TOKEN: expectedToken('moonpad') },
+      { RPC_RELAY_TOKEN_SECRET: RELAY_SECRET },
+    ]) {
+      const err = (await client.setEnv('prj_123', vars).catch((e: unknown) => e)) as Error;
+      expect(err).toMatchObject({ kind: 'invalid_input' });
+      expect(err.message).not.toContain(RELAY_SECRET);
+    }
+    expect(stub.calls).toHaveLength(0);
+  });
+
   it('upserts variables for production and preview with the right types', async () => {
     const { client, stub } = make(route(() => json({ created: [], failed: [] })));
     const out = await client.setEnv('prj_123', {
@@ -792,6 +843,45 @@ describe('deployments', () => {
     ]);
     await client.getDeployment('https://lp-moonpad-abc123-forge.vercel.app');
     expect(stub.calls[0]?.path).toBe('/v13/deployments/lp-moonpad-abc123-forge.vercel.app');
+  });
+
+  it('reports the commit and the project of a deployment', async () => {
+    const sha = 'a'.repeat(40);
+    const other = 'b'.repeat(40);
+    const { client } = make([
+      {
+        method: 'GET',
+        path: '/v13/deployments/dpl_1',
+        handler: () =>
+          json(
+            deploymentJson('READY', {
+              projectId: 'prj_123',
+              gitSource: { type: 'github', ref: 'main', sha },
+              meta: { githubCommitSha: other },
+            }),
+          ),
+      },
+      {
+        method: 'GET',
+        path: '/v13/deployments/dpl_2',
+        handler: () => json(deploymentJson('READY', { meta: { githubCommitSha: other } })),
+      },
+      {
+        method: 'GET',
+        path: '/v13/deployments/dpl_3',
+        handler: () => json(deploymentJson('READY', { gitSource: { sha: 'main' } })),
+      },
+    ]);
+    // gitSource first, then the git metadata; anything that is not a full sha is ignored.
+    expect(await client.getDeployment('dpl_1')).toMatchObject({
+      commitSha: sha,
+      projectId: 'prj_123',
+    });
+    expect(await client.getDeployment('dpl_2')).toMatchObject({
+      commitSha: other,
+      projectId: undefined,
+    });
+    expect((await client.getDeployment('dpl_3')).commitSha).toBeUndefined();
   });
 });
 

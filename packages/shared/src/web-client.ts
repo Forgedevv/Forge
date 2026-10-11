@@ -86,6 +86,7 @@ export const CLIENT_ERROR_CODES = [
   'SIGNUPS_PAUSED',
   'QUOTE_EXPIRED',
   'WRONG_WALLET',
+  'BETA_NOT_INVITED',
   'NETWORK',
 ] as const;
 export type ClientErrorCode = (typeof CLIENT_ERROR_CODES)[number];

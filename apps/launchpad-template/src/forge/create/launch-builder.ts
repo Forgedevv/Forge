@@ -1,4 +1,11 @@
 import {
+  DEFAULT_FIRST_BUY_SLIPPAGE_BPS,
+  LAUNCH_COIN_COMPUTE_UNITS,
+  METADATA_ACCOUNT_SIZE,
+  METAPLEX_CREATE_METADATA_FEE_LAMPORTS,
+  quoteConfigFromPoolConfig,
+} from '@forge/core';
+import {
   DynamicBondingCurveClient,
   type PoolConfig,
   type SwapQuoteConfig,
@@ -34,19 +41,21 @@ import { MAX_FIRST_BUY_SLIPPAGE_BPS } from './verify';
  * browser. Every chain read goes through the FORGE RPC relay connection handed in; rent is read
  * from the cluster (`getMinimumBalanceForRentExemption`), never hardcoded.
  *
- * SWITCH TO @forge/core: once `@forge/core` exports a builder for user coins on a launchpad config
- * (creator = payer = buyer) and the template depends on it, replace this module with a thin wrapper.
+ * `@forge/core` has no builder for this case yet: `buildLaunchCoinTx` is made for the FORGE-run
+ * coin flow (the pool creator is the FORGE creator wallet, distinct from the owner, on a config whose
+ * fee claimer is the owner), so it refuses a launchpad config and a creator equal to the buyer. This
+ * module therefore keeps the SDK call, and reuses the constants and the pool config quote inputs
+ * of `@forge/core`. Once core exports a user-coin builder, replace the body of `build` by it.
  * The output is checked by the same verifier as the browser (`verify.ts`) before it is returned.
  */
 
-/** Compute unit limit of the launch transaction (same as `@forge/core` LAUNCH_COIN_COMPUTE_UNITS). */
-export const LAUNCH_COMPUTE_UNITS = 300_000;
-/** Default slippage applied to the first buy minimum (same default as `@forge/core`). */
-export const DEFAULT_FIRST_BUY_SLIPPAGE_BPS = 100;
-/** Size of the Metaplex metadata account created with the pool (measured on devnet, @forge/core). */
-export const METADATA_ACCOUNT_SIZE = 607;
-/** Metaplex Token Metadata creation fee (0.01 SOL, measured on devnet, @forge/core). */
-export const METAPLEX_CREATE_METADATA_FEE_LAMPORTS = BigInt(10_000_000);
+/** Constants shared with `@forge/core` (single source of truth). */
+export const LAUNCH_COMPUTE_UNITS = LAUNCH_COIN_COMPUTE_UNITS;
+export {
+  DEFAULT_FIRST_BUY_SLIPPAGE_BPS,
+  METADATA_ACCOUNT_SIZE,
+  METAPLEX_CREATE_METADATA_FEE_LAMPORTS,
+};
 /** Solana packet limit. */
 export const MAX_TRANSACTION_BYTES = 1232;
 
@@ -140,27 +149,6 @@ export interface LaunchBuilderOptions {
 
 const toBigInt = (value: BN | number | bigint): bigint => BigInt(value.toString());
 
-/** The quote inputs of a pool config, for a pool that does not exist yet. */
-function quoteConfigOf(config: PoolConfig): SwapQuoteConfig {
-  return {
-    poolFees: {
-      baseFee: {
-        cliffFeeNumerator: config.poolFees.baseFee.cliffFeeNumerator,
-        firstFactor: config.poolFees.baseFee.firstFactor,
-        secondFactor: config.poolFees.baseFee.secondFactor,
-        thirdFactor: config.poolFees.baseFee.thirdFactor,
-        baseFeeMode: config.poolFees.baseFee.baseFeeMode,
-      },
-      dynamicFee: config.poolFees.dynamicFee,
-    },
-    collectFeeMode: config.collectFeeMode,
-    sqrtStartPrice: config.sqrtStartPrice,
-    migrationQuoteThreshold: config.migrationQuoteThreshold,
-    curve: config.curve,
-    migrationSqrtPrice: config.migrationSqrtPrice,
-  } as SwapQuoteConfig;
-}
-
 function createsAta(instructions: readonly TransactionInstruction[], ata: PublicKey): boolean {
   return instructions.some(
     (ix) =>
@@ -231,7 +219,7 @@ export function createLaunchBuilder(options: LaunchBuilderOptions): LaunchBuilde
         let quote;
         try {
           quote = client.pool.getQuoteFromInputAmount({
-            config: quoteConfigOf(config.poolConfig),
+            config: quoteConfigFromPoolConfig(config.poolConfig),
             swapBaseForQuote: false,
             amountIn: new BN(input.firstBuyLamports.toString()),
             slippageBps,

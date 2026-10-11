@@ -18,11 +18,11 @@ export const WHEEL_MAX_STEP = 0.5;
  */
 export const DWELL = 0.35;
 /** Minimum time (s) the scene stays on a chapter it has just reached. Input keeps queuing meanwhile. */
-export const DWELL_SECONDS = 1;
-/** Highest speed of the displayed progress (chapters/s): a full chapter transition takes at least 1.2 s. */
-export const MAX_TRANSITION_SPEED = 1 / 1.2;
+export const DWELL_SECONDS = 1.6;
+/** Highest speed of the displayed progress (chapters/s): a full chapter transition takes at least 2.4 s. */
+export const MAX_TRANSITION_SPEED = 1 / 2.4;
 /** Acceleration (chapters/s^2) that eases the displayed progress into and out of its speed. */
-export const TRANSITION_ACCELERATION = 2.5;
+export const TRANSITION_ACCELERATION = 1.8;
 /** Largest distance (chapters) the queued target may lead or trail the displayed progress. */
 export const MAX_QUEUE_AHEAD = 1.5;
 /** Time constant (s) of the final soft approach onto a stop. */

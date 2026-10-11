@@ -8,9 +8,10 @@ export default function AboutPage() {
       <Head>
         <title>{`${content.strings.aboutTitle} - ${content.name}`}</title>
       </Head>
-      <article className="mx-auto w-full max-w-3xl px-2 py-8">
-        <h1 className="mb-4 text-3xl font-bold tracking-tight">{content.strings.aboutTitle}</h1>
-        <p className="whitespace-pre-line text-neutral-300">{content.about}</p>
+      <article className="launchpad-about">
+        <p className="launchpad-eyebrow">{content.strings.aboutEyebrow}</p>
+        <h1>{content.strings.aboutTitle}</h1>
+        <p className="launchpad-about-copy">{content.about}</p>
       </article>
     </Page>
   );

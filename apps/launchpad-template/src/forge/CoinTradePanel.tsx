@@ -8,8 +8,11 @@ export interface CoinTradePanelProps {
   mint: string;
   /** Ticker shown in labels (display only). */
   symbol?: string;
-  /** Token decimals (display only; DBC coins use 6). */
-  tokenDecimals?: number;
+  /**
+   * Decimals from the data API (Jupiter indexer): display fallback only, never used for an amount.
+   * The trade form reads the decimals of the on-chain mint through the relay.
+   */
+  displayDecimals?: number;
   className?: string;
 }
 
@@ -21,7 +24,7 @@ export interface CoinTradePanelProps {
  * Without the on-chain configuration, or for a coin that is not on this launchpad, the panel shows
  * "not configured" and nothing can be traded.
  */
-export function CoinTradePanel({ mint, symbol, tokenDecimals, className }: CoinTradePanelProps) {
+export function CoinTradePanel({ mint, symbol, displayDecimals, className }: CoinTradePanelProps) {
   const launchpadConfig = onchainConfig?.launchpadConfig;
   const pool = useMemo(() => launchpadPoolForMint(mint, launchpadConfig), [mint, launchpadConfig]);
   return (
@@ -29,7 +32,7 @@ export function CoinTradePanel({ mint, symbol, tokenDecimals, className }: CoinT
       mint={mint}
       pool={pool ?? ''}
       symbol={symbol}
-      tokenDecimals={saneDecimals(tokenDecimals)}
+      displayDecimals={saneDecimals(displayDecimals)}
       className={className}
     />
   );

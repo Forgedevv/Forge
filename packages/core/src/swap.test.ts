@@ -57,6 +57,7 @@ import {
   poolSwapStatus,
   quoteSwap,
   requiredSwapLamports,
+  swapPriceImpactBps,
   type SwapAccountSnapshot,
   type SwapContext,
   type SwapErrorCode,
@@ -542,6 +543,213 @@ describe('computeSwapQuote', () => {
 // ---------------------------------------------------------------------------------------------
 // Fee accounts
 // ---------------------------------------------------------------------------------------------
+
+describe('swapPriceImpactBps', () => {
+  const Q64 = 1n << 64n;
+
+  it('is 0 at the spot price and counts what the trade loses against it', () => {
+    // Spot price 1 (sqrtPrice = 2^64): 1,000 lamports buy 1,000 units at spot.
+    expect(
+      swapPriceImpactBps({
+        side: 'buy',
+        sqrtPrice: Q64,
+        curveAmountIn: 1000n,
+        curveAmountOut: 1000n,
+      }),
+    ).toBe(0);
+    expect(
+      swapPriceImpactBps({
+        side: 'buy',
+        sqrtPrice: Q64,
+        curveAmountIn: 1000n,
+        curveAmountOut: 990n,
+      }),
+    ).toBe(100);
+    // Spot price 4 (sqrtPrice = 2^65): 1,000 units sell for 4,000 lamports at spot.
+    expect(
+      swapPriceImpactBps({
+        side: 'sell',
+        sqrtPrice: 2n * Q64,
+        curveAmountIn: 1000n,
+        curveAmountOut: 4000n,
+      }),
+    ).toBe(0);
+    expect(
+      swapPriceImpactBps({
+        side: 'sell',
+        sqrtPrice: 2n * Q64,
+        curveAmountIn: 1000n,
+        curveAmountOut: 3600n,
+      }),
+    ).toBe(1000);
+    // Same trade, price 1/4: a buy of 1,000 lamports gets 4,000 units at spot.
+    expect(
+      swapPriceImpactBps({
+        side: 'buy',
+        sqrtPrice: Q64 / 2n,
+        curveAmountIn: 1000n,
+        curveAmountOut: 3000n,
+      }),
+    ).toBe(2500);
+  });
+
+  it('rounds up to the next bps and clamps to 0..10,000', () => {
+    // 2/3 of the spot output: 33.33...% impact, shown as 3,334 bps.
+    expect(
+      swapPriceImpactBps({ side: 'buy', sqrtPrice: Q64, curveAmountIn: 3n, curveAmountOut: 2n }),
+    ).toBe(3334);
+    expect(
+      swapPriceImpactBps({
+        side: 'buy',
+        sqrtPrice: Q64,
+        curveAmountIn: 100_000n,
+        curveAmountOut: 99_999n,
+      }),
+    ).toBe(1);
+    // Better than spot (cannot happen on a curve): 0, never negative.
+    expect(
+      swapPriceImpactBps({
+        side: 'buy',
+        sqrtPrice: Q64,
+        curveAmountIn: 1000n,
+        curveAmountOut: 2000n,
+      }),
+    ).toBe(0);
+    expect(
+      swapPriceImpactBps({
+        side: 'sell',
+        sqrtPrice: Q64,
+        curveAmountIn: 1000n,
+        curveAmountOut: 0n,
+      }),
+    ).toBe(10_000);
+  });
+
+  it('is exact on u64 amounts and a u128 sqrt price (bigint, no float)', () => {
+    const U64 = (1n << 64n) - 1n;
+    const big = (1n << 127n) + 12345n;
+    expect(
+      swapPriceImpactBps({ side: 'sell', sqrtPrice: big, curveAmountIn: U64, curveAmountOut: U64 }),
+    ).toBe(10_000);
+    expect(
+      swapPriceImpactBps({ side: 'buy', sqrtPrice: 1n, curveAmountIn: U64, curveAmountOut: U64 }),
+    ).toBe(10_000);
+    // At a huge price one raw unit for all the SOL is still better than spot: no impact.
+    expect(
+      swapPriceImpactBps({ side: 'buy', sqrtPrice: big, curveAmountIn: U64, curveAmountOut: 1n }),
+    ).toBe(0);
+  });
+
+  it('refuses inputs outside its domain', () => {
+    const base = { side: 'buy' as const, sqrtPrice: Q64, curveAmountIn: 1n, curveAmountOut: 1n };
+    for (const bad of [
+      { ...base, sqrtPrice: 0n },
+      { ...base, curveAmountIn: 0n },
+      { ...base, curveAmountOut: -1n },
+      { ...base, side: 'swap' as never },
+    ]) {
+      expect(() => swapPriceImpactBps(bad)).toThrow(SwapError);
+    }
+  });
+});
+
+describe('computeSwapQuote — priceImpactBps', () => {
+  /** `ceil(10_000 * (1 - a / b))` for `a <= b`: the single-segment closed form. */
+  const closedForm = (a: bigint, b: bigint) => Number(10_000n - (a * 10_000n) / b);
+
+  it('matches 1 - sqrtPrice / nextSqrtPrice on a buy (single curve segment)', () => {
+    const s = activeState();
+    for (const amountIn of [SOL / 1000n, SOL / 100n, SOL / 10n, SOL]) {
+      const q = computeSwapQuote(s, { side: 'buy', amountIn, slippage: { slippageBps: 0 } });
+      const sdk = swapQuote(
+        s.virtualPool,
+        s.config,
+        false,
+        new BN(amountIn.toString()),
+        0,
+        true,
+        s.currentPoint,
+        false,
+      );
+      const s0 = BigInt(s.virtualPool.poolState.sqrtPrice.toString());
+      const s1 = BigInt(sdk.nextSqrtPrice.toString());
+      expect(Math.abs(q.priceImpactBps - closedForm(s0, s1))).toBeLessThanOrEqual(1);
+    }
+  });
+
+  it('matches 1 - nextSqrtPrice / sqrtPrice on a sell', () => {
+    const s = activeState();
+    // What a 0.01 SOL buy gets: the fixture pool holds little SOL to pay sells with.
+    const held = computeSwapQuote(s, {
+      side: 'buy',
+      amountIn: SOL / 100n,
+      slippage: { slippageBps: 0 },
+    });
+    for (const amountIn of [held.expectedAmountOut / 1000n, held.expectedAmountOut / 10n]) {
+      const q = computeSwapQuote(s, { side: 'sell', amountIn, slippage: { slippageBps: 0 } });
+      const sdk = swapQuote(
+        s.virtualPool,
+        s.config,
+        true,
+        new BN(amountIn.toString()),
+        0,
+        true,
+        s.currentPoint,
+        false,
+      );
+      const s0 = BigInt(s.virtualPool.poolState.sqrtPrice.toString());
+      const s1 = BigInt(sdk.nextSqrtPrice.toString());
+      expect(Math.abs(q.priceImpactBps - closedForm(s1, s0))).toBeLessThanOrEqual(1);
+    }
+  });
+
+  it('grows with the trade size and leaves the pool fee out', () => {
+    const s = activeState();
+    const impacts = [SOL / 10_000n, SOL / 100n, SOL / 10n, SOL, 3n * SOL].map(
+      (amountIn) =>
+        computeSwapQuote(s, { side: 'buy', amountIn, slippage: { slippageBps: 0 } }).priceImpactBps,
+    );
+    for (let i = 1; i < impacts.length; i++)
+      expect(impacts[i]!).toBeGreaterThanOrEqual(impacts[i - 1]!);
+    expect(impacts[impacts.length - 1]!).toBeGreaterThan(impacts[0]!);
+    // A tiny buy pays the 1% pool fee (100 bps) but moves the price by at most 1 bps.
+    expect(impacts[0]!).toBeLessThanOrEqual(1);
+  });
+
+  it('adds output-side fees back on a sell (they are fees, not impact)', () => {
+    const s = activeState();
+    const held = computeSwapQuote(s, {
+      side: 'buy',
+      amountIn: SOL / 10n,
+      slippage: { slippageBps: 0 },
+    });
+    const q = computeSwapQuote(s, {
+      side: 'sell',
+      amountIn: held.expectedAmountOut / 100n,
+      slippage: { slippageBps: 0 },
+    });
+    const sdk = swapQuote(
+      s.virtualPool,
+      s.config,
+      true,
+      new BN((held.expectedAmountOut / 100n).toString()),
+      0,
+      true,
+      s.currentPoint,
+      false,
+    );
+    expect(q.priceImpactBps).toBe(
+      swapPriceImpactBps({
+        side: 'sell',
+        sqrtPrice: BigInt(s.virtualPool.poolState.sqrtPrice.toString()),
+        curveAmountIn: BigInt(sdk.actualInputAmount.toString()),
+        curveAmountOut: q.expectedAmountOut + q.fees.totalPoolFee,
+      }),
+    );
+    // The 1% fee on the output alone would read as about 100 bps.
+    expect(q.priceImpactBps).toBeLessThan(50);
+  });
+});
 
 describe('fee account checks', () => {
   it('refuses a platform fee wallet that is missing or not rent-exempt', () => {

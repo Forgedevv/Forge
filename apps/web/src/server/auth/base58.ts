@@ -39,6 +39,13 @@ export function base58DecodeExact(input: string, length: number): Uint8Array | n
   return bytes !== null && bytes.length === length ? bytes : null;
 }
 
+/** A canonical base58 encoding of a 32-byte public key (a Solana wallet or mint address). */
+export function isCanonicalPublicKey(value: string): boolean {
+  if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(value)) return false;
+  const bytes = base58DecodeExact(value, 32);
+  return bytes !== null && base58Encode(bytes) === value;
+}
+
 export function base58Encode(bytes: Uint8Array): string {
   let leadingZeros = 0;
   while (leadingZeros < bytes.length && bytes[leadingZeros] === 0) leadingZeros++;

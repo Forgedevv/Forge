@@ -1,15 +1,4 @@
-import {
-  FailedStage,
-  JobStatus,
-  JobType,
-  LaunchpadStatus,
-  isActiveJobStatus,
-  type Job,
-  type JobEvent,
-  type LaunchpadDetail,
-  type LaunchpadSpecDraft,
-  type LaunchpadSummary,
-} from '@forge/shared';
+import { FailedStage, JobStatus, JobType, type Job, type JobEvent } from '@forge/shared';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { z } from 'zod';
 import { networkError } from './errors';
@@ -48,27 +37,6 @@ const PaymentRowSchema = z.object({
   refund_signature: z.string().nullable().optional(),
 });
 
-export const LaunchpadRowSchema = z.object({
-  id: z.string(),
-  slug: z.string(),
-  spec: z.record(z.string(), z.unknown()),
-  launchpad_config: z.string().nullable().optional(),
-  launchpad_coin_config: z.string().nullable().optional(),
-  launchpad_coin_mint: z.string().nullable().optional(),
-  included_modifications_left: z.number().nullable().optional(),
-  status: LaunchpadStatus,
-  created_at: Timestamp,
-});
-export type LaunchpadRowData = z.infer<typeof LaunchpadRowSchema>;
-
-const CoinSpec = z
-  .object({
-    name: z.string().optional(),
-    symbol: z.string().optional(),
-    imageUrl: z.string().optional(),
-  })
-  .optional();
-
 function lamportsString(v: string | number): string {
   try {
     return BigInt(String(v)).toString();
@@ -100,57 +68,6 @@ export function mapJobEvent(row: z.infer<typeof JobEventRowSchema>): JobEvent {
     jobId: row.job_id,
     message: row.message,
     createdAt: row.created_at ?? '',
-  };
-}
-
-export function mapLaunchpadSummary(row: LaunchpadRowData, jobs: Job[]): LaunchpadSummary {
-  const name = typeof row.spec.name === 'string' ? row.spec.name : row.slug;
-  const coin = CoinSpec.safeParse(row.spec.launchpadCoin);
-  const c = coin.success ? coin.data : undefined;
-  const active = jobs
-    .filter((j) => j.launchpadId === row.id && isActiveJobStatus(j.status))
-    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
-  return {
-    id: row.id,
-    name,
-    slug: row.slug,
-    // Not stored in the database: needs a server-provided value (see contract gaps).
-    siteUrl: null,
-    status: row.status,
-    coin: {
-      name: c?.name ?? '',
-      symbol: c?.symbol ?? '',
-      mint: row.launchpad_coin_mint ?? null,
-      imageUrl: c?.imageUrl ?? '',
-    },
-    coinsCount: 0,
-    claimablePartnerFeesLamports: '0',
-    includedModificationsLeft: row.included_modifications_left ?? 0,
-    activeJobId: active?.id ?? null,
-  };
-}
-
-export function mapLaunchpadDetail(row: LaunchpadRowData, jobRows: JobRowData[]): LaunchpadDetail {
-  const jobs = jobRows.map((r) => mapJob(r)).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-  const versions = jobRows
-    .filter((r) => r.status === 'live')
-    .map((r) => ({
-      jobId: r.id,
-      createdAt: r.created_at ?? '',
-      request: r.request ?? null,
-      previewUrl: r.preview_url ?? null,
-    }))
-    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-  return {
-    ...mapLaunchpadSummary(row, jobs),
-    spec: row.spec as LaunchpadSpecDraft,
-    onchain: {
-      launchpadConfig: row.launchpad_config ?? null,
-      launchpadCoinConfig: row.launchpad_coin_config ?? null,
-      launchpadCoinMint: row.launchpad_coin_mint ?? null,
-    },
-    versions,
-    jobs,
   };
 }
 
@@ -192,37 +109,4 @@ export async function fetchJobEvents(sb: SupabaseClient, jobId: string): Promise
   );
   const parsed = z.array(JobEventRowSchema).safeParse(rows ?? []);
   return parsed.success ? parsed.data.map(mapJobEvent) : [];
-}
-
-async function fetchJobRows(sb: SupabaseClient, launchpadIds: string[]): Promise<JobRowData[]> {
-  if (launchpadIds.length === 0) return [];
-  const rows = check(await sb.from('jobs').select(JOB_COLUMNS).in('launchpad_id', launchpadIds));
-  const parsed = z.array(JobRowSchema).safeParse(rows ?? []);
-  return parsed.success ? parsed.data : [];
-}
-
-export async function fetchLaunchpads(sb: SupabaseClient): Promise<LaunchpadSummary[]> {
-  const rows = check(
-    await sb.from('launchpads').select('*').order('created_at', { ascending: false }),
-  );
-  const parsed = z.array(LaunchpadRowSchema).safeParse(rows ?? []);
-  if (!parsed.success) return [];
-  const jobRows = await fetchJobRows(
-    sb,
-    parsed.data.map((r) => r.id),
-  );
-  const jobs = jobRows.map((r) => mapJob(r));
-  return parsed.data.map((r) => mapLaunchpadSummary(r, jobs));
-}
-
-export async function fetchLaunchpad(
-  sb: SupabaseClient,
-  id: string,
-): Promise<LaunchpadDetail | null> {
-  const row = check(await sb.from('launchpads').select('*').eq('id', id).maybeSingle());
-  if (!row) return null;
-  const parsed = LaunchpadRowSchema.safeParse(row);
-  if (!parsed.success) return null;
-  const jobRows = await fetchJobRows(sb, [id]);
-  return mapLaunchpadDetail(parsed.data, jobRows);
 }

@@ -4,9 +4,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { setSwapCore } from '../../src/forge/trade/core-adapter';
 import { createMockSwapCore, type MockSwapCore } from '../../src/forge/trade/core-adapter.mock';
 import {
+  accountsByAddress,
   connectionRef,
   createFakeConnection,
   keys,
+  mintAccount,
   okSigner,
   site,
   wallet,
@@ -26,9 +28,13 @@ vi.mock('@jup-ag/wallet-adapter', async () => {
 });
 
 // jsdom's Uint8Array realm breaks PDA derivation; the derivation itself is not under test here.
-vi.mock('@solana/spl-token', async () => {
+vi.mock('@solana/spl-token', async (importOriginal) => {
   const h = await import('./harness');
-  return { getAssociatedTokenAddressSync: () => h.keys.user };
+  // Keep the other exports: `@forge/core` (imported by the swap adapter) needs them at load time.
+  return {
+    ...(await importOriginal<typeof import('@solana/spl-token')>()),
+    getAssociatedTokenAddressSync: () => h.keys.user,
+  };
 });
 
 vi.mock('../../src/forge/config', async () => {
@@ -308,7 +314,9 @@ describe('buy and sell execution', () => {
   it('sells: uses the token balance and the sell builder', async () => {
     const data = new Uint8Array(165);
     new DataView(data.buffer).setBigUint64(64, BigInt(5_000_000), true);
-    connection.getAccountInfo.mockResolvedValue({ data, lamports: 2_039_280 });
+    connection.getAccountInfo.mockImplementation(
+      accountsByAddress(() => ({ data, lamports: 2_039_280 })),
+    );
     const build = vi.spyOn(core, 'buildSellTx');
     renderPanel();
     await screen.findByTestId('trade-form');
@@ -325,6 +333,50 @@ describe('buy and sell execution', () => {
     await screen.findByTestId('trade-success');
     expect(build).toHaveBeenCalledTimes(1);
     expect(build.mock.calls[0]?.[0]).toMatchObject({ amountIn: BigInt(1_000_000) });
+  });
+
+  it('sells with the decimals of the on-chain mint, not the data API value', async () => {
+    const data = new Uint8Array(165);
+    new DataView(data.buffer).setBigUint64(64, BigInt(5_000_000_000), true);
+    // The mint has 9 decimals; the data API claims 6.
+    connection.getAccountInfo.mockImplementation(
+      accountsByAddress(() => ({ data, lamports: 2_039_280 }), mintAccount(9)),
+    );
+    const build = vi.spyOn(core, 'buildSellTx');
+    renderPanel({ displayDecimals: 6 });
+    await screen.findByTestId('trade-form');
+    fireEvent.click(screen.getByRole('tab', { name: 'sell' }));
+    await waitFor(() => expect(screen.getByTestId('balance').textContent).toContain('5 MOON'));
+    fireEvent.change(amountInput(), { target: { value: '1' } });
+    await screen.findByTestId('quote-summary');
+    await waitFor(() => expect(submit().textContent).toBe('Sell MOON'));
+    fireEvent.click(submit());
+    await screen.findByTestId('trade-success');
+    expect(build.mock.calls[0]?.[0]).toMatchObject({ amountIn: BigInt(1_000_000_000) });
+  });
+
+  it('does not sell while the mint cannot be read, and retries', async () => {
+    let fail = true;
+    connection.getAccountInfo.mockImplementation(async (address: { toBase58(): string }) => {
+      if (address.toBase58() === keys.mint && fail) return null;
+      return address.toBase58() === keys.mint ? mintAccount(6) : null;
+    });
+    const quote = vi.spyOn(core, 'quoteSwap');
+    renderPanel({ displayDecimals: 6 });
+    await screen.findByTestId('trade-form');
+    fireEvent.click(screen.getByRole('tab', { name: 'sell' }));
+    const alert = await screen.findByTestId('mint-error');
+    expect(alert.textContent).toContain('does not exist');
+    fireEvent.change(amountInput(), { target: { value: '1' } });
+    expect(submit().textContent).toBe('Coin unavailable');
+    expect(submit().disabled).toBe(true);
+    expect(quote).not.toHaveBeenCalled();
+
+    fail = false;
+    fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(screen.queryByTestId('mint-error')).toBeNull());
+    await screen.findByTestId('quote-summary');
+    expect(quote).toHaveBeenCalled();
   });
 
   it('blocks a sell above the token balance', async () => {

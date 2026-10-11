@@ -8,6 +8,67 @@ launchpad template, the signer, the web app) pin an exact version, never a range
 First version meant for publication to GitHub Packages (`pnpm --filter @forge/core
 publish:packages`, which runs typecheck, lint, tests and build first). Not published yet.
 
+### Changed (wave 4 review)
+
+- **No referral on the first buy.** `buildLaunchCoinTx` no longer adds the FORGE Meteora referral
+  (`FORGE_METEORA_REFERRAL_ACCOUNT`) to the first buy, and refuses an explicit one
+  (`LaunchCoinError` `REFERRAL_UNSUPPORTED`) instead of silently dropping it. Why: with a referral
+  token account on the swap of `createPoolWithFirstBuy`, the DBC program does not apply the
+  first-swap minimum fee (`enableFirstSwapWithMinFee`); on devnet the first buy then paid the
+  anti-sniper fee and failed with `ExceededSlippage` even at 10% slippage, while the same launch
+  without a referral landed exactly at the quote (`scripts/devnet-tests/reports/signer-routes.md`,
+  reproduced in `scripts/devnet-tests/reports/core-launch.md`). The referral would only have
+  earned 20% of the protocol share of one minimum-fee swap. There is no opt-in: no devnet run
+  showed a referral first buy at the minimum fee. Swaps built by `swap.ts` keep the referral.
+  - `BuildLaunchCoinTxParams.referralTokenAccount` and `.env` are deprecated (kept so that callers
+    passing `null` / `{}` still compile); `LaunchCoinSummary.referralTokenAccount`,
+    `.referralSource` and `.referralOmittedForSize` are now always `null`, `'none'` and `false`.
+  - Removed: `defaultLaunchReferral`, `REFERRAL_TX_BYTES` and the `REFERRAL_INVALID` error code.
+  - The 32 bytes the referral took are free again: with a nonce held by the creator, a 32-byte
+    name, a 10-character symbol and a 106-byte URI fit in 1,232 bytes.
+
+### Added (wave 4 review)
+
+- `buildUserCoinLaunchTx({ connection, config, wallet, mint, name, symbol, metadataUri,
+  firstBuyLamports, slippageBps?, env?, computeUnitLimit?, computeUnitPriceMicroLamports? })`
+  returns `{ transaction, summary }` for a coin created by a user on the client's launchpad
+  config: the wallet is pool creator, rent payer, fee payer and buyer; the mint is the only other
+  signer; recent blockhash (no durable nonce); no referral on the first buy (same reason as
+  above); `env` is accepted but not read. Config checks (`assertUserCoinConfig`): SOL quote, SPL
+  token program for both tokens, `enableFirstSwapWithMinFee`; no owner or creator-share check.
+  `summary.costs` has the same figures as `LaunchCoinCosts` (rent read from the cluster; the
+  `owner*` fields are the wallet's, `creatorTotalLamports` is 0). A launch with short metadata is
+  950 bytes; the largest metadata (32 / 10 / 200 bytes) fits.
+- `SwapQuote.priceImpactBps` (required field, integer bps 0 to 10,000, rounded up), computed by
+  the new pure `swapPriceImpactBps` from the pool state: with the spot price
+  `P = sqrtPrice^2 / 2^128`, `I` what enters the curve (after input-side fees) and `O` what the
+  curve returns (before output-side fees), a buy is `1 - O / (I / P)` and a sell
+  `1 - O / (I * P)`: one minus what the trade gets over what it would get at the spot price.
+  Pool and platform fees are excluded (they are
+  in `fees`). On a single curve segment it equals `1 - sqrtPrice / nextSqrtPrice` (buy) and
+  `1 - nextSqrtPrice / sqrtPrice` (sell), checked against the SDK in the tests.
+- `CoinOfConfig.poolCreationFee` (required field, `PoolCreationFeeStatus`): the coin's pool
+  creation fee (`totalLamports`, the config's `poolCreationFee`), the partner share
+  (`partnerShareLamports`, 90% rounded as the program does), whether the partner claimed it
+  (`partnerClaimed`, from the pool's `creationFeeBits` & `0b10`) and `partnerUnclaimedLamports`, so
+  the dashboard can add it to the claimable total without another read. Pure helper
+  `poolCreationFeeStatus(state)`; `PROTOCOL_POOL_CREATION_FEE_CLAIMED_BIT` (`0b01`) added.
+  `PARTNER_POOL_CREATION_FEE_CLAIMED_BIT` and `partnerPoolCreationFeeShare` moved to `reads.ts`
+  (still exported, same values).
+- `package.json`: `"sideEffects": false`, so bundlers can drop the modules a site does not use.
+  Verified: no module has a side effect when loaded (only constant definitions, a WeakMap cache
+  and a guard on the SDK IDL in `swap.ts`); `src/side-effects.test.ts` loads every module and
+  checks that no global is added and `process.env` is neither read nor written.
+- Deterministic durable nonce accounts: `buildCreateNonceAccountWithSeedTx({ connection, base,
+  seed, authority, payer?, computeUnitPriceMicroLamports? })` creates and initializes the nonce
+  account at `createWithSeed(base, seed, SystemProgram)` (`createAccountWithSeed` +
+  `nonceInitialize`, rent read from the cluster). No nonce keypair to store: after a lost journal
+  the signer re-derives the address with `deriveSeededNonceAccount(base, seed)` and reads it with
+  `readNonce`. Signers: the payer (default: the base) and the base when distinct. Seeds are 1 to
+  32 UTF-8 bytes (`assertNonceSeed`, `MAX_NONCE_SEED_BYTES`); a launchpad UUID without its dashes
+  is exactly 32 characters. Like `buildCreateNonceAccountTx`, it does not check that the account
+  is free.
+
 ### Added
 
 - `addresses.ts`: FORGE addresses read from the environment, `requireAddresses([...])`.
@@ -57,5 +118,6 @@ client's debit equals the summary to the lamport.
 
 - The launch is a legacy transaction of at most 1,232 bytes: 1,120 bytes with short metadata, a
   nonce held by the creator and no priority fee, leaving 112 bytes for longer metadata (a 32-byte
-  name, a 10-character symbol and a 102-byte URI fit; a priority fee adds 12 bytes, a referral
-  32, a nonce authority other than the creator or the owner 96). `TX_TOO_LARGE` otherwise.
+  name, a 10-character symbol and a 102-byte URI fit; a priority fee adds 12 bytes, a nonce
+  authority other than the creator or the owner 96). `TX_TOO_LARGE` otherwise. (Before the wave 4
+  review the first buy also carried a 32-byte referral; see "Changed".)

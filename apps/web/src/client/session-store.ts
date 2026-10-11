@@ -53,3 +53,43 @@ export function setSession(session: Session | null): void {
 export function emitUnauthorized(): void {
   if (current) setSession(null);
 }
+
+// ---------------------------------------------------------------------------------------------
+// Private beta: the server refused the wallet (BETA_NOT_INVITED)
+// ---------------------------------------------------------------------------------------------
+
+let betaNotInvited = false;
+const betaListeners = new Set<() => void>();
+
+function emitBeta(): void {
+  for (const l of betaListeners) l();
+}
+
+export function getBetaSnapshot(): boolean {
+  return betaNotInvited;
+}
+
+export function getServerBetaSnapshot(): boolean {
+  return false;
+}
+
+export function subscribeBeta(l: () => void): () => void {
+  betaListeners.add(l);
+  return () => {
+    betaListeners.delete(l);
+  };
+}
+
+/** Any API call answered BETA_NOT_INVITED: forget the local session and show the beta notice. */
+export function emitBetaNotInvited(): void {
+  setSession(null);
+  if (betaNotInvited) return;
+  betaNotInvited = true;
+  emitBeta();
+}
+
+export function clearBetaNotInvited(): void {
+  if (!betaNotInvited) return;
+  betaNotInvited = false;
+  emitBeta();
+}

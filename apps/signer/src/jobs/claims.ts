@@ -10,7 +10,8 @@
  *   3. if the unclaimed creator share (SOL side) reaches the threshold, the claim is built by core
  *      (`claimCreatorTradingFeeToReceiver`, receiver = FORGE multisig vault), checked against the
  *      claim policy, signed by the creator wallet (+ the payer wallet when it pays the fees),
- *      journaled, sent and confirmed by polling.
+ *      journaled, sent and confirmed by polling. A claim paid by the payer wallet is checked,
+ *      built, signed and sent under the payer lock shared with the signing routes.
  * The creator signs, the vault only receives: no Squads proposal is needed.
  * Partner fees are NOT claimed here: they belong to the client (`feeClaimer` = client wallet),
  * who claims them from the dashboard.
@@ -60,6 +61,7 @@ import {
   type Journal,
   type KeystoreLike,
   type KeystoreSignerRef,
+  type Mutex,
   type PauseReason,
   type PostgrestClient,
   type RetryOptions,
@@ -67,6 +69,7 @@ import {
   type SettleTiming,
   type SolanaRpc,
 } from './shared.js';
+import type { PayerReservations } from './reservations.js';
 
 export interface CreatorLaunchpad {
   id: string;
@@ -150,6 +153,13 @@ export interface ClaimsDeps {
    * watcher's expected signatures). Required: wiring the job without it is a startup error.
    */
   onBeforeSend: BeforeSendHook;
+  /**
+   * Lock of the payer wallet, shared with the signing routes: a claim paid by the payer wallet is
+   * checked, built, signed, journaled and sent under it (never interleaved with a creation).
+   */
+  payerLock?: Mutex;
+  /** Payer lamports reserved by the routes' creations in flight (subtracted from its balance). */
+  payerReservations?: PayerReservations;
 }
 
 export type ClaimOutcome = {
@@ -399,93 +409,115 @@ export function createClaimsJob(deps: ClaimsDeps): ClaimsJob {
       await journal.put(poolKey, entry);
     }
 
-    // 4. Fee payer funds: temporary WSOL account + vault token account rent + fees.
+    // 4-5. Fee payer funds, build (core), check (policy), sign (keystore), journal, send. When the
+    // payer wallet pays, all of it runs under the payer lock (the signing routes spend from that
+    // wallet too) and the lamports reserved by their creations in flight are not counted.
     const feePayer = payer ? payer.publicKey : creator;
-    const tokenRent = await withRetry(
-      () => rpc.getMinimumBalanceForRentExemption(TOKEN_ACCOUNT_SIZE),
-      retry,
-    );
-    const needed = tokenRent * CLAIM_TOKEN_ACCOUNTS_FUNDED + CLAIM_FEE_BUFFER_LAMPORTS;
-    const feePayerBalance = await withRetry(() => rpc.getBalance(feePayer, 'confirmed'), retry);
-    if (feePayerBalance < needed) {
-      await alert(
-        'high',
-        'claim_payer_low_balance',
-        'The wallet paying creator-fee claims is too low: fund it',
-        {
-          address: feePayer.toBase58(),
-          balance: formatSol(feePayerBalance),
-          needed: formatSol(needed),
+    const signAndSend = async (): Promise<
+      { outcome: ClaimOutcome } | { raw: Buffer; signature: string; lastValidBlockHeight: number }
+    > => {
+      const tokenRent = await withRetry(
+        () => rpc.getMinimumBalanceForRentExemption(TOKEN_ACCOUNT_SIZE),
+        retry,
+      );
+      const needed = tokenRent * CLAIM_TOKEN_ACCOUNTS_FUNDED + CLAIM_FEE_BUFFER_LAMPORTS;
+      const feePayerBalance = await withRetry(() => rpc.getBalance(feePayer, 'confirmed'), retry);
+      const reserved =
+        payer && deps.payerReservations ? await deps.payerReservations.outstanding(rpc, retry) : 0n;
+      const available = feePayerBalance > reserved ? feePayerBalance - reserved : 0n;
+      if (available < needed) {
+        await alert(
+          'high',
+          'claim_payer_low_balance',
+          'The wallet paying creator-fee claims is too low: fund it',
+          {
+            address: feePayer.toBase58(),
+            balance: formatSol(feePayerBalance),
+            reservedInFlight: formatSol(reserved),
+            needed: formatSol(needed),
+          },
+          `claim_payer_low_balance:${feePayer.toBase58()}`,
+        );
+        return { outcome: { ...base, result: 'skipped', reason: 'payer_low_balance' } };
+      }
+
+      const built = await withRetry(
+        () => core.buildCreatorClaimTx({ pool, creator, receiver: config.vault, payer: feePayer }),
+        retry,
+      );
+      const tx = built.transaction;
+      if (!tx || built.lastValidBlockHeight === null) {
+        return { outcome: { ...base, result: 'nothing_to_claim' } };
+      }
+      if (built.summary.claimable.quote < config.minClaimLamports) {
+        return {
+          outcome: { ...base, result: 'below_threshold', claimable: built.summary.claimable.quote },
+        };
+      }
+      if (!built.summary.receiver.equals(config.vault) || !built.summary.claimer.equals(creator)) {
+        throw new JobError('TX_POLICY', 'claim summary does not match the request');
+      }
+      assertCreatorClaimTx(tx, {
+        dbcProgramId: core.dbcProgramId,
+        pool,
+        baseMint: mint,
+        creator,
+        feePayer,
+        receiver: config.vault,
+        claimedQuoteLamports: built.summary.claimable.quote,
+      });
+      // The kill switch may have been turned on since the run started: re-read it before signing.
+      const pause = await checkPaused(deps.flags, JOB_FLAGS.claims, config.paused, log);
+      if (pause.paused) {
+        stopReason = pause.reason;
+        await alertAbnormalPause(alerter, log, 'claims', JOB_FLAGS.claims, pause.reason);
+        return { outcome: { ...base, result: 'skipped', reason: 'paused' } };
+      }
+      const signers: KeystoreSignerRef[] = [{ ref: expectedRef, expected: creator }];
+      if (payer && !payer.publicKey.equals(creator)) {
+        signers.push({ ref: payer.ref, expected: payer.publicKey });
+      }
+      const { raw, signature } = await signWithKeystore(keystore, tx, signers);
+      entry = {
+        ...entry,
+        inFlight: {
+          signature,
+          rawTx: raw.toString('base64'),
+          lastValidBlockHeight: built.lastValidBlockHeight,
+          claimableQuote: built.summary.claimable.quote.toString(),
+          startedAt: iso(),
         },
-        `claim_payer_low_balance:${feePayer.toBase58()}`,
-      );
-      return { ...base, result: 'skipped', reason: 'payer_low_balance' };
-    }
-
-    // 5. Build (core), check (policy), sign (keystore), journal, send, confirm.
-    const built = await withRetry(
-      () => core.buildCreatorClaimTx({ pool, creator, receiver: config.vault, payer: feePayer }),
-      retry,
-    );
-    const tx = built.transaction;
-    if (!tx || built.lastValidBlockHeight === null) return { ...base, result: 'nothing_to_claim' };
-    if (built.summary.claimable.quote < config.minClaimLamports) {
-      return { ...base, result: 'below_threshold', claimable: built.summary.claimable.quote };
-    }
-    if (!built.summary.receiver.equals(config.vault) || !built.summary.claimer.equals(creator)) {
-      throw new JobError('TX_POLICY', 'claim summary does not match the request');
-    }
-    assertCreatorClaimTx(tx, {
-      dbcProgramId: core.dbcProgramId,
-      pool,
-      baseMint: mint,
-      creator,
-      feePayer,
-      receiver: config.vault,
-      claimedQuoteLamports: built.summary.claimable.quote,
-    });
-    // The kill switch may have been turned on since the run started: re-read it before signing.
-    const pause = await checkPaused(deps.flags, JOB_FLAGS.claims, config.paused, log);
-    if (pause.paused) {
-      stopReason = pause.reason;
-      await alertAbnormalPause(alerter, log, 'claims', JOB_FLAGS.claims, pause.reason);
-      return { ...base, result: 'skipped', reason: 'paused' };
-    }
-    const signers: KeystoreSignerRef[] = [{ ref: expectedRef, expected: creator }];
-    if (payer && !payer.publicKey.equals(creator)) {
-      signers.push({ ref: payer.ref, expected: payer.publicKey });
-    }
-    const { raw, signature } = await signWithKeystore(keystore, tx, signers);
-    entry = {
-      ...entry,
-      inFlight: {
-        signature,
-        rawTx: raw.toString('base64'),
-        lastValidBlockHeight: built.lastValidBlockHeight,
-        claimableQuote: built.summary.claimable.quote.toString(),
-        startedAt: iso(),
-      },
-    };
-    await journal.put(poolKey, entry);
-
-    if (!announce(signature)) {
-      return { ...base, result: 'in_flight', signature, state: 'not_announced' };
-    }
-    const sent = await broadcast(rpc, raw, retry);
-    if (sent.status === 'rejected') {
-      entry = { ...entry, lastError: sent.reason };
+      };
       await journal.put(poolKey, entry);
-      await alert(
-        'high',
-        'creator_claim_rejected',
-        'The RPC rejected a creator-fee claim (simulation failed)',
-        { launchpadId: lp.id, pool: poolKey, signature, reason: sent.reason },
-        `creator_claim_rejected:${poolKey}`,
-      );
-      return { ...base, result: 'failed', signature, error: sent.reason };
-    }
+
+      if (!announce(signature)) {
+        return { outcome: { ...base, result: 'in_flight', signature, state: 'not_announced' } };
+      }
+      const sent = await broadcast(rpc, raw, retry);
+      if (sent.status === 'rejected') {
+        entry = { ...entry, lastError: sent.reason };
+        await journal.put(poolKey, entry);
+        await alert(
+          'high',
+          'creator_claim_rejected',
+          'The RPC rejected a creator-fee claim (simulation failed)',
+          { launchpadId: lp.id, pool: poolKey, signature, reason: sent.reason },
+          `creator_claim_rejected:${poolKey}`,
+        );
+        return { outcome: { ...base, result: 'failed', signature, error: sent.reason } };
+      }
+      return { raw, signature, lastValidBlockHeight: built.lastValidBlockHeight };
+    };
+    const step =
+      payer && deps.payerLock
+        ? await deps.payerLock.runExclusive(signAndSend)
+        : await signAndSend();
+    if ('outcome' in step) return step.outcome;
+
+    // Confirmation by polling, outside the payer lock.
+    const { raw, signature } = step;
     const s = await awaitSettlement(rpc, signature, {
-      lastValidBlockHeight: built.lastValidBlockHeight,
+      lastValidBlockHeight: step.lastValidBlockHeight,
       raw,
       until: 'confirmed',
       ...settleTiming,

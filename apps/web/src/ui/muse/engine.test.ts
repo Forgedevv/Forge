@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { Muse } from './engine';
+import { Muse, FORGE_PRIMARY } from './engine';
 import { museColorsFor, museMoodForJob } from './context';
 import { MUSE_MOODS } from './moods';
 import { hexRGB, isHexColor } from './paint';
@@ -94,7 +94,7 @@ describe('Muse engine', () => {
     expect(new Muse({ primary: '#0E9F76', accent: '#B8F5A0' }).base1).toEqual([14, 159, 118]);
     expect(new Muse({ primary: '#3A6BFF' }).eyeLight).toBe(true);
     expect(new Muse({ primary: '#F4F2FB' }).eyeLight).toBe(false);
-    expect(new Muse({ primary: 'not a color' }).base1).toEqual([155, 92, 255]);
+    expect(new Muse({ primary: 'not a color' }).base1).toEqual(hexRGB(FORGE_PRIMARY));
   });
 
   it('renders every mood at avatar and stage sizes', () => {

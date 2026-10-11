@@ -4,15 +4,19 @@ import type { LaunchpadSpecDraft, SpecValidation } from '@forge/shared';
 import { Address } from './components';
 import { chatCopy as copy } from './content/chat';
 import { common } from './content/common';
-import { safeUrl } from './safe-url';
+import { safeUrl, siteHost } from './safe-url';
 
 export function SpecSummary({
   spec,
   validation,
+  siteUrl = null,
 }: {
   spec: LaunchpadSpecDraft;
   validation: SpecValidation;
+  /** The real site URL once it exists: its hostname replaces the address preview. */
+  siteUrl?: string | null;
 }) {
+  const host = siteHost(siteUrl);
   const field = (path: string): unknown =>
     path
       .split('.')
@@ -50,7 +54,7 @@ export function SpecSummary({
             else if (path.endsWith('Sol'))
               display = `${value.toLocaleString('en-US', { maximumFractionDigits: 4 })} SOL`;
           }
-          if (path === 'slug' && value) display = `${String(value)}.forgepads.xyz`;
+          if (path === 'slug' && value) display = host ?? `${String(value)}.forgepads.xyz`;
           return (
             <div key={path} className={error ? 'fw-field-invalid' : ''}>
               <dt>{label}</dt>

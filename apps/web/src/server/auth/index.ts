@@ -2,6 +2,7 @@ export { AuthConfigError, getAppUrl, isAllowedHost, MIN_SECRET_BYTES } from './c
 export { checkOrigin, errorResponse, jsonResponse } from './http';
 export type { AuthErrorCode } from './http';
 export {
+  betaRefusal,
   clearSession,
   getSession,
   requireSession,

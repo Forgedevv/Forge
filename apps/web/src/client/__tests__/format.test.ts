@@ -58,12 +58,18 @@ describe('shortAddress', () => {
 describe('explorerTxUrl', () => {
   afterEach(() => vi.unstubAllEnvs());
 
-  it('uses the devnet cluster by default', () => {
+  it('follows NEXT_PUBLIC_SOLANA_CLUSTER', () => {
+    vi.stubEnv('NEXT_PUBLIC_SOLANA_CLUSTER', 'devnet');
     expect(explorerTxUrl('sig1')).toBe('https://explorer.solana.com/tx/sig1?cluster=devnet');
-  });
-
-  it('has no cluster param on mainnet', () => {
     vi.stubEnv('NEXT_PUBLIC_SOLANA_CLUSTER', 'mainnet-beta');
     expect(explorerTxUrl('sig1')).toBe('https://explorer.solana.com/tx/sig1');
+  });
+
+  it('never guesses a devnet link in a production build without a cluster', () => {
+    vi.stubEnv('NEXT_PUBLIC_SOLANA_CLUSTER', '');
+    vi.stubEnv('NODE_ENV', 'production');
+    expect(explorerTxUrl('sig1')).toBe('https://explorer.solana.com/tx/sig1');
+    vi.stubEnv('NODE_ENV', 'development');
+    expect(explorerTxUrl('sig1')).toBe('https://explorer.solana.com/tx/sig1?cluster=devnet');
   });
 });

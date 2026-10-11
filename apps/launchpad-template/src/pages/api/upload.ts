@@ -1,5 +1,4 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
-import { Connection } from '@solana/web3.js';
 import { onchainConfig, siteConfig } from '@/forge/config';
 import { solNumberToLamports } from '@/forge/create/amounts';
 import { createLaunchBuilder } from '@/forge/create/launch-builder';
@@ -7,12 +6,14 @@ import { createPrepareHandler } from '@/forge/create/prepare-handler';
 import { createUploadClient, resolveForgeApiBase } from '@/forge/create/upload-client';
 import { currentMode, rejectIfNotLive } from '@/forge/mode-guard';
 import { resolveRelayUrl } from '@/forge/relay';
+import { createServerRelayConnection, serverRelayHeaders } from '@/forge/server-relay';
 
 /**
  * Coin preparation (`POST /api/upload`, contract in `src/forge/create/api.ts`). All the logic is in
  * the locked zone (`src/forge/create/prepare-handler.ts`). This route holds no secret: chain reads
  * go through the FORGE RPC relay and files through the FORGE upload endpoint. When either is not
- * configured it answers 503 and stores nothing.
+ * configured it answers 503 and stores nothing. Both calls carry the per-launchpad server token
+ * (`FORGE_RPC_RELAY_TOKEN`, server-only) when it is set.
  */
 
 // The body is read by the handler with its own size cap (2 MB image as base64).
@@ -53,16 +54,18 @@ function getHandler(): ReturnType<typeof createPrepareHandler> {
     launchBuilder:
       relay && launchpadConfig && poolCreationFeeLamports !== undefined
         ? createLaunchBuilder({
-            connection: new Connection(relay, {
-              commitment: 'confirmed',
-              disableRetryOnRateLimit: true,
-            }),
+            connection: createServerRelayConnection(relay),
             launchpadConfig,
             poolCreationFeeLamports,
           })
         : null,
     uploadClient: apiBase
-      ? createUploadClient({ apiBase, slug: siteConfig.slug, publicBaseUrl: readPublicBaseUrl() })
+      ? createUploadClient({
+          apiBase,
+          slug: siteConfig.slug,
+          publicBaseUrl: readPublicBaseUrl(),
+          forgeHeaders: serverRelayHeaders(),
+        })
       : null,
   });
   return handler;

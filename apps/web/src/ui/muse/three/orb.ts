@@ -54,9 +54,9 @@ const MOOD: Record<
   { glow: number; orbit: number; tint: string | null; tintAmt: number; star: number }
 > = {
   idle: { glow: 1, orbit: 0.55, tint: null, tintAmt: 0, star: 0 },
-  building: { glow: 1.25, orbit: 3.2, tint: '#FF5FCF', tintAmt: 0.14, star: 0 },
-  waiting_approval: { glow: 1.1, orbit: 0.8, tint: '#FF8BE0', tintAmt: 0.12, star: 0 },
-  success: { glow: 1.45, orbit: 1.8, tint: '#FFC4F2', tintAmt: 0.18, star: 1 },
+  building: { glow: 1.08, orbit: 3.2, tint: '#FF5FCF', tintAmt: 0.14, star: 0 },
+  waiting_approval: { glow: 1.05, orbit: 0.8, tint: '#FF8BE0', tintAmt: 0.12, star: 0 },
+  success: { glow: 1.16, orbit: 1.8, tint: '#FFC4F2', tintAmt: 0.18, star: 1 },
 };
 
 const coreVertex = /* glsl */ `

@@ -336,6 +336,13 @@ export interface SwapQuote {
   minAmountOut: bigint;
   /** The tolerance used, or `null` when an explicit `minAmountOut` was given. */
   slippageBps: number | null;
+  /**
+   * Price impact on the curve, in bps (integer, 0 to 10,000, rounded up): how much worse the
+   * average price of this trade is than the pool's spot price before it, computed from the pool
+   * state by `swapPriceImpactBps` (formula there). Pool fees and the platform fee are excluded:
+   * they are in `fees`. Display only; the protection on-chain is `minAmountOut`.
+   */
+  priceImpactBps: number;
   fees: SwapFeeBreakdown;
   /**
    * Change of the user's SOL balance from the swap and the platform fee, excluding the network fee
@@ -370,6 +377,52 @@ function readSlippage(slippage: SlippageInput | undefined): SlippageInput {
 }
 
 const toBigInt = (value: BN): bigint => BigInt(value.toString());
+
+const Q128 = 1n << 128n;
+
+export interface PriceImpactInput {
+  side: SwapSide;
+  /** Pool `sqrtPrice` before the trade (Q64.64, as stored in the pool state). */
+  sqrtPrice: bigint;
+  /** What enters the curve: the input after any input-side pool fee (SDK `actualInputAmount`). */
+  curveAmountIn: bigint;
+  /** What the curve returns, before any output-side pool fee. */
+  curveAmountOut: bigint;
+}
+
+/**
+ * Price impact of a swap on the curve, in bps, from the pool state (pure, bigint, no float).
+ *
+ * The spot price before the trade is `P = sqrtPrice^2 / 2^128` (lamports per raw coin unit; the
+ * pool stores `sqrtPrice` as a Q64.64 number). With `I` = what enters the curve (after input-side
+ * fees) and `O` = what the curve returns (before output-side fees), so that pool fees do not count
+ * as impact:
+ *
+ *   buy  (SOL in, coin out): `impact = 1 - O / (I / P) = 1 - O * sqrtPrice^2 / (I * 2^128)`
+ *   sell (coin in, SOL out): `impact = 1 - O / (I * P) = 1 - O * 2^128 / (I * sqrtPrice^2)`
+ *
+ * i.e. one minus the ratio between what the trade gets and what it would get at the spot price.
+ * Returned as `10_000 - floor(10_000 * ratio)`: rounded up to the next bps (never understated),
+ * clamped to 0..10_000. Within one constant-liquidity segment of the curve this equals
+ * `1 - sqrtPrice / nextSqrtPrice` on a buy and `1 - nextSqrtPrice / sqrtPrice` on a sell.
+ */
+export function swapPriceImpactBps(input: PriceImpactInput): number {
+  const { sqrtPrice, curveAmountIn, curveAmountOut } = input;
+  if (input.side !== 'buy' && input.side !== 'sell') throw invalid('side must be buy or sell');
+  if (typeof sqrtPrice !== 'bigint' || sqrtPrice <= 0n) {
+    throw invalid('sqrtPrice must be a positive bigint');
+  }
+  assertU64('curveAmountIn', curveAmountIn, 1n);
+  assertU64('curveAmountOut', curveAmountOut);
+  const priceNumerator = sqrtPrice * sqrtPrice;
+  const ratioBps =
+    input.side === 'buy'
+      ? (curveAmountOut * priceNumerator * BPS_DENOMINATOR) / (curveAmountIn * Q128)
+      : (curveAmountOut * Q128 * BPS_DENOMINATOR) / (curveAmountIn * priceNumerator);
+  const impact = BPS_DENOMINATOR - ratioBps;
+  if (impact <= 0n) return 0;
+  return Number(impact > BPS_DENOMINATOR ? BPS_DENOMINATOR : impact);
+}
 
 /**
  * Quotes a swap with the SDK quote function (`swapQuote`, exact in, with referral) and adds the
@@ -472,6 +525,14 @@ export function computeSwapQuote(state: SwapPoolState, request: SwapQuoteRequest
   const tradingFee = toBigInt(result.tradingFee);
   const protocolFee = toBigInt(result.protocolFee);
   const referralFee = toBigInt(result.referralFee);
+  const totalPoolFee = tradingFee + protocolFee + referralFee;
+  const priceImpactBps = swapPriceImpactBps({
+    side: request.side,
+    sqrtPrice: toBigInt(state.virtualPool.poolState.sqrtPrice),
+    curveAmountIn: toBigInt(result.actualInputAmount),
+    // Fees taken from the output are not price impact: add them back.
+    curveAmountOut: feeMode.feesOnInput ? expectedAmountOut : expectedAmountOut + totalPoolFee,
+  });
   return {
     side: request.side,
     pool: state.pool,
@@ -480,12 +541,13 @@ export function computeSwapQuote(state: SwapPoolState, request: SwapQuoteRequest
     expectedAmountOut,
     minAmountOut,
     slippageBps: slippage.slippageBps ?? null,
+    priceImpactBps,
     fees: {
       poolFeeToken: feeMode.feesOnBaseToken ? 'base' : 'quote',
       tradingFee,
       protocolFee,
       referralFee,
-      totalPoolFee: tradingFee + protocolFee + referralFee,
+      totalPoolFee,
       platformFee,
       platformFeeBps: PLATFORM_FEE_BPS,
     },

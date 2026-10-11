@@ -3,6 +3,7 @@ export const gatingCopy = {
   title: 'A little FORGE opens the door.',
   body: 'Hold the required amount of $FORGE in your wallet to use the builder. Nothing is spent or locked.',
   checking: 'Checking your $FORGE balance…',
+  unavailable: 'We could not check your access. Try again.',
   ready: 'You are ready to build.',
   disabled: 'Access is open while the $FORGE balance check is disabled.',
   required: 'Required balance',

@@ -843,6 +843,50 @@ describe('commitFiles', () => {
     expect(patch?.body).toMatchObject({ force: false });
   });
 
+  it('commits only on top of the expected head (compare-and-swap)', async () => {
+    const { gh, client } = await setup();
+    const main = gh.repos.get('lp-moonpad')!.refs.get('heads/main')!;
+    const ok = await client.commitFiles({
+      repo: 'lp-moonpad',
+      branch: 'main',
+      message: 'mode',
+      files: [{ path: 'a', content: '1' }],
+      expectedHeadSha: main,
+    });
+    expect(ok.committed).toBe(true);
+    const commitsBefore = gh.stub.find('POST', /\/git\/commits$/).length;
+    // The caller read `main` before the commit above: its write is refused.
+    await expect(
+      client.commitFiles({
+        repo: 'lp-moonpad',
+        branch: 'main',
+        message: 'stale',
+        files: [{ path: 'a', content: '2' }],
+        expectedHeadSha: main,
+      }),
+    ).rejects.toMatchObject({ kind: 'conflict' });
+    // A missing branch does not match either.
+    await expect(
+      client.commitFiles({
+        repo: 'lp-moonpad',
+        branch: 'forge/none',
+        message: 'x',
+        files: [{ path: 'a', content: '2' }],
+        expectedHeadSha: main,
+      }),
+    ).rejects.toMatchObject({ kind: 'conflict' });
+    expect(gh.stub.find('POST', /\/git\/commits$/)).toHaveLength(commitsBefore);
+    await expect(
+      client.commitFiles({
+        repo: 'lp-moonpad',
+        branch: 'main',
+        message: 'x',
+        files: [],
+        expectedHeadSha: 'main',
+      }),
+    ).rejects.toMatchObject({ kind: 'invalid_input' });
+  });
+
   it('rejects invalid input before touching the API', async () => {
     const { gh, client } = await setup();
     const base = { repo: 'lp-moonpad', branch: 'forge/job1', message: 'm' };

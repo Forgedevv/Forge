@@ -1,7 +1,9 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import type { OwnerTransactionSummary, TxPhase, TxResult } from '@forge/shared';
+import type { JobStatus, TxPhase, TxResult } from '@forge/shared';
+import { serverCodeOf } from '@/client/errors';
+import type { LaunchReview } from '@/client/types';
 import { useWebClient, useWorkspace } from './provider';
 import {
   ActionLink,
@@ -19,6 +21,9 @@ import { launchCopy as copy } from './content/launch';
 import { common } from './content/common';
 import { Muse } from '../muse';
 
+/** The launch transaction is confirmed once the job reached one of these statuses. */
+const SIGNED_STATUSES: ReadonlySet<JobStatus> = new Set(['owner_signed', 'deploying', 'live']);
+
 export function LaunchScreen({
   jobId,
   initialPhase = 'idle',
@@ -34,7 +39,10 @@ export function LaunchScreen({
     router = useRouter(),
     { openLogin } = useWorkspace();
   const { session, disconnect } = api.useSession();
-  const [summary, setSummary] = useState<OwnerTransactionSummary | null>(null),
+  const { job } = api.useJob(jobId);
+  const [summary, setSummary] = useState<LaunchReview | null>(null),
+    [alreadySigned, setAlreadySigned] = useState(false),
+    [acknowledged, setAcknowledged] = useState(false),
     [error, setError] = useState(''),
     [phase, setPhase] = useState<TxPhase>(initialPhase),
     [result, setResult] = useState<TxResult | null>(null),
@@ -47,17 +55,28 @@ export function LaunchScreen({
     void api
       .getOwnerTransactionSummary(jobId)
       .then((value) => {
-        if (!cancelled) setSummary(value);
+        if (cancelled) return;
+        setSummary(value);
+        setAcknowledged(false);
       })
       .catch((e) => {
-        if (!cancelled) setError(readableError(e));
+        if (cancelled) return;
+        // Signed and confirmed already (e.g. from another tab): that is a success.
+        if (serverCodeOf(e) === 'ALREADY_SIGNED') setAlreadySigned(true);
+        else setError(readableError(e));
       });
     return () => {
       cancelled = true;
     };
   }, [api, jobId, generation, holdLoading]);
+  const signed =
+    phase === 'confirmed' || alreadySigned || Boolean(job && SIGNED_STATUSES.has(job.status));
+  // Without a successful simulation of this exact transaction the amounts are a minimum and the
+  // launch may fail: the owner must say they want to sign anyway.
+  const simulated = summary?.simulation === 'ok';
   const sign = async () => {
     if (!summary || session?.wallet !== summary.ownerWallet || lock.current) return;
+    if (!simulated && !acknowledged) return;
     lock.current = true;
     setError('');
     try {
@@ -74,6 +93,23 @@ export function LaunchScreen({
     }
   };
   const busy = phase === 'awaiting_signature' || phase === 'sending';
+  const confirmedView = (
+    <>
+      <Muse className="fw-launch-muse" size={96} mood="success" />
+      <h2>{copy.confirmed}</h2>
+      <ActionLink href={`/jobs/${jobId}`}>{copy.track}</ActionLink>
+    </>
+  );
+  if (signed && !summary) {
+    return (
+      <div className="fw-centered">
+        <Heading eyebrow={copy.eyebrow} title={copy.title}>
+          {copy.explanation}
+        </Heading>
+        <Card className="fw-launch-card">{confirmedView}</Card>
+      </div>
+    );
+  }
   return (
     <div className="fw-centered">
       <Heading eyebrow={copy.eyebrow} title={copy.title}>
@@ -99,7 +135,38 @@ export function LaunchScreen({
                 <p>{copy.network}</p>
                 <Amount lamports={summary.estimatedNetworkFeeLamports} />
               </div>
+              <div>
+                <p>{copy.total}</p>
+                <Amount
+                  lamports={(
+                    BigInt(summary.firstBuyLamports) + BigInt(summary.estimatedNetworkFeeLamports)
+                  ).toString()}
+                />
+              </div>
             </div>
+            <p className="fw-caption">{copy.networkHint}</p>
+            {!simulated && (
+              <div className="fw-notice fw-notice-error" role="alert">
+                <h2>
+                  {summary.simulation === 'failed'
+                    ? copy.simulationFailed
+                    : copy.simulationUnavailable}
+                </h2>
+                <p>
+                  {summary.simulation === 'failed'
+                    ? copy.simulationFailedBody
+                    : copy.simulationUnavailableBody}
+                </p>
+                <label className="fw-confirm-check">
+                  <input
+                    type="checkbox"
+                    checked={acknowledged}
+                    onChange={(event) => setAcknowledged(event.target.checked)}
+                  />
+                  <span>{copy.acknowledge}</span>
+                </label>
+              </div>
+            )}
             <Address value={summary.ownerWallet} label={copy.owner} />
             {session?.wallet !== summary.ownerWallet ? (
               <div className="fw-notice">
@@ -118,15 +185,11 @@ export function LaunchScreen({
                   {copy.switch}
                 </Button>
               </div>
-            ) : phase === 'confirmed' ? (
-              <>
-                <Muse className="fw-launch-muse" size={96} mood="success" />
-                <h2>{copy.confirmed}</h2>
-                <ActionLink href={`/jobs/${jobId}`}>{copy.track}</ActionLink>
-              </>
+            ) : signed ? (
+              confirmedView
             ) : (
               <>
-                <Button disabled={busy} onClick={sign}>
+                <Button disabled={busy || (!simulated && !acknowledged)} onClick={sign}>
                   {busy
                     ? phase === 'sending'
                       ? common.sending
@@ -136,7 +199,11 @@ export function LaunchScreen({
                       : copy.sign}{' '}
                   ↗
                 </Button>
-                {phase === 'error' && <p className="fw-caption">{copy.retryBody}</p>}
+                {phase === 'error' && (
+                  <p className="fw-caption">
+                    {result?.signature ? copy.retrySigned : copy.retryBody}
+                  </p>
+                )}
               </>
             )}
             <TransactionState phase={phase} result={result} />

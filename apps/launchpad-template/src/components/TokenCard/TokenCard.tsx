@@ -11,6 +11,7 @@ import { TokenAge } from '../TokenAge';
 import { TokenSocials } from '../TokenSocials';
 import { TokenCardMcapMetric, TokenCardVolumeMetric } from './TokenCardMetric';
 import Link from 'next/link';
+import { content } from '@/content';
 
 type TokenCardProps = {
   pool: Pool;
@@ -25,7 +26,7 @@ export const TokenCard: React.FC<TokenCardProps> = ({ pool, timeframe, rowRef })
     <div
       ref={(el) => rowRef(el, pool.id)}
       data-pool-id={pool.id}
-      className="relative flex cursor-pointer items-center border-neutral-850 py-3 pl-1.5 pr-2 text-xs has-hover:hover:bg-neutral-900 [&:nth-child(n+2)]:border-t"
+      className="launchpad-token-row relative flex cursor-pointer items-center border-neutral-850 text-xs has-hover:hover:bg-neutral-900 [&:nth-child(n+2)]:border-t"
     >
       <div className="shrink-0 pl-2 pr-4">
         <TrenchesPoolTokenIcon width={54} height={54} pool={pool} />
@@ -46,7 +47,7 @@ export const TokenCard: React.FC<TokenCardProps> = ({ pool, timeframe, rowRef })
 
               <div className="ml-1 flex items-center gap-1 overflow-hidden z-10">
                 <Copyable
-                  name="Address"
+                  name={content.strings.tokenAddress}
                   copyText={pool.baseAsset.id}
                   className="z-[1] flex min-w-0 items-center gap-0.5 text-[0.625rem] leading-none text-neutral-500 duration-500 hover:text-neutral-200 data-[copied=true]:text-primary"
                 >
@@ -92,6 +93,7 @@ export const TokenCard: React.FC<TokenCardProps> = ({ pool, timeframe, rowRef })
       <Link
         className="absolute inset-0 cursor-pointer rounded-lg"
         href={`/token/${pool.baseAsset.id}`}
+        aria-label={`${pool.baseAsset.name} (${pool.baseAsset.symbol})`}
       />
     </div>
   );

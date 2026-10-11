@@ -10,6 +10,12 @@ import {
   type RequestOptions,
   type RetryEvent,
 } from './http.js';
+import {
+  RELAY_TOKEN_ENV,
+  RELAY_TOKEN_RE,
+  RELAY_TOKEN_SECRET_ENV,
+  rpcRelayToken,
+} from './relay-token.js';
 
 /**
  * Vercel client (REST over fetch).
@@ -92,8 +98,13 @@ export function subdomainFor(slug: string, clientsDomain: string): string {
  * - the public R2 URL and the pool config key read by server routes.
  *
  * Never: `RPC_URL` (raw provider key), R2 write credentials, `JUPITER_API_KEY`,
- * `GITHUB_PACKAGES_TOKEN`, or any other credential. RPC traffic goes through the FORGE relay and
- * uploads must go through a FORGE-side presigned-URL endpoint.
+ * `GITHUB_PACKAGES_TOKEN`, `RPC_RELAY_TOKEN_SECRET`, or any other credential. RPC traffic goes
+ * through the FORGE relay and uploads must go through a FORGE-side presigned-URL endpoint.
+ *
+ * One exception, the only server-only secret a client project holds: `FORGE_RPC_RELAY_TOKEN`
+ * (relay-token.ts), the token of the RPC relay and upload routes for this launchpad only. Derived
+ * per slug by the builder, stored as a `sensitive` variable, never `NEXT_PUBLIC_*`, never taken
+ * from the builder's own environment. A leak only exposes that launchpad's own relay quota.
  *
  * `TEMPLATE_ENV` (packages/shared) still lists RPC_URL, JUPITER_API_KEY and the R2 write keys:
  * this module deliberately does not follow it.
@@ -113,7 +124,11 @@ export const PROJECT_ENV_ALLOWLIST: ReadonlySet<string> = new Set<string>([
   'NEXT_PUBLIC_R2_PUBLIC_URL',
   'POOL_CONFIG_KEY',
   'NEXT_PUBLIC_POOL_CONFIG_KEY',
+  RELAY_TOKEN_ENV,
 ]);
+
+/** Allowlisted variables that are secrets: server-only (`sensitive`), set per launchpad. */
+export const PROJECT_SERVER_SECRETS: ReadonlySet<string> = new Set<string>([RELAY_TOKEN_ENV]);
 
 /**
  * Secrets that earlier code (and `TEMPLATE_ENV`) sent to client projects. Refused by `setEnv` with
@@ -128,6 +143,7 @@ export const PROJECT_ENV_FORBIDDEN: ReadonlySet<string> = new Set<string>([
   'R2_BUCKET',
   'GITHUB_PACKAGES_TOKEN',
   'NODE_AUTH_TOKEN',
+  RELAY_TOKEN_SECRET_ENV,
 ]);
 
 /** Variables a client project cannot work without (the pool config key is added per launchpad). */
@@ -188,13 +204,17 @@ const VALUE_CHECKS: Readonly<Record<string, (value: string) => boolean>> = {
   NEXT_PUBLIC_R2_PUBLIC_URL: isPublicUrl,
   POOL_CONFIG_KEY: (v) => ADDRESS_LIST.test(v),
   NEXT_PUBLIC_POOL_CONFIG_KEY: (v) => ADDRESS_LIST.test(v),
+  [RELAY_TOKEN_ENV]: (v) => RELAY_TOKEN_RE.test(v),
 };
 
 export type ProjectEnvType = 'plain' | 'sensitive';
 
-/** Every allowed variable is public, hence `plain`. Anything else is never sent. */
+/**
+ * Allowed public variables are `plain`; the server-only secret (and anything else, which is never
+ * sent anyway) is `sensitive`.
+ */
 export function envTypeFor(key: string): ProjectEnvType {
-  return PROJECT_ENV_ALLOWLIST.has(key) ? 'plain' : 'sensitive';
+  return PROJECT_ENV_ALLOWLIST.has(key) && !PROJECT_SERVER_SECRETS.has(key) ? 'plain' : 'sensitive';
 }
 
 /**
@@ -226,6 +246,8 @@ export function pickProjectEnv(
 ): { vars: Record<string, string>; missing: string[]; invalid: string[] } {
   const vars: Record<string, string> = {};
   for (const key of PROJECT_ENV_ALLOWLIST) {
+    // Per-launchpad secrets are derived for each project, never copied from an environment.
+    if (PROJECT_SERVER_SECRETS.has(key)) continue;
     const v = source[key];
     if (typeof v === 'string' && v !== '') vars[key] = v;
   }
@@ -246,6 +268,24 @@ export function pickProjectEnv(
   for (const key of invalid) delete vars[key];
   const missing = required.filter((k) => vars[k] === undefined && !invalid.has(k));
   return { vars, missing, invalid: [...invalid].sort() };
+}
+
+/**
+ * Variables of one client project: the shared public ones, its pool config keys and its own relay
+ * token (derived here, never taken from `base`).
+ */
+export function clientProjectVars(
+  base: Readonly<Record<string, string>>,
+  opts: { slug: string; poolKeys?: string | undefined; relayTokenSecret: string },
+): Record<string, string> {
+  const vars: Record<string, string> = {};
+  for (const [k, v] of Object.entries(base)) if (!PROJECT_SERVER_SECRETS.has(k)) vars[k] = v;
+  if (opts.poolKeys) {
+    vars.POOL_CONFIG_KEY = opts.poolKeys;
+    vars.NEXT_PUBLIC_POOL_CONFIG_KEY = opts.poolKeys;
+  }
+  vars[RELAY_TOKEN_ENV] = rpcRelayToken(opts.relayTokenSecret, opts.slug);
+  return vars;
 }
 
 function sameHost(a: string, b: string): boolean {
@@ -349,6 +389,10 @@ export interface VercelDeployment {
   target: 'production' | 'preview';
   errorCode: string | undefined;
   errorMessage: string | undefined;
+  /** Git commit the deployment was built from (`gitSource.sha`, else `meta.githubCommitSha`). */
+  commitSha: string | undefined;
+  /** Project the deployment belongs to, when Vercel reports it. */
+  projectId: string | undefined;
 }
 
 /**
@@ -463,7 +507,12 @@ const DeploymentSchema = z.object({
   target: z.string().nullish(),
   errorCode: z.string().optional(),
   errorMessage: z.string().optional(),
+  projectId: z.string().optional(),
+  gitSource: z.object({ sha: z.string().optional() }).nullish(),
+  meta: z.object({ githubCommitSha: z.string().optional() }).nullish(),
 });
+
+const COMMIT_SHA_RE = /^[0-9a-f]{40}$/;
 const DomainSchema = z.object({
   name: z.string(),
   verified: z.boolean(),
@@ -532,6 +581,7 @@ function apiOnlyPolicyHolds(
 function toDeployment(d: z.infer<typeof DeploymentSchema>): VercelDeployment {
   const state = d.readyState.toUpperCase();
   const url = d.url.startsWith('http') ? d.url : d.url ? `https://${d.url}` : '';
+  const sha = d.gitSource?.sha ?? d.meta?.githubCommitSha;
   return {
     id: d.id,
     url,
@@ -539,6 +589,8 @@ function toDeployment(d: z.infer<typeof DeploymentSchema>): VercelDeployment {
     target: d.target === 'production' ? 'production' : 'preview',
     errorCode: d.errorCode,
     errorMessage: d.errorMessage,
+    commitSha: sha !== undefined && COMMIT_SHA_RE.test(sha) ? sha : undefined,
+    projectId: d.projectId,
   };
 }
 

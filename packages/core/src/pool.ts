@@ -20,10 +20,20 @@
  * a durable nonce the owner can close it before signing (the transaction would then fail and still
  * advance the nonce).
  *
- * Referral: by default the first buy carries the FORGE Meteora referral account
- * (`FORGE_METEORA_REFERRAL_ACCOUNT`) when it is configured. It costs 32 bytes; when the default
- * referral would push the transaction over the size limit, it is left out and the summary says so
- * (`referralOmittedForSize`). An explicit referral is never dropped (`TX_TOO_LARGE` instead).
+ * No referral on the first buy. A Meteora referral token account on the swap of
+ * `createPoolWithFirstBuy` makes the DBC program skip the first-swap minimum fee
+ * (`enableFirstSwapWithMinFee`): on devnet the first buy then paid the anti-sniper fee and failed
+ * with `ExceededSlippage` even at 10% slippage, while the same launch without a referral landed
+ * exactly at the quote (scripts/devnet-tests/reports/signer-routes.md, reproduced in
+ * scripts/devnet-tests/reports/core-launch.md). The referral would only have earned 20% of the
+ * protocol share of one minimum-fee swap, so it is not worth an anti-sniper fee for the client.
+ * Both builders below therefore never put a referral on the first buy, and refuse one
+ * (`REFERRAL_UNSUPPORTED`) instead of silently dropping it. Later swaps (swap.ts) keep the FORGE
+ * referral: they never get the first-swap minimum fee anyway.
+ *
+ * `buildUserCoinLaunchTx` is the same launch for a coin created by a user on the client's
+ * launchpad config: the user is pool creator, rent payer, fee payer and buyer, the mint is the
+ * only other signer.
  */
 import {
   DYNAMIC_BONDING_CURVE_PROGRAM_ID,
@@ -42,19 +52,17 @@ import {
   TOKEN_PROGRAM_ID,
   createAssociatedTokenAccountIdempotentInstruction,
   getAssociatedTokenAddressSync,
-  unpackAccount,
 } from '@solana/spl-token';
 import {
   PublicKey,
   SystemProgram,
   Transaction,
-  type AccountInfo,
   type Connection,
   type TransactionInstruction,
 } from '@solana/web3.js';
 import BN from 'bn.js';
 import type { OwnerTransactionSummary } from '@forge/shared';
-import { getMeteoraReferralAccount, type AddressEnv } from './addresses.js';
+import type { AddressEnv } from './addresses.js';
 import { quoteFirstBuyOnConfig, type FirstBuyQuote } from './config.js';
 import {
   FEES,
@@ -65,7 +73,6 @@ import {
 } from './constants.js';
 import {
   MAX_TRANSACTION_BYTES,
-  assertRentExempt,
   computeBudgetInstructions,
   priorityFeeLamports,
   readNonce,
@@ -92,9 +99,6 @@ export const MAX_FIRST_BUY_SLIPPAGE_BPS = 1000;
 
 /** Largest first buy (the spec bound, `launchpadCoin.firstBuySol` <= 10 SOL). */
 export const MAX_FIRST_BUY_LAMPORTS = solToLamports(MAX_FIRST_BUY_SOL);
-
-/** Bytes a referral token account adds to the launch transaction (one more account key). */
-export const REFERRAL_TX_BYTES = 32;
 
 /** Metaplex token metadata limits, in UTF-8 bytes. */
 export const METADATA_LIMITS = { name: 32, symbol: 10, uri: 200 } as const;
@@ -123,7 +127,8 @@ export type LaunchCoinErrorCode =
   | 'CONFIG_MISMATCH'
   | 'POOL_EXISTS'
   | 'MINT_EXISTS'
-  | 'REFERRAL_INVALID'
+  /** A referral was given for the first buy: it would lose the first-swap minimum fee. */
+  | 'REFERRAL_UNSUPPORTED'
   | 'RENT_PAYER_REFUSED'
   | 'FIRST_BUY_EXCEEDS_CURVE'
   | 'QUOTE_FAILED'
@@ -185,12 +190,15 @@ export interface BuildLaunchCoinTxParams {
    */
   rentPayer?: RentPayer;
   /**
-   * Meteora referral (a WSOL token account) on the first buy. `undefined` (default): the FORGE
-   * referral account `FORGE_METEORA_REFERRAL_ACCOUNT` when it is set in `env`, left out if it
-   * does not fit in the transaction; `null`: no referral; a key: that account (never dropped).
+   * @deprecated The first buy never carries a referral (see the top of this file): leave it out
+   * or pass `null`. A key is refused with `REFERRAL_UNSUPPORTED`. Kept so that callers passing
+   * `null` explicitly still compile.
    */
   referralTokenAccount?: PublicKey | null;
-  /** Where `FORGE_METEORA_REFERRAL_ACCOUNT` is read from (defaults to `process.env`). */
+  /**
+   * @deprecated Not read any more: it was only the source of the default FORGE referral of the
+   * first buy, which is gone. Kept so that existing callers still compile.
+   */
   env?: AddressEnv;
   computeUnitLimit?: number;
   /** Priority fee, micro-lamports per compute unit (default 0). */
@@ -238,12 +246,12 @@ export interface LaunchCoinSummary {
   rentPayer: PublicKey;
   /** The config's fee claimer (= owner). */
   feeClaimer: PublicKey;
-  /** Referral used by the first buy, or null. */
-  referralTokenAccount: PublicKey | null;
-  /** `explicit` (given by the caller), `forge` (FORGE default) or `none`. */
-  referralSource: 'explicit' | 'forge' | 'none';
-  /** True when the FORGE default referral was left out because the transaction was too large. */
-  referralOmittedForSize: boolean;
+  /** @deprecated Always null: the first buy never carries a referral. */
+  referralTokenAccount: null;
+  /** @deprecated Always `none`: the first buy never carries a referral. */
+  referralSource: 'none';
+  /** @deprecated Always false: no referral is ever left out (there is none). */
+  referralOmittedForSize: false;
   name: string;
   symbol: string;
   metadataUri: string;
@@ -399,16 +407,15 @@ export function quoteConfigFromPoolConfig(config: PoolConfig): SwapQuoteConfig {
 
 const toBigInt = (value: BN): bigint => BigInt(value.toString());
 
-/** First buy quote on the on-chain config, mapped to `LaunchCoinError`. */
+/** First buy quote on the on-chain config (no referral), mapped to `LaunchCoinError`. */
 function quoteFirstBuy(
   poolConfig: PoolConfig,
   firstBuyLamports: bigint,
   slippageBps: number,
-  hasReferral: boolean,
 ): FirstBuyQuote {
   const quote = quoteFirstBuyOnConfig(quoteConfigFromPoolConfig(poolConfig), firstBuyLamports, {
     slippageBps,
-    hasReferral,
+    hasReferral: false,
   });
   if (!quote.ok) {
     fail(
@@ -439,80 +446,39 @@ function createsAssociatedAccount(
 }
 
 /**
- * The FORGE Meteora referral account when `FORGE_METEORA_REFERRAL_ACCOUNT` is set, else null.
- * @throws ForgeAddressError when it is set but not a valid address.
- */
-export function defaultLaunchReferral(env?: AddressEnv): PublicKey | null {
-  const source: AddressEnv = env ?? (typeof process !== 'undefined' ? process.env : {});
-  const value = source.FORGE_METEORA_REFERRAL_ACCOUNT;
-  if (value === undefined || value === '') return null;
-  return getMeteoraReferralAccount(source);
-}
-
-/** Checks that `referral` is an initialized, rent-exempt WSOL token account. */
-async function assertReferralAccount(
-  connection: Connection,
-  referral: PublicKey,
-  referralInfo: AccountInfo<Buffer> | null,
-): Promise<void> {
-  if (!referralInfo) fail('REFERRAL_INVALID', 'referral token account does not exist');
-  let tokenAccount: ReturnType<typeof unpackAccount>;
-  try {
-    tokenAccount = unpackAccount(referral, referralInfo, TOKEN_PROGRAM_ID);
-  } catch {
-    fail('REFERRAL_INVALID', 'referral account is not an SPL token account');
-  }
-  if (!tokenAccount.mint.equals(NATIVE_MINT) || !tokenAccount.isInitialized) {
-    fail('REFERRAL_INVALID', 'referral account must be an initialized WSOL token account');
-  }
-  await assertRentExempt(connection, [{ address: referral, label: 'referralTokenAccount' }]);
-}
-
-// ---------------------------------------------------------------------------------------------
-// Builder
-// ---------------------------------------------------------------------------------------------
-
-/**
- * Builds the launch transaction of the launchpad coin: pool creation + the owner's first buy,
- * with compute budget instructions and, optionally, a durable nonce.
+ * Refuses any referral on the first buy (see the top of this file): with one, the DBC program
+ * does not apply the first-swap minimum fee.
  *
- * @throws LaunchCoinError (typed `code`), DurableNonceError / RentExemptionError from tx.ts, or
- *   ForgeAddressError when `FORGE_METEORA_REFERRAL_ACCOUNT` is set but invalid.
+ * @throws LaunchCoinError `REFERRAL_UNSUPPORTED`.
  */
-export async function buildLaunchCoinTx(params: BuildLaunchCoinTxParams): Promise<LaunchCoinTx> {
-  const { connection, config, creator, owner } = params;
-  const mint = params.mint instanceof PublicKey ? params.mint : params.mint.publicKey;
-  const rentPayerKind: RentPayer = params.rentPayer ?? 'owner';
-  const slippageBps = params.slippageBps ?? DEFAULT_FIRST_BUY_SLIPPAGE_BPS;
-  const computeUnitLimit = params.computeUnitLimit ?? LAUNCH_COIN_COMPUTE_UNITS;
-  const computeUnitPriceMicroLamports = params.computeUnitPriceMicroLamports ?? 0;
-  const budget = { units: computeUnitLimit, microLamports: computeUnitPriceMicroLamports };
+function assertNoFirstBuyReferral(referral: unknown): void {
+  if (referral !== undefined && referral !== null) {
+    fail(
+      'REFERRAL_UNSUPPORTED',
+      'the first buy cannot carry a referral: the DBC program then skips the first-swap minimum fee and the buy pays the anti-sniper fee (devnet finding)',
+    );
+  }
+}
 
-  // 1. Inputs.
-  for (const [name, key] of [
-    ['config', config],
-    ['creator', creator],
-    ['owner', owner],
-    ['mint', mint],
-  ] as const) {
+/** Checks the inputs shared by both launch builders (pure). */
+function assertCommonLaunchInputs(input: {
+  keys: readonly (readonly [string, unknown])[];
+  firstBuyLamports: bigint;
+  name: string;
+  symbol: string;
+  metadataUri: string;
+  slippageBps: number;
+  budget: { units: number; microLamports: number };
+}): void {
+  for (const [name, key] of input.keys) {
     if (!(key instanceof PublicKey)) fail('INVALID_INPUT', `${name} must be a PublicKey`);
   }
-  if (rentPayerKind !== 'owner' && rentPayerKind !== 'creator') {
-    fail('INVALID_INPUT', "rentPayer must be 'owner' or 'creator'");
-  }
+  assertFirstBuyLamports(input.firstBuyLamports);
+  assertLaunchMetadata(input.name, input.symbol, input.metadataUri);
   if (
-    params.referralTokenAccount !== undefined &&
-    params.referralTokenAccount !== null &&
-    !(params.referralTokenAccount instanceof PublicKey)
-  ) {
-    fail('INVALID_INPUT', 'referralTokenAccount must be a PublicKey, null or undefined');
-  }
-  assertFirstBuyLamports(params.firstBuyLamports);
-  assertLaunchMetadata(params.name, params.symbol, params.metadataUri);
-  if (
-    !Number.isInteger(slippageBps) ||
-    slippageBps < 0 ||
-    slippageBps > MAX_FIRST_BUY_SLIPPAGE_BPS
+    !Number.isInteger(input.slippageBps) ||
+    input.slippageBps < 0 ||
+    input.slippageBps > MAX_FIRST_BUY_SLIPPAGE_BPS
   ) {
     fail(
       'INVALID_INPUT',
@@ -520,50 +486,35 @@ export async function buildLaunchCoinTx(params: BuildLaunchCoinTxParams): Promis
     );
   }
   try {
-    computeBudgetInstructions(budget);
+    computeBudgetInstructions(input.budget);
   } catch (error) {
     fail('INVALID_INPUT', error instanceof Error ? error.message : String(error));
   }
+}
 
-  // Referral: explicit, FORGE default (only meaningful with a first buy), or none.
-  const hasFirstBuy = params.firstBuyLamports > 0n;
-  let referral: PublicKey | null;
-  let referralSource: LaunchCoinSummary['referralSource'];
-  if (params.referralTokenAccount === undefined) {
-    referral = hasFirstBuy ? defaultLaunchReferral(params.env) : null;
-    referralSource = referral ? 'forge' : 'none';
-  } else {
-    referral = params.referralTokenAccount;
-    referralSource = referral ? 'explicit' : 'none';
-  }
+type DbcClient = ReturnType<typeof DynamicBondingCurveClient.create>;
+type DbcCreatorProgram = ReturnType<DbcClient['creator']['getProgram']>;
 
-  const keys: (readonly [string, PublicKey])[] = [
-    ['config', config],
-    ['creator', creator],
-    ['owner', owner],
-    ['mint', mint],
-  ];
-  if (referral) keys.push(['referralTokenAccount', referral]);
-  if (params.durableNonce) keys.push(['nonceAccount', params.durableNonce.nonceAccount]);
-  assertDistinctKeys(keys);
-  if (params.durableNonce) {
-    const { authority, nonceAccount } = params.durableNonce;
-    if (authority.equals(mint) || authority.equals(config) || authority.equals(nonceAccount)) {
-      fail('INVALID_INPUT', 'the nonce authority must be the creator, the owner or a separate key');
-    }
-  }
+interface LaunchState {
+  poolConfig: PoolConfig;
+  client: DbcClient;
+  program: DbcCreatorProgram;
+}
 
-  const pool = deriveDbcPoolAddress(SOL_QUOTE_MINT, mint, config);
-  const rentPayer = rentPayerKind === 'owner' ? owner : creator;
-
-  // 2. On-chain state: config, pool, mint, referral.
-  const ownerWsol = getAssociatedTokenAddressSync(NATIVE_MINT, owner, true, TOKEN_PROGRAM_ID);
-  const lookups = [config, pool, mint, ...(referral ? [referral] : [])];
-  const [configInfo, poolInfo, mintInfo, referralInfo] = await connection.getMultipleAccountsInfo(
-    lookups,
+/**
+ * Reads the config, the pool and the mint: the config must be a DBC pool config accepted by
+ * `checkConfig`, the pool and the mint must not exist yet.
+ */
+async function loadLaunchState(
+  connection: Connection,
+  accounts: { config: PublicKey; pool: PublicKey; mint: PublicKey },
+  checkConfig: (poolConfig: PoolConfig) => void,
+): Promise<LaunchState> {
+  const { config, pool, mint } = accounts;
+  const [configInfo, poolInfo, mintInfo] = await connection.getMultipleAccountsInfo(
+    [config, pool, mint],
     'confirmed',
   );
-
   if (!configInfo) fail('CONFIG_NOT_FOUND', `config ${config.toBase58()} does not exist`);
   if (!configInfo.owner.equals(DYNAMIC_BONDING_CURVE_PROGRAM_ID)) {
     fail('CONFIG_MISMATCH', 'config account is not owned by the DBC program');
@@ -576,7 +527,266 @@ export async function buildLaunchCoinTx(params: BuildLaunchCoinTxParams): Promis
   } catch {
     fail('CONFIG_MISMATCH', 'config account is not a DBC pool config');
   }
-  assertLaunchCoinConfig(poolConfig, owner);
+  checkConfig(poolConfig);
+  if (poolInfo) fail('POOL_EXISTS', `pool ${pool.toBase58()} already exists`);
+  if (mintInfo) fail('MINT_EXISTS', `mint ${mint.toBase58()} already exists: use a fresh keypair`);
+  return { poolConfig, client, program };
+}
+
+interface AssembleLaunchInput {
+  client: DbcClient;
+  poolConfig: PoolConfig;
+  config: PublicKey;
+  mint: PublicKey;
+  /** Pool creator (signs). */
+  poolCreator: PublicKey;
+  /** Pays the pool accounts and the pool creation fee (signs). */
+  payer: PublicKey;
+  /** Fee payer, buyer and receiver of the first buy (signs). */
+  buyer: PublicKey;
+  name: string;
+  symbol: string;
+  metadataUri: string;
+  firstBuyLamports: bigint;
+  slippageBps: number;
+  budget: { units: number; microLamports: number };
+  nonce: NonceInfo | null;
+  recentBlockhash: string;
+  lastValidBlockHeight: number | null;
+}
+
+/**
+ * Quotes the first buy on the fresh pool at the minimum fee (exact: nothing else can trade before
+ * it, the pool is created in the same transaction) and assembles the transaction: nonce advance,
+ * compute budget, the buyer's WSOL account (idempotent), then the SDK instructions of
+ * `createPoolWithFirstBuy` (proven call pattern of devnet test 3), without referral.
+ */
+async function assembleLaunch(input: AssembleLaunchInput): Promise<{
+  transaction: Transaction;
+  quote: FirstBuyQuote | null;
+  txBytes: number;
+}> {
+  const { buyer, nonce } = input;
+  const quote =
+    input.firstBuyLamports > 0n
+      ? quoteFirstBuy(input.poolConfig, input.firstBuyLamports, input.slippageBps)
+      : null;
+  const sdkTx = await input.client.creator.createPoolWithFirstBuy({
+    createPoolParam: {
+      name: input.name,
+      symbol: input.symbol,
+      uri: input.metadataUri,
+      payer: input.payer,
+      poolCreator: input.poolCreator,
+      config: input.config,
+      baseMint: input.mint,
+    },
+    ...(quote
+      ? {
+          firstBuyParam: {
+            buyer,
+            receiver: buyer,
+            buyAmount: new BN(input.firstBuyLamports.toString()),
+            minimumAmountOut: new BN(quote.minimumTokensOut.toString()),
+            referralTokenAccount: null,
+          },
+        }
+      : {}),
+  });
+
+  const instructions: TransactionInstruction[] = [];
+  if (nonce) {
+    instructions.push(
+      SystemProgram.nonceAdvance({
+        noncePubkey: nonce.nonceAccount,
+        authorizedPubkey: nonce.authority,
+      }),
+    );
+  }
+  instructions.push(...computeBudgetInstructions(input.budget));
+  // The SDK adds the buyer's WSOL account creation only when it is missing at build time.
+  const buyerWsol = getAssociatedTokenAddressSync(NATIVE_MINT, buyer, true, TOKEN_PROGRAM_ID);
+  if (quote && !createsAssociatedAccount(sdkTx.instructions, buyerWsol)) {
+    instructions.push(
+      createAssociatedTokenAccountIdempotentInstruction(
+        buyer,
+        buyerWsol,
+        buyer,
+        NATIVE_MINT,
+        TOKEN_PROGRAM_ID,
+      ),
+    );
+  }
+  instructions.push(...sdkTx.instructions);
+  const transaction = new Transaction({ feePayer: buyer, recentBlockhash: input.recentBlockhash });
+  if (input.lastValidBlockHeight !== null) {
+    transaction.lastValidBlockHeight = input.lastValidBlockHeight;
+  }
+  transaction.add(...instructions);
+  return { transaction, quote, txBytes: transactionSize(transaction) };
+}
+
+/** The required signers, and whether they are exactly `expected` with `feePayer` first. */
+function checkSigners(
+  transaction: Transaction,
+  expected: readonly PublicKey[],
+  feePayer: PublicKey,
+): { ok: boolean; actual: PublicKey[] } {
+  const actual = requiredSigners(transaction);
+  const ok =
+    actual.length === expected.length &&
+    expected.every((k) => actual.some((a) => a.equals(k))) &&
+    actual[0]!.equals(feePayer);
+  return { ok, actual };
+}
+
+/** @throws LaunchCoinError `TX_TOO_LARGE`. */
+function assertLaunchSize(txBytes: number): void {
+  if (txBytes > MAX_TRANSACTION_BYTES) {
+    fail(
+      'TX_TOO_LARGE',
+      `launch transaction is ${txBytes} bytes (limit ${MAX_TRANSACTION_BYTES}): shorten the name, symbol or metadata URI`,
+    );
+  }
+}
+
+/**
+ * Every lamport of a launch, rent read from the cluster. `rentPayerIsOwner`: the owner (buyer,
+ * fee payer) also pays the pool accounts, the Metaplex fee and the pool creation fee; otherwise
+ * the creator wallet does.
+ */
+async function computeLaunchCosts(input: {
+  connection: Connection;
+  program: DbcCreatorProgram;
+  transaction: Transaction;
+  signatureCount: number;
+  nonce: NonceInfo | null;
+  budget: { units: number; microLamports: number };
+  quote: FirstBuyQuote | null;
+  firstBuyLamports: bigint;
+  poolCreationFeeLamports: bigint;
+  rentPayerIsOwner: boolean;
+}): Promise<LaunchCoinCosts> {
+  const { connection, quote } = input;
+  const rentFor = async (size: number) =>
+    BigInt(await connection.getMinimumBalanceForRentExemption(size));
+  const [poolRent, mintRent, metadataRent, tokenAccountRent] = await Promise.all([
+    rentFor(input.program.account.virtualPool.size),
+    rentFor(MINT_SIZE),
+    rentFor(METADATA_ACCOUNT_SIZE),
+    rentFor(ACCOUNT_SIZE),
+  ]);
+  const poolAccountsRentLamports = poolRent + mintRent + metadataRent + 2n * tokenAccountRent;
+  const firstBuy = quote ? input.firstBuyLamports : 0n;
+  const ownerTokenAccountRentLamports = quote ? tokenAccountRent : 0n;
+  // The WSOL account is created (idempotently) and closed in the transaction: its rent is only
+  // held for the duration of the transaction, whether or not it exists at build time.
+  const ownerTemporaryLamports = quote ? tokenAccountRent : 0n;
+
+  let networkFeeSource: 'cluster' | 'estimate' = 'estimate';
+  const lamportsPerSignature = input.nonce?.lamportsPerSignature || FALLBACK_LAMPORTS_PER_SIGNATURE;
+  let networkFeeLamports =
+    BigInt(input.signatureCount) * lamportsPerSignature + priorityFeeLamports(input.budget);
+  try {
+    const fee = (await connection.getFeeForMessage(input.transaction.compileMessage(), 'confirmed'))
+      .value;
+    if (typeof fee === 'number' && Number.isSafeInteger(fee) && fee > 0) {
+      networkFeeLamports = BigInt(fee);
+      networkFeeSource = 'cluster';
+    }
+  } catch {
+    // Keep the estimate: the fee only informs the summary, it is not part of the transaction.
+  }
+
+  const rentPayerCosts =
+    poolAccountsRentLamports +
+    METAPLEX_CREATE_METADATA_FEE_LAMPORTS +
+    input.poolCreationFeeLamports;
+  const ownerTotalLamports =
+    firstBuy +
+    networkFeeLamports +
+    ownerTokenAccountRentLamports +
+    (input.rentPayerIsOwner ? rentPayerCosts : 0n);
+  return {
+    firstBuyLamports: firstBuy,
+    firstBuyFeeLamports: quote ? quote.feeLamports : 0n,
+    poolCreationFeeLamports: input.poolCreationFeeLamports,
+    poolAccountsRentLamports,
+    metaplexFeeLamports: METAPLEX_CREATE_METADATA_FEE_LAMPORTS,
+    ownerTokenAccountRentLamports,
+    ownerTemporaryLamports,
+    networkFeeLamports,
+    networkFeeSource,
+    ownerTotalLamports,
+    ownerRequiredBalanceLamports: ownerTotalLamports + ownerTemporaryLamports,
+    creatorTotalLamports: input.rentPayerIsOwner ? 0n : rentPayerCosts,
+  };
+}
+
+// ---------------------------------------------------------------------------------------------
+// Builder: the launchpad coin (FORGE creator wallet, client first buy)
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * Builds the launch transaction of the launchpad coin: pool creation + the owner's first buy
+ * (never with a referral), with compute budget instructions and, optionally, a durable nonce.
+ *
+ * @throws LaunchCoinError (typed `code`, `REFERRAL_UNSUPPORTED` when a referral is given), or
+ *   DurableNonceError from tx.ts.
+ */
+export async function buildLaunchCoinTx(params: BuildLaunchCoinTxParams): Promise<LaunchCoinTx> {
+  const { connection, config, creator, owner } = params;
+  const mint = params.mint instanceof PublicKey ? params.mint : params.mint.publicKey;
+  const rentPayerKind: RentPayer = params.rentPayer ?? 'owner';
+  const slippageBps = params.slippageBps ?? DEFAULT_FIRST_BUY_SLIPPAGE_BPS;
+  const computeUnitLimit = params.computeUnitLimit ?? LAUNCH_COIN_COMPUTE_UNITS;
+  const computeUnitPriceMicroLamports = params.computeUnitPriceMicroLamports ?? 0;
+  const budget = { units: computeUnitLimit, microLamports: computeUnitPriceMicroLamports };
+
+  // 1. Inputs.
+  assertCommonLaunchInputs({
+    keys: [
+      ['config', config],
+      ['creator', creator],
+      ['owner', owner],
+      ['mint', mint],
+    ],
+    firstBuyLamports: params.firstBuyLamports,
+    name: params.name,
+    symbol: params.symbol,
+    metadataUri: params.metadataUri,
+    slippageBps,
+    budget,
+  });
+  if (rentPayerKind !== 'owner' && rentPayerKind !== 'creator') {
+    fail('INVALID_INPUT', "rentPayer must be 'owner' or 'creator'");
+  }
+  assertNoFirstBuyReferral(params.referralTokenAccount);
+
+  const keys: (readonly [string, PublicKey])[] = [
+    ['config', config],
+    ['creator', creator],
+    ['owner', owner],
+    ['mint', mint],
+  ];
+  if (params.durableNonce) keys.push(['nonceAccount', params.durableNonce.nonceAccount]);
+  assertDistinctKeys(keys);
+  if (params.durableNonce) {
+    const { authority, nonceAccount } = params.durableNonce;
+    if (authority.equals(mint) || authority.equals(config) || authority.equals(nonceAccount)) {
+      fail('INVALID_INPUT', 'the nonce authority must be the creator, the owner or a separate key');
+    }
+  }
+
+  const pool = deriveDbcPoolAddress(SOL_QUOTE_MINT, mint, config);
+  const rentPayer = rentPayerKind === 'owner' ? owner : creator;
+
+  // 2. On-chain state: config (this owner's launchpad coin config), pool and mint not existing.
+  const { poolConfig, client, program } = await loadLaunchState(
+    connection,
+    { config, pool, mint },
+    (decoded) => assertLaunchCoinConfig(decoded, owner),
+  );
   const poolCreationFeeLamports = toBigInt(poolConfig.poolCreationFee);
   if (rentPayerKind === 'creator' && poolCreationFeeLamports !== 0n) {
     fail(
@@ -584,9 +794,6 @@ export async function buildLaunchCoinTx(params: BuildLaunchCoinTxParams): Promis
       `the creator wallet cannot pay the rent on a config with a pool creation fee (${poolCreationFeeLamports} lamports): it would pay the client's own fee`,
     );
   }
-  if (poolInfo) fail('POOL_EXISTS', `pool ${pool.toBase58()} already exists`);
-  if (mintInfo) fail('MINT_EXISTS', `mint ${mint.toBase58()} already exists: use a fresh keypair`);
-  if (referral) await assertReferralAccount(connection, referral, referralInfo ?? null);
 
   // 3. Blockhash or durable nonce.
   let nonce: NonceInfo | null = null;
@@ -603,86 +810,35 @@ export async function buildLaunchCoinTx(params: BuildLaunchCoinTxParams): Promis
     lastValidBlockHeight = latest.lastValidBlockHeight;
   }
 
-  // 4. Quote of the first buy on the fresh pool, at the minimum fee (exact: nothing else can
-  //    trade before it, the pool is created in the same transaction), then the instructions.
-  const assemble = async (withReferral: PublicKey | null) => {
-    const quote = hasFirstBuy
-      ? quoteFirstBuy(poolConfig, params.firstBuyLamports, slippageBps, withReferral !== null)
-      : null;
-    // SDK instructions (proven call pattern of test 3).
-    const sdkTx = await client.creator.createPoolWithFirstBuy({
-      createPoolParam: {
-        name: params.name,
-        symbol: params.symbol,
-        uri: params.metadataUri,
-        payer: rentPayer,
-        poolCreator: creator,
-        config,
-        baseMint: mint,
-      },
-      ...(quote
-        ? {
-            firstBuyParam: {
-              buyer: owner,
-              receiver: owner,
-              buyAmount: new BN(params.firstBuyLamports.toString()),
-              minimumAmountOut: new BN(quote.minimumTokensOut.toString()),
-              referralTokenAccount: withReferral,
-            },
-          }
-        : {}),
-    });
-
-    const instructions: TransactionInstruction[] = [];
-    if (nonce) {
-      instructions.push(
-        SystemProgram.nonceAdvance({
-          noncePubkey: nonce.nonceAccount,
-          authorizedPubkey: nonce.authority,
-        }),
-      );
-    }
-    instructions.push(...computeBudgetInstructions(budget));
-    // The SDK adds the owner's WSOL account creation only when it is missing at build time.
-    if (quote && !createsAssociatedAccount(sdkTx.instructions, ownerWsol)) {
-      instructions.push(
-        createAssociatedTokenAccountIdempotentInstruction(
-          owner,
-          ownerWsol,
-          owner,
-          NATIVE_MINT,
-          TOKEN_PROGRAM_ID,
-        ),
-      );
-    }
-    instructions.push(...sdkTx.instructions);
-    const transaction = new Transaction({ feePayer: owner, recentBlockhash });
-    if (lastValidBlockHeight !== null) transaction.lastValidBlockHeight = lastValidBlockHeight;
-    transaction.add(...instructions);
-    return { transaction, quote, txBytes: transactionSize(transaction) };
-  };
-
-  let built = await assemble(referral);
-  let referralOmittedForSize = false;
-  if (built.txBytes > MAX_TRANSACTION_BYTES && referralSource === 'forge') {
-    built = await assemble(null);
-    referral = null;
-    referralSource = 'none';
-    referralOmittedForSize = true;
-  }
-  const { transaction, quote, txBytes } = built;
+  // 4. Quote and instructions.
+  const { transaction, quote, txBytes } = await assembleLaunch({
+    client,
+    poolConfig,
+    config,
+    mint,
+    poolCreator: creator,
+    payer: rentPayer,
+    buyer: owner,
+    name: params.name,
+    symbol: params.symbol,
+    metadataUri: params.metadataUri,
+    firstBuyLamports: params.firstBuyLamports,
+    slippageBps,
+    budget,
+    nonce,
+    recentBlockhash,
+    lastValidBlockHeight,
+  });
 
   // 5. Signers: exactly owner, creator, mint (+ the nonce authority). With the owner paying
   //    the rent, the creator wallet must not be debitable at all (read-only signer).
   const expected = [owner, creator, mint];
   if (nonce && !expected.some((k) => k.equals(nonce.authority))) expected.push(nonce.authority);
-  const actual = requiredSigners(transaction);
-  const sameSet =
-    actual.length === expected.length && expected.every((k) => actual.some((a) => a.equals(k)));
-  if (!sameSet || !actual[0]!.equals(owner)) {
+  const signers = checkSigners(transaction, expected, owner);
+  if (!signers.ok) {
     fail(
       'UNEXPECTED_SIGNERS',
-      `unexpected signers: ${actual.map((k) => k.toBase58()).join(', ')} (fee payer must be the owner)`,
+      `unexpected signers: ${signers.actual.map((k) => k.toBase58()).join(', ')} (fee payer must be the owner)`,
     );
   }
   if (rentPayerKind === 'owner' && isWritableInMessage(transaction, creator)) {
@@ -693,66 +849,21 @@ export async function buildLaunchCoinTx(params: BuildLaunchCoinTxParams): Promis
   }
 
   // 6. Size.
-  if (txBytes > MAX_TRANSACTION_BYTES) {
-    fail(
-      'TX_TOO_LARGE',
-      `launch transaction is ${txBytes} bytes (limit ${MAX_TRANSACTION_BYTES}): shorten the name, symbol or metadata URI`,
-    );
-  }
+  assertLaunchSize(txBytes);
 
   // 7. Costs (rent read from the cluster).
-  const rentFor = async (size: number) =>
-    BigInt(await connection.getMinimumBalanceForRentExemption(size));
-  const [poolRent, mintRent, metadataRent, tokenAccountRent] = await Promise.all([
-    rentFor(program.account.virtualPool.size),
-    rentFor(MINT_SIZE),
-    rentFor(METADATA_ACCOUNT_SIZE),
-    rentFor(ACCOUNT_SIZE),
-  ]);
-  const poolAccountsRentLamports = poolRent + mintRent + metadataRent + 2n * tokenAccountRent;
-  const firstBuy = quote ? params.firstBuyLamports : 0n;
-  const ownerTokenAccountRentLamports = quote ? tokenAccountRent : 0n;
-  // The WSOL account is created (idempotently) and closed in the transaction: its rent is only
-  // held for the duration of the transaction, whether or not it exists at build time.
-  const ownerTemporaryLamports = quote ? tokenAccountRent : 0n;
-
-  let networkFeeLamports: bigint;
-  let networkFeeSource: 'cluster' | 'estimate' = 'estimate';
-  const signatureCount = BigInt(actual.length);
-  const lamportsPerSignature = nonce?.lamportsPerSignature || FALLBACK_LAMPORTS_PER_SIGNATURE;
-  networkFeeLamports = signatureCount * lamportsPerSignature + priorityFeeLamports(budget);
-  try {
-    const fee = (await connection.getFeeForMessage(transaction.compileMessage(), 'confirmed'))
-      .value;
-    if (typeof fee === 'number' && Number.isSafeInteger(fee) && fee > 0) {
-      networkFeeLamports = BigInt(fee);
-      networkFeeSource = 'cluster';
-    }
-  } catch {
-    // Keep the estimate: the fee only informs the summary, it is not part of the transaction.
-  }
-
-  const rentPayerCosts =
-    poolAccountsRentLamports + METAPLEX_CREATE_METADATA_FEE_LAMPORTS + poolCreationFeeLamports;
-  const ownerTotalLamports =
-    firstBuy +
-    networkFeeLamports +
-    ownerTokenAccountRentLamports +
-    (rentPayerKind === 'owner' ? rentPayerCosts : 0n);
-  const costs: LaunchCoinCosts = {
-    firstBuyLamports: firstBuy,
-    firstBuyFeeLamports: quote ? quote.feeLamports : 0n,
+  const costs = await computeLaunchCosts({
+    connection,
+    program,
+    transaction,
+    signatureCount: signers.actual.length,
+    nonce,
+    budget,
+    quote,
+    firstBuyLamports: params.firstBuyLamports,
     poolCreationFeeLamports,
-    poolAccountsRentLamports,
-    metaplexFeeLamports: METAPLEX_CREATE_METADATA_FEE_LAMPORTS,
-    ownerTokenAccountRentLamports,
-    ownerTemporaryLamports,
-    networkFeeLamports,
-    networkFeeSource,
-    ownerTotalLamports,
-    ownerRequiredBalanceLamports: ownerTotalLamports + ownerTemporaryLamports,
-    creatorTotalLamports: rentPayerKind === 'creator' ? rentPayerCosts : 0n,
-  };
+    rentPayerIsOwner: rentPayerKind === 'owner',
+  });
 
   const signerSideSigners = [creator, mint];
   if (nonce && !nonce.authority.equals(owner) && !nonce.authority.equals(creator)) {
@@ -770,9 +881,9 @@ export async function buildLaunchCoinTx(params: BuildLaunchCoinTxParams): Promis
       feePayer: owner,
       rentPayer,
       feeClaimer: poolConfig.feeClaimer,
-      referralTokenAccount: referral,
-      referralSource,
-      referralOmittedForSize,
+      referralTokenAccount: null,
+      referralSource: 'none',
+      referralOmittedForSize: false,
       name: params.name,
       symbol: params.symbol,
       metadataUri: params.metadataUri,
@@ -789,6 +900,216 @@ export async function buildLaunchCoinTx(params: BuildLaunchCoinTxParams): Promis
       computeUnitPriceMicroLamports,
       signerSideSigners,
       ownerSigner: owner,
+      txBytes,
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------------------------
+// Builder: a user coin on the client's launchpad config
+// ---------------------------------------------------------------------------------------------
+
+export interface BuildUserCoinLaunchTxParams {
+  connection: Connection;
+  /** The client's launchpad config (`buildLaunchpadConfig`), already created on-chain. */
+  config: PublicKey;
+  /** The user: pool creator, rent payer, fee payer, buyer and receiver; signs last. */
+  wallet: PublicKey;
+  /** Fresh base mint keypair (or its public key); the only other signer. */
+  mint: PublicKey | { publicKey: PublicKey };
+  /** Token metadata (Metaplex limits: 32 / 10 / 200 bytes). */
+  name: string;
+  symbol: string;
+  metadataUri: string;
+  /** SOL spent by the user on the first buy, in lamports (0 = no first buy, at most 10 SOL). */
+  firstBuyLamports: bigint;
+  /** Slippage on the first buy (default 100 bps, at most 1000). */
+  slippageBps?: number;
+  /**
+   * Accepted for symmetry with `buildLaunchCoinTx`; not read: a user coin launch involves no
+   * FORGE address (no referral on the first buy, no platform fee on the creation).
+   */
+  env?: AddressEnv;
+  computeUnitLimit?: number;
+  /** Priority fee, micro-lamports per compute unit (default 0). */
+  computeUnitPriceMicroLamports?: number;
+}
+
+export interface UserCoinLaunchSummary {
+  config: PublicKey;
+  pool: PublicKey;
+  mint: PublicKey;
+  /** The user: pool creator, rent payer, fee payer, buyer and receiver of the first buy. */
+  wallet: PublicKey;
+  /** The config's fee claimer (the launchpad owner, who earns the partner fees). */
+  feeClaimer: PublicKey;
+  name: string;
+  symbol: string;
+  metadataUri: string;
+  /** Raw base units (6 decimals) the first buy is quoted to deliver, and the minimum accepted. */
+  expectedTokensOut: bigint;
+  minimumTokensOut: bigint;
+  slippageBps: number;
+  /**
+   * Same figures as `LaunchCoinCosts`, read the same way: the `owner*` fields are the wallet's
+   * (it pays everything, including the pool accounts and the pool creation fee);
+   * `creatorTotalLamports` is 0 because no separate creator wallet pays anything.
+   */
+  costs: LaunchCoinCosts;
+  recentBlockhash: string;
+  lastValidBlockHeight: number;
+  computeUnitLimit: number;
+  computeUnitPriceMicroLamports: number;
+  /** Required signers in message order: the wallet (fee payer) then the mint. */
+  signers: PublicKey[];
+  txBytes: number;
+}
+
+export interface UserCoinLaunchTx {
+  /** Unsigned. The mint signs (`partialSign`), then the wallet signs last. */
+  transaction: Transaction;
+  summary: UserCoinLaunchSummary;
+}
+
+/**
+ * Checks that an on-chain config can launch a user coin with a first buy at the minimum fee: SOL
+ * quote, SPL token program for both tokens, `enableFirstSwapWithMinFee`. Nothing about who owns
+ * the config or the creator share: the template checks the config address itself.
+ *
+ * @throws LaunchCoinError `CONFIG_MISMATCH` listing every mismatch.
+ */
+export function assertUserCoinConfig(config: PoolConfig): void {
+  const problems: string[] = [];
+  if (!config.quoteMint.equals(SOL_QUOTE_MINT)) problems.push('quote mint is not SOL');
+  if (config.quoteTokenFlag !== 0) problems.push('quote token is not an SPL token');
+  if (config.tokenType !== TokenType.SPLToken) problems.push('base token type is not SPL token');
+  if (config.enableFirstSwapWithMinFee !== 1) {
+    problems.push(
+      'first swap with minimum fee is disabled (the first buy would pay the anti-sniper fee)',
+    );
+  }
+  if (problems.length > 0) {
+    fail('CONFIG_MISMATCH', `config cannot launch a user coin: ${problems.join('; ')}`);
+  }
+}
+
+/**
+ * Builds the launch transaction of a coin created by a user on the client's launchpad config:
+ * pool creation + the user's first buy at the minimum fee (no referral), with a compute unit limit
+ * (and a priority fee when given) and a recent blockhash. The user is pool creator, rent payer,
+ * fee payer and buyer; the mint is the only other signer. Rent is read from the cluster.
+ *
+ * @throws LaunchCoinError (typed `code`).
+ */
+export async function buildUserCoinLaunchTx(
+  params: BuildUserCoinLaunchTxParams,
+): Promise<UserCoinLaunchTx> {
+  const { connection, config, wallet } = params;
+  const mint = params.mint instanceof PublicKey ? params.mint : params.mint.publicKey;
+  const slippageBps = params.slippageBps ?? DEFAULT_FIRST_BUY_SLIPPAGE_BPS;
+  const computeUnitLimit = params.computeUnitLimit ?? LAUNCH_COIN_COMPUTE_UNITS;
+  const computeUnitPriceMicroLamports = params.computeUnitPriceMicroLamports ?? 0;
+  const budget = { units: computeUnitLimit, microLamports: computeUnitPriceMicroLamports };
+
+  // 1. Inputs.
+  assertCommonLaunchInputs({
+    keys: [
+      ['config', config],
+      ['wallet', wallet],
+      ['mint', mint],
+    ],
+    firstBuyLamports: params.firstBuyLamports,
+    name: params.name,
+    symbol: params.symbol,
+    metadataUri: params.metadataUri,
+    slippageBps,
+    budget,
+  });
+  assertDistinctKeys([
+    ['config', config],
+    ['wallet', wallet],
+    ['mint', mint],
+  ]);
+  const baseMint = mint;
+  const pool = deriveDbcPoolAddress(SOL_QUOTE_MINT, baseMint, config);
+
+  // 2. On-chain state.
+  const { poolConfig, client, program } = await loadLaunchState(
+    connection,
+    { config, pool, mint: baseMint },
+    assertUserCoinConfig,
+  );
+  const poolCreationFeeLamports = toBigInt(poolConfig.poolCreationFee);
+
+  // 3. Recent blockhash: the user signs right away, no durable nonce.
+  const latest = await connection.getLatestBlockhash('confirmed');
+
+  // 4. Quote and instructions.
+  const { transaction, quote, txBytes } = await assembleLaunch({
+    client,
+    poolConfig,
+    config,
+    mint: baseMint,
+    poolCreator: wallet,
+    payer: wallet,
+    buyer: wallet,
+    name: params.name,
+    symbol: params.symbol,
+    metadataUri: params.metadataUri,
+    firstBuyLamports: params.firstBuyLamports,
+    slippageBps,
+    budget,
+    nonce: null,
+    recentBlockhash: latest.blockhash,
+    lastValidBlockHeight: latest.lastValidBlockHeight,
+  });
+
+  // 5. Signers: exactly the wallet (fee payer, first) and the mint.
+  const signers = checkSigners(transaction, [wallet, baseMint], wallet);
+  if (!signers.ok) {
+    fail(
+      'UNEXPECTED_SIGNERS',
+      `unexpected signers: ${signers.actual.map((k) => k.toBase58()).join(', ')} (expected the wallet, fee payer, and the mint)`,
+    );
+  }
+
+  // 6. Size.
+  assertLaunchSize(txBytes);
+
+  // 7. Costs (rent read from the cluster): the wallet pays everything.
+  const costs = await computeLaunchCosts({
+    connection,
+    program,
+    transaction,
+    signatureCount: signers.actual.length,
+    nonce: null,
+    budget,
+    quote,
+    firstBuyLamports: params.firstBuyLamports,
+    poolCreationFeeLamports,
+    rentPayerIsOwner: true,
+  });
+
+  return {
+    transaction,
+    summary: {
+      config,
+      pool,
+      mint: baseMint,
+      wallet,
+      feeClaimer: poolConfig.feeClaimer,
+      name: params.name,
+      symbol: params.symbol,
+      metadataUri: params.metadataUri,
+      expectedTokensOut: quote ? quote.tokensOut : 0n,
+      minimumTokensOut: quote ? quote.minimumTokensOut : 0n,
+      slippageBps,
+      costs,
+      recentBlockhash: latest.blockhash,
+      lastValidBlockHeight: latest.lastValidBlockHeight,
+      computeUnitLimit,
+      computeUnitPriceMicroLamports,
+      signers: signers.actual,
       txBytes,
     },
   };

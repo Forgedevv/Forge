@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { CAMERA_PATH, chapterTransforms } from './camera-path';
+import * as T from 'three';
+import { createCharacter } from './character';
 import { CHAPTER_COUNT } from './motion';
 
 describe('camera path', () => {
@@ -17,7 +19,7 @@ describe('camera path', () => {
         frame.mobileFovOffset,
       ];
       values.forEach((value) => expect(Number.isFinite(value)).toBe(true));
-      expect(frame.camera.fov).toBeGreaterThan(20);
+      expect(frame.camera.fov).toBeGreaterThan(5);
       expect(frame.camera.fov + frame.mobileFovOffset).toBeLessThan(90);
       expect(frame.character.scale).toBeGreaterThan(0);
     }
@@ -31,9 +33,22 @@ describe('camera path', () => {
     }
   });
 
-  it('separates the chapter scenery origins', () => {
-    const targets = chapterTransforms().map((t) => t.target);
-    for (let i = 1; i < targets.length; i++)
-      expect(targets[i]!.distanceTo(targets[i - 1]!)).toBeGreaterThan(4);
+  it('keeps the opening dolly, dark descent and distant workshop view distinct', () => {
+    const transforms = chapterTransforms();
+    expect(transforms[0]!.target.distanceTo(transforms[1]!.target)).toBeLessThan(2);
+    expect(transforms[1]!.camera.z - transforms[0]!.camera.z).toBeGreaterThan(3);
+    expect(transforms[1]!.camera.y - transforms[2]!.camera.y).toBeGreaterThan(10);
+    expect(transforms[3]!.camera.distanceTo(transforms[3]!.target)).toBeGreaterThan(25);
+    expect(transforms[3]!.fov).toBeLessThan(20);
+  });
+
+  it('grounds the local pilot on the workshop grid before its jump animation', () => {
+    const { root } = createCharacter();
+    const transform = chapterTransforms()[3]!;
+    root.position.copy(transform.position);
+    root.quaternion.copy(transform.quaternion);
+    root.scale.setScalar(transform.scale);
+    const bounds = new T.Box3().setFromObject(root);
+    expect(bounds.min.y).toBeCloseTo(transform.target.y - 1.18, 2);
   });
 });

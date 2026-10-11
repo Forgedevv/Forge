@@ -149,6 +149,11 @@ export interface UploadClientOptions {
   slug: string;
   /** `R2_PUBLIC_URL`: when set, every public URL must live under it. */
   publicBaseUrl?: string | null;
+  /**
+   * Extra headers for the two FORGE API calls only (ticket and complete), e.g. the per-launchpad
+   * server token (`server-relay.ts`). Never sent with the presigned storage PUT.
+   */
+  forgeHeaders?: Record<string, string>;
   fetch?: UploadFetch;
   /** Extra attempts on network errors and 5xx. Default 2. */
   retries?: number;
@@ -242,6 +247,7 @@ export function createUploadClient(options: UploadClientOptions): UploadClient {
   const sleep = options.sleep ?? defaultSleep;
   const now = options.now ?? Date.now;
   const root = `${base}/api/launchpads/${encodeURIComponent(options.slug)}/uploads`;
+  const forgeHeaders = { ...(options.forgeHeaders ?? {}), 'Content-Type': 'application/json' };
 
   /** Sends with retries on network errors and 5xx. Returns the last response. */
   async function send(
@@ -319,7 +325,7 @@ export function createUploadClient(options: UploadClientOptions): UploadClient {
       // 1. Ticket.
       const res = await send(root, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: forgeHeaders,
         body: JSON.stringify(body),
       });
       if (!res.ok) await refuse(res);
@@ -354,7 +360,7 @@ export function createUploadClient(options: UploadClientOptions): UploadClient {
       // 3. Complete: FORGE verifies the stored image and writes the metadata.
       const done = await send(`${root}/${encodeURIComponent(ticket.uploadId)}/complete`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: forgeHeaders,
         body: JSON.stringify({ mint: body.mint }),
       });
       if (!done.ok) await refuse(done);

@@ -10,10 +10,12 @@ import { LaunchScreen } from './launch';
 import { ChatScreen } from './chat';
 import { LoginPanel } from './session';
 import { GatingScreen } from './gating';
-import { safeUrl } from './safe-url';
+import { safeUrl, siteHost } from './safe-url';
 
 const navigation = vi.hoisted(() => ({ push: vi.fn(), replace: vi.fn() }));
 vi.mock('next/navigation', () => ({ useRouter: () => navigation }));
+// Full-screen renders: allow for a busy machine when the whole suite runs in parallel.
+vi.setConfig({ testTimeout: 30_000 });
 beforeEach(() => {
   vi.useFakeTimers();
   vi.setSystemTime(new Date('2026-10-07T10:00:00Z'));
@@ -103,9 +105,57 @@ describe('required frontend components', () => {
     fireEvent.click(button);
     fireEvent.click(button);
     expect(claim).toHaveBeenCalledTimes(1);
+    await advance(300);
+    fireEvent.click(screen.getByRole('button', { name: 'Sign this claim' }));
     expect(done).not.toHaveBeenCalled();
     await advance(1800);
     expect(done).toHaveBeenCalledTimes(1);
+    expect(controller.snapshot().pads[0]!.claimablePartnerFeesLamports).toBe('0');
+  });
+  it('shows what the claim collects and costs before signing, and cancelling signs nothing', async () => {
+    const done = vi.fn();
+    const { controller } = mount(
+      'dashboard:one',
+      <ClaimButton launchpadId="demo-pad" lamports="1285000000" onSuccess={done} />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Claim my fees' }));
+    await advance(300);
+    const review = screen.getByRole('group', { name: 'Claim review' });
+    expect(review).toHaveTextContent('This claim collects');
+    expect(review).toHaveTextContent('1.285 SOL');
+    expect(review).toHaveTextContent('Network fee and deposits');
+    expect(review).toHaveTextContent('0.002 SOL');
+    expect(screen.queryByText('Sign in your wallet')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    await advance(2000);
+    expect(screen.getByRole('button', { name: 'Claim my fees' })).toBeEnabled();
+    expect(done).not.toHaveBeenCalled();
+    expect(controller.snapshot().pads[0]!.claimablePartnerFeesLamports).toBe('1285000000');
+  });
+  it('claims pool by pool while pools remain, each reviewed and signed separately', async () => {
+    const done = vi.fn();
+    const { controller } = mount(
+      'dashboard:claim-multi',
+      <ClaimButton launchpadId="demo-pad" lamports="1285000000" onSuccess={done} />,
+    );
+    const claim = vi.spyOn(controller.client, 'claimPartnerFees');
+    fireEvent.click(screen.getByRole('button', { name: 'Claim my fees' }));
+    await advance(300);
+    let review = screen.getByRole('group', { name: 'Claim review' });
+    expect(review).toHaveTextContent('0.6425 SOL');
+    expect(review).toHaveTextContent('Pools left after this one');
+    fireEvent.click(screen.getByRole('button', { name: 'Sign this claim' }));
+    await advance(1700);
+    expect(done).not.toHaveBeenCalled();
+    await advance(300);
+    review = screen.getByRole('group', { name: 'Claim review' });
+    expect(review).toHaveTextContent('0.6425 SOL');
+    expect(review).not.toHaveTextContent('Pools left after this one');
+    fireEvent.click(screen.getByRole('button', { name: 'Sign this claim' }));
+    await advance(1800);
+    expect(claim).toHaveBeenCalledTimes(2);
+    expect(done).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole('list', { name: 'Claims made' }).children).toHaveLength(2);
     expect(controller.snapshot().pads[0]!.claimablePartnerFeesLamports).toBe('0');
   });
   it('disables claiming when there is nothing to claim', () => {
@@ -167,6 +217,20 @@ describe('screen interactions', () => {
     await advance(500);
     fireEvent.click(screen.getByRole('button', { name: /Continue to the chat/ }));
     expect(screen.getByText('Chat unlocked')).toBeInTheDocument();
+  });
+  it('shows the hostname of a real site URL and refuses unsafe ones', () => {
+    expect(siteHost('https://moonpad.clients.example/')).toBe('moonpad.clients.example');
+    expect(siteHost('/dev/preview')).toBe('/dev/preview');
+    expect(siteHost('javascript:alert(1)')).toBeNull();
+    expect(siteHost(null)).toBeNull();
+    render(
+      <SpecSummary
+        spec={fullSpec}
+        validation={{ complete: true, errors: {} }}
+        siteUrl="https://orbit.clients.example"
+      />,
+    );
+    expect(screen.getByText('orbit.clients.example')).toBeInTheDocument();
   });
   it('rejects unsafe preview and image links', () => {
     expect(safeUrl('javascript:alert(1)')).toBeNull();

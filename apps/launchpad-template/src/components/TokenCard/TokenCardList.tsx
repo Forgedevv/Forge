@@ -6,6 +6,8 @@ import { useDataStream } from '@/forge/data/DataStreamProvider';
 import { cn } from '@/lib/utils';
 import { TokenCard } from './TokenCard';
 import { TokenCardSkeleton } from './TokenCard';
+import { content } from '@/content';
+import Link from 'next/link';
 
 const ROWS_OVERSCAN = 0;
 const ROW_HEIGHT_ESTIMATE = 90; // px for cards
@@ -86,11 +88,20 @@ export const TokenCardList = memo(
                 }}
               />
             ))
+          ) : status === 'error' ? (
+            <div className="launchpad-market-empty" role="status">
+              <span className="launchpad-empty-mark" aria-hidden="true">↻</span>
+              <p>{content.strings.unavailableTokens}</p>
+              <span>{content.strings.unavailableTokensBody}</span>
+              <button type="button" className="launchpad-hero-link" onClick={() => window.location.reload()}>{content.strings.retry}</button>
+            </div>
           ) : !data || data.length === 0 ? (
             (emptyState ?? (
-              <div className="col-span-full py-12 text-center">
-                <div className="text-neutral-500">No tokens matching this criteria</div>
-                <div className="text-neutral-600">Adjust filters!</div>
+              <div className="launchpad-market-empty">
+                <span className="launchpad-empty-mark" aria-hidden="true">✳</span>
+                <p>{content.strings.emptyTokens}</p>
+                <span>{content.strings.emptyTokensBody}</span>
+                <Link href="/create-pool" className="launchpad-hero-link">{content.strings.createCoin}<span aria-hidden="true">↗</span></Link>
               </div>
             ))
           ) : (

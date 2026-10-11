@@ -16,9 +16,10 @@ import { common } from './content/common';
 import { safeUrl } from './safe-url';
 
 export function DetailScreen({ launchpadId }: { launchpadId: string }) {
-  const { launchpad, loading } = useWebClient().useLaunchpad(launchpadId);
+  const { launchpad, loading, error, refresh } = useWebClient().useLaunchpad(launchpadId);
   if (loading) return <Loading />;
-  if (!launchpad) return <ErrorNotice message={common.missing} />;
+  if (!launchpad)
+    return <ErrorNotice message={error ?? common.missing} onRetry={error ? refresh : undefined} />;
   return (
     <>
       <Link className="fw-back" href="/dashboard">
@@ -34,7 +35,11 @@ export function DetailScreen({ launchpadId }: { launchpadId: string }) {
         <Card>
           <h2>{copy.settings}</h2>
           <p className="fw-notice">{copy.final}</p>
-          <SpecSummary spec={launchpad.spec} validation={{ complete: true, errors: {} }} />
+          <SpecSummary
+            spec={launchpad.spec}
+            validation={{ complete: true, errors: {} }}
+            siteUrl={launchpad.siteUrl}
+          />
           <div className="fw-onchain-addresses">
             {(
               [

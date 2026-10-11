@@ -622,6 +622,118 @@ export async function buildCreateNonceAccountTx(
   };
 }
 
+/** Longest seed of an address derived with `createWithSeed` (system program limit), in bytes. */
+export const MAX_NONCE_SEED_BYTES = 32;
+
+/**
+ * Checks a nonce account seed: a string of 1 to 32 UTF-8 bytes.
+ * @throws RangeError otherwise.
+ */
+export function assertNonceSeed(seed: string): void {
+  if (typeof seed !== 'string' || seed.length === 0) {
+    throw new RangeError('the nonce seed must be a non-empty string');
+  }
+  const bytes = Buffer.byteLength(seed, 'utf8');
+  if (bytes > MAX_NONCE_SEED_BYTES) {
+    throw new RangeError(
+      `the nonce seed is ${bytes} bytes, at most ${MAX_NONCE_SEED_BYTES} are allowed`,
+    );
+  }
+}
+
+/**
+ * Address of the nonce account created by `buildCreateNonceAccountWithSeedTx` for `base` and
+ * `seed` (`createWithSeed(base, seed, SystemProgram)`): deterministic, so it can be re-derived
+ * at any time, e.g. after a lost journal.
+ *
+ * @throws RangeError on an invalid seed.
+ */
+export async function deriveSeededNonceAccount(base: PublicKey, seed: string): Promise<PublicKey> {
+  assertNonceSeed(seed);
+  return PublicKey.createWithSeed(base, seed, SystemProgram.programId);
+}
+
+export interface BuildCreateNonceAccountWithSeedTxParams {
+  connection: Pick<Connection, 'getMinimumBalanceForRentExemption' | 'getLatestBlockhash'>;
+  /** Base key of the address derivation; signs (`createAccountWithSeed`). */
+  base: PublicKey;
+  /**
+   * Seed, 1 to 32 UTF-8 bytes. Same base and seed, same address: derive the seed from something
+   * stable (e.g. the launchpad UUID without its dashes is exactly 32 characters).
+   */
+  seed: string;
+  /** Who may advance the nonce (and therefore must sign every transaction that uses it). */
+  authority: PublicKey;
+  /** Pays the rent and the fee; signs. Defaults to `base`. */
+  payer?: PublicKey;
+  /** Optional priority fee; no compute budget instruction is added when absent. */
+  computeUnitPriceMicroLamports?: number;
+}
+
+export interface CreateNonceAccountWithSeedTx extends CreateNonceAccountTx {
+  base: PublicKey;
+  seed: string;
+}
+
+/**
+ * Unsigned transaction creating and initializing a durable nonce account at an address derived
+ * from `base` and `seed` (`SystemProgram.createNonceAccount` with `basePubkey` / `seed`, i.e.
+ * `createAccountWithSeed` + `nonceInitialize`). Unlike `buildCreateNonceAccountTx`, no fresh
+ * keypair has to be stored: the signer can re-derive the address with `deriveSeededNonceAccount`
+ * and read it back with `readNonce`. The rent is read from the cluster. It does not check that
+ * the account is free: read it first (creating it twice fails on-chain, nothing is lost but the
+ * fee).
+ *
+ * Signers: the payer, and the base when it is another key.
+ *
+ * @throws RangeError on an invalid seed or priority fee.
+ */
+export async function buildCreateNonceAccountWithSeedTx(
+  params: BuildCreateNonceAccountWithSeedTxParams,
+): Promise<CreateNonceAccountWithSeedTx> {
+  const { base, seed, authority } = params;
+  const payer = params.payer ?? base;
+  for (const [name, key] of [
+    ['base', base],
+    ['authority', authority],
+    ['payer', payer],
+  ] as const) {
+    if (!(key instanceof PublicKey)) throw new TypeError(`${name} must be a PublicKey`);
+  }
+  const nonceAccount = await deriveSeededNonceAccount(base, seed);
+  const budget =
+    params.computeUnitPriceMicroLamports !== undefined
+      ? computeBudgetInstructions({
+          units: 10_000,
+          microLamports: params.computeUnitPriceMicroLamports,
+        })
+      : [];
+  const rent = await params.connection.getMinimumBalanceForRentExemption(NONCE_ACCOUNT_LENGTH);
+  const { blockhash, lastValidBlockHeight } =
+    await params.connection.getLatestBlockhash('confirmed');
+  const transaction = new Transaction({ feePayer: payer, blockhash, lastValidBlockHeight });
+  transaction.add(
+    ...budget,
+    SystemProgram.createNonceAccount({
+      fromPubkey: payer,
+      noncePubkey: nonceAccount,
+      basePubkey: base,
+      seed,
+      authorizedPubkey: authority,
+      lamports: rent,
+    }),
+  );
+  return {
+    transaction,
+    nonceAccount,
+    base,
+    seed,
+    rentLamports: BigInt(rent),
+    lastValidBlockHeight,
+    signers: base.equals(payer) ? [payer] : [payer, base],
+  };
+}
+
 // ---------------------------------------------------------------------------------------------
 // Rent exemption
 // ---------------------------------------------------------------------------------------------
