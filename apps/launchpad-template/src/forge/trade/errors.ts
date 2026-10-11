@@ -12,6 +12,8 @@ export type TradeErrorCode =
   | 'simulation_failed'
   | 'tx_failed'
   | 'confirm_timeout'
+  | 'previous_trade_pending'
+  | 'previous_trade_landed'
   | 'rate_limited'
   | 'network'
   | 'not_configured'
@@ -37,6 +39,10 @@ export const TRADE_ERROR_MESSAGES: Record<TradeErrorCode, string> = {
   tx_failed: 'The transaction failed on-chain.',
   confirm_timeout:
     'The transaction was sent but is not confirmed yet. Check the explorer link before retrying.',
+  previous_trade_pending:
+    'Your previous trade may still land. Wait until it is confirmed or expires (about a minute) before trading again.',
+  previous_trade_landed:
+    'Your previous trade went through. Check your balance and the explorer link before trading again.',
   rate_limited: 'The network is busy. Wait a few seconds and try again.',
   network: 'Network error while reaching the Solana network. Check your connection and try again.',
   not_configured: 'Trading is not configured on this site.',
