@@ -69,7 +69,10 @@ export interface LaunchBuildParams {
 
 export interface RouteCore {
   readonly dbcProgramId: PublicKey;
-  /** Referral token account passed to the first buy (null: none). Part of the launch inputs. */
+  /**
+   * Referral token account passed to the first buy: always null (core refuses a referral on the
+   * first buy, REFERRAL_UNSUPPORTED). Kept in the launch inputs hash.
+   */
   readonly firstBuyReferral: PublicKey | null;
   /** sha256 (hex) of the exact config parameters core would send for this spec (pure). */
   configParamsHash(spec: LaunchpadSpec, kind: ConfigKind): string;
@@ -94,11 +97,18 @@ export interface RouteCore {
     nonceAccount: PublicKey,
     authority: PublicKey,
     commitment: ReadCommitment,
+    /** When set, the RPC refuses to answer from a state older than this slot. */
+    minContextSlot?: number,
   ): Promise<NonceState | null>;
   /** Unsigned launch transaction with the durable nonce (nonce authority = creator, rent paid by
-   * the owner, first-buy referral = `firstBuyReferral`). */
+   * the owner, no first-buy referral). */
   buildLaunchCoinTx(params: LaunchBuildParams): Promise<LaunchCoinTx>;
-  getAccount(address: PublicKey, commitment: ReadCommitment): Promise<AccountSummary | null>;
+  /** The account, or null; with `minContextSlot`, read from a node at least at that slot. */
+  getAccount(
+    address: PublicKey,
+    commitment: ReadCommitment,
+    minContextSlot?: number,
+  ): Promise<AccountSummary | null>;
   /**
    * Which of `addresses` exist, read from a node whose state is at least `minContextSlot` (the
    * RPC refuses to answer from an older state).
@@ -141,21 +151,19 @@ export function sha256Hex(text: string): string {
 
 export interface ForgeRouteCoreOptions {
   connection: Connection;
-  /**
-   * Meteora referral token account of the client's first buy. Default null (no referral), on
-   * purpose: on devnet (2026-10-11, scripts/devnet-tests/reports/signer-routes.md) a first buy that
-   * carries a referral account does NOT get the first-swap minimum fee: it pays the anti-sniper
-   * fee and fails on slippage, even at 10%. Without a referral it lands exactly at core's quote.
-   * The referral would only earn 20% of the protocol share of a 1% fee on one swap.
-   * Core's own default (FORGE_METEORA_REFERRAL_ACCOUNT from the environment) is never used here:
-   * the route always passes the account explicitly (core never drops an explicit one).
-   */
-  firstBuyReferral?: PublicKey | null;
 }
+
+/**
+ * No referral on the client's first buy, ever: on devnet (2026-10-11,
+ * scripts/devnet-tests/reports/signer-routes.md) a first buy carrying a referral account does NOT
+ * get the first-swap minimum fee (it pays the anti-sniper fee and fails on slippage, even at 10%),
+ * and core now refuses one (REFERRAL_UNSUPPORTED). It is passed explicitly as null.
+ */
+const FIRST_BUY_REFERRAL = null;
 
 export function createForgeRouteCore(options: ForgeRouteCoreOptions): RouteCore {
   const { connection } = options;
-  const firstBuyReferral = options.firstBuyReferral ?? null;
+  const firstBuyReferral = FIRST_BUY_REFERRAL;
 
   return {
     dbcProgramId: DYNAMIC_BONDING_CURVE_PROGRAM_ID,
@@ -198,12 +206,12 @@ export function createForgeRouteCore(options: ForgeRouteCoreOptions): RouteCore 
       };
     },
 
-    async readNonce(nonceAccount, authority, commitment) {
+    async readNonce(nonceAccount, authority, commitment, minContextSlot) {
       // One read gives both the account and the slot of the answer; core decodes and checks it.
-      const { context, value } = await connection.getAccountInfoAndContext(
-        nonceAccount,
+      const { context, value } = await connection.getAccountInfoAndContext(nonceAccount, {
         commitment,
-      );
+        ...(minContextSlot !== undefined ? { minContextSlot } : {}),
+      });
       if (!value) return null;
       const info = await coreReadNonce({ getAccountInfo: async () => value }, nonceAccount, {
         expectedAuthority: authority,
@@ -230,8 +238,11 @@ export function createForgeRouteCore(options: ForgeRouteCoreOptions): RouteCore 
       });
     },
 
-    async getAccount(address, commitment) {
-      const info = await connection.getAccountInfo(address, commitment);
+    async getAccount(address, commitment, minContextSlot) {
+      const info = await connection.getAccountInfo(address, {
+        commitment,
+        ...(minContextSlot !== undefined ? { minContextSlot } : {}),
+      });
       if (!info) return null;
       return { owner: info.owner, lamports: BigInt(info.lamports), dataLength: info.data.length };
     },

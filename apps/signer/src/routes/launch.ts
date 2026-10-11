@@ -2,12 +2,12 @@
  * POST /v1/launch-coin/prepare { jobId } -> { partiallySignedTx, mint, summary, details }
  * (docs/INTERFACES.md §7; devnet test 3; core pool.ts).
  *
- * 1. Same checks as /v1/configs (context.ts); the two configs must be created (journal) and the
- *    coin config must still match the spec.
+ * 1. Same checks as /v1/configs (context.ts, the payment proven on-chain by payment.ts); the two
+ *    configs must be created (journal) and the coin config must still match the spec.
  * 2. The launchpad's durable nonce account is created once (accounts.ts), paid by the payer
  *    wallet, with the creator wallet as nonce authority (it already signs: no extra signature).
- * 3. core builds the launch transaction (pool + the client's first buy, durable nonce, FORGE
- *    referral by default); the launch policy checks it; a one-time mint key and the creator
+ * 3. core builds the launch transaction (pool + the client's first buy, durable nonce, no
+ *    referral: core refuses one on the first buy); the launch policy checks it; a one-time mint key and the creator
  *    wallet sign; the client (fee payer, buyer) is the only signature left.
  * 4. The partially signed transaction is journaled per job, the mint is written to the launchpad
  *    row (compare-and-set), and the transaction is returned with the owner summary.
@@ -18,7 +18,9 @@
  * but only after proving, at finalized commitment from a node past the slot the advance was seen
  * at, that the advance was not the launch itself (mint and pool absent, no successful transaction
  * on the mint). A launched coin is refused (409), never prepared twice. The signer never sends
- * this transaction: the client signs and sends it (apps/web).
+ * this transaction: the client signs and sends it (apps/web). An operator can revoke a handed-out
+ * transaction (`--revoke-launch <jobId>`, revoke.ts): until its nonce advance lands, prepare
+ * answers 503 `launch_revoking`, then rebuilds.
  */
 import { PublicKey } from '@solana/web3.js';
 import {
@@ -33,17 +35,18 @@ import {
   assertRoutesNotPaused,
   creationEnv,
   ensureCreatorWallet,
-  loadOnchainSetup,
   metadataUriFor,
   payerOf,
   recordLaunchpadColumns,
   type KeyRefWithAddress,
   type RouteRuntime,
+  withLaunchpadLock,
 } from './context.js';
 import { createEphemeralKey } from './ephemeral.js';
 import { fail } from './errors.js';
 import type { LaunchJournalEntry, NonceJournalEntry } from './journal.js';
 import { canonicalJson, sha256Hex } from './onchain.js';
+import { assertCreationPaid } from './payment.js';
 import { assertLaunchCoinTx } from './policy.js';
 import type { SignerLaunchPrepareResult } from './schemas.js';
 import { nonceCreationTarget, nonceParamsHash } from './targets.js';
@@ -94,11 +97,11 @@ export async function handlePrepareLaunch(
   rt: RouteRuntime,
   jobId: string,
 ): Promise<SignerLaunchPrepareResult> {
-  const outside = await loadOnchainSetup(rt, jobId);
-  return rt.locks.run(outside.launchpad.id, async () => {
-    const { launchpad, spec, owner } = await loadOnchainSetup(rt, jobId);
+  return withLaunchpadLock(rt, jobId, async (setup) => {
+    const { launchpad, spec, owner } = setup;
     const launchpadId = launchpad.id;
     const { core } = rt;
+    await assertCreationPaid(rt, setup);
 
     // 1. The configs this launch depends on.
     const configs = await rt.journals.configs.get(launchpadId);
@@ -199,6 +202,10 @@ export async function handlePrepareLaunch(
       const previousMint = new PublicKey(entry.mint);
       const previousPool = core.poolAddress(coinConfig, previousMint);
       if (current.nonce === entry.nonceValue) {
+        // The operator revoked this transaction (revoke.ts): never hand it out again; once the
+        // nonce moved, the rebuild below takes over.
+        const revocation = await rt.journals.revocations.get(jobId);
+        if (revocation && revocation.nonceValue === entry.nonceValue) fail(503, 'launch_revoking');
         if (entry.inputsHash !== inputsHash) {
           await rt.alert(
             'high',
@@ -375,20 +382,10 @@ export async function handlePrepareLaunch(
           pool: next.details.pool,
           nonceAccount: next.details.nonceAccount,
           referral: summary.referralSource,
-          referralOmittedForSize: summary.referralOmittedForSize,
           txBytes: summary.txBytes,
         },
         'launch transaction prepared',
       );
-      if (summary.referralOmittedForSize) {
-        await rt.alert(
-          'normal',
-          'launch_referral_omitted',
-          'The FORGE referral was left out of a launch transaction to fit the size limit',
-          { launchpadId, jobId },
-          `launch_referral_omitted:${jobId}`,
-        );
-      }
       return resultOf(next);
     } finally {
       mintKey.destroy();

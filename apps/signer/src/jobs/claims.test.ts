@@ -17,7 +17,9 @@ import {
   type ClaimsConfig,
   type ClaimsDeps,
 } from './claims.js';
+import { PayerReservations } from './reservations.js';
 import {
+  Mutex,
   createMemoryJournal,
   createPostgrestClient,
   silentJobLogger,
@@ -246,6 +248,52 @@ describe('claims: refusals and alerts', () => {
     expect(report.outcomes[0]).toMatchObject({ result: 'skipped', reason: 'payer_low_balance' });
     expect(t.alerter.codes()).toContain('claim_payer_low_balance');
     expect(t.chain.calls).not.toContain('sendRawTransaction');
+  });
+
+  it('checks, signs and sends a payer-paid claim only under the payer lock', async () => {
+    const t = await setup();
+    const payerLock = new Mutex();
+    let release!: () => void;
+    const held = payerLock.runExclusive(() => new Promise<void>((r) => (release = r)));
+    const run = t.job({ payerLock }).runOnce();
+    await new Promise((r) => setTimeout(r, 200));
+    // Blocked before the balance check: nothing built, signed or sent while a route holds it.
+    expect(t.chain.calls).not.toContain('sendRawTransaction');
+    expect(t.chain.calls).not.toContain('getBalance');
+    release();
+    await held;
+    const report = await run;
+    expect(report.outcomes[0]).toMatchObject({ result: 'claimed' });
+    expect(payerLock.held).toBe(false); // released before the confirmation wait ended
+  });
+
+  it('does not take the payer lock when the creator wallet pays', async () => {
+    const t = await setup({ config: { feePayer: 'creator' } });
+    const payerLock = new Mutex();
+    let release!: () => void;
+    const held = payerLock.runExclusive(() => new Promise<void>((r) => (release = r)));
+    const report = await t.job({ payerLock }).runOnce();
+    expect(report.outcomes[0]).toMatchObject({ result: 'claimed' });
+    release();
+    await held;
+  });
+
+  it('does not count the payer lamports reserved by creations in flight', async () => {
+    const t = await setup();
+    const payerReservations = new PayerReservations();
+    const lastValidBlockHeight = (await t.chain.getBlockHeight('confirmed')) + 1_000;
+    payerReservations.reserve('in-flight-creation', SOL - 1_000_000n, lastValidBlockHeight);
+    const report = await t.job({ payerReservations }).runOnce();
+    expect(report.outcomes[0]).toMatchObject({ result: 'skipped', reason: 'payer_low_balance' });
+    expect(t.alerter.codes()).toContain('claim_payer_low_balance');
+    expect(t.chain.calls).not.toContain('sendRawTransaction');
+    // Once its blockhash is past the finalized height, the reservation no longer counts.
+    t.chain.advance(5_000);
+    expect(
+      await payerReservations.outstanding(t.chain, { attempts: 1, baseDelayMs: 1, maxDelayMs: 1 }),
+    ).toBe(0n);
+    const next = await t.job({ payerReservations }).runOnce();
+    expect(next.outcomes[0]).toMatchObject({ result: 'claimed' });
   });
 
   it('sends a one-time notice for graduated pools and still claims the DBC share', async () => {

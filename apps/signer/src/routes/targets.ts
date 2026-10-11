@@ -45,8 +45,8 @@ export function configCreationTarget(
         config: address,
         owner: input.owner,
       }),
-    async exists(address) {
-      const account = await core.getAccount(address, 'confirmed');
+    async exists(address, read = { commitment: 'confirmed' }) {
+      const account = await core.getAccount(address, read.commitment, read.minContextSlot);
       return !!account && account.owner.equals(core.dbcProgramId) && account.dataLength > 0;
     },
   };
@@ -80,13 +80,19 @@ export function nonceCreationTarget(
         authority: input.authority,
         rentLamports,
       }),
-    async exists(address) {
-      const account = await core.getAccount(address, 'confirmed');
+    async exists(address, read = { commitment: 'confirmed' }) {
+      const account = await core.getAccount(address, read.commitment, read.minContextSlot);
       if (!account) return false;
       if (!account.owner.equals(SystemProgram.programId)) return false;
       if (account.dataLength !== NONCE_ACCOUNT_LENGTH) return false;
       // Initialized, with the expected authority (throws on another authority).
-      return (await core.readNonce(address, input.authority, 'confirmed')) !== null;
+      const nonce = await core.readNonce(
+        address,
+        input.authority,
+        read.commitment,
+        read.minContextSlot,
+      );
+      return nonce !== null;
     },
   };
 }

@@ -37,6 +37,7 @@ import {
   rpcFromConnection,
   sendAlert,
 } from '../jobs/shared.js';
+import { PayerReservations } from '../jobs/reservations.js';
 import { createExpectedSignatures } from '../jobs/watch.js';
 import {
   createFileRouteJournals,
@@ -206,6 +207,7 @@ export async function createSignerRuntime(options: SignerRuntimeOptions): Promis
       jobLogger: (name) => createJobLogger(logger, name),
       walletLock: new Mutex(),
       payerLock: new Mutex(),
+      payerReservations: new PayerReservations(),
       expected,
       onBeforeSend: (signature) => expected.expect(signature),
       journalDir: config.journalDir,
@@ -237,6 +239,11 @@ export async function createSignerRuntime(options: SignerRuntimeOptions): Promis
           options.routeCore ?? createForgeRouteCore({ connection }),
         rpc,
         keystore,
+        // The creation payment is proven on-chain (finalized) before any payer spend.
+        payments: {
+          cashbox: addresses.cashbox,
+          verifyPayment: (signature, expected) => context.core.verifyPayment(signature, expected),
+        },
         flags,
         journals: createFileRouteJournals(config.journalDir),
         alerter,
@@ -245,9 +252,11 @@ export async function createSignerRuntime(options: SignerRuntimeOptions): Promis
           metadataUriTemplate: config.coinMetadataUrl,
           computeUnitPriceMicroLamports: config.priorityFeeMicroLamports,
           paused: config.routesPaused,
+          maxLaunchpadsPerDay: config.maxLaunchpadsPerDay,
         },
         onBeforeSend: context.onBeforeSend,
         payerLock: context.payerLock,
+        payerReservations: context.payerReservations,
         now,
       },
       { health },

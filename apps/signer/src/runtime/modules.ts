@@ -16,6 +16,7 @@ import type pino from 'pino';
 import type { QueueingAlerter } from '../alerts.js';
 import type { SignerCore } from '../core-adapter.js';
 import type { Keystore } from '../keystore.js';
+import type { PayerReservations } from '../jobs/reservations.js';
 import {
   createCashboxJob,
   cashboxConfigFromEnv,
@@ -107,8 +108,10 @@ export interface SignerJobContext {
   jobLogger(name: string): JobLogger;
   /** Shared by every job that spends from the cashbox or a bot wallet. */
   walletLock: Mutex;
-  /** Shared by the signing routes (payer wallet). */
+  /** Shared by everything that spends from the payer wallet: routes, payer-paid claims, payer conversions. */
   payerLock: Mutex;
+  /** Payer lamports reserved by the routes' creations in flight (subtracted from its balance). */
+  payerReservations: PayerReservations;
   expected: ExpectedSignatures;
   onBeforeSend: BeforeSendHook;
   journalDir: string;
@@ -141,6 +144,8 @@ export const claimsModule: SignerJobModule = {
       logger: ctx.jobLogger('claims'),
       config,
       onBeforeSend: ctx.onBeforeSend,
+      payerLock: ctx.payerLock,
+      payerReservations: ctx.payerReservations,
     });
     return { runOnce: () => job.runOnce(), delayMs: () => intervalMs };
   },
@@ -282,8 +287,16 @@ export const convertModule: SignerJobModule = {
         ctx.onBeforeSend(base58Encode(first));
       },
     });
+    // Every conversion holds the wallet lock; one of the payer wallet also holds the payer lock
+    // (shared with the signing routes and the claims). Order: wallet lock, then payer lock.
+    const payerAddress = ctx.payer.publicKey.toBase58();
     const lockedSender: SwapSender = {
-      send: (input) => ctx.walletLock.runExclusive(() => sender.send(input)),
+      send: (input) =>
+        ctx.walletLock.runExclusive(() =>
+          input.owner === payerAddress
+            ? ctx.payerLock.runExclusive(() => sender.send(input))
+            : sender.send(input),
+        ),
     };
     const deps: ConvertDeps = {
       jupiter: createJupiterClient({

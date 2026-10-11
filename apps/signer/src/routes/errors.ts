@@ -9,6 +9,7 @@ import {
   DurableNonceError,
   ForgeAddressError,
   LaunchCoinError,
+  PaymentError,
   RentExemptionError,
   TransactionEncodingError,
   ValidationError,
@@ -47,7 +48,8 @@ const LAUNCH_CODES: Record<string, ClassifiedError> = {
   CONFIG_MISMATCH: { status: 409, code: 'coin_config_mismatch', alert: true },
   POOL_EXISTS: { status: 409, code: 'pool_exists', alert: true },
   MINT_EXISTS: { status: 409, code: 'mint_exists', alert: true },
-  REFERRAL_INVALID: { status: 503, code: 'referral_invalid', alert: true },
+  // Core refuses any referral on the first buy; the routes never pass one: a wiring bug.
+  REFERRAL_UNSUPPORTED: { status: 500, code: 'referral_unsupported', alert: true },
   RENT_PAYER_REFUSED: { status: 409, code: 'rent_payer_refused', alert: true },
   FIRST_BUY_EXCEEDS_CURVE: { status: 422, code: 'first_buy_exceeds_curve', alert: false },
   QUOTE_FAILED: { status: 502, code: 'first_buy_quote_failed', alert: true },
@@ -77,6 +79,12 @@ export function classifyError(err: unknown): ClassifiedError {
     return { status: 500, code: 'tx_encoding_failed', alert: true };
   }
   if (err instanceof ForgeAddressError) return { status: 500, code: 'address_config', alert: true };
+  if (err instanceof PaymentError) {
+    // Input refused by core (job id, amount): the payment cannot be the one of this job.
+    return err.code === 'invalid_job_id' || err.code === 'invalid_amount'
+      ? { status: 409, code: 'payment_not_verified', alert: true }
+      : { status: 500, code: 'payment_verifier_error', alert: true };
+  }
   if (isKeystoreError(err)) return { status: 500, code: 'keystore_error', alert: true };
   if (isJobError(err)) {
     switch (err.code) {

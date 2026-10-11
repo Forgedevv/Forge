@@ -11,6 +11,7 @@ import { signRequest } from '../server.js';
 import { RuntimeConfigError, parseRuntimeEnv } from './env.js';
 import { buybackJobModule, type BuybackDepsLike, type BuybackLibrary } from './buyback.js';
 import type { SignerJobContext, SignerJobModule } from './modules.js';
+import { runRevokeLaunch } from './operator.js';
 import { createSignerRuntime, type SignerRuntime } from './runtime.js';
 import { JobScheduler, statusOf } from './scheduler.js';
 
@@ -198,6 +199,63 @@ describe('runtime environment', () => {
     );
     expect(() => parseRuntimeEnv({ ...env, SOLANA_CLUSTER: 'testnet' })).toThrow(/SOLANA_CLUSTER/);
   });
+
+  it('refuses mainnet-beta or production without Telegram alerting, naming no value', () => {
+    const telegram = { TELEGRAM_BOT_TOKEN: 'bot-token-SECRETVALUE', TELEGRAM_CHAT_ID: '-100123' };
+    // development / test on devnet: alerts may stay in the log.
+    expect(() => parseRuntimeEnv(baseEnv())).not.toThrow();
+    expect(() => parseRuntimeEnv(baseEnv({ NODE_ENV: 'development' }))).not.toThrow();
+    for (const overrides of [
+      { NODE_ENV: 'production' },
+      { NODE_ENV: undefined }, // unset = production (fail closed)
+      { NODE_ENV: 'staging' },
+      { SOLANA_CLUSTER: 'mainnet-beta', NODE_ENV: 'test' },
+    ]) {
+      let error: unknown;
+      try {
+        parseRuntimeEnv(baseEnv(overrides));
+      } catch (e) {
+        error = e;
+      }
+      expect(error, JSON.stringify(overrides)).toBeInstanceOf(RuntimeConfigError);
+      const text = (error as RuntimeConfigError).problems.join('\n');
+      expect(text).toContain('TELEGRAM_BOT_TOKEN');
+      expect(text).toContain('TELEGRAM_CHAT_ID');
+      // One of the two set: only the other is reported, never the value.
+      expect(() =>
+        parseRuntimeEnv(baseEnv({ ...overrides, TELEGRAM_BOT_TOKEN: telegram.TELEGRAM_BOT_TOKEN })),
+      ).toThrow(/TELEGRAM_CHAT_ID/);
+      try {
+        parseRuntimeEnv(baseEnv({ ...overrides, TELEGRAM_BOT_TOKEN: telegram.TELEGRAM_BOT_TOKEN }));
+      } catch (e) {
+        expect((e as Error).message).not.toContain('SECRETVALUE');
+        expect((e as Error).message).not.toMatch(/TELEGRAM_BOT_TOKEN is required/);
+      }
+      expect(() => parseRuntimeEnv(baseEnv({ ...overrides, ...telegram }))).not.toThrow();
+      // Blank values are unset.
+      expect(() =>
+        parseRuntimeEnv(baseEnv({ ...overrides, TELEGRAM_BOT_TOKEN: ' ', TELEGRAM_CHAT_ID: '' })),
+      ).toThrow(/TELEGRAM_BOT_TOKEN/);
+    }
+  });
+
+  it('fails to start in production without Telegram, before opening the keystore', async () => {
+    await expect(create({ NODE_ENV: 'production' })).rejects.toThrow(/TELEGRAM_BOT_TOKEN/);
+    await expect(create({ SOLANA_CLUSTER: 'mainnet-beta' })).rejects.toThrow(/TELEGRAM_CHAT_ID/);
+  });
+
+  it('caps the new launchpads per day: 20 by default, bounded, never unlimited', () => {
+    const env = baseEnv();
+    expect(parseRuntimeEnv(env).maxLaunchpadsPerDay).toBe(20);
+    expect(
+      parseRuntimeEnv({ ...env, SIGNER_MAX_LAUNCHPADS_PER_DAY: '5' }).maxLaunchpadsPerDay,
+    ).toBe(5);
+    for (const value of ['0', '1001', '-1', 'many']) {
+      expect(() => parseRuntimeEnv({ ...env, SIGNER_MAX_LAUNCHPADS_PER_DAY: value })).toThrow(
+        /SIGNER_MAX_LAUNCHPADS_PER_DAY/,
+      );
+    }
+  });
 });
 
 describe('signer runtime wiring', () => {
@@ -215,6 +273,7 @@ describe('signer runtime wiring', () => {
     const ctx = seen[0]!;
     expect(ctx).toBe(runtime.context);
     expect(ctx.walletLock).not.toBe(ctx.payerLock);
+    expect(ctx.payerReservations.size).toBe(0);
     // One expected-signature set: what a job announces, the watcher knows.
     ctx.onBeforeSend('5'.repeat(88));
     expect(ctx.expected.has('5'.repeat(88))).toBe(true);
@@ -297,6 +356,42 @@ describe('signer runtime wiring', () => {
     await expect(create({ SIGNER_KEYSTORE_PASSPHRASE: `${PASSPHRASE}x` })).rejects.toThrow();
     await expect(create({ SIGNER_HMAC_SECRET: 'too-short' })).rejects.toThrow(/SIGNER_HMAC_SECRET/);
     await expect(create({ WATCH_INTERVAL_MS: 'fast' })).rejects.toThrow();
+  });
+});
+
+describe('operator command --revoke-launch', () => {
+  const jobId = '0f8fad5b-d9cb-469f-a165-70867728950e';
+
+  it('runs with the service environment and refuses a job without a prepared launch', async () => {
+    await expect(
+      runRevokeLaunch({
+        env: baseEnv(),
+        jobId,
+        connection: mockConnection(),
+        fetch: mockFetch(),
+        logger: pino({ level: 'silent' }),
+      }),
+    ).rejects.toThrow(/launch_not_prepared/);
+  });
+
+  it('fails closed on the wrong cluster or a bad environment', async () => {
+    await expect(
+      runRevokeLaunch({
+        env: baseEnv(),
+        jobId,
+        connection: mockConnection(CLUSTER_GENESIS_HASH['mainnet-beta']),
+        fetch: mockFetch(),
+        logger: pino({ level: 'silent' }),
+      }),
+    ).rejects.toThrow(/does not serve SOLANA_CLUSTER/);
+    await expect(
+      runRevokeLaunch({
+        env: baseEnv({ NODE_ENV: 'production' }),
+        jobId,
+        connection: mockConnection(),
+        logger: pino({ level: 'silent' }),
+      }),
+    ).rejects.toThrow(/TELEGRAM_BOT_TOKEN/);
   });
 });
 
@@ -405,6 +500,18 @@ describe('job scheduler', () => {
     expect(statusOf({ status: 'paused' })).toBe('paused');
     expect(statusOf({ status: 'Not a code!' })).toBe('ran');
     expect(statusOf(undefined)).toBe('ran');
+  });
+});
+
+describe('production command', () => {
+  it('is the start script: the entry point without a file watcher', async () => {
+    const pkg = JSON.parse(
+      await fs.readFile(new URL('../../package.json', import.meta.url), 'utf8'),
+    ) as { scripts: Record<string, string> };
+    expect(pkg.scripts.start).toBe('tsx src/index.ts');
+    expect(pkg.scripts.dev).toContain('watch');
+    const example = await fs.readFile(new URL('../../.env.example', import.meta.url), 'utf8');
+    expect(example).toContain('pnpm --filter @forge/signer start');
   });
 });
 

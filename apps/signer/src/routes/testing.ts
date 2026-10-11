@@ -28,8 +28,14 @@ import {
   Transaction,
   TransactionInstruction,
 } from '@solana/web3.js';
-import type { ConfigKind, LaunchCoinSummary, LaunchCoinTx } from '@forge/core';
+import {
+  paymentMemo,
+  type ConfigKind,
+  type LaunchCoinSummary,
+  type LaunchCoinTx,
+} from '@forge/core';
 import type { JobStatus, LaunchpadSpec, LaunchpadStatus, PaymentStatus } from '@forge/shared';
+import type { ExpectedPayment, PaymentVerification } from '../core-adapter.js';
 import {
   base58Encode,
   type RecentSignature,
@@ -45,6 +51,7 @@ import type {
   RouteCore,
 } from './onchain.js';
 import { canonicalJson, sha256Hex } from './onchain.js';
+import type { RoutePaymentVerifier } from './payment.js';
 import { DBC_DISCRIMINATORS } from './policy.js';
 import type {
   LaunchpadAddressColumn,
@@ -86,15 +93,34 @@ interface LandedTx {
   accounts: string[];
 }
 
-type Method = keyof SolanaRpc | keyof RouteCore;
+/** A client payment to the cashbox, as the chain sees it (for `verifyPayment`). */
+export interface FakePayment {
+  payer: PublicKey;
+  recipient: PublicKey;
+  lamports: bigint;
+  memo: string;
+  slot: number;
+  finalized: boolean;
+  failed: boolean;
+}
+
+type Method = keyof SolanaRpc | keyof RouteCore | keyof RoutePaymentVerifier;
 
 export const CONFIG_ACCOUNT_SIZE = 1048;
 export const LAUNCH_FEE_LAMPORTS_PER_SIGNATURE = 5_000n;
 
-/** In-memory chain: the routes' `SolanaRpc` and `RouteCore` at once. */
-export class FakeRouteChain implements SolanaRpc, RouteCore {
+/** Random base58 transaction signature (64 bytes). */
+export function randomSignature(): string {
+  return base58Encode(randomBytes(64));
+}
+
+/** In-memory chain: the routes' `SolanaRpc`, `RouteCore` and payment verifier at once. */
+export class FakeRouteChain implements SolanaRpc, RouteCore, RoutePaymentVerifier {
   readonly dbcProgramId = DYNAMIC_BONDING_CURVE_PROGRAM_ID;
   readonly firstBuyReferral = null;
+  readonly cashbox = randomKey();
+  /** Client payments by signature (what `verifyPayment` finds on-chain). */
+  readonly payments = new Map<string, FakePayment>();
   height = 1_000;
   finalityLag = 32;
   defaultBehavior: SendBehavior = 'land';
@@ -105,6 +131,8 @@ export class FakeRouteChain implements SolanaRpc, RouteCore {
   readonly landed = new Map<string, LandedTx>();
   readonly sendAttempts: string[] = [];
   readonly calls: Method[] = [];
+  /** `minContextSlot` of every account read that set one. */
+  readonly minContextSlots: number[] = [];
   readonly failures = new Map<Method, Error[]>();
   readonly built = { config: 0, nonce: 0, launch: 0 };
   /** Successful transactions touching an address (for `hasSuccessfulTransaction`). */
@@ -255,7 +283,10 @@ export class FakeRouteChain implements SolanaRpc, RouteCore {
     }
   }
 
+  /** As on Solana: a recent valid blockhash first; otherwise the durable nonce rule. */
   private blockhashValid(tx: Transaction): boolean {
+    const recent = this.blockhashes.get(tx.recentBlockhash ?? '');
+    if (recent !== undefined && this.height <= recent) return true;
     const first = tx.instructions[0];
     if (first?.programId.equals(SystemProgram.programId)) {
       try {
@@ -302,9 +333,11 @@ export class FakeRouteChain implements SolanaRpc, RouteCore {
     } else {
       const payer = tx.feePayer!.toBase58();
       this.balances.set(payer, (this.balances.get(payer) ?? 0n) - fee);
-      // A failed durable-nonce transaction still advances its nonce.
+      // A failed durable-nonce transaction still advances its nonce (not one with a recent
+      // blockhash: its instructions are rolled back).
       const first = tx.instructions[0];
-      if (first && this.isNonceAdvance(first)) this.applyNonceAdvance(first);
+      const durable = !this.blockhashes.has(tx.recentBlockhash ?? '');
+      if (first && durable && this.isNonceAdvance(first)) this.applyNonceAdvance(first);
     }
     const accounts = tx.compileMessage().accountKeys.map((k) => k.toBase58());
     for (const a of accounts) {
@@ -589,8 +622,14 @@ export class FakeRouteChain implements SolanaRpc, RouteCore {
     return { transaction: tx, summary };
   }
 
-  async getAccount(address: PublicKey, commitment: ReadCommitment): Promise<AccountSummary | null> {
+  /** `minContextSlot` is recorded only: this chain has a single node, always current. */
+  async getAccount(
+    address: PublicKey,
+    commitment: ReadCommitment,
+    minContextSlot?: number,
+  ): Promise<AccountSummary | null> {
     this.enter('getAccount');
+    if (minContextSlot !== undefined) this.minContextSlots.push(minContextSlot);
     const account = this.accounts.get(address.toBase58());
     if (!this.visible(account, commitment) || !account) return null;
     return { owner: account.owner, lamports: account.lamports, dataLength: account.dataLength };
@@ -611,6 +650,53 @@ export class FakeRouteChain implements SolanaRpc, RouteCore {
 
   poolAddress(config: PublicKey, mint: PublicKey): PublicKey {
     return deriveDbcPoolAddress(NATIVE_MINT, mint, config);
+  }
+
+  // -- RoutePaymentVerifier --------------------------------------------------------------
+
+  /** Records a finalized payment of `jobId` to the cashbox (overrides: a wrong one). */
+  recordPayment(
+    signature: string,
+    input: { payer: PublicKey; lamports: bigint; jobId: string } & Partial<FakePayment>,
+  ): void {
+    this.payments.set(signature, {
+      payer: input.payer,
+      recipient: input.recipient ?? this.cashbox,
+      lamports: input.lamports,
+      memo: input.memo ?? paymentMemo(input.jobId),
+      slot: input.slot ?? this.height,
+      finalized: input.finalized ?? true,
+      failed: input.failed ?? false,
+    });
+  }
+
+  /** Same decisions as core `verifyPayment` at finalized commitment. */
+  async verifyPayment(signature: string, expected: ExpectedPayment): Promise<PaymentVerification> {
+    this.enter('verifyPayment');
+    const p = this.payments.get(signature);
+    if (!p || !p.finalized) return { status: 'pending', signature };
+    const invalid = (reason: string): PaymentVerification => ({
+      status: 'invalid',
+      signature,
+      reason,
+      detail: reason,
+      slot: p.slot,
+    });
+    if (p.failed) return invalid('transaction_failed');
+    if (!p.recipient.equals(this.cashbox)) return invalid('recipient_mismatch');
+    if (!p.payer.equals(expected.payer)) return invalid('payer_mismatch');
+    if (p.lamports !== expected.lamports) return invalid('amount_mismatch');
+    if (p.memo !== paymentMemo(expected.jobId)) return invalid('memo_mismatch');
+    return {
+      status: 'confirmed',
+      signature,
+      slot: p.slot,
+      confirmationStatus: 'finalized',
+      payer: p.payer,
+      recipient: p.recipient,
+      lamports: p.lamports,
+      memo: p.memo,
+    };
   }
 }
 
@@ -685,7 +771,10 @@ export class MemoryRouteStore implements RouteStore {
     return true;
   }
 
-  /** Seeds one creation job in `onchain_setup` with a confirmed payment. */
+  /**
+   * Seeds one creation job in `onchain_setup` with a confirmed payment of 0.3 SOL (random
+   * signature unless given). Returns the payment row (record it on the chain to make it real).
+   */
   seed(input: {
     jobId: string;
     launchpadId: string;
@@ -694,7 +783,9 @@ export class MemoryRouteStore implements RouteStore {
     jobStatus?: JobStatus;
     launchpadStatus?: LaunchpadStatus;
     paymentStatus?: PaymentStatus;
-  }): void {
+    paymentLamports?: bigint;
+    txSignature?: string;
+  }): RoutePayment {
     this.jobs.set(input.jobId, {
       id: input.jobId,
       launchpadId: input.launchpadId,
@@ -712,14 +803,18 @@ export class MemoryRouteStore implements RouteStore {
       launchpadCoinMint: null,
       creatorWalletRef: null,
     });
-    this.payments.push({
+    const payment: RoutePayment = {
       id: uuid(),
       jobId: input.jobId,
       kind: 'creation',
       status: input.paymentStatus ?? 'confirmed',
       payerWallet: input.spec.ownerWallet,
-      lamports: 300_000_000n,
-    });
+      lamports: input.paymentLamports ?? 300_000_000n,
+      txSignature: input.txSignature ?? randomSignature(),
+      refundSignature: null,
+    };
+    this.payments.push(payment);
+    return { ...payment };
   }
 }
 

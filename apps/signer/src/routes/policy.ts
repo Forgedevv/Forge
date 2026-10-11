@@ -16,6 +16,9 @@
  *   first buy, one `swap` paid by the client; System only for the nonce advance and transfers
  *   FROM the client; SPL Token only SyncNative / CloseAccount by the client; Associated Token
  *   only (idempotent) creations funded by and for the client.
+ * - Launch revocation (operator command, revoke.ts): fee payer = payer wallet; signers = {payer,
+ *   creator}; only bounded compute budget and ONE System `AdvanceNonceAccount` of the launchpad's
+ *   nonce account by the creator wallet (read-only): the creator signature can do nothing else.
  * Account indexes follow the pinned DBC SDK IDL (1.5.13).
  */
 import { createHash } from 'node:crypto';
@@ -294,4 +297,38 @@ export function assertLaunchCoinTx(tx: Transaction, expected: LaunchExpectation)
   });
   if (inits !== 1) policy('exactly one pool initialization expected');
   if (swaps !== (expected.firstBuy ? 1 : 0)) policy('unexpected number of first buy swaps');
+}
+
+// ---------------------------------------------------------------------------------------
+// Launch revocation (advance the launchpad's nonce: a handed-out launch can no longer land)
+
+export interface RevokeNonceExpectation {
+  payer: PublicKey;
+  nonceAccount: PublicKey;
+  /** Nonce authority = the launchpad's creator wallet. */
+  authority: PublicKey;
+}
+
+export function assertRevokeNonceTx(tx: Transaction, expected: RevokeNonceExpectation): void {
+  assertSignerSet(tx, expected.payer, [expected.payer, expected.authority]);
+  const { writable } = compiled(tx);
+  if (writable(expected.authority)) policy('the creator wallet must be read-only');
+  let advances = 0;
+  for (const ix of tx.instructions) {
+    if (ix.programId.equals(ComputeBudgetProgram.programId)) {
+      assertComputeBudget(ix);
+      continue;
+    }
+    if (!ix.programId.equals(SystemProgram.programId)) {
+      policy('program not allowed in a launch revocation');
+    }
+    if (systemType(ix) !== 'AdvanceNonceAccount') {
+      policy('system instruction not allowed in a launch revocation');
+    }
+    const p = SystemInstruction.decodeNonceAdvance(ix);
+    if (!p.noncePubkey.equals(expected.nonceAccount)) policy('unexpected nonce account');
+    if (!p.authorizedPubkey.equals(expected.authority)) policy('unexpected nonce authority');
+    advances++;
+  }
+  if (advances !== 1) policy('exactly one nonce advance expected');
 }

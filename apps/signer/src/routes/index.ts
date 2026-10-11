@@ -23,6 +23,21 @@ export {
   type RouteJournals,
 } from './journal.js';
 export { SignerHealthReport, SignerLaunchPrepareResult } from './schemas.js';
+export type { RoutePaymentVerifier } from './payment.js';
+export { revokeLaunch, type RevokeDeps, type RevokeResult } from './revoke.js';
+
+/**
+ * Refusals that get no generic route alert: retryable states (the builder calls again) and
+ * refusals the handler already alerted with a specific code.
+ */
+const QUIET_CODES = new Set([
+  'confirmation_pending',
+  'deploys_paused',
+  'payment_not_final',
+  'launchpad_daily_cap',
+  'launch_revoking',
+  'account_not_final',
+]);
 
 async function run<T>(
   rt: RouteRuntime,
@@ -37,7 +52,7 @@ async function run<T>(
     const fields = { route, jobId, status: c.status, code: c.code, err: describeError(err) };
     if (c.status >= 500) rt.log.error(fields, 'signer route failed');
     else rt.log.warn(fields, 'signer route refused');
-    if (c.alert && c.code !== 'confirmation_pending' && c.code !== 'deploys_paused') {
+    if (c.alert && !QUIET_CODES.has(c.code)) {
       await rt.alert(
         c.status >= 500 ? 'high' : 'normal',
         `route_${c.code}`.slice(0, 64),
