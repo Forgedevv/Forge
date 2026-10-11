@@ -109,6 +109,54 @@ describe('modify: building', () => {
     expect(h.github.protectedRepos.has(REPO)).toBe(true);
   });
 
+  it('previews a modification of a sleeping launchpad as the live site it will become', async () => {
+    const h = await liveLaunchpad();
+    const sleeping = { ...mainConfig(h), mode: 'sleeping' };
+    await h.github.commitFiles({
+      repo: REPO,
+      branch: 'main',
+      message: 'sleep',
+      files: [{ path: 'forge.config.json', content: `${JSON.stringify(sleeping, null, 2)}\n` }],
+    });
+    h.store.setStatus(LAUNCHPAD_ID, 'sleeping');
+    const { outcome } = await run(h, modifyJob());
+    // The builder-owned baseline says live: the preview is the live site, not the sleep page.
+    const branch = JSON.parse(h.github.text(REPO, BRANCH, 'forge.config.json')!);
+    expect(branch.mode).toBe('live');
+    expect(branch.theme.accentColor).toBe('#00FF88');
+    const project = h.vercel.projectBySlug('moonpad')!;
+    const preview = h.vercel
+      .deploymentsOf(project.id)
+      .find((d) => d.url === outcome.patch?.preview_url)!;
+    const previewConfig = JSON.parse(h.github.text(REPO, preview.sha!, 'forge.config.json')!);
+    expect(previewConfig.mode).toBe('live');
+    // The live site keeps sleeping until the release.
+    expect(mainConfig(h).mode).toBe('sleeping');
+
+    await run(h, modifyJob({ status: 'deploying', preview_url: outcome.patch!.preview_url! }));
+    expect(mainConfig(h).mode).toBe('live');
+    // The merge itself brought `live`: no extra mode commit.
+    expect(
+      [...h.github.commits.values()].some((c) => c.message.startsWith('Set the site mode')),
+    ).toBe(false);
+    expect(h.store.get(LAUNCHPAD_ID).status).toBe('live');
+  });
+
+  it('refuses to modify a site whose default branch is disabled', async () => {
+    const h = await liveLaunchpad();
+    const cut = { ...mainConfig(h), mode: 'disabled' };
+    await h.github.commitFiles({
+      repo: REPO,
+      branch: 'main',
+      message: 'cut',
+      files: [{ path: 'forge.config.json', content: `${JSON.stringify(cut, null, 2)}\n` }],
+    });
+    const agentRuns = h.runner.runs.length;
+    await expect(run(h, modifyJob())).rejects.toThrow(/disabled/);
+    expect(h.runner.runs.length).toBe(agentRuns);
+    expect(h.github.repos.get(REPO)!.branches.has(BRANCH)).toBe(false);
+  });
+
   it('cannot touch forge.config.json#onchain', async () => {
     const h = await liveLaunchpad();
     h.runner.agent = agents.changeOnchain;

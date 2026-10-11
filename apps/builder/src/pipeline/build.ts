@@ -33,6 +33,7 @@ import {
   serializeSiteConfig,
   SITE_CONFIG_PATH,
   typedSiteConfig,
+  withMode,
   type OnchainConfig,
 } from './site-config.js';
 import { scanInput } from './scan-input.js';
@@ -87,6 +88,16 @@ export function prepareBaseline(
   } else {
     if (!existing) throw new PipelineError('forge.config.json is missing from the launchpad repo');
     configText = existing.content.toString('utf8');
+    const current = parseSiteConfig(configText);
+    const mode = typedSiteConfig(current).mode;
+    if (mode === 'disabled') {
+      throw new PipelineError('the site is disabled by FORGE: it cannot be modified');
+    }
+    if (mode === 'sleeping') {
+      // The modification is previewed, then released, as a live site (the release wakes it up):
+      // the builder's baseline says `live`, so the preview shows the site the client will get.
+      configText = serializeSiteConfig(withMode(current, 'live'));
+    }
   }
   const config = typedSiteConfig(parseSiteConfig(configText));
   if (config.slug !== ctx.spec.slug) {
@@ -346,7 +357,10 @@ export async function runBuildStep(
   guard(signal);
   const protection = await deps.github.protectDefaultBranch(repo.name);
   if (!protection.applied) {
-    log.warn(jobFields(job, { reason: protection.reason }), 'default branch protection not applied');
+    log.warn(
+      jobFields(job, { reason: protection.reason }),
+      'default branch protection not applied',
+    );
   }
   if (launchpad.github_repo !== repo.name) {
     guard(signal);
