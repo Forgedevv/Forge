@@ -290,6 +290,120 @@ describe('createQuote', () => {
     expect(noRpc.store.payments.size).toBe(0);
   });
 
+  it('hands the open quote out again instead of a second one (same amount, memo, expiry)', async () => {
+    let priceCalls = 0;
+    const ctx = setup({
+      prices: {
+        getSolUsdPrice: () => {
+          priceCalls += 1;
+          return Promise.resolve(priceCalls === 1 ? 150 : 100);
+        },
+      },
+    });
+    const first = await quoteCreation(ctx);
+    ctx.clock.advance(30_000);
+    const second = await quoteCreation(ctx);
+    expect(second).toEqual({ ...first, transaction: second.transaction });
+    expect(priceCalls).toBe(1);
+    expect(ctx.store.payments.size).toBe(1);
+    // A freshly built transaction paying the same quote.
+    expect(ctx.gateway.built).toEqual([
+      { payer: OWNER_WALLET, lamports: CREATION_LAMPORTS, jobId: ctx.job.id },
+      { payer: OWNER_WALLET, lamports: CREATION_LAMPORTS, jobId: ctx.job.id },
+    ]);
+    const tx = VersionedTransaction.deserialize(Buffer.from(second.transaction!, 'base64'));
+    const [transfer, memo] = tx.message.compiledInstructions;
+    expect(decodeSystemTransfer(transfer!.data)).toBe(CREATION_LAMPORTS);
+    expect(Buffer.from(memo!.data).toString('utf8')).toBe(paymentMemo(ctx.job.id));
+    expect(ctx.logger.events()).toContain('quote.reused');
+  });
+
+  it('quotes again once the open quote is too close to its expiry, or expired', async () => {
+    const ctx = setup();
+    const first = await quoteCreation(ctx);
+    ctx.clock.advance(QUOTE_TIMING.validityMs - QUOTE_TIMING.reuseMinRemainingMs);
+    const second = await quoteCreation(ctx);
+    expect(second.paymentId).not.toBe(first.paymentId);
+
+    ctx.store.payments.get(second.paymentId)!.status = 'expired';
+    const third = await quoteCreation(ctx);
+    expect(new Set([first.paymentId, second.paymentId, third.paymentId]).size).toBe(3);
+  });
+
+  it('hands the same quote to concurrent requests and expires the extra rows', async () => {
+    const ctx = setup();
+    const quotes = await Promise.all([quoteCreation(ctx), quoteCreation(ctx), quoteCreation(ctx)]);
+    expect(new Set(quotes.map((q) => q.paymentId)).size).toBe(1);
+    const rows = [...ctx.store.payments.values()];
+    expect(rows.filter((r) => r.status === 'quoted').map((r) => r.id)).toEqual([
+      quotes[0]!.paymentId,
+    ]);
+    expect(rows.filter((r) => r.status === 'expired').length).toBe(rows.length - 1);
+  });
+
+  it('expires its own paid quote when the job got paid while the quote was written', async () => {
+    const ctx = setup({ included: 0 });
+    const job = ctx.store.addJob({ launchpadId: ctx.launchpad.id, type: 'modify_launchpad' });
+    ctx.store.beforeStatement = (name) => {
+      if (name === 'insertQuote') {
+        queueMicrotask(() => {
+          ctx.store.jobs.get(job.id)!.status = 'paid';
+        });
+      }
+    };
+    await expect(
+      ctx.service.createQuote({ wallet: OWNER_WALLET, jobId: job.id, kind: 'modification' }),
+    ).rejects.toMatchObject({ httpStatus: 409, code: 'ALREADY_PAID' });
+    expect([...ctx.store.payments.values()].map((p) => p.status)).toEqual(['expired']);
+  });
+
+  it('expires its own quote and repairs the job when a confirmed payment appears meanwhile', async () => {
+    const ctx = setup();
+    ctx.store.beforeStatement = (name) => {
+      if (name === 'insertQuote') {
+        ctx.store.beforeStatement = null;
+        queueMicrotask(() => {
+          ctx.store.payments.set('paid-elsewhere', {
+            id: 'paid-elsewhere',
+            jobId: ctx.job.id,
+            payerWallet: OWNER_WALLET,
+            kind: 'creation',
+            usdAmount: 33,
+            lamports: CREATION_LAMPORTS,
+            quoteExpiresAt: T0,
+            txSignature: randomSignature(),
+            status: 'confirmed',
+          });
+        });
+      }
+    };
+    await expect(quoteCreation(ctx)).rejects.toMatchObject({ code: 'ALREADY_PAID' });
+    const own = [...ctx.store.payments.values()].find((p) => p.id !== 'paid-elsewhere')!;
+    expect(own.status).toBe('expired');
+    expect(ctx.store.jobs.get(ctx.job.id)!.status).toBe('paid');
+  });
+
+  it('never leaves a paid quote open for a job paid by its last included modification', async () => {
+    const ctx = setup({ included: 1 });
+    const job = ctx.store.addJob({ launchpadId: ctx.launchpad.id, type: 'modify_launchpad' });
+    const input = { wallet: OWNER_WALLET, jobId: job.id, kind: 'modification' as const };
+    const results = await Promise.allSettled([
+      ctx.service.createQuote(input),
+      ctx.service.createQuote(input),
+    ]);
+    const fulfilled = results.filter((r) => r.status === 'fulfilled');
+    const rejected = results.filter((r) => r.status === 'rejected') as PromiseRejectedResult[];
+    expect(fulfilled).toHaveLength(1);
+    expect((fulfilled[0] as PromiseFulfilledResult<QuoteResult>).value.lamports).toBe('0');
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0]!.reason).toMatchObject({ code: 'ALREADY_PAID' });
+    expect(ctx.store.jobs.get(job.id)!.status).toBe('paid');
+    const open = [...ctx.store.payments.values()].filter(
+      (p) => p.status === 'quoted' && p.lamports > 0n,
+    );
+    expect(open).toEqual([]);
+  });
+
   it('repairs a job left in spec_ready behind a confirmed payment', async () => {
     const ctx = setup();
     const quote = await quoteCreation(ctx);
@@ -372,7 +486,10 @@ describe('confirmPayment', () => {
   it('lets exactly one of two quotes of the same job claim one signature concurrently', async () => {
     const ctx = setup();
     const q1 = await quoteCreation(ctx);
+    // Past the reuse window of q1, so that q2 is a distinct quote (same amount and memo).
+    ctx.clock.advance(QUOTE_TIMING.validityMs - QUOTE_TIMING.reuseMinRemainingMs + 1);
     const q2 = await quoteCreation(ctx);
+    expect(q2.paymentId).not.toBe(q1.paymentId);
     const signature = pay(ctx, q1, ctx.job.id);
     const results = await Promise.allSettled([
       confirm(ctx, q1.paymentId, signature),
@@ -669,7 +786,7 @@ describe('confirmPayment', () => {
     const q1 = await quoteCreation(ctx);
     const s1 = pay(ctx, q1, ctx.job.id);
     // A second quote once the first one is too old to be handed out again.
-    ctx.clock.advance(61_000);
+    ctx.clock.advance(QUOTE_TIMING.validityMs - QUOTE_TIMING.reuseMinRemainingMs + 1);
     const q2 = await quoteCreation(ctx);
     expect(q2.paymentId).not.toBe(q1.paymentId);
     const s2 = pay(ctx, q2, ctx.job.id);
@@ -876,7 +993,7 @@ describe('payment anomalies (docs/DECISIONS.md D20)', () => {
   it('records one duplicate when two quotes of a job are confirmed concurrently', async () => {
     const ctx = setup();
     const q1 = await quoteCreation(ctx);
-    ctx.clock.advance(61_000);
+    ctx.clock.advance(QUOTE_TIMING.validityMs - QUOTE_TIMING.reuseMinRemainingMs + 1);
     const q2 = await quoteCreation(ctx);
     expect(q2.paymentId).not.toBe(q1.paymentId);
     const s1 = pay(ctx, q1, ctx.job.id);

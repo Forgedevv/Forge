@@ -37,6 +37,14 @@ export const QUOTE_TIMING = {
    * valid payment (it would land after the window), so the quote is marked expired.
    */
   notFoundGraceMs: 90_000,
+  /**
+   * Server-side guard against paying twice (two tabs, a retried request): while an open paid
+   * quote of the job and payer has at least this much validity left, a quote request gets that
+   * same quote back (same amount, memo and expiry, freshly built transaction) instead of a second
+   * one. With the block time tolerance this covers a blockhash lifetime (about 60 to 90 s), so a
+   * transaction built for a reused quote cannot land after its window.
+   */
+  reuseMinRemainingMs: 60_000,
 } as const;
 
 /** The confirm route waits this long for a transaction that is not yet confirmed. */
@@ -213,11 +221,59 @@ export function createPaymentsService(deps: PaymentsServiceDeps): PaymentsServic
     return createPaidQuote(ctx, wallet, kind);
   }
 
+  /** The open paid quote that a new quote request of this job and payer must reuse, if any. */
+  function findReusableQuote(jobId: string, wallet: string, kind: PaymentKind) {
+    return store.findOpenQuote({
+      jobId,
+      payerWallet: wallet,
+      kind,
+      expiresAfter: new Date(now() + QUOTE_TIMING.reuseMinRemainingMs),
+    });
+  }
+
+  /**
+   * Hands an open quote out again: same payment row, amount, memo and expiry. The transaction is
+   * rebuilt (fresh blockhash) unless `built` already pays exactly this amount.
+   */
+  async function reuseQuote(
+    open: PaymentRecord,
+    built: { lamports: bigint; transaction: string } | null,
+  ): Promise<QuoteResult> {
+    const transaction =
+      built && built.lamports === open.lamports
+        ? built.transaction
+        : (
+            await gateway.buildPayment({
+              payer: new PublicKey(open.payerWallet),
+              lamports: open.lamports,
+              jobId: open.jobId,
+            })
+          ).transaction;
+    logger.log('info', 'quote.reused', {
+      paymentId: open.id,
+      jobId: open.jobId,
+      kind: open.kind,
+      lamports: open.lamports.toString(),
+    });
+    return {
+      paymentId: open.id,
+      kind: open.kind,
+      lamports: open.lamports.toString(),
+      usdAmount: open.usdAmount,
+      expiresAt: new Date(open.quoteExpiresAt).toISOString(),
+      transaction,
+    };
+  }
+
   async function createPaidQuote(
     ctx: JobContext,
     wallet: string,
     kind: PaymentKind,
   ): Promise<QuoteResult> {
+    const jobId = ctx.job.id;
+    const open = await findReusableQuote(jobId, wallet, kind);
+    if (open) return reuseQuote(open, null);
+
     const usdAmount = usdPriceForKind(kind);
     const solUsd = await prices.getSolUsdPrice();
     const lamports = usdToLamports(usdAmount, solUsd);
@@ -225,10 +281,10 @@ export function createPaymentsService(deps: PaymentsServiceDeps): PaymentsServic
     const built = await gateway.buildPayment({
       payer: new PublicKey(wallet),
       lamports,
-      jobId: ctx.job.id,
+      jobId,
     });
     const payment = await store.insertQuote({
-      jobId: ctx.job.id,
+      jobId,
       payerWallet: wallet,
       kind,
       usdAmount,
@@ -239,14 +295,32 @@ export function createPaymentsService(deps: PaymentsServiceDeps): PaymentsServic
     // wallet (chat/store.ts). The release writes the launchpad then reads the payments; a quote
     // writes its row then reads the launchpad: whatever the interleaving, one of the two sees the
     // other and backs off, so a quote is never handed out for a released draft.
-    const fresh = await store.getJobContext(ctx.job.id);
+    const fresh = await store.getJobContext(jobId);
     if (!fresh || fresh.launchpad.status === 'disabled') {
       await store.markPaymentExpired(payment.id);
       throw new PaymentError(403, 'LAUNCHPAD_DISABLED', LAUNCHPAD_DISABLED_MESSAGE);
     }
+    // The job may have been paid meanwhile (e.g. by the last included modification, taken by a
+    // concurrent request of the same job): never hand out a paid quote for a paid job.
+    if (fresh.job.status !== 'spec_ready') {
+      await store.markPaymentExpired(payment.id);
+      throw new PaymentError(409, 'ALREADY_PAID', ALREADY_PAID_MESSAGE);
+    }
+    if (await store.findConfirmedPaymentForJob(jobId)) {
+      await store.markPaymentExpired(payment.id);
+      await markJobPaid(jobId, 'reconcile_on_quote');
+      throw new PaymentError(409, 'ALREADY_PAID', ALREADY_PAID_MESSAGE);
+    }
+    // Concurrent quote requests of the same job: every request reads the oldest open quote after
+    // writing its own, so they all hand out that one and the others are expired.
+    const winner = await findReusableQuote(jobId, wallet, kind);
+    if (winner && winner.id !== payment.id) {
+      await store.markPaymentExpired(payment.id);
+      return reuseQuote(winner, { lamports, transaction: built.transaction });
+    }
     logger.log('info', 'quote.created', {
       paymentId: payment.id,
-      jobId: ctx.job.id,
+      jobId,
       kind,
       lamports: lamports.toString(),
       usdAmount,
