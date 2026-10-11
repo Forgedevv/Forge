@@ -24,6 +24,7 @@ export {
 } from './journal.js';
 export { SignerHealthReport, SignerLaunchPrepareResult } from './schemas.js';
 export type { RoutePaymentVerifier } from './payment.js';
+export { revokeLaunch, type RevokeDeps, type RevokeResult } from './revoke.js';
 
 /**
  * Refusals that get no generic route alert: retryable states (the builder calls again) and
@@ -34,6 +35,7 @@ const QUIET_CODES = new Set([
   'deploys_paused',
   'payment_not_final',
   'launchpad_daily_cap',
+  'launch_revoking',
 ]);
 
 async function run<T>(

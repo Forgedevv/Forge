@@ -18,7 +18,9 @@
  * but only after proving, at finalized commitment from a node past the slot the advance was seen
  * at, that the advance was not the launch itself (mint and pool absent, no successful transaction
  * on the mint). A launched coin is refused (409), never prepared twice. The signer never sends
- * this transaction: the client signs and sends it (apps/web).
+ * this transaction: the client signs and sends it (apps/web). An operator can revoke a handed-out
+ * transaction (`--revoke-launch <jobId>`, revoke.ts): until its nonce advance lands, prepare
+ * answers 503 `launch_revoking`, then rebuilds.
  */
 import { PublicKey } from '@solana/web3.js';
 import {
@@ -200,6 +202,10 @@ export async function handlePrepareLaunch(
       const previousMint = new PublicKey(entry.mint);
       const previousPool = core.poolAddress(coinConfig, previousMint);
       if (current.nonce === entry.nonceValue) {
+        // The operator revoked this transaction (revoke.ts): never hand it out again; once the
+        // nonce moved, the rebuild below takes over.
+        const revocation = await rt.journals.revocations.get(jobId);
+        if (revocation && revocation.nonceValue === entry.nonceValue) fail(503, 'launch_revoking');
         if (entry.inputsHash !== inputsHash) {
           await rt.alert(
             'high',

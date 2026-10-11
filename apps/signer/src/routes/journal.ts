@@ -7,7 +7,8 @@
  * - `launch.<jobId>`: the prepared launch transaction of a creation job;
  * - `route-payment.<paymentId>`: a creation payment verified on-chain (payment.ts);
  * - `route-admission.<YYYY-MM-DD>`: the launchpads admitted for account creations that UTC day
- *   (budget.ts, SIGNER_MAX_LAUNCHPADS_PER_DAY).
+ *   (budget.ts, SIGNER_MAX_LAUNCHPADS_PER_DAY);
+ * - `launch-revoke.<jobId>`: the operator revocation of a prepared launch (revoke.ts).
  *
  * An account creation records every transaction BEFORE it is first broadcast (signature, signed
  * bytes, last valid block height): after a crash the same bytes are re-sent or settled, and a new
@@ -146,12 +147,52 @@ export const DailyAdmissionsEntry = z.object({
 });
 export type DailyAdmissionsEntry = z.infer<typeof DailyAdmissionsEntry>;
 
+/** One signed revocation (nonce advance) transaction. */
+export const RevocationAttempt = z.object({
+  signature: Signature,
+  /** Signed transaction, base64. */
+  rawTx: z.string().min(1),
+  lastValidBlockHeight: z.number().int().nonnegative(),
+  recordedAt: IsoTime,
+  lastError: z.string().nullable(),
+});
+
+/**
+ * Revocation of a prepared launch (revoke.ts): the launchpad's nonce is advanced so the launch
+ * transaction built on `nonceValue` can never land. Keyed by job id.
+ */
+export const LaunchRevocationEntry = z.object({
+  v: z.literal(1),
+  jobId: z.string(),
+  launchpadId: z.string(),
+  nonceAccount: Address,
+  /** Nonce value of the revoked launch transaction. */
+  nonceValue: Address,
+  /** Mint of the revoked launch transaction. */
+  mint: Address,
+  status: z.enum(['open', 'in_flight', 'confirmed']),
+  current: RevocationAttempt.nullable(),
+  confirmedAt: IsoTime.nullable(),
+  history: z
+    .array(
+      z.object({
+        signature: Signature,
+        outcome: z.enum(['failed', 'expired']),
+        error: z.string().nullable(),
+        at: IsoTime,
+      }),
+    )
+    .max(20),
+});
+export type LaunchRevocationEntry = z.infer<typeof LaunchRevocationEntry>;
+
 export interface RouteJournals {
   configs: Journal<ConfigsJournalEntry>;
   nonces: Journal<NonceJournalEntry>;
   launches: Journal<LaunchJournalEntry>;
   payments: Journal<VerifiedPaymentEntry>;
   admissions: Journal<DailyAdmissionsEntry>;
+  revocations: Journal<LaunchRevocationEntry>;
 }
 
 export function createFileRouteJournals(dir: string): RouteJournals {
@@ -165,6 +206,11 @@ export function createFileRouteJournals(dir: string): RouteJournals {
       namespace: 'route-admission',
       schema: DailyAdmissionsEntry,
     }),
+    revocations: createFileJournal({
+      dir,
+      namespace: 'launch-revoke',
+      schema: LaunchRevocationEntry,
+    }),
   };
 }
 
@@ -175,5 +221,6 @@ export function createMemoryRouteJournals(): RouteJournals {
     launches: createMemoryJournal(LaunchJournalEntry),
     payments: createMemoryJournal(VerifiedPaymentEntry),
     admissions: createMemoryJournal(DailyAdmissionsEntry),
+    revocations: createMemoryJournal(LaunchRevocationEntry),
   };
 }

@@ -281,7 +281,10 @@ export class FakeRouteChain implements SolanaRpc, RouteCore, RoutePaymentVerifie
     }
   }
 
+  /** As on Solana: a recent valid blockhash first; otherwise the durable nonce rule. */
   private blockhashValid(tx: Transaction): boolean {
+    const recent = this.blockhashes.get(tx.recentBlockhash ?? '');
+    if (recent !== undefined && this.height <= recent) return true;
     const first = tx.instructions[0];
     if (first?.programId.equals(SystemProgram.programId)) {
       try {
@@ -328,9 +331,11 @@ export class FakeRouteChain implements SolanaRpc, RouteCore, RoutePaymentVerifie
     } else {
       const payer = tx.feePayer!.toBase58();
       this.balances.set(payer, (this.balances.get(payer) ?? 0n) - fee);
-      // A failed durable-nonce transaction still advances its nonce.
+      // A failed durable-nonce transaction still advances its nonce (not one with a recent
+      // blockhash: its instructions are rolled back).
       const first = tx.instructions[0];
-      if (first && this.isNonceAdvance(first)) this.applyNonceAdvance(first);
+      const durable = !this.blockhashes.has(tx.recentBlockhash ?? '');
+      if (first && durable && this.isNonceAdvance(first)) this.applyNonceAdvance(first);
     }
     const accounts = tx.compileMessage().accountKeys.map((k) => k.toBase58());
     for (const a of accounts) {

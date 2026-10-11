@@ -11,6 +11,7 @@ import { signRequest } from '../server.js';
 import { RuntimeConfigError, parseRuntimeEnv } from './env.js';
 import { buybackJobModule, type BuybackDepsLike, type BuybackLibrary } from './buyback.js';
 import type { SignerJobContext, SignerJobModule } from './modules.js';
+import { runRevokeLaunch } from './operator.js';
 import { createSignerRuntime, type SignerRuntime } from './runtime.js';
 import { JobScheduler, statusOf } from './scheduler.js';
 
@@ -355,6 +356,42 @@ describe('signer runtime wiring', () => {
     await expect(create({ SIGNER_KEYSTORE_PASSPHRASE: `${PASSPHRASE}x` })).rejects.toThrow();
     await expect(create({ SIGNER_HMAC_SECRET: 'too-short' })).rejects.toThrow(/SIGNER_HMAC_SECRET/);
     await expect(create({ WATCH_INTERVAL_MS: 'fast' })).rejects.toThrow();
+  });
+});
+
+describe('operator command --revoke-launch', () => {
+  const jobId = '0f8fad5b-d9cb-469f-a165-70867728950e';
+
+  it('runs with the service environment and refuses a job without a prepared launch', async () => {
+    await expect(
+      runRevokeLaunch({
+        env: baseEnv(),
+        jobId,
+        connection: mockConnection(),
+        fetch: mockFetch(),
+        logger: pino({ level: 'silent' }),
+      }),
+    ).rejects.toThrow(/launch_not_prepared/);
+  });
+
+  it('fails closed on the wrong cluster or a bad environment', async () => {
+    await expect(
+      runRevokeLaunch({
+        env: baseEnv(),
+        jobId,
+        connection: mockConnection(CLUSTER_GENESIS_HASH['mainnet-beta']),
+        fetch: mockFetch(),
+        logger: pino({ level: 'silent' }),
+      }),
+    ).rejects.toThrow(/does not serve SOLANA_CLUSTER/);
+    await expect(
+      runRevokeLaunch({
+        env: baseEnv({ NODE_ENV: 'production' }),
+        jobId,
+        connection: mockConnection(),
+        logger: pino({ level: 'silent' }),
+      }),
+    ).rejects.toThrow(/TELEGRAM_BOT_TOKEN/);
   });
 });
 
