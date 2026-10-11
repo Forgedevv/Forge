@@ -115,7 +115,7 @@ const production = (vercel: FakeVercel, slug = 'moonpad') => {
 };
 
 describe('disabled launchpads', () => {
-  it('cuts the live site: mode disabled on main, production deployment, promotion, alert', async () => {
+  it('cuts the live site: mode disabled on main, production deployment, promotion, pause, alert', async () => {
     const h = await setup();
     const result = await enforceDisabledLaunchpads(h.deps);
     expect(result).toMatchObject({ cut: [{ slug: 'moonpad', how: 'maintenance' }], failed: [] });
@@ -124,40 +124,84 @@ describe('disabled launchpads', () => {
     expect(h.github.commits.get(main)!.message).toBe('Disable the site (cut by FORGE)');
     expect(production(h.vercel)).toMatchObject({ sha: main, target: 'production' });
     expect(production(h.vercel)!.env.POOL_CONFIG_KEY).toContain(LAUNCHPAD_CONFIG);
-    expect(h.vercel.projectBySlug('moonpad')!.paused).toBe(false);
+    // SECURITY.md section 12: the site disappears, whatever its code does with the mode.
+    expect(h.vercel.projectBySlug('moonpad')!.paused).toBe(true);
+    // The pause comes after the maintenance page is in production.
+    const calls = h.vercel.calls;
+    expect(calls.lastIndexOf('pauseProject')).toBeGreaterThan(
+      calls.lastIndexOf('promoteToProduction'),
+    );
     expect(h.alerts).toEqual([{ level: 'normal', code: 'site_cut:moonpad' }]);
     // The status stays the team's: the builder never writes it here.
     expect(h.store.get(LAUNCHPAD_ID).status).toBe('disabled');
     expect(h.store.count('updateLaunchpad')).toBe(0);
   });
 
-  it('is idempotent: a cut site is left alone, without new commits, deployments or alerts', async () => {
+  it('is idempotent: a paused site is left alone, without new commits, deployments or alerts', async () => {
     const h = await setup();
     await enforceDisabledLaunchpads(h.deps);
     const commits = h.github.commits.size;
     const deployments = h.vercel.deployments.size;
+    const reads = h.vercel.count('getDeployment');
     const second = await enforceDisabledLaunchpads(h.deps);
     expect(second).toMatchObject({ cut: [], alreadyCut: 1, failed: [] });
     expect(h.github.commits.size).toBe(commits);
     expect(h.vercel.deployments.size).toBe(deployments);
+    expect(h.vercel.count('pauseProject')).toBe(1);
     expect(h.alerts).toHaveLength(1);
-    // Without the in-memory cache (a restart), the production commit is verified on GitHub.
+    // Without the in-memory cache (a restart): the pause alone says it is cut, nothing is read.
     h.verified.clear();
     expect(await enforceDisabledLaunchpads(h.deps)).toMatchObject({ alreadyCut: 1, cut: [] });
-    expect(h.vercel.count('getDeployment')).toBeGreaterThan(0);
+    expect(h.vercel.count('getDeployment')).toBe(reads);
     expect(h.vercel.deployments.size).toBe(deployments);
   });
 
-  it('cuts again when the production deployment changed after the cut', async () => {
+  it('regression: a production that serves mode disabled is not cut until the project is paused', async () => {
+    // A released site whose own code ignores `mode` (for example a changed app shell) still
+    // serves everything even though its forge.config.json says disabled.
+    const h = await setup();
+    const main = h.github.forceBranch(
+      REPO,
+      'main',
+      new Map([
+        ...h.github.filesAt(REPO, 'main'),
+        ['forge.config.json', { content: Buffer.from(siteConfig('disabled')), executable: false }],
+      ]),
+      'Disable the site (cut by FORGE)',
+    );
+    const project = h.vercel.projectBySlug('moonpad')!;
+    const d = await h.vercel.createDeployment({
+      project: { id: project.id, name: project.name },
+      repo: REPO,
+      ref: 'main',
+      sha: main,
+      target: 'production',
+    });
+    await h.vercel.waitForDeployment(d.id);
+    await h.vercel.promoteToProduction(project.id, d.id);
+    const deployments = h.vercel.deployments.size;
+    const commits = h.github.commits.size;
+
+    const result = await cutDisabledLaunchpad(h.deps, LAUNCHPAD_ID);
+    expect(result).toEqual({ state: 'cut', how: 'maintenance' });
+    expect(project.paused).toBe(true);
+    // Nothing to redeploy: only the pause was missing.
+    expect(h.vercel.deployments.size).toBe(deployments);
+    expect(h.github.commits.size).toBe(commits);
+  });
+
+  it('pauses again a project unpaused while still disabled, after redeploying the maintenance page', async () => {
     const h = await setup();
     await enforceDisabledLaunchpads(h.deps);
-    // Someone promoted the previous (live) deployment again.
+    // Someone unpaused the project and promoted the previous (live) deployment again.
     const project = h.vercel.projectBySlug('moonpad')!;
     const live = h.vercel.deploymentsOf(project.id)[0]!;
+    project.paused = false;
     project.productionDeploymentId = live.id;
     const result = await enforceDisabledLaunchpads(h.deps);
     expect(result.cut).toEqual([{ slug: 'moonpad', how: 'maintenance' }]);
     expect(project.productionDeploymentId).not.toBe(live.id);
+    expect(project.paused).toBe(true);
     expect(mainMode(h.github)).toBe('disabled');
   });
 
@@ -218,6 +262,7 @@ describe('disabled launchpads', () => {
     expect(await cutDisabledLaunchpad(h.deps, LAUNCHPAD_ID)).toEqual({ state: 'not-disabled' });
     expect(h.vercel.count('promoteToProduction')).toBe(1); // the setup release only
     expect(h.vercel.projectBySlug('moonpad')!.productionDeploymentId).toBe(before);
+    expect(h.vercel.count('pauseProject')).toBe(0);
   });
 
   it('pages through every disabled launchpad, one failure does not stop the others', async () => {

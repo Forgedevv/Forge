@@ -22,20 +22,22 @@ import type { WorkerLogger } from './worker.js';
 import { sanitizeError } from './worker/messages.js';
 
 /**
- * `launchpads.status = 'disabled'` cuts the site (docs/OPERATIONS.md kill switches, SECURITY.md:
- * "per-launchpad disabled flag that cuts the site"). The team sets the status; the builder makes
- * the deployed site follow, at startup and at every scheduler cycle:
+ * `launchpads.status = 'disabled'` cuts the site (docs/OPERATIONS.md kill switches, SECURITY.md
+ * section 12: "the coin stays on-chain but the site disappears"). The team sets the status; the
+ * builder makes the deployed site follow, at startup and at every scheduler cycle:
  *
- *   preferred: forge.config.json `mode: disabled` on the default branch (builder-owned commit),
- *              production deployment of that commit, promotion -> the template's maintenance page
- *   fallback:  Vercel pause of the project (production and previews answer a pause page), when
- *              the maintenance page cannot be deployed (or `deploys_paused` is set: a pause
- *              deploys nothing)
+ *   1. forge.config.json `mode: disabled` on the default branch (builder-owned commit), production
+ *      deployment of that commit, promotion: the template's maintenance page, so that what a later
+ *      unpause would serve is the cut site. Skipped when production already serves it; given up
+ *      when `deploys_paused` is set or the deployment fails.
+ *   2. Always: Vercel pause of the project. Production and every preview answer Vercel's pause
+ *      page, whatever the deployed code does with `mode` (a released client change can never keep
+ *      a disabled site up).
  *
- * Idempotent: a site whose production deployment already serves `mode: disabled`, or whose
- * project is paused, is left alone (no commit, no deployment, no alert). The builder never
- * re-enables a site: the team does it by hand (mode back to live on the default branch, a release,
- * and an unpause if the fallback was used).
+ * Only a paused project counts as cut: a production deployment that serves `mode: disabled` is not
+ * enough, since the mode is enforced by the site's own code. Idempotent: a paused project is left
+ * alone (no commit, no deployment, no alert). The builder never re-enables a site: the team does it
+ * by hand (mode back to live on the default branch, a release, and an unpause).
  */
 
 export interface DisableDeps {
@@ -65,12 +67,17 @@ export interface DisableDeps {
   deploymentTimeoutMs?: number;
   promotionTimeoutMs?: number;
   /**
-   * Sites already verified as cut, by launchpad id: the project state they were verified in. A
-   * later sweep that finds the same state skips the verification reads.
+   * Sites whose production deployment was verified to serve `mode: disabled`, by launchpad id: the
+   * project state they were verified in. A later sweep that finds the same state (the pause failed)
+   * skips the verification reads and only pauses.
    */
   verified?: Map<string, string>;
 }
 
+/**
+ * `maintenance`: the maintenance page serves production and the project is paused. `paused`: the
+ * project is paused; the maintenance page could not be deployed (or nothing went to production).
+ */
 export type CutHow = 'maintenance' | 'paused';
 
 export type CutOutcome =
@@ -122,7 +129,7 @@ async function deployMaintenance(
   lp: LaunchpadRecord,
   project: VercelProject,
   signal: AbortSignal,
-): Promise<'cut' | 'already-cut' | 'not-disabled'> {
+): Promise<'deployed' | 'not-disabled'> {
   await assertNotPaused(deps);
   const repo = await deps.github.getRepo(repoNameForSlug(lp.slug));
   if (!repo) throw new PipelineError('the launchpad repository does not exist');
@@ -136,7 +143,6 @@ async function deployMaintenance(
   if (config.slug !== lp.slug) throw new PipelineError('forge.config.json slug does not match');
 
   let sha = head;
-  let committed = false;
   if (config.mode !== 'disabled') {
     guard(signal);
     const commit = await deps.github.commitFiles({
@@ -147,7 +153,6 @@ async function deployMaintenance(
       expectedHeadSha: head,
     });
     sha = commit.commitSha;
-    committed = commit.committed;
   }
 
   const vars = clientProjectVars(deps.projectEnv, {
@@ -176,10 +181,10 @@ async function deployMaintenance(
   if (!current || current.status !== 'disabled') return 'not-disabled';
   await assertNotPaused(deps);
   guard(signal);
-  const { promoted } = await deps.vercel.promoteToProduction(project.id, ready.id, {
+  await deps.vercel.promoteToProduction(project.id, ready.id, {
     timeoutMs: deps.promotionTimeoutMs ?? 5 * 60_000,
   });
-  return committed || promoted ? 'cut' : 'already-cut';
+  return 'deployed';
 }
 
 /** Makes the deployed site of one disabled launchpad cut. Throws when even the pause fails. */
@@ -192,34 +197,40 @@ export async function cutDisabledLaunchpad(
   if (!lp || lp.status !== 'disabled') return { state: 'not-disabled' };
   const project = await deps.vercel.getProject(lp.vercel_project_id ?? projectNameForSlug(lp.slug));
   if (!project) return { state: 'nothing-deployed' };
+  // Only the pause cuts the site whatever its code does: nothing else counts as cut.
   if (project.paused) return { state: 'already-cut', how: 'paused' };
 
-  const pause = async (reason: string): Promise<CutOutcome> => {
+  const pause = async (how: CutHow, reason?: string): Promise<CutOutcome> => {
     guard(signal);
     await deps.vercel.pauseProject(project.id);
-    return { state: 'cut', how: 'paused', reason };
+    return { state: 'cut', how, ...(reason !== undefined ? { reason } : {}) };
   };
   // Never released: previews may still be reachable. Pausing cuts them all.
-  if (project.productionDeploymentId === undefined) return pause('no production deployment');
+  if (project.productionDeploymentId === undefined) {
+    return pause('paused', 'no production deployment');
+  }
 
+  // Production already serves the maintenance page (an earlier cut whose pause failed, or one made
+  // before the pause was systematic): only the pause is missing.
   const key = stateKey(project);
-  if (deps.verified?.get(lp.id) === key) return { state: 'already-cut', how: 'maintenance' };
-  if (await productionServesDisabled(deps, lp, project.productionDeploymentId)) {
+  if (
+    deps.verified?.get(lp.id) === key ||
+    (await productionServesDisabled(deps, lp, project.productionDeploymentId))
+  ) {
     deps.verified?.set(lp.id, key);
-    return { state: 'already-cut', how: 'maintenance' };
+    return pause('maintenance');
   }
 
   try {
     const done = await deployMaintenance(deps, lp, project, signal);
     if (done === 'not-disabled') return { state: 'not-disabled' };
-    return done === 'cut'
-      ? { state: 'cut', how: 'maintenance' }
-      : { state: 'already-cut', how: 'maintenance' };
   } catch (err) {
     if (err instanceof StepAbortedError) throw err;
-    // The maintenance page could not be deployed (template, build, deploys paused...): pause.
-    return pause(sanitizeError(err));
+    // The maintenance page could not be deployed (template, build, deploys paused...): the pause
+    // alone cuts the site.
+    return pause('paused', sanitizeError(err));
   }
+  return pause('maintenance');
 }
 
 async function safeAlert(
@@ -268,7 +279,7 @@ export async function enforceDisabledLaunchpads(
             outcome.how === 'maintenance' ? 'normal' : 'high',
             `site_cut:${lp.slug}`,
             outcome.how === 'maintenance'
-              ? 'Disabled launchpad: maintenance page deployed'
+              ? 'Disabled launchpad: maintenance page deployed and Vercel project paused'
               : 'Disabled launchpad: Vercel project paused (the maintenance page could not be deployed)',
             { launchpad: lp.slug, ...(outcome.reason ? { reason: outcome.reason } : {}) },
           );

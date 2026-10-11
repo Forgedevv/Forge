@@ -41,6 +41,7 @@ export type RuleId =
   | 'next-config'
   | 'zone-outside-allowed'
   | 'api-route'
+  | 'app-shell-locked'
   | 'special-file'
   | 'file-type-not-allowed'
   | 'file-mode'
