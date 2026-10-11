@@ -38,6 +38,7 @@ import type { PayerReservations } from '../jobs/reservations.js';
 import { createEphemeralKey } from './ephemeral.js';
 import { fail } from './errors.js';
 import type { AccountCreation, CreationAttempt } from './journal.js';
+import type { ReadCommitment } from './onchain.js';
 
 export type AlertFn = (
   level: 'immediate' | 'high' | 'normal',
@@ -83,8 +84,16 @@ export interface CreationTarget {
   ): Promise<{ transaction: Transaction; lastValidBlockHeight: number; rentLamports: bigint }>;
   /** Transaction policy, before any signature. Throws JobError('TX_POLICY'). */
   check(transaction: Transaction, address: PublicKey, rentLamports: bigint): void;
-  /** True when the account exists on-chain with the expected owner and shape. */
-  exists(address: PublicKey): Promise<boolean>;
+  /**
+   * True when the account exists on-chain with the expected owner and shape. Default read:
+   * confirmed; `minContextSlot` makes the RPC refuse to answer from an older state.
+   */
+  exists(address: PublicKey, read?: AccountRead): Promise<boolean>;
+}
+
+export interface AccountRead {
+  commitment: ReadCommitment;
+  minContextSlot?: number;
 }
 
 export function openCreation(paramsHash: string): AccountCreation {
@@ -238,6 +247,76 @@ async function sendNewAttempt(
   }
 }
 
+/** Is the error the RPC refusing to answer below `minContextSlot` (a lagging node)? */
+function isMinContextSlotError(err: unknown): boolean {
+  return /minimum context slot/i.test(describeError(err).message);
+}
+
+/**
+ * A journaled-confirmed account that the (confirmed) read does not show. A lagging RPC node
+ * behind a load balancer looks exactly like a vanished account, so nothing is alerted without a
+ * proof:
+ * - its creation must be FINALIZED: the account is then read at finalized commitment from a node
+ *   at least at the finalized slot and the creation slot; found: fine (the node lagged); absent:
+ *   it really vanished, IMMEDIATE alert, 409 (manual handling);
+ * - its creation failed or expired (the journal is wrong): IMMEDIATE alert, 409;
+ * - anything else (confirmed only, unknown to the node, a node below the slot): 503
+ *   `account_not_final`, retryable, not alerted.
+ */
+async function proveStillCreated(
+  env: CreationEnv,
+  target: CreationTarget,
+  attempt: CreationAttempt,
+  address: PublicKey,
+): Promise<void> {
+  const base = { launchpadId: target.launchpadId, account: target.label };
+  const vanished = async (reason: string): Promise<never> => {
+    await env.alert(
+      'immediate',
+      'account_vanished',
+      'A launchpad account recorded as created is no longer on-chain',
+      { ...base, address: attempt.address, signature: attempt.signature, reason },
+      `account_vanished:${attempt.address}`,
+    );
+    fail(409, `${target.label}_missing_onchain`);
+  };
+  const notFinal = (): never => {
+    env.logger.warn(
+      { ...base, address: attempt.address, signature: attempt.signature },
+      'created account not visible yet: retry once its creation is finalized',
+    );
+    fail(503, 'account_not_final');
+  };
+  const s = await checkSettlement(
+    env.rpc,
+    attempt.signature,
+    attempt.lastValidBlockHeight,
+    env.retry,
+  );
+  if (s.kind === 'failed' || s.kind === 'expired') return vanished(`creation_${s.kind}`);
+  if (s.kind !== 'finalized') return notFinal();
+  const finalizedSlot = await withRetry(() => env.rpc.getSlot('finalized'), env.retry);
+  const read: AccountRead = {
+    commitment: 'finalized',
+    minContextSlot: Math.max(finalizedSlot, s.slot),
+  };
+  let found: boolean;
+  try {
+    found = await withRetry(() => target.exists(address, read), env.retry);
+  } catch (err) {
+    if (isMinContextSlotError(err)) return notFinal();
+    throw err;
+  }
+  if (found) {
+    env.logger.warn(
+      { ...base, address: attempt.address },
+      'created account missing from a confirmed read but present at finalized (lagging node)',
+    );
+    return;
+  }
+  return vanished('absent_at_finalized');
+}
+
 /**
  * Makes sure the account of `target` exists, creating it at most once. Returns the confirmed
  * record (with `address`), or throws a RouteError: 503 `confirmation_pending` while a transaction
@@ -267,17 +346,10 @@ export async function ensureAccountCreated(
   }
 
   if (record.status === 'confirmed') {
-    if (!record.address) fail(500, 'journal_error');
+    if (!record.address || !record.current) fail(500, 'journal_error');
     const address = new PublicKey(record.address);
     if (!(await withRetry(() => target.exists(address), env.retry))) {
-      await env.alert(
-        'immediate',
-        'account_vanished',
-        'A launchpad account recorded as created is no longer on-chain',
-        { ...base, address: record.address },
-        `account_vanished:${record.address}`,
-      );
-      fail(409, `${target.label}_missing_onchain`);
+      await proveStillCreated(env, target, record.current, address);
     }
     return record as AccountCreation & { address: string };
   }

@@ -36,6 +36,7 @@ const QUIET_CODES = new Set([
   'payment_not_final',
   'launchpad_daily_cap',
   'launch_revoking',
+  'account_not_final',
 ]);
 
 async function run<T>(

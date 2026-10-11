@@ -131,6 +131,8 @@ export class FakeRouteChain implements SolanaRpc, RouteCore, RoutePaymentVerifie
   readonly landed = new Map<string, LandedTx>();
   readonly sendAttempts: string[] = [];
   readonly calls: Method[] = [];
+  /** `minContextSlot` of every account read that set one. */
+  readonly minContextSlots: number[] = [];
   readonly failures = new Map<Method, Error[]>();
   readonly built = { config: 0, nonce: 0, launch: 0 };
   /** Successful transactions touching an address (for `hasSuccessfulTransaction`). */
@@ -620,8 +622,14 @@ export class FakeRouteChain implements SolanaRpc, RouteCore, RoutePaymentVerifie
     return { transaction: tx, summary };
   }
 
-  async getAccount(address: PublicKey, commitment: ReadCommitment): Promise<AccountSummary | null> {
+  /** `minContextSlot` is recorded only: this chain has a single node, always current. */
+  async getAccount(
+    address: PublicKey,
+    commitment: ReadCommitment,
+    minContextSlot?: number,
+  ): Promise<AccountSummary | null> {
     this.enter('getAccount');
+    if (minContextSlot !== undefined) this.minContextSlots.push(minContextSlot);
     const account = this.accounts.get(address.toBase58());
     if (!this.visible(account, commitment) || !account) return null;
     return { owner: account.owner, lamports: account.lamports, dataLength: account.dataLength };

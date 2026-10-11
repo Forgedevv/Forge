@@ -94,11 +94,18 @@ export interface RouteCore {
     nonceAccount: PublicKey,
     authority: PublicKey,
     commitment: ReadCommitment,
+    /** When set, the RPC refuses to answer from a state older than this slot. */
+    minContextSlot?: number,
   ): Promise<NonceState | null>;
   /** Unsigned launch transaction with the durable nonce (nonce authority = creator, rent paid by
    * the owner, first-buy referral = `firstBuyReferral`). */
   buildLaunchCoinTx(params: LaunchBuildParams): Promise<LaunchCoinTx>;
-  getAccount(address: PublicKey, commitment: ReadCommitment): Promise<AccountSummary | null>;
+  /** The account, or null; with `minContextSlot`, read from a node at least at that slot. */
+  getAccount(
+    address: PublicKey,
+    commitment: ReadCommitment,
+    minContextSlot?: number,
+  ): Promise<AccountSummary | null>;
   /**
    * Which of `addresses` exist, read from a node whose state is at least `minContextSlot` (the
    * RPC refuses to answer from an older state).
@@ -198,12 +205,12 @@ export function createForgeRouteCore(options: ForgeRouteCoreOptions): RouteCore 
       };
     },
 
-    async readNonce(nonceAccount, authority, commitment) {
+    async readNonce(nonceAccount, authority, commitment, minContextSlot) {
       // One read gives both the account and the slot of the answer; core decodes and checks it.
-      const { context, value } = await connection.getAccountInfoAndContext(
-        nonceAccount,
+      const { context, value } = await connection.getAccountInfoAndContext(nonceAccount, {
         commitment,
-      );
+        ...(minContextSlot !== undefined ? { minContextSlot } : {}),
+      });
       if (!value) return null;
       const info = await coreReadNonce({ getAccountInfo: async () => value }, nonceAccount, {
         expectedAuthority: authority,
@@ -230,8 +237,11 @@ export function createForgeRouteCore(options: ForgeRouteCoreOptions): RouteCore 
       });
     },
 
-    async getAccount(address, commitment) {
-      const info = await connection.getAccountInfo(address, commitment);
+    async getAccount(address, commitment, minContextSlot) {
+      const info = await connection.getAccountInfo(address, {
+        commitment,
+        ...(minContextSlot !== undefined ? { minContextSlot } : {}),
+      });
       if (!info) return null;
       return { owner: info.owner, lamports: BigInt(info.lamports), dataLength: info.data.length };
     },
