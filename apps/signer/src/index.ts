@@ -1,5 +1,7 @@
 /**
- * Entry point of the signer (VPS 2): `tsx src/index.ts` (or `pnpm --filter @forge/signer dev`).
+ * Entry point of the signer (VPS 2). Production command: `pnpm --filter @forge/signer start`
+ * (= `tsx src/index.ts`, no file watcher), run under a process supervisor that restarts it;
+ * `pnpm --filter @forge/signer dev` (tsx watch) is for local development only.
  *
  *   (no argument)  starts the HMAC server and the scheduled jobs (runtime/runtime.ts);
  *   --init-keys    creates the fixed keystore wallets (payer, cashbox, buyback) when absent and
