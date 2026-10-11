@@ -229,7 +229,7 @@ describe('validateSpecOnchain', () => {
     expect(codes(validateSpecOnchain(spec))).toEqual(['QUOTE_NOT_SOL', 'INVALID_ADDRESS']);
   });
 
-  it.each([-1, 100.000000001])('rejects firstBuySol %d', (sol) => {
+  it.each([-1, 10.000000001, 50])('rejects firstBuySol %d', (sol) => {
     const spec = makeSpec();
     spec.launchpadCoin.firstBuySol = sol;
     expect(codes(validateSpecOnchain(spec))).toEqual(['SPEC_INVALID']);

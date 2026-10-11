@@ -1,0 +1,249 @@
+/**
+ * Local build of the client site in the sandbox, before any push (tasks/04-BUILDER.md).
+ *
+ * Two runs, least privilege each:
+ * 1. install: frozen lockfile, lifecycle scripts and pnpmfile disabled (no code from the
+ *    repo runs), network limited to the package registries, read-only packages token;
+ * 2. build: no network at all and no secret. This is where the agent's code runs.
+ */
+import { lstat, realpath } from 'node:fs/promises';
+import path from 'node:path';
+import { SandboxError } from './errors.js';
+import { capText } from './redact.js';
+import type { SandboxRunner } from './run.js';
+import { RELATIVE_PATH_RE, type SandboxRunOptions, type SandboxRunResult } from './types.js';
+
+export type PackageManager = 'pnpm' | 'npm';
+
+export interface BuildStepLimits {
+  timeoutMs?: number;
+  memoryMb?: number;
+  cpus?: number;
+  /** Size of the $HOME tmpfs (package manager store and caches); counts against memory. */
+  homeSizeMb?: number;
+}
+
+export interface BuildSiteOptions {
+  jobId: string;
+  /** Project folder relative to the workdir (default: the workdir itself). */
+  projectDir?: string;
+  /** Build output relative to the project folder (default: `.next`). */
+  outputDir?: string;
+  /** Read-only GitHub Packages token, for `@forge/core`. */
+  packagesToken?: string;
+  install?: BuildStepLimits;
+  build?: BuildStepLimits;
+  /** Max chars of the combined `logs`. */
+  maxLogChars?: number;
+  signal?: AbortSignal;
+}
+
+export type BuildFailedStep = 'prepare' | 'install' | 'build' | 'artifacts';
+
+export interface BuildSiteResult {
+  ok: boolean;
+  failedStep: BuildFailedStep | null;
+  /** Exit code of the last step that ran. */
+  exitCode: number | null;
+  /** Combined, redacted, truncated logs of the steps. */
+  logs: string;
+  packageManager: PackageManager | null;
+  steps: { install?: SandboxRunResult; build?: SandboxRunResult };
+  /** Host path of the build output (a real directory inside the workdir), when ok. */
+  artifactsPath: string | null;
+}
+
+export const BUILD_DEFAULTS = {
+  install: { timeoutMs: 10 * 60 * 1000, memoryMb: 4096, cpus: 2, homeSizeMb: 3072 },
+  build: { timeoutMs: 15 * 60 * 1000, memoryMb: 4096, cpus: 2, homeSizeMb: 512 },
+  outputDir: '.next',
+  maxLogChars: 256 * 1024,
+} as const;
+
+/** Commands of each step. No shell; nothing from the repo runs during the install. */
+export function buildCommands(pm: PackageManager): { install: string[]; build: string[] } {
+  if (pm === 'pnpm') {
+    return {
+      install: [
+        'pnpm',
+        'install',
+        '--frozen-lockfile',
+        '--ignore-scripts',
+        '--ignore-pnpmfile',
+        '--config.manage-package-manager-versions=false',
+        '--reporter=append-only',
+      ],
+      build: ['pnpm', 'run', 'build'],
+    };
+  }
+  return {
+    install: ['npm', 'ci', '--ignore-scripts', '--no-audit', '--no-fund'],
+    build: ['npm', 'run', 'build'],
+  };
+}
+
+async function isRegularFile(file: string): Promise<boolean> {
+  try {
+    const stat = await lstat(file);
+    return stat.isFile();
+  } catch {
+    return false;
+  }
+}
+
+/** Detects the package manager from the lockfile (a frozen install needs one). */
+export async function detectPackageManager(projectPath: string): Promise<PackageManager | null> {
+  if (await isRegularFile(path.join(projectPath, 'pnpm-lock.yaml'))) return 'pnpm';
+  if (await isRegularFile(path.join(projectPath, 'package-lock.json'))) return 'npm';
+  return null;
+}
+
+function section(title: string, run: SandboxRunResult): string {
+  const status = run.killedReason
+    ? `killed (${run.killedReason})`
+    : run.oomKilled
+      ? 'out of memory'
+      : `exit ${run.exitCode}`;
+  const denied = run.egress?.denied.length
+    ? `\n[egress denied: ${run.egress.denied.map((d) => `${d.host ?? '?'}:${d.port ?? ''} ${d.reason}`).join(', ')}]`
+    : '';
+  return `== ${title}: ${status} ==\n${run.stdout}${run.stderr ? `\n${run.stderr}` : ''}${denied}\n`;
+}
+
+function relativeOrThrow(value: string | undefined, name: string): string | undefined {
+  if (value === undefined || value === '.' || value === '') return undefined;
+  if (!RELATIVE_PATH_RE.test(value)) throw new SandboxError('unsafe_option', `${name} is invalid`);
+  return value.replace(/\/+$/, '');
+}
+
+/** Installs dependencies and builds the site at `workdir` inside the sandbox. */
+export async function buildSite(
+  runner: SandboxRunner,
+  workdir: string,
+  options: BuildSiteOptions,
+): Promise<BuildSiteResult> {
+  const projectDir = relativeOrThrow(options.projectDir, 'projectDir');
+  const outputDir = relativeOrThrow(options.outputDir ?? BUILD_DEFAULTS.outputDir, 'outputDir');
+  if (!outputDir) throw new SandboxError('unsafe_option', 'outputDir is required');
+  const maxLogChars = options.maxLogChars ?? BUILD_DEFAULTS.maxLogChars;
+  const projectPath = projectDir ? path.join(workdir, ...projectDir.split('/')) : workdir;
+  const steps: BuildSiteResult['steps'] = {};
+  const logs: string[] = [];
+  const finish = (
+    partial: Pick<BuildSiteResult, 'ok' | 'failedStep' | 'exitCode' | 'artifactsPath'> & {
+      packageManager: PackageManager | null;
+    },
+  ): BuildSiteResult => ({ ...partial, steps, logs: capText(logs.join('\n'), maxLogChars) });
+
+  if (!(await isRegularFile(path.join(projectPath, 'package.json')))) {
+    logs.push('package.json is missing (or is not a regular file).');
+    return finish({
+      ok: false,
+      failedStep: 'prepare',
+      exitCode: null,
+      artifactsPath: null,
+      packageManager: null,
+    });
+  }
+  const pm = await detectPackageManager(projectPath);
+  if (!pm) {
+    logs.push(
+      'No lockfile (pnpm-lock.yaml or package-lock.json): refusing a non-reproducible install.',
+    );
+    return finish({
+      ok: false,
+      failedStep: 'prepare',
+      exitCode: null,
+      artifactsPath: null,
+      packageManager: null,
+    });
+  }
+  const commands = buildCommands(pm);
+  const base = {
+    jobId: options.jobId,
+    workdir,
+    ...(projectDir ? { workingDir: projectDir } : {}),
+    ...(options.signal ? { signal: options.signal } : {}),
+  };
+
+  const install: SandboxRunOptions = {
+    ...base,
+    command: commands.install,
+    timeoutMs: options.install?.timeoutMs ?? BUILD_DEFAULTS.install.timeoutMs,
+    memoryMb: options.install?.memoryMb ?? BUILD_DEFAULTS.install.memoryMb,
+    cpus: options.install?.cpus ?? BUILD_DEFAULTS.install.cpus,
+    homeSizeMb: options.install?.homeSizeMb ?? BUILD_DEFAULTS.install.homeSizeMb,
+    network: 'allowlist',
+    allow: options.packagesToken ? ['npm', 'github-packages'] : ['npm'],
+    ...(options.packagesToken ? { secrets: { packagesToken: options.packagesToken } } : {}),
+  };
+  const installRun = await runner.run(install);
+  steps.install = installRun;
+  logs.push(section('install', installRun));
+  if (!installRun.ok) {
+    return finish({
+      ok: false,
+      failedStep: 'install',
+      exitCode: installRun.exitCode,
+      artifactsPath: null,
+      packageManager: pm,
+    });
+  }
+
+  const buildMemory = options.build?.memoryMb ?? BUILD_DEFAULTS.build.memoryMb;
+  const buildRun = await runner.run({
+    ...base,
+    command: commands.build,
+    timeoutMs: options.build?.timeoutMs ?? BUILD_DEFAULTS.build.timeoutMs,
+    memoryMb: buildMemory,
+    cpus: options.build?.cpus ?? BUILD_DEFAULTS.build.cpus,
+    homeSizeMb: options.build?.homeSizeMb ?? BUILD_DEFAULTS.build.homeSizeMb,
+    network: 'none',
+    env: {
+      NODE_OPTIONS: `--max-old-space-size=${Math.floor(buildMemory * 0.75)}`,
+      NEXT_TELEMETRY_DISABLED: '1',
+    },
+  });
+  steps.build = buildRun;
+  logs.push(section('build', buildRun));
+  if (!buildRun.ok) {
+    return finish({
+      ok: false,
+      failedStep: 'build',
+      exitCode: buildRun.exitCode,
+      artifactsPath: null,
+      packageManager: pm,
+    });
+  }
+
+  // The output was written by hostile code: it must be a real directory inside the workdir.
+  const outputPath = path.join(projectPath, ...outputDir.split('/'));
+  let artifactsPath: string | null = null;
+  try {
+    const stat = await lstat(outputPath);
+    if (stat.isDirectory() && !stat.isSymbolicLink()) {
+      const [real, root] = await Promise.all([realpath(outputPath), realpath(workdir)]);
+      const rel = path.relative(root, real);
+      if (rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel)) artifactsPath = real;
+    }
+  } catch {
+    artifactsPath = null;
+  }
+  if (!artifactsPath) {
+    logs.push(`Build output ${outputDir} is missing or is not a real directory.`);
+    return finish({
+      ok: false,
+      failedStep: 'artifacts',
+      exitCode: buildRun.exitCode,
+      artifactsPath: null,
+      packageManager: pm,
+    });
+  }
+  return finish({
+    ok: true,
+    failedStep: null,
+    exitCode: buildRun.exitCode,
+    artifactsPath,
+    packageManager: pm,
+  });
+}

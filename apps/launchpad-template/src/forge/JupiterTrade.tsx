@@ -1,6 +1,9 @@
 import { useUnifiedWalletContext, useWallet } from '@jup-ag/wallet-adapter';
 import { useEffect, useState } from 'react';
 import { Skeleton } from '@/components/ui/Skeleton';
+import { siteConfig } from './config';
+import { JUPITER_REFERRAL_FEE_BPS } from './trade/constants';
+import { readTradeEnv, resolveJupiterReferral } from './trade/trade-config';
 
 const SOL_MINT = 'So11111111111111111111111111111111111111112';
 const PLUGIN_CONTAINER_ID = 'jupiter-plugin';
@@ -21,12 +24,35 @@ function ensurePluginScript() {
 }
 
 /**
- * Jupiter Plugin (successor of Jupiter Terminal) in integrated display mode.
+ * Trading for a graduated coin: the Jupiter Plugin (successor of Jupiter Terminal) in integrated
+ * display mode, with the FORGE integrator fee (`referralAccount` + `referralFee`, 30 bps).
+ *
+ * - Renders nothing and loads no script when the site is not live.
+ * - The referral account comes from the environment (never hardcoded). Without a valid one the
+ *   plugin is NOT loaded: the platform fee would be lost silently, so the widget fails closed.
+ * - Jupiter does not index devnet: this can only be exercised on mainnet.
  *
  * @see https://dev.jup.ag/docs/tool-kits/plugin
  * @see https://github.com/jup-ag/plugin
  */
 export function JupiterTrade({ mint }: { mint: string }) {
+  if (siteConfig.mode !== 'live') return null;
+  const referralAccount = resolveJupiterReferral(readTradeEnv().jupiterReferral);
+  if (!referralAccount) {
+    return (
+      <div
+        role="alert"
+        className="rounded-[var(--radius)] border border-[var(--color-border)] p-4 text-sm text-[var(--color-text-muted)]"
+        data-testid="jupiter-not-configured"
+      >
+        Trading is not configured on this site.
+      </div>
+    );
+  }
+  return <JupiterPlugin mint={mint} referralAccount={referralAccount} />;
+}
+
+function JupiterPlugin({ mint, referralAccount }: { mint: string; referralAccount: string }) {
   const walletContext = useWallet();
   const { setShowModal } = useUnifiedWalletContext();
 
@@ -67,6 +93,8 @@ export function JupiterTrade({ mint }: { mint: string }) {
       formProps: {
         initialInputMint: SOL_MINT,
         initialOutputMint: mint,
+        referralAccount,
+        referralFee: JUPITER_REFERRAL_FEE_BPS,
       },
       // Reuse the app's wallet connection instead of the plugin's own adapter
       enableWalletPassthrough: true,
@@ -78,7 +106,7 @@ export function JupiterTrade({ mint }: { mint: string }) {
       window.Jupiter?.close?.();
     };
     // walletContext is synced separately below to avoid re-initializing
-  }, [isReady, mint, setShowModal]);
+  }, [isReady, mint, referralAccount, setShowModal]);
 
   // Keep the plugin's wallet state in sync with the app's wallet
   useEffect(() => {

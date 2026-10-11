@@ -57,7 +57,7 @@ Every protection below is **mandatory** in the MVP. Agents that touch one of the
 
 ## 10. Forged payment
 
-**Protections** (agent 3): `POST /api/payments/confirm` verifies the transaction on-chain: signer = session wallet = launchpad owner (`spec.ownerWallet`), recipient = cashbox, amount ≥ quote, quote not expired, signature never used before.
+**Protections** (agent 3): `POST /api/payments/confirm` verifies the transaction on-chain: signer = session wallet = launchpad owner (`spec.ownerWallet`), recipient = cashbox, exact quoted amount, memo `forge:job:<jobId>`, quote not expired, signature never used before.
 
 ## 11. RPC relay abused
 

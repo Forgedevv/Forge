@@ -48,6 +48,7 @@ import {
   MAX_BASIS_POINT,
   MAX_FEE_BPS,
   MAX_FEE_NUMERATOR,
+  MAX_FIRST_BUY_SOL,
   MAX_MIGRATED_POOL_FEE_BPS,
   MAX_POOL_CREATION_FEE,
   MIGRATION_THRESHOLD_LAMPORTS,
@@ -279,7 +280,7 @@ function collectSpecViolations(spec: LaunchpadSpec, c: Collector, prefix: string
   }
 
   const firstBuy = spec.launchpadCoin?.firstBuySol;
-  let firstBuyOk = typeof firstBuy === 'number' && firstBuy >= 0 && firstBuy <= 100;
+  let firstBuyOk = typeof firstBuy === 'number' && firstBuy >= 0 && firstBuy <= MAX_FIRST_BUY_SOL;
   if (firstBuyOk) {
     try {
       solToLamports(firstBuy as number);
@@ -291,7 +292,7 @@ function collectSpecViolations(spec: LaunchpadSpec, c: Collector, prefix: string
     c.add(
       f('launchpadCoin.firstBuySol'),
       'SPEC_INVALID',
-      'launchpadCoin.firstBuySol must be between 0 and 100 SOL with at most 9 decimals',
+      `launchpadCoin.firstBuySol must be between 0 and ${MAX_FIRST_BUY_SOL} SOL with at most 9 decimals`,
     );
   }
 }

@@ -11,16 +11,20 @@ import { useTokenAddress, useTokenInfo } from '@/hooks/queries';
 import dynamic from 'next/dynamic';
 import { useEffect } from 'react';
 
-const JupiterTrade = dynamic(() => import('@/forge/JupiterTrade'), { ssr: false });
+// FORGE trade panel: FORGE buy/sell (0.3% platform fee) before graduation, Jupiter after.
+const CoinTradePanel = dynamic(() => import('@/forge/CoinTradePanel'), { ssr: false });
 
 const SwapWidget = () => {
   const tokenId = useTokenAddress();
+  const { data: baseAsset } = useTokenInfo((data) => data?.baseAsset);
 
   if (!tokenId) {
     return null;
   }
 
-  return <JupiterTrade mint={tokenId} />;
+  return (
+    <CoinTradePanel mint={tokenId} symbol={baseAsset?.symbol} tokenDecimals={baseAsset?.decimals} />
+  );
 };
 
 export const TokenPageWithContext = () => {

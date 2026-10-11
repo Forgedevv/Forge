@@ -62,7 +62,7 @@ Our own (stricter) bounds are in `INTERFACES.md`, section 1.
 
 ## The platform fee (0.3%)
 
-- **Before graduation**: a SOL transfer instruction of 0.3% of the amount is added to the swap transaction built by `@forge/core`, to `FORGE_PLATFORM_FEE_WALLET`. On a buy: 0.3% of the SOL spent. On a sell: 0.3% of the expected SOL (computed from the quote, with the same tolerance as the slippage).
+- **Before graduation**: a SOL transfer instruction of 0.3% of the amount is added to the swap transaction built by `@forge/core`, to `FORGE_PLATFORM_FEE_WALLET`. On a buy: 0.3% of the SOL spent. On a sell: 0.3% of the quoted SOL out (not of the slippage minimum). The fee is always rounded up to the lamport (FORGE gains less than 1 lamport) and the fee transfer is the **last** instruction, so a sell pays it from the proceeds.
 - **After graduation**: a Jupiter transaction cannot be modified. We use the **Jupiter integrator fee** (`referralAccount` + `referralFee` = 30 bps). Jupiter keeps 20% of this fee. A Jupiter referral account must be created, along with token accounts for each currency Jupiter may collect in (at minimum SOL and USDC).
 
 ## Migration (graduation)
