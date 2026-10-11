@@ -32,6 +32,12 @@ export function coin(
       lifetime: { trading: zero, protocol: zero },
       creatorTradingFeePercentage: 25,
     },
+    poolCreationFee: {
+      totalLamports: 0n,
+      partnerShareLamports: 0n,
+      partnerClaimed: false,
+      partnerUnclaimedLamports: 0n,
+    },
   };
 }
 
