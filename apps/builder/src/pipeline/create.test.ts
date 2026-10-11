@@ -629,6 +629,14 @@ describe('create: deploying', () => {
     expect(h.store.get(LAUNCHPAD_ID).status).toBe('draft');
   });
 
+  it('refuses to release on-chain addresses of another cluster', async () => {
+    const h = harness();
+    await prepareOnchain(h);
+    h.deps.config = { ...h.deps.config, cluster: 'mainnet-beta' };
+    await expect(runStep(h, deployingJob())).rejects.toBeInstanceOf(PolicyViolationError);
+    expect(h.github.count('mergeBranch')).toBe(0);
+  });
+
   it('refuses to release a branch without the on-chain section', async () => {
     const h = harness();
     await buildPreview(h);

@@ -87,6 +87,7 @@ export async function runDeployStep(
       );
     }
     if (
+      onchain.cluster !== deps.config.cluster ||
       onchain.ownerWallet !== spec.ownerWallet ||
       (launchpad.launchpad_config !== null &&
         onchain.launchpadConfig !== launchpad.launchpad_config) ||
