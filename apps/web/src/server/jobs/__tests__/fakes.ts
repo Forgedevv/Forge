@@ -112,6 +112,8 @@ export class MemoryRoutesStore implements RoutesStore {
   beforeTransition: ((jobId: string) => void) | null = null;
   /** Called right after a modification job is inserted (simulates a concurrent insert). */
   afterInsert: ((job: JobRecord) => void) | null = null;
+  /** Called before a modification job is inserted; may throw (simulates a database refusal). */
+  beforeInsert: ((launchpadId: string) => void) | null = null;
   private clock = 0;
 
   private stamp(): string {
@@ -236,6 +238,7 @@ export class MemoryRoutesStore implements RoutesStore {
   }
 
   async insertModificationJob(launchpadId: string, text: string): Promise<JobRecord> {
+    this.beforeInsert?.(launchpadId);
     const job = this.addJob(launchpadId, { type: 'modify_launchpad', request: text });
     this.afterInsert?.(job);
     return { ...job };

@@ -2,6 +2,7 @@
 import { Keypair } from '@solana/web3.js';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { ctx, request, spec } from '../../jobs/__tests__/fakes';
+import { StoreError } from '../../jobs/store';
 import { LAUNCHPAD_QUOTAS } from '../quotas';
 import { coin } from './fake-chain';
 import { NOW, launchpadsHarness } from './helpers';
@@ -225,6 +226,56 @@ describe('POST /api/launchpads/:id/modifications', () => {
     expect(res.status).toBe(200);
     expect(((await res.json()) as { jobId: string }).jobId).toBe(rival);
     expect(modificationJobs(lp.id).map((j) => j.id)).toEqual([rival]);
+  });
+
+  it('answers a database unique violation (one open modification) like a lost race', async () => {
+    const { lp, conversation } = seed();
+    let rival: string | null = null;
+    h.store.beforeInsert = (launchpadId) => {
+      h.store.beforeInsert = null;
+      rival = h.store.addJob(launchpadId, { type: 'modify_launchpad', request: 'Rival' }).id;
+      throw new StoreError('insert modification job', '23505');
+    };
+    const res = await modify(lp.id, { conversationId: conversation.id, request: 'Mine' });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { jobId: string }).jobId).toBe(rival);
+    expect(modificationJobs(lp.id).map((j) => j.id)).toEqual([rival]);
+  });
+
+  it('maps a unique violation to MODIFICATION_IN_PROGRESS when the winner is already paid', async () => {
+    const { lp, conversation } = seed();
+    let rival: string | null = null;
+    h.store.beforeInsert = (launchpadId) => {
+      h.store.beforeInsert = null;
+      rival = h.store.addJob(launchpadId, { type: 'modify_launchpad', status: 'paid' }).id;
+      throw new StoreError('insert modification job', '23505');
+    };
+    const res = await modify(lp.id, { conversationId: conversation.id, request: 'Mine' });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ code: 'MODIFICATION_IN_PROGRESS', jobId: rival });
+  });
+
+  it('maps a unique violation to MODIFICATION_IN_PROGRESS even if the winner is gone', async () => {
+    const { lp, conversation } = seed();
+    h.store.beforeInsert = () => {
+      h.store.beforeInsert = null;
+      throw new StoreError('insert modification job', '23505');
+    };
+    const res = await modify(lp.id, { conversationId: conversation.id, request: 'Mine' });
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.code).toBe('MODIFICATION_IN_PROGRESS');
+    expect(body).not.toHaveProperty('jobId');
+  });
+
+  it('does not hide other database errors behind MODIFICATION_IN_PROGRESS', async () => {
+    const { lp, conversation } = seed();
+    h.store.beforeInsert = () => {
+      throw new StoreError('insert modification job', '23503');
+    };
+    const res = await modify(lp.id, { conversationId: conversation.id, request: 'Mine' });
+    expect(res.status).toBeGreaterThanOrEqual(500);
+    expect(((await res.json()) as { code: string }).code).not.toBe('MODIFICATION_IN_PROGRESS');
   });
 
   it('requires a live launchpad whose creation is finished', async () => {
