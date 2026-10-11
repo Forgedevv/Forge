@@ -118,6 +118,8 @@ export const galleryCopy = {
         ['confirmed', 'Confirmed'],
         ['send-error', 'Send failure'],
         ['wrong-wallet', 'Wrong wallet'],
+        ['simulation-failed', 'Simulation failed'],
+        ['simulation-unavailable', 'Simulation unavailable'],
       ],
     },
     {

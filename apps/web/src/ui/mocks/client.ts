@@ -497,7 +497,15 @@ export function createMockController(scenario = 'journey') {
     async getOwnerTransactionSummary(id) {
       await wait();
       if (!state.jobs[id]) throw new Error('Job not found.');
-      return ownerSummary;
+      return {
+        ...ownerSummary,
+        simulation:
+          scenario === 'launch:simulation-failed'
+            ? 'failed'
+            : scenario === 'launch:simulation-unavailable'
+              ? 'unavailable'
+              : 'ok',
+      };
     },
     async signOwnerTransaction(id, onPhase) {
       if (state.session?.wallet !== mockWallet)

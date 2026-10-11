@@ -1,7 +1,8 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import type { OwnerTransactionSummary, TxPhase, TxResult } from '@forge/shared';
+import type { TxPhase, TxResult } from '@forge/shared';
+import type { LaunchReview } from '@/client/types';
 import { useWebClient, useWorkspace } from './provider';
 import {
   ActionLink,
@@ -34,7 +35,8 @@ export function LaunchScreen({
     router = useRouter(),
     { openLogin } = useWorkspace();
   const { session, disconnect } = api.useSession();
-  const [summary, setSummary] = useState<OwnerTransactionSummary | null>(null),
+  const [summary, setSummary] = useState<LaunchReview | null>(null),
+    [acknowledged, setAcknowledged] = useState(false),
     [error, setError] = useState(''),
     [phase, setPhase] = useState<TxPhase>(initialPhase),
     [result, setResult] = useState<TxResult | null>(null),
@@ -47,7 +49,9 @@ export function LaunchScreen({
     void api
       .getOwnerTransactionSummary(jobId)
       .then((value) => {
-        if (!cancelled) setSummary(value);
+        if (cancelled) return;
+        setSummary(value);
+        setAcknowledged(false);
       })
       .catch((e) => {
         if (!cancelled) setError(readableError(e));
@@ -56,8 +60,12 @@ export function LaunchScreen({
       cancelled = true;
     };
   }, [api, jobId, generation, holdLoading]);
+  // Without a successful simulation of this exact transaction the amounts are a minimum and the
+  // launch may fail: the owner must say they want to sign anyway.
+  const simulated = summary?.simulation === 'ok';
   const sign = async () => {
     if (!summary || session?.wallet !== summary.ownerWallet || lock.current) return;
+    if (!simulated && !acknowledged) return;
     lock.current = true;
     setError('');
     try {
@@ -99,7 +107,38 @@ export function LaunchScreen({
                 <p>{copy.network}</p>
                 <Amount lamports={summary.estimatedNetworkFeeLamports} />
               </div>
+              <div>
+                <p>{copy.total}</p>
+                <Amount
+                  lamports={(
+                    BigInt(summary.firstBuyLamports) + BigInt(summary.estimatedNetworkFeeLamports)
+                  ).toString()}
+                />
+              </div>
             </div>
+            <p className="fw-caption">{copy.networkHint}</p>
+            {!simulated && (
+              <div className="fw-notice fw-notice-error" role="alert">
+                <h2>
+                  {summary.simulation === 'failed'
+                    ? copy.simulationFailed
+                    : copy.simulationUnavailable}
+                </h2>
+                <p>
+                  {summary.simulation === 'failed'
+                    ? copy.simulationFailedBody
+                    : copy.simulationUnavailableBody}
+                </p>
+                <label className="fw-confirm-check">
+                  <input
+                    type="checkbox"
+                    checked={acknowledged}
+                    onChange={(event) => setAcknowledged(event.target.checked)}
+                  />
+                  <span>{copy.acknowledge}</span>
+                </label>
+              </div>
+            )}
             <Address value={summary.ownerWallet} label={copy.owner} />
             {session?.wallet !== summary.ownerWallet ? (
               <div className="fw-notice">
@@ -126,7 +165,7 @@ export function LaunchScreen({
               </>
             ) : (
               <>
-                <Button disabled={busy} onClick={sign}>
+                <Button disabled={busy || (!simulated && !acknowledged)} onClick={sign}>
                   {busy
                     ? phase === 'sending'
                       ? common.sending

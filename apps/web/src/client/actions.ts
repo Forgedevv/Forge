@@ -15,7 +15,6 @@ import {
   type ClaimTransactionSummary,
   type LaunchpadSpec,
   type OnTxPhase,
-  type OwnerTransactionSummary,
   type PaymentKind,
   type Quote,
   type TxPhase,
@@ -45,7 +44,13 @@ import {
   safeReporter,
   sendAndConfirm,
 } from './tx';
-import type { ClaimOptions, ClaimResult, PaymentResult, PendingPayment } from './types';
+import type {
+  ClaimOptions,
+  ClaimResult,
+  LaunchReview,
+  PaymentResult,
+  PendingPayment,
+} from './types';
 import { getWalletBridge } from './wallet-bridge';
 
 /**
@@ -265,12 +270,16 @@ export async function approvePreview(jobId: string): Promise<void> {
   });
 }
 
-export async function getOwnerTransactionSummary(jobId: string): Promise<OwnerTransactionSummary> {
+/**
+ * What the owner reviews before signing the launch: the summary plus whether the server simulated
+ * the exact transaction (when not `ok`, the amounts are a lower bound).
+ */
+export async function getOwnerTransactionSummary(jobId: string): Promise<LaunchReview> {
   const res = await request(
     route(WEB_API_ROUTES.ownerTransactionGet.path, { id: jobId }),
     OwnerTransactionGetResponse,
   );
-  return res.summary;
+  return { ...res.summary, simulation: res.simulation ?? 'unavailable' };
 }
 
 export async function signOwnerTransaction(jobId: string, onPhase: OnTxPhase): Promise<TxResult> {

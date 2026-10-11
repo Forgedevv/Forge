@@ -99,8 +99,16 @@ describe('simple actions', () => {
       estimatedNetworkFeeLamports: '5000',
       ownerWallet: owner.toBase58(),
     };
+    mockFetch(() => json({ transaction: txB64(), summary, simulation: 'failed' }));
+    await expect(getOwnerTransactionSummary(id())).resolves.toEqual({
+      ...summary,
+      simulation: 'failed',
+    });
+    // A server that does not say whether it simulated: treated as not checked.
     mockFetch(() => json({ transaction: txB64(), summary }));
-    await expect(getOwnerTransactionSummary(id())).resolves.toEqual(summary);
+    await expect(getOwnerTransactionSummary(id())).resolves.toMatchObject({
+      simulation: 'unavailable',
+    });
   });
 
   it('reactivateLaunchpad posts to the reactivate route', async () => {

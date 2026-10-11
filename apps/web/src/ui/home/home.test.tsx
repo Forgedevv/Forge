@@ -3,6 +3,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { homeContent as copy } from './content';
 import { ForgeHome } from './home';
 
+// Full-page renders: allow for a busy machine when the whole suite runs in parallel.
+vi.setConfig({ testTimeout: 30_000 });
+
 const scene = vi.hoisted(() => ({
   chapter: (chapter: number) => {
     void chapter;

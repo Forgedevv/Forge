@@ -2251,6 +2251,21 @@
   }
 }
 
+/* Explicit confirmation before signing an unchecked launch. */
+.fw-confirm-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-top: 14px;
+  color: var(--fw-text);
+  font-size: 13px;
+  cursor: pointer;
+}
+.fw-confirm-check input {
+  margin-top: 3px;
+  accent-color: var(--fw-accent);
+}
+
 /* Claim review: what one claim transaction collects and costs, before signing. */
 .fw-pad-revenue {
   flex-wrap: wrap;
