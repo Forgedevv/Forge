@@ -505,19 +505,11 @@ export class FakeGithub extends Recorder implements PipelineGithub, RepoSource {
     });
   }
 
-  /** First ancestor of head (breadth first) that is also an ancestor of base. */
+  /** Best common ancestor, like git: a common ancestor that no other common ancestor descends from. */
   private mergeBase(baseSha: string, headSha: string): string | undefined {
     const baseAncestors = this.ancestors(baseSha);
-    const queue = [headSha];
-    const seen = new Set<string>();
-    while (queue.length > 0) {
-      const s = queue.shift()!;
-      if (seen.has(s)) continue;
-      seen.add(s);
-      if (baseAncestors.has(s)) return s;
-      queue.push(...(this.commits.get(s)?.parents ?? []));
-    }
-    return undefined;
+    const common = [...this.ancestors(headSha)].filter((c) => baseAncestors.has(c));
+    return common.find((c) => !common.some((d) => d !== c && this.ancestors(d).has(c)));
   }
 
   private commitOf(repo: string, ref: string): FakeCommit {

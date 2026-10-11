@@ -77,8 +77,12 @@ export async function runDeployStep(
     throw new PipelineError('forge.config.json is missing from the job branch');
   const branchRaw = parseSiteConfig(branchText);
   const branchConfig = typedSiteConfig(branchRaw);
-  const mainText = await deps.github.readFile(repo.name, SITE_CONFIG_PATH, repo.defaultBranch);
-  const mainConfig = mainText === null ? null : typedSiteConfig(parseSiteConfig(mainText));
+  // Pin the default branch too: the release must go on top of exactly this commit.
+  const mainHead = await deps.github.getBranchHead(repo.name, repo.defaultBranch);
+  if (mainHead === null) throw new PipelineError('the default branch does not exist');
+  const mainText = await deps.github.readFile(repo.name, SITE_CONFIG_PATH, mainHead);
+  const mainRaw = mainText === null ? null : parseSiteConfig(mainText);
+  const mainConfig = mainRaw === null ? null : typedSiteConfig(mainRaw);
   // A site cut by FORGE is never brought back by a release (only the team re-enables it).
   if (mainConfig?.mode === 'disabled' || branchConfig.mode === 'disabled') {
     throw new PipelineError('the site is disabled by FORGE (forge.config.json mode): no release');
@@ -118,7 +122,7 @@ export async function runDeployStep(
     if (branchConfig.name !== mainConfig.name) locked.push(lockedField('name'));
   }
   // Second scan: exactly what the merge brings in, as stored on GitHub (merge base -> commit).
-  const release = await scanRelease(deps, repo.name, repo.defaultBranch, headSha);
+  const release = await scanRelease(deps, repo.name, mainHead, headSha);
   const blocked = [...locked, ...release.violations];
   if (blocked.length > 0) {
     await safeAlert(
@@ -147,29 +151,54 @@ export async function runDeployStep(
   // Nothing but the approved preview (plus, for a creation, the builder's on-chain commit).
   await checkApprovedHead(deps, job, repo.name, kind, previewSha, headSha, branchRaw);
 
-  // Merge (answers "already merged" on a re-run).
   await say(jobCtx, STEP_EVENTS.release);
-  guard(signal);
-  const merged = await deps.github.mergeBranch(repo.name, {
-    base: repo.defaultBranch,
-    head: headSha,
-    message: `Release job ${job.id}`,
-  });
-  const releasedText = await deps.github.readFile(repo.name, SITE_CONFIG_PATH, merged.sha);
+  let mergedSha: string;
+  if (release.mergeBaseSha === mainHead) {
+    // The branch starts from the current head of the default branch: the merge brings in
+    // exactly the scanned diff.
+    guard(signal);
+    const merged = await deps.github.mergeBranch(repo.name, {
+      base: repo.defaultBranch,
+      head: headSha,
+      message: `Release job ${job.id}`,
+    });
+    mergedSha = merged.sha;
+  } else if (release.mergeBaseSha === headSha) {
+    // Re-run after a crash: the commit is already in the default branch. Only the builder's mode
+    // commit may sit on top of it.
+    if (mainRaw === null || !(await onlyModeChangedSince(deps, repo.name, headSha, mainHead))) {
+      throw new PipelineError(
+        'the job branch is already in the default branch, which changed since: manual handling required',
+      );
+    }
+    mergedSha = mainHead;
+  } else {
+    throw new PipelineError(
+      'the default branch moved since the preview was built (the merge base is not its head): the release needs manual handling',
+    );
+  }
+  const releasedText = await deps.github.readFile(repo.name, SITE_CONFIG_PATH, mergedSha);
   if (releasedText === null)
     throw new PipelineError('forge.config.json is missing after the merge');
   const releasedRaw = parseSiteConfig(releasedText);
   const released = typedSiteConfig(releasedRaw);
+  if (released.mode === 'disabled') {
+    // The default branch was cut while the release was merging: never turned back to live.
+    throw new PipelineError('the released site is disabled by FORGE: it stays cut');
+  }
   if (!sameOnchain(released.onchain, branchConfig.onchain)) {
     throw new PipelineError(
       'the merged forge.config.json does not hold the expected on-chain section',
     );
   }
-  let releaseSha = merged.sha;
-  if (released.mode === 'disabled') {
-    // The default branch was cut while the release was merging: never turned back to live.
-    throw new PipelineError('the released site is disabled by FORGE: it stays cut');
+  // What is deployed must be what was scanned: the merge result holds exactly the tree of the
+  // scanned commit (the default branch did not move in between), up to the builder's mode.
+  if (!(await onlyModeChangedSince(deps, repo.name, headSha, mergedSha))) {
+    throw new PipelineError(
+      'the default branch moved during the release: the merge brought in unscanned changes; manual handling required',
+    );
   }
+  let releaseSha = mergedSha;
   if (released.mode === 'sleeping') {
     // A release wakes a sleeping site (only `sleeping` ever becomes `live` here).
     guard(signal);
@@ -180,6 +209,7 @@ export async function runDeployStep(
       files: [
         { path: SITE_CONFIG_PATH, content: serializeSiteConfig(withMode(releasedRaw, 'live')) },
       ],
+      expectedHeadSha: mergedSha,
     });
     releaseSha = commit.commitSha;
   }
@@ -305,4 +335,29 @@ async function checkApprovedHead(
   if (!deepEqual(withOnchain(previewConfig, onchain), headConfig)) {
     return refuse('the commit after the preview changes more than the on-chain section');
   }
+}
+
+/**
+ * True when `to` holds exactly the tree of `from`, except possibly the `mode` of
+ * forge.config.json (the builder's own mode commit).
+ */
+async function onlyModeChangedSince(
+  deps: PipelineDeps,
+  repo: string,
+  from: string,
+  to: string,
+): Promise<boolean> {
+  if (from === to) return true;
+  const cmp = await deps.github.compareCommits(repo, from, to);
+  if (cmp.mergeBaseSha !== from) return false;
+  if (cmp.files.some((f) => f.path !== SITE_CONFIG_PATH)) return false;
+  if (cmp.files.length === 0) return true;
+  const [before, after] = await Promise.all([
+    deps.github.readFile(repo, SITE_CONFIG_PATH, from),
+    deps.github.readFile(repo, SITE_CONFIG_PATH, to),
+  ]);
+  if (before === null || after === null) return false;
+  const a = parseSiteConfig(before);
+  const b = parseSiteConfig(after);
+  return deepEqual(withMode(a, 'live'), withMode(b, 'live'));
 }

@@ -339,6 +339,62 @@ describe('modify: deploying', () => {
     expect(h.vercel.deployments.get(project.productionDeploymentId!)!.sha).toBe(main);
   });
 
+  it('fails the release when the default branch moved since the preview was built', async () => {
+    const h = await liveLaunchpad();
+    await run(h, modifyJob());
+    await h.github.commitFiles({
+      repo: REPO,
+      branch: 'main',
+      message: 'someone else',
+      files: [{ path: 'README.md', content: 'moved\n' }],
+    });
+    const productionBefore = h.vercel.projectBySlug('moonpad')!.productionDeploymentId;
+    await expect(run(h, modifyJob({ status: 'deploying' }))).rejects.toThrow(
+      /moved since the preview/,
+    );
+    expect(h.github.count('mergeBranch')).toBe(1); // the creation release only
+    expect(h.vercel.projectBySlug('moonpad')!.productionDeploymentId).toBe(productionBefore);
+  });
+
+  it('never deploys a merge that brought in changes pushed during the release', async () => {
+    const h = await liveLaunchpad();
+    await run(h, modifyJob());
+    let moved = false;
+    h.github.onCall = (op) => {
+      if (op !== 'mergeBranch' || moved) return;
+      moved = true;
+      const files = new Map(h.github.filesAt(REPO, 'main'));
+      files.set('src/content/injected.ts', {
+        content: Buffer.from('export const injected = 1;\n'),
+        executable: false,
+      });
+      h.github.forceBranch(REPO, 'main', files, 'concurrent push');
+    };
+    const deploymentsBefore = h.vercel.deployments.size;
+    await expect(run(h, modifyJob({ status: 'deploying' }))).rejects.toThrow(
+      /moved during the release/,
+    );
+    expect(h.vercel.deployments.size).toBe(deploymentsBefore);
+    expect(h.store.get(LAUNCHPAD_ID).status).toBe('live');
+  });
+
+  it('refuses to re-release a job once the default branch moved past it', async () => {
+    const h = await liveLaunchpad();
+    await run(h, modifyJob());
+    await run(h, modifyJob({ status: 'deploying' }));
+    await h.github.commitFiles({
+      repo: REPO,
+      branch: 'main',
+      message: 'later work',
+      files: [{ path: 'README.md', content: 'later\n' }],
+    });
+    const deploymentsBefore = h.vercel.deployments.size;
+    await expect(run(h, modifyJob({ status: 'deploying' }))).rejects.toThrow(
+      /already in the default branch/,
+    );
+    expect(h.vercel.deployments.size).toBe(deploymentsBefore);
+  });
+
   it('converges when re-run after a crash after the merge', async () => {
     const h = await liveLaunchpad();
     await run(h, modifyJob());
