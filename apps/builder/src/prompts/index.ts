@@ -65,15 +65,21 @@ export function createTaskPrompt(spec: LaunchpadSpec, opts: TaskPromptOptions = 
   ].join('\n');
 }
 
-/** Task of a modification: apply the client's request to the live site, nothing else. */
+/**
+ * Task of a modification: apply the client's request to the live site, nothing else. The
+ * launchpad name and slug come from the client's spec too, so they travel inside the escaped
+ * client block with the request, never as instruction text.
+ */
 export function modifyTaskPrompt(request: string, context: { name: string; slug: string }): string {
   return [
     'Apply the client modification request below to this launchpad site. The site is live:',
     'change only what the request asks for (within the zones you may change) and keep',
     'everything else as it is.',
     '',
-    `Launchpad: ${JSON.stringify(context.name)} (${context.slug}).`,
-    '',
-    clientBlock({ modificationRequest: request }),
+    clientBlock({
+      launchpadName: context.name,
+      launchpadSlug: context.slug,
+      modificationRequest: request,
+    }),
   ].join('\n');
 }
