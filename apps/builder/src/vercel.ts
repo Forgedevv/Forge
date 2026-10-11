@@ -92,7 +92,10 @@ export function subdomainFor(slug: string, clientsDomain: string): string {
  * only ever receives public values:
  *
  * - `NEXT_PUBLIC_*` values the browser needs (cluster, RPC relay origin, Jupiter referral account,
- *   public bucket URL, pool config keys);
+ *   platform fee wallet and Meteora referral account of the curve swap, public bucket URL, pool
+ *   config keys). The template reads them as literal `process.env.NEXT_PUBLIC_*` (inlined at
+ *   build time): a name the builder does not set is `undefined` in the browser, and trading
+ *   breaks (vercel.template-env.test.ts checks the template source against this list);
  * - the public on-chain FORGE addresses and the cluster, which `@forge/core` reads from
  *   `process.env` on the server (addresses, not credentials);
  * - the public R2 URL and the pool config key read by server routes.
@@ -119,6 +122,8 @@ export const PROJECT_ENV_ALLOWLIST: ReadonlySet<string> = new Set<string>([
   'FORGE_PLATFORM_FEE_WALLET',
   'FORGE_JUPITER_REFERRAL_ACCOUNT',
   'NEXT_PUBLIC_FORGE_JUPITER_REFERRAL_ACCOUNT',
+  'NEXT_PUBLIC_FORGE_PLATFORM_FEE_WALLET',
+  'NEXT_PUBLIC_FORGE_METEORA_REFERRAL_ACCOUNT',
   'NEXT_PUBLIC_FORGE_RPC_RELAY_URL',
   'R2_PUBLIC_URL',
   'NEXT_PUBLIC_R2_PUBLIC_URL',
@@ -155,14 +160,21 @@ export const PROJECT_ENV_REQUIRED: readonly string[] = [
   'FORGE_PLATFORM_FEE_WALLET',
   'FORGE_JUPITER_REFERRAL_ACCOUNT',
   'NEXT_PUBLIC_FORGE_JUPITER_REFERRAL_ACCOUNT',
+  'NEXT_PUBLIC_FORGE_PLATFORM_FEE_WALLET',
+  'NEXT_PUBLIC_FORGE_METEORA_REFERRAL_ACCOUNT',
   'NEXT_PUBLIC_FORGE_RPC_RELAY_URL',
   'R2_PUBLIC_URL',
 ];
 
-/** Public `NEXT_PUBLIC_*` twins derived from a FORGE-side variable when not given explicitly. */
+/**
+ * Public `NEXT_PUBLIC_*` twins derived from a FORGE-side variable when not given explicitly. A twin
+ * given explicitly must equal its source: the browser and the server must use the same accounts.
+ */
 const DERIVED_ENV: ReadonlyArray<readonly [string, string]> = [
   ['NEXT_PUBLIC_SOLANA_CLUSTER', 'SOLANA_CLUSTER'],
   ['NEXT_PUBLIC_FORGE_JUPITER_REFERRAL_ACCOUNT', 'FORGE_JUPITER_REFERRAL_ACCOUNT'],
+  ['NEXT_PUBLIC_FORGE_PLATFORM_FEE_WALLET', 'FORGE_PLATFORM_FEE_WALLET'],
+  ['NEXT_PUBLIC_FORGE_METEORA_REFERRAL_ACCOUNT', 'FORGE_METEORA_REFERRAL_ACCOUNT'],
   ['NEXT_PUBLIC_R2_PUBLIC_URL', 'R2_PUBLIC_URL'],
   ['NEXT_PUBLIC_POOL_CONFIG_KEY', 'POOL_CONFIG_KEY'],
 ];
@@ -199,6 +211,8 @@ const VALUE_CHECKS: Readonly<Record<string, (value: string) => boolean>> = {
   FORGE_PLATFORM_FEE_WALLET: (v) => BASE58_ADDRESS.test(v),
   FORGE_JUPITER_REFERRAL_ACCOUNT: (v) => BASE58_ADDRESS.test(v),
   NEXT_PUBLIC_FORGE_JUPITER_REFERRAL_ACCOUNT: (v) => BASE58_ADDRESS.test(v),
+  NEXT_PUBLIC_FORGE_PLATFORM_FEE_WALLET: (v) => BASE58_ADDRESS.test(v),
+  NEXT_PUBLIC_FORGE_METEORA_REFERRAL_ACCOUNT: (v) => BASE58_ADDRESS.test(v),
   NEXT_PUBLIC_FORGE_RPC_RELAY_URL: isPublicUrl,
   R2_PUBLIC_URL: isPublicUrl,
   NEXT_PUBLIC_R2_PUBLIC_URL: isPublicUrl,
@@ -251,11 +265,15 @@ export function pickProjectEnv(
     const v = source[key];
     if (typeof v === 'string' && v !== '') vars[key] = v;
   }
+  const invalid = new Set<string>();
   for (const [target, from] of DERIVED_ENV) {
     const v = vars[from];
     if (vars[target] === undefined && v !== undefined) vars[target] = v;
+    else if (vars[target] !== undefined && v !== undefined && vars[target] !== v) {
+      // An explicit twin that disagrees with its source: the browser would use other accounts.
+      invalid.add(target);
+    }
   }
-  const invalid = new Set<string>();
   for (const [key, value] of Object.entries(vars)) {
     if (projectEnvProblem(key, value) !== undefined) invalid.add(key);
   }
