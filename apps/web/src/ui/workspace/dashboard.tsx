@@ -16,7 +16,7 @@ import {
 } from './components';
 import { dashboardCopy as copy } from './content/dashboard';
 import { common } from './content/common';
-import { safeUrl } from './safe-url';
+import { safeUrl, siteHost } from './safe-url';
 import { Muse, museColorsFor, museMoodForJob, type MuseMood } from '../muse';
 import { MuseHero, type HeroAction } from './muse-hero';
 import { LaunchpadArt } from './launchpad-art';
@@ -305,7 +305,7 @@ function LaunchpadCard({
             </p>
             {url && (
               <Link className="fw-site-url" href={url} target="_blank" rel="noreferrer">
-                {pad.slug}.forgepads.xyz <span aria-hidden="true">↗</span>
+                {siteHost(url)} <span aria-hidden="true">↗</span>
               </Link>
             )}
           </div>

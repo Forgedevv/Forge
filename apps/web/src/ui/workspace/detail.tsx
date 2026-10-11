@@ -35,7 +35,11 @@ export function DetailScreen({ launchpadId }: { launchpadId: string }) {
         <Card>
           <h2>{copy.settings}</h2>
           <p className="fw-notice">{copy.final}</p>
-          <SpecSummary spec={launchpad.spec} validation={{ complete: true, errors: {} }} />
+          <SpecSummary
+            spec={launchpad.spec}
+            validation={{ complete: true, errors: {} }}
+            siteUrl={launchpad.siteUrl}
+          />
           <div className="fw-onchain-addresses">
             {(
               [

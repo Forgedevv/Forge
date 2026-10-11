@@ -63,3 +63,17 @@ it('shows a failed load with a retry instead of an empty workshop', async () => 
   expect(screen.getByRole('alert')).toHaveTextContent('could not be loaded');
   expect(screen.getByRole('button', { name: 'Try again' })).toBeInTheDocument();
 });
+
+it('labels each site link with the hostname of its real URL', async () => {
+  const controller = createMockController('dashboard:one');
+  controller.snapshot().pads[0]!.siteUrl = 'https://orbit.launch.example/';
+  render(
+    <WorkspaceProvider controller={controller}>
+      <DashboardScreen heroFallback />
+    </WorkspaceProvider>,
+  );
+  await act(async () => {});
+  const link = screen.getByRole('link', { name: /orbit\.launch\.example/ });
+  expect(link).toHaveAttribute('href', 'https://orbit.launch.example/');
+  expect(screen.queryByText(/forgepads\.xyz/)).not.toBeInTheDocument();
+});

@@ -10,7 +10,7 @@ import { LaunchScreen } from './launch';
 import { ChatScreen } from './chat';
 import { LoginPanel } from './session';
 import { GatingScreen } from './gating';
-import { safeUrl } from './safe-url';
+import { safeUrl, siteHost } from './safe-url';
 
 const navigation = vi.hoisted(() => ({ push: vi.fn(), replace: vi.fn() }));
 vi.mock('next/navigation', () => ({ useRouter: () => navigation }));
@@ -217,6 +217,20 @@ describe('screen interactions', () => {
     await advance(500);
     fireEvent.click(screen.getByRole('button', { name: /Continue to the chat/ }));
     expect(screen.getByText('Chat unlocked')).toBeInTheDocument();
+  });
+  it('shows the hostname of a real site URL and refuses unsafe ones', () => {
+    expect(siteHost('https://moonpad.clients.example/')).toBe('moonpad.clients.example');
+    expect(siteHost('/dev/preview')).toBe('/dev/preview');
+    expect(siteHost('javascript:alert(1)')).toBeNull();
+    expect(siteHost(null)).toBeNull();
+    render(
+      <SpecSummary
+        spec={fullSpec}
+        validation={{ complete: true, errors: {} }}
+        siteUrl="https://orbit.clients.example"
+      />,
+    );
+    expect(screen.getByText('orbit.clients.example')).toBeInTheDocument();
   });
   it('rejects unsafe preview and image links', () => {
     expect(safeUrl('javascript:alert(1)')).toBeNull();
