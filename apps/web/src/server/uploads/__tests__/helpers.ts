@@ -4,7 +4,12 @@ import type { MintChecker } from '../chain';
 import type { UploadRequest } from '../contract';
 import { buildLaunchAuthMessage } from '../launch-auth';
 import { SlidingWindowLimiter } from '../rate-limit';
-import { createUploadService, type UploadServiceDeps } from '../service';
+import {
+  createUploadService,
+  type UploadCaller,
+  type UploadService,
+  type UploadServiceDeps,
+} from '../service';
 import { createR2Storage } from '../storage';
 import { MemoryUploadStore, type LaunchpadRef } from '../store';
 import { createFakeR2 } from './fake-r2';
@@ -109,11 +114,27 @@ export function signedRequest(options: RequestOptions = {}): UploadRequest {
   };
 }
 
+/** The service with the caller optional: by default, the site whose launchpad is in the route. */
+export interface TestUploadService {
+  issue(
+    launchpadParam: string,
+    body: unknown,
+    caller?: UploadCaller,
+  ): ReturnType<UploadService['issue']>;
+  complete(
+    launchpadParam: string,
+    uploadId: string,
+    body: unknown,
+    caller?: UploadCaller,
+  ): ReturnType<UploadService['complete']>;
+}
+
 export interface Harness {
   clock: { now: number };
   store: MemoryUploadStore;
   r2: ReturnType<typeof createFakeR2>;
-  service: ReturnType<typeof createUploadService>;
+  storage: ReturnType<typeof createR2Storage>;
+  service: TestUploadService;
   logs: string[];
   mintChecks: string[];
 }
@@ -149,7 +170,7 @@ export function harness(
       return existing.has(address);
     },
   };
-  const service = createUploadService({
+  const raw = createUploadService({
     store,
     storage,
     clientsDomain: CLIENTS_DOMAIN,
@@ -159,7 +180,15 @@ export function harness(
     log: (message) => logs.push(message),
     ...overrides,
   });
-  return { clock, store, r2, service, logs, mintChecks };
+  const callerFor = (param: string): UploadCaller => ({
+    serverSlug: store.launchpads.get(param.toLowerCase())?.slug ?? param,
+  });
+  const service: TestUploadService = {
+    issue: (param, body, caller) => raw.issue(param, body, caller ?? callerFor(param)),
+    complete: (param, uploadId, body, caller) =>
+      raw.complete(param, uploadId, body, caller ?? callerFor(param)),
+  };
+  return { clock, store, r2, storage, service, logs, mintChecks };
 }
 
 /** What the client site does with a ticket: PUT the bytes with exactly the ticket headers. */

@@ -3,8 +3,8 @@ import { presignParts, type SigV4Credentials } from '../sigv4';
 
 /*
  * In-memory stand-in for the R2 S3 API, reached through `fetch`: it checks every presigned URL
- * exactly like R2 would (signature over the signed headers, expiry), then applies the write-once
- * (`If-None-Match: *`) and checksum (`x-amz-checksum-sha256`) rules.
+ * exactly like R2 would (signature over the signed headers, `Content-Length` included, expiry),
+ * then applies the write-once (`If-None-Match: *`) and checksum (`x-amz-checksum-sha256`) rules.
  */
 
 export interface FakeObject {
@@ -92,6 +92,10 @@ export function createFakeR2(options: FakeR2Options) {
       return reply(method, key, 403);
     }
     const sent = headerMap(init);
+    // Like any HTTP client, fetch sends Content-Length from a body of known size.
+    if (init?.body !== undefined && init.body !== null && !sent.has('content-length')) {
+      sent.set('content-length', String(bodyBytes(init.body).length));
+    }
     const signedHeaders: Record<string, string> = {};
     for (const name of signedNames) {
       if (name === 'host') continue;

@@ -5,6 +5,7 @@ import {
   UploadStoreError,
   type InsertResult,
   type LaunchpadRef,
+  type SweepQuery,
   type TicketRecord,
   type UploadStore,
 } from './store';
@@ -45,18 +46,20 @@ const TicketRow = z.object({
   content_type: z.enum(IMAGE_TYPES),
   image_size: z.number().int(),
   image_sha256: z.string(),
+  upload_key: z.string(),
   image_key: z.string(),
   metadata_key: z.string(),
   coin_name: z.string(),
   coin_symbol: z.string(),
   coin_description: z.string(),
   first_buy_lamports: z.string(),
-  status: z.enum(['issued', 'completed', 'rejected']),
+  status: z.enum(['issued', 'completed', 'rejected', 'expired']),
   rejection: z.string().nullable(),
   metadata_sha256: z.string().nullable(),
   issued_at: z.string(),
   expires_at: z.string(),
   completed_at: z.string().nullable(),
+  swept_at: z.string().nullable(),
 });
 
 function toDate(value: string, operation: string): Date {
@@ -80,6 +83,7 @@ export function parseTicketRow(row: unknown, operation = 'parse ticket'): Ticket
     contentType: r.content_type,
     imageSize: r.image_size,
     imageSha256: r.image_sha256,
+    uploadKey: r.upload_key,
     imageKey: r.image_key,
     metadataKey: r.metadata_key,
     coinName: r.coin_name,
@@ -92,6 +96,7 @@ export function parseTicketRow(row: unknown, operation = 'parse ticket'): Ticket
     issuedAt: toDate(r.issued_at, operation),
     expiresAt: toDate(r.expires_at, operation),
     completedAt: r.completed_at === null ? null : toDate(r.completed_at, operation),
+    sweptAt: r.swept_at === null ? null : toDate(r.swept_at, operation),
   };
 }
 
@@ -107,6 +112,7 @@ export function ticketToRow(t: TicketRecord): Record<string, unknown> {
     content_type: t.contentType,
     image_size: t.imageSize,
     image_sha256: t.imageSha256,
+    upload_key: t.uploadKey,
     image_key: t.imageKey,
     metadata_key: t.metadataKey,
     coin_name: t.coinName,
@@ -119,6 +125,7 @@ export function ticketToRow(t: TicketRecord): Record<string, unknown> {
     issued_at: t.issuedAt.toISOString(),
     expires_at: t.expiresAt.toISOString(),
     completed_at: t.completedAt === null ? null : t.completedAt.toISOString(),
+    swept_at: t.sweptAt === null ? null : t.sweptAt.toISOString(),
   };
 }
 
@@ -235,6 +242,49 @@ export class SupabaseUploadStore implements UploadStore {
     if (res.error) fail('reject ticket', res.error);
     const row = res.data?.[0];
     return row ? parseTicketRow(row, 'reject ticket') : this.findTicketById(id);
+  }
+
+  async markExpired(id: string): Promise<TicketRecord | null> {
+    const res = await this.db
+      .from(TABLE)
+      .update({ status: 'expired' })
+      .eq('id', id)
+      .eq('status', 'issued')
+      .select('*');
+    if (res.error) fail('expire ticket', res.error);
+    const row = res.data?.[0];
+    return row ? parseTicketRow(row, 'expire ticket') : this.findTicketById(id);
+  }
+
+  async listSweepable(query: SweepQuery): Promise<TicketRecord[]> {
+    // Two indexed range reads (partial index on unswept tickets), merged oldest first.
+    const stale = await this.db
+      .from(TABLE)
+      .select('*')
+      .is('swept_at', null)
+      .eq('status', 'issued')
+      .lt('issued_at', query.issuedBefore.toISOString())
+      .order('issued_at', { ascending: true })
+      .limit(query.limit);
+    if (stale.error) fail('list stale tickets', stale.error);
+    const finished = await this.db
+      .from(TABLE)
+      .select('*')
+      .is('swept_at', null)
+      .neq('status', 'issued')
+      .lt('expires_at', query.urlExpiredBefore.toISOString())
+      .order('issued_at', { ascending: true })
+      .limit(query.limit);
+    if (finished.error) fail('list finished tickets', finished.error);
+    return [...(stale.data ?? []), ...(finished.data ?? [])]
+      .map((row) => parseTicketRow(row, 'list sweepable tickets'))
+      .sort((a, b) => a.issuedAt.getTime() - b.issuedAt.getTime())
+      .slice(0, query.limit);
+  }
+
+  async markSwept(id: string, at: Date): Promise<void> {
+    const res = await this.db.from(TABLE).update({ swept_at: at.toISOString() }).eq('id', id);
+    if (res.error) fail('mark ticket swept', res.error);
   }
 }
 

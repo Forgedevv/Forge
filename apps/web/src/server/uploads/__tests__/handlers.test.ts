@@ -1,22 +1,60 @@
 // @vitest-environment node
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { UploadHttpError } from '../contract';
-import { createUploadHandlers } from '../handlers';
+import { deriveRelayToken, RELAY_TOKEN_HEADER } from '../../rpc/server-token';
+import { UPLOAD_PRE_LIMITS, UploadHttpError } from '../contract';
+import { createUploadHandlers, type UploadHandlerDeps } from '../handlers';
+import { SlidingWindowLimiter } from '../rate-limit';
 import type { UploadService } from '../service';
-import { harness, pngBytes, putImage, signedRequest, type Harness } from './helpers';
+import { harness, LIVE, pngBytes, putImage, signedRequest, T0, type Harness } from './helpers';
 
 const API = 'https://forge.app';
+const SECRET = Buffer.from('relay-token-secret-for-tests-0123456789abcdef', 'utf8');
+const MOON_TOKEN = deriveRelayToken(SECRET, 'moonpad');
 
-function post(path: string, body: unknown, headers: Record<string, string> = {}) {
+function post(
+  path: string,
+  body: unknown,
+  headers: Record<string, string> = {},
+  token: string | null = MOON_TOKEN,
+) {
   return new Request(`${API}${path}`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', ...headers },
+    headers: {
+      'content-type': 'application/json',
+      'x-real-ip': '76.76.21.9',
+      ...(token === null ? {} : { [RELAY_TOKEN_HEADER]: token }),
+      ...headers,
+    },
     body: typeof body === 'string' ? body : JSON.stringify(body),
   });
 }
 
-function handlersFor(h: Harness, logs: string[] = []) {
-  return createUploadHandlers({ service: () => h.service, log: (m) => logs.push(m) });
+function handlersFor(h: Harness, logs: string[] = [], extra: UploadHandlerDeps = {}) {
+  return createUploadHandlers({
+    service: () => h.service,
+    log: (m) => logs.push(m),
+    tokenSecret: () => SECRET,
+    limiter: new SlidingWindowLimiter(() => h.clock.now),
+    ...extra,
+  });
+}
+
+/** A service that must never be reached. */
+function unreachable(calls: string[]): UploadService {
+  return {
+    issue: async () => {
+      calls.push('issue');
+      throw new Error('unreachable');
+    },
+    complete: async () => {
+      calls.push('complete');
+      throw new Error('unreachable');
+    },
+  };
+}
+
+async function codeOf(res: Response): Promise<string> {
+  return ((await res.json()) as { error: { code: string } }).error.code;
 }
 
 afterEach(() => {
@@ -106,10 +144,11 @@ describe('upload routes over HTTP', () => {
         throw new Error('unused');
       },
     };
-    const res = await createUploadHandlers({ service: () => service }).createUpload(
-      post('/x', signedRequest()),
-      'moonpad',
-    );
+    const res = await createUploadHandlers({
+      service: () => service,
+      tokenSecret: () => SECRET,
+      limiter: new SlidingWindowLimiter(),
+    }).createUpload(post('/x', signedRequest()), 'moonpad');
     expect(res.status).toBe(429);
     expect(res.headers.get('retry-after')).toBe('43');
   });
@@ -127,6 +166,8 @@ describe('upload routes over HTTP', () => {
     const res = await createUploadHandlers({
       service: () => service,
       log: (m) => logs.push(m),
+      tokenSecret: () => SECRET,
+      limiter: new SlidingWindowLimiter(),
     }).createUpload(post('/x', signedRequest()), 'moonpad');
     expect(res.status).toBe(500);
     const text = await res.text();
@@ -135,8 +176,169 @@ describe('upload routes over HTTP', () => {
   });
 });
 
+describe('server token and pre-limits', () => {
+  it('requires a valid server token on both routes before any other work (401)', async () => {
+    const h = harness();
+    const calls: string[] = [];
+    const handlers = handlersFor(h, [], { service: () => unreachable(calls) });
+    const forged = `v1.moonpad.${'0'.repeat(64)}`;
+    for (const token of [
+      null,
+      '',
+      'garbage',
+      forged,
+      deriveRelayToken(Buffer.alloc(32, 1), 'moonpad'),
+    ]) {
+      const res = await handlers.createUpload(post('/x', signedRequest(), {}, token), 'moonpad');
+      expect(res.status).toBe(401);
+      expect(await codeOf(res)).toBe('SERVER_TOKEN_REQUIRED');
+      const done = await handlers.completeUpload(
+        post('/x', { mint: signedRequest().mint }, {}, token),
+        'moonpad',
+        'A'.repeat(22),
+      );
+      expect(done.status).toBe(401);
+    }
+    expect(calls).toEqual([]);
+  });
+
+  it("refuses another launchpad's token for a slug route without touching the database", async () => {
+    const h = harness();
+    const calls: string[] = [];
+    const handlers = handlersFor(h, [], { service: () => unreachable(calls) });
+    const sun = deriveRelayToken(SECRET, 'sun-pad');
+    const res = await handlers.createUpload(post('/x', signedRequest(), {}, sun), 'moonpad');
+    expect(res.status).toBe(403);
+    expect(await codeOf(res)).toBe('SERVER_TOKEN_MISMATCH');
+    const done = await handlers.completeUpload(
+      post('/x', { mint: signedRequest().mint }, {}, sun),
+      'moonpad',
+      'A'.repeat(22),
+    );
+    expect(await codeOf(done)).toBe('SERVER_TOKEN_MISMATCH');
+    expect(calls).toEqual([]);
+  });
+
+  it("refuses another launchpad's token for a uuid route (checked by the service)", async () => {
+    const h = harness();
+    const handlers = handlersFor(h);
+    const sun = deriveRelayToken(SECRET, 'sun-pad');
+    const res = await handlers.createUpload(post('/x', signedRequest(), {}, sun), LIVE.id);
+    expect(res.status).toBe(403);
+    expect(await codeOf(res)).toBe('SERVER_TOKEN_MISMATCH');
+    expect(h.store.tickets.size).toBe(0);
+  });
+
+  it('fails closed with 503 when RPC_RELAY_TOKEN_SECRET is unset or too short', async () => {
+    for (const secret of [null, 'invalid'] as const) {
+      const h = harness();
+      const logs: string[] = [];
+      const calls: string[] = [];
+      const handlers = handlersFor(h, logs, {
+        service: () => unreachable(calls),
+        tokenSecret: () => secret,
+      });
+      const res = await handlers.createUpload(post('/x', signedRequest()), 'moonpad');
+      expect(res.status).toBe(503);
+      expect(await codeOf(res)).toBe('NOT_CONFIGURED');
+      expect(logs.join(' ')).toContain('RPC_RELAY_TOKEN_SECRET');
+      expect(calls).toEqual([]);
+    }
+  });
+
+  it('limits per client IP before checking the token', async () => {
+    const h = harness();
+    const calls: string[] = [];
+    const handlers = handlersFor(h, [], { service: () => unreachable(calls) });
+    for (let i = 0; i < UPLOAD_PRE_LIMITS.ip.limit; i++) {
+      const res = await handlers.createUpload(post('/x', '{bad', {}, null), 'moonpad');
+      expect(res.status).toBe(401);
+    }
+    const limited = await handlers.createUpload(post('/x', signedRequest()), 'moonpad');
+    expect(limited.status).toBe(429);
+    expect(Number(limited.headers.get('retry-after'))).toBeGreaterThan(0);
+    // The complete route shares the per-IP budget.
+    const done = await handlers.completeUpload(
+      post('/x', { mint: signedRequest().mint }),
+      'moonpad',
+      'A'.repeat(22),
+    );
+    expect(done.status).toBe(429);
+    // Another IP still passes the pre-limits.
+    const other = await handlers.createUpload(
+      post('/x', '{bad', { 'x-real-ip': '76.76.21.10' }),
+      'moonpad',
+    );
+    expect(other.status).toBe(400);
+    expect(calls).toEqual([]);
+  });
+
+  it('keys ticket and complete limits on the server token, across IPs', async () => {
+    const h = harness();
+    const calls: string[] = [];
+    const handlers = handlersFor(h, [], { service: () => unreachable(calls) });
+    const ip = (i: number) => ({ 'x-real-ip': `198.51.${Math.floor(i / 250)}.${i % 250}` });
+    for (let i = 0; i < UPLOAD_PRE_LIMITS.serverIssue.limit; i++) {
+      await handlers.createUpload(post('/x', '{bad', ip(i)), 'moonpad');
+    }
+    const limited = await handlers.createUpload(
+      post('/x', '{bad', { 'x-real-ip': '192.0.2.1' }),
+      'moonpad',
+    );
+    expect(limited.status).toBe(429);
+    // Another site's token is not affected; neither is the complete route of this site.
+    const sun = deriveRelayToken(SECRET, 'sun-pad');
+    const sunRes = await handlers.createUpload(post('/x', '{bad', {}, sun), 'sun-pad');
+    expect(sunRes.status).toBe(400);
+    const done = await handlers.completeUpload(post('/x', '{bad'), 'moonpad', 'A'.repeat(22));
+    expect(done.status).toBe(400);
+
+    for (let i = 1; i < UPLOAD_PRE_LIMITS.serverComplete.limit; i++) {
+      await handlers.completeUpload(
+        post('/x', '{bad', ip(i)),
+        'moonpad',
+        `${'B'.repeat(21)}${i % 10}`,
+      );
+    }
+    const completeLimited = await handlers.completeUpload(
+      post('/x', '{bad', { 'x-real-ip': '192.0.2.2' }),
+      'moonpad',
+      'C'.repeat(22),
+    );
+    expect(completeLimited.status).toBe(429);
+    expect(calls).toEqual([]);
+  });
+
+  it('frees the per-token budget after the window', async () => {
+    const h = harness();
+    const handlers = handlersFor(h, [], { service: () => unreachable([]) });
+    for (let i = 0; i < UPLOAD_PRE_LIMITS.serverIssue.limit; i++) {
+      await handlers.createUpload(
+        post('/x', '{bad', { 'x-real-ip': `203.0.113.${i % 200}` }),
+        'moonpad',
+      );
+    }
+    expect((await handlers.createUpload(post('/x', '{bad'), 'moonpad')).status).toBe(429);
+    h.clock.now = T0 + UPLOAD_PRE_LIMITS.serverIssue.windowMs + 1;
+    expect((await handlers.createUpload(post('/x', '{bad'), 'moonpad')).status).toBe(400);
+  });
+});
+
 describe('route files', () => {
+  it('fail closed with 503 NOT_CONFIGURED without the server token secret', async () => {
+    vi.stubEnv('RPC_RELAY_TOKEN_SECRET', '');
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const { POST } = await import('../../../../app/api/launchpads/[id]/uploads/route');
+    const res = await POST(post('/api/launchpads/moonpad/uploads', signedRequest()), {
+      params: Promise.resolve({ id: 'moonpad' }),
+    });
+    expect(res.status).toBe(503);
+    expect(await codeOf(res)).toBe('NOT_CONFIGURED');
+    expect(errors.mock.calls.flat().join(' ')).toContain('RPC_RELAY_TOKEN_SECRET');
+  });
+
   it('fail closed with 503 NOT_CONFIGURED when storage is not configured', async () => {
+    vi.stubEnv('RPC_RELAY_TOKEN_SECRET', SECRET.toString('utf8'));
     for (const name of [
       'R2_ACCOUNT_ID',
       'R2_ACCESS_KEY_ID',

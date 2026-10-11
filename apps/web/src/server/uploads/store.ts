@@ -14,7 +14,8 @@ export interface LaunchpadRef {
   coinMint: string | null;
 }
 
-export type TicketStatus = 'issued' | 'completed' | 'rejected';
+/** `expired`: never completed within the complete window (set by the sweep). */
+export type TicketStatus = 'issued' | 'completed' | 'rejected' | 'expired';
 
 export interface TicketRecord {
   id: string;
@@ -28,6 +29,9 @@ export interface TicketRecord {
   contentType: ImageType;
   imageSize: number;
   imageSha256: string;
+  /** Staging key of the presigned PUT (`pending/...`). */
+  uploadKey: string;
+  /** Public image key, written by FORGE after verification. */
   imageKey: string;
   metadataKey: string;
   coinName: string;
@@ -42,6 +46,16 @@ export interface TicketRecord {
   issuedAt: Date;
   expiresAt: Date;
   completedAt: Date | null;
+  /** When the sweep deleted the objects this ticket no longer needs (null: not yet). */
+  sweptAt: Date | null;
+}
+
+export interface SweepQuery {
+  /** `issued` tickets issued before this are past the complete window (plus grace). */
+  issuedBefore: Date;
+  /** Finished tickets whose presigned URL expired before this (plus grace). */
+  urlExpiredBefore: Date;
+  limit: number;
 }
 
 export type InsertResult = { ok: true } | { ok: false; conflict: 'nonce' | 'mint' | 'other' };
@@ -67,6 +81,16 @@ export interface UploadStore {
   markCompleted(id: string, metadataSha256: string, at: Date): Promise<TicketRecord | null>;
   /** `issued` -> `rejected`; returns the ticket as stored afterwards (null if missing). */
   markRejected(id: string, rejection: string): Promise<TicketRecord | null>;
+  /** `issued` -> `expired`; returns the ticket as stored afterwards (null if missing). */
+  markExpired(id: string): Promise<TicketRecord | null>;
+  /**
+   * Tickets not swept yet that the sweep must clean, oldest first: `issued` ones issued before
+   * `issuedBefore`, and the others (completed, rejected, expired) whose presigned URL expired
+   * before `urlExpiredBefore`.
+   */
+  listSweepable(query: SweepQuery): Promise<TicketRecord[]>;
+  /** Records that the sweep cleaned the ticket's objects. */
+  markSwept(id: string, at: Date): Promise<void>;
 }
 
 export class UploadStoreError extends Error {
@@ -160,5 +184,31 @@ export class MemoryUploadStore implements UploadStore {
       ticket.rejection = rejection;
     }
     return { ...ticket };
+  }
+
+  async markExpired(id: string): Promise<TicketRecord | null> {
+    const ticket = this.tickets.get(id);
+    if (!ticket) return null;
+    if (ticket.status === 'issued') ticket.status = 'expired';
+    return { ...ticket };
+  }
+
+  async listSweepable(query: SweepQuery): Promise<TicketRecord[]> {
+    return [...this.tickets.values()]
+      .filter(
+        (t) =>
+          t.sweptAt === null &&
+          (t.status === 'issued'
+            ? t.issuedAt.getTime() < query.issuedBefore.getTime()
+            : t.expiresAt.getTime() < query.urlExpiredBefore.getTime()),
+      )
+      .sort((a, b) => a.issuedAt.getTime() - b.issuedAt.getTime())
+      .slice(0, query.limit)
+      .map((t) => ({ ...t }));
+  }
+
+  async markSwept(id: string, at: Date): Promise<void> {
+    const ticket = this.tickets.get(id);
+    if (ticket) ticket.sweptAt = at;
   }
 }

@@ -15,7 +15,7 @@ import {
   type UploadTicket,
 } from './contract';
 import { sniffImageType } from './image';
-import { imageKey, metadataKey } from './keys';
+import { imageKey, metadataKey, uploadKey } from './keys';
 import {
   buildLaunchAuthMessage,
   isFreshIssuedAt,
@@ -34,15 +34,21 @@ import { UploadStoreError, type LaunchpadRef, type TicketRecord, type UploadStor
 /*
  * Coin upload tickets for client sites (contract v1, see contract.ts).
  *
+ * The route handlers (handlers.ts) have already checked the per-IP and per-token limits and the
+ * calling site's server token; `caller.serverSlug` is the launchpad that token names.
+ *
  * Issue:    strict body -> fresh `issuedAt` -> ed25519 signature over the exact v1 message ->
- *           per-instance wallet limit -> launchpad (slug or uuid) live -> `auth.host` is the
- *           launchpad's domain -> `(wallet, nonce)` already seen? identical body: same ticket,
- *           other body: 409 -> durable limits per wallet and per launchpad -> mint never used
- *           (tickets, launchpad coins, on-chain account) -> ticket stored (unique constraints
- *           decide races) -> presigned write-once PUT.
- * Complete: ticket of this launchpad and mint -> stored image read back: size, SHA-256, magic
- *           bytes and type must match, otherwise it is deleted and the ticket rejected ->
- *           metadata JSON written write-once -> ticket completed. Every step is idempotent.
+ *           per-instance wallet limit -> launchpad (slug or uuid) is the token's and live ->
+ *           `auth.host` is the launchpad's domain -> `(wallet, nonce)` already seen? identical
+ *           body: same ticket, other body: 409 -> durable limits per wallet and per launchpad ->
+ *           mint never used (tickets, launchpad coins, on-chain account) -> ticket stored (unique
+ *           constraints decide races) -> presigned write-once PUT to the staging key, size signed.
+ * Complete: launchpad is the token's -> ticket of this launchpad and mint -> public image key
+ *           already written by an earlier attempt? reuse it; otherwise the staged image is read
+ *           back: size, SHA-256, magic bytes and type must match (else it is deleted and the
+ *           ticket rejected), then FORGE writes the verified bytes to the public image key
+ *           (write-once) and deletes the staged copy -> metadata JSON written write-once ->
+ *           ticket completed. Every step is idempotent.
  */
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -66,9 +72,20 @@ export interface UploadServiceDeps {
   log?: (message: string) => void;
 }
 
+/** The calling client site, as authenticated by its server token (handlers.ts). */
+export interface UploadCaller {
+  /** Launchpad slug named by the `X-Forge-Relay-Token` of the request. */
+  serverSlug: string;
+}
+
 export interface UploadService {
-  issue(launchpadParam: string, body: unknown): Promise<UploadTicket>;
-  complete(launchpadParam: string, uploadId: string, body: unknown): Promise<UploadReceipt>;
+  issue(launchpadParam: string, body: unknown, caller: UploadCaller): Promise<UploadTicket>;
+  complete(
+    launchpadParam: string,
+    uploadId: string,
+    body: unknown,
+    caller: UploadCaller,
+  ): Promise<UploadReceipt>;
 }
 
 function hexToBase64(hex: string): string {
@@ -152,6 +169,16 @@ export function createUploadService(deps: UploadServiceDeps): UploadService {
     return launchpad;
   }
 
+  function requireCaller(launchpad: LaunchpadRef, caller: UploadCaller): void {
+    if (launchpad.slug !== caller.serverSlug) {
+      throw new UploadHttpError(
+        403,
+        'SERVER_TOKEN_MISMATCH',
+        'This server token belongs to another launchpad.',
+      );
+    }
+  }
+
   function requireLive(launchpad: LaunchpadRef): void {
     if (launchpad.status !== 'live') {
       throw new UploadHttpError(
@@ -179,9 +206,10 @@ export function createUploadService(deps: UploadServiceDeps): UploadService {
 
   function toTicket(ticket: TicketRecord): UploadTicket {
     const put = storage.presignPut({
-      key: ticket.imageKey,
+      key: ticket.uploadKey,
       contentType: ticket.contentType,
       sha256Base64: hexToBase64(ticket.imageSha256),
+      contentLength: ticket.imageSize,
       date: ticket.issuedAt,
       expiresSeconds: TICKET_TTL_SECONDS,
     });
@@ -222,7 +250,11 @@ export function createUploadService(deps: UploadServiceDeps): UploadService {
     return new UploadHttpError(409, 'MINT_USED', 'This coin address is already used. Try again.');
   }
 
-  async function issue(launchpadParam: string, raw: unknown): Promise<UploadTicket> {
+  async function issue(
+    launchpadParam: string,
+    raw: unknown,
+    caller: UploadCaller,
+  ): Promise<UploadTicket> {
     const parsed = UploadRequest.safeParse(raw);
     if (!parsed.success) {
       throw new UploadHttpError(
@@ -265,6 +297,7 @@ export function createUploadService(deps: UploadServiceDeps): UploadService {
 
     take(`wallet:${body.wallet}`, UPLOAD_RATE_LIMITS.wallet);
     const launchpad = await findLaunchpad(launchpadParam);
+    requireCaller(launchpad, caller);
     requireLive(launchpad);
     checkHost(body.auth.host, launchpad);
 
@@ -307,6 +340,7 @@ export function createUploadService(deps: UploadServiceDeps): UploadService {
       contentType: body.image.contentType,
       imageSize: body.image.size,
       imageSha256: body.image.sha256,
+      uploadKey: uploadKey(launchpad.slug, body.mint, body.image.contentType),
       imageKey: imageKey(launchpad.slug, body.mint, body.image.contentType),
       metadataKey: metadataKey(launchpad.slug, body.mint),
       coinName: body.coin.name,
@@ -319,6 +353,7 @@ export function createUploadService(deps: UploadServiceDeps): UploadService {
       issuedAt,
       expiresAt: new Date(issuedAt.getTime() + TICKET_TTL_SECONDS * 1000),
       completedAt: null,
+      sweptAt: null,
     };
     if (!UPLOAD_ID_PATTERN.test(ticket.id)) throw new UploadStoreError('new upload id', 'bad_id');
     const metadataUrl = storage.publicUrl(ticket.metadataKey);
@@ -339,8 +374,13 @@ export function createUploadService(deps: UploadServiceDeps): UploadService {
     return toTicket(ticket);
   }
 
+  /**
+   * Deletes the staged image and rejects the ticket. The presigned URL stays valid until it
+   * expires and may stage new bytes: they never reach a public key (complete refuses a rejected
+   * ticket) and the sweep deletes them once the URL is dead.
+   */
   async function reject(ticket: TicketRecord, reason: string): Promise<never> {
-    await storage.delete(ticket.imageKey);
+    await storage.delete(ticket.uploadKey);
     await store.markRejected(ticket.id, reason);
     log(`uploads: stored image rejected (${reason}) for upload ${ticket.id}`);
     throw new UploadHttpError(
@@ -377,45 +417,34 @@ export function createUploadService(deps: UploadServiceDeps): UploadService {
     return sha;
   }
 
-  async function complete(
-    launchpadParam: string,
-    uploadId: string,
-    raw: unknown,
-  ): Promise<UploadReceipt> {
-    const notFound = () =>
-      new UploadHttpError(404, 'UPLOAD_NOT_FOUND', 'This upload does not exist.');
-    if (!UPLOAD_ID_PATTERN.test(uploadId)) throw notFound();
-    const parsed = CompleteRequest.safeParse(raw);
-    if (!parsed.success) {
-      throw new UploadHttpError(400, 'BAD_REQUEST', 'The request must be { "mint": "<mint>" }.');
-    }
-    take(`complete:${uploadId}`, UPLOAD_RATE_LIMITS.complete);
+  function imageConflict(ticket: TicketRecord): UploadHttpError {
+    log(`uploads: public image already exists with other content for upload ${ticket.id}`);
+    return new UploadHttpError(
+      409,
+      'IMAGE_CONFLICT',
+      'An image already exists for this coin. Start again.',
+    );
+  }
 
-    const ticket = await store.findTicketById(uploadId);
-    if (!ticket) throw notFound();
-    const launchpad = await findLaunchpad(launchpadParam);
-    if (ticket.launchpadId !== launchpad.id) throw notFound();
-    if (ticket.mint !== parsed.data.mint) {
-      throw new UploadHttpError(400, 'BAD_REQUEST', 'The mint does not match this upload.');
+  /** The verified image at its public key: true when written there (now or by an earlier try). */
+  async function publicImageMatches(ticket: TicketRecord): Promise<boolean> {
+    let current: StoredObject | null;
+    try {
+      current = await storage.get(ticket.imageKey, IMAGE_MAX_BYTES);
+    } catch (error) {
+      if (error instanceof ObjectTooLargeError) throw imageConflict(ticket);
+      throw error;
     }
+    if (!current) return false;
+    if (sha256Hex(current.bytes) !== ticket.imageSha256) throw imageConflict(ticket);
+    return true;
+  }
 
-    if (ticket.status === 'completed') return toReceipt(ticket);
-    if (ticket.status === 'rejected') {
-      throw new UploadHttpError(
-        422,
-        'IMAGE_REJECTED',
-        'The stored image did not match the upload request and was deleted. Start again.',
-      );
-    }
-    requireLive(launchpad);
-    if (now() > ticket.issuedAt.getTime() + COMPLETE_WINDOW_SECONDS * 1000) {
-      throw new UploadHttpError(410, 'UPLOAD_EXPIRED', 'This upload expired. Start again.');
-    }
-
-    // The stored image must be exactly the declared one.
+  /** Verifies the staged image and writes it to the public key; rejects the ticket on mismatch. */
+  async function promoteStagedImage(ticket: TicketRecord): Promise<void> {
     let stored: StoredObject | null;
     try {
-      stored = await storage.get(ticket.imageKey, IMAGE_MAX_BYTES);
+      stored = await storage.get(ticket.uploadKey, IMAGE_MAX_BYTES);
     } catch (error) {
       if (error instanceof ObjectTooLargeError) return reject(ticket, 'too_large');
       throw error;
@@ -430,10 +459,61 @@ export function createUploadService(deps: UploadServiceDeps): UploadService {
     if (storedType !== null && storedType !== ticket.contentType) {
       return reject(ticket, 'content_type');
     }
+    const written = await storage.putIfAbsent(
+      ticket.imageKey,
+      stored.bytes,
+      ticket.contentType,
+      hexToBase64(ticket.imageSha256),
+    );
+    // `exists`: a concurrent attempt of this ticket won; it must hold the very same bytes.
+    if (written === 'exists' && !(await publicImageMatches(ticket))) throw imageConflict(ticket);
+  }
+
+  async function complete(
+    launchpadParam: string,
+    uploadId: string,
+    raw: unknown,
+    caller: UploadCaller,
+  ): Promise<UploadReceipt> {
+    const notFound = () =>
+      new UploadHttpError(404, 'UPLOAD_NOT_FOUND', 'This upload does not exist.');
+    if (!UPLOAD_ID_PATTERN.test(uploadId)) throw notFound();
+    const parsed = CompleteRequest.safeParse(raw);
+    if (!parsed.success) {
+      throw new UploadHttpError(400, 'BAD_REQUEST', 'The request must be { "mint": "<mint>" }.');
+    }
+    take(`complete:${uploadId}`, UPLOAD_RATE_LIMITS.complete);
+
+    const launchpad = await findLaunchpad(launchpadParam);
+    requireCaller(launchpad, caller);
+    const ticket = await store.findTicketById(uploadId);
+    if (!ticket || ticket.launchpadId !== launchpad.id) throw notFound();
+    if (ticket.mint !== parsed.data.mint) {
+      throw new UploadHttpError(400, 'BAD_REQUEST', 'The mint does not match this upload.');
+    }
+
+    if (ticket.status === 'completed') return toReceipt(ticket);
+    if (ticket.status === 'rejected') {
+      throw new UploadHttpError(
+        422,
+        'IMAGE_REJECTED',
+        'The stored image did not match the upload request and was deleted. Start again.',
+      );
+    }
+    const expired = () =>
+      new UploadHttpError(410, 'UPLOAD_EXPIRED', 'This upload expired. Start again.');
+    if (ticket.status === 'expired') throw expired();
+    requireLive(launchpad);
+    if (now() > ticket.issuedAt.getTime() + COMPLETE_WINDOW_SECONDS * 1000) throw expired();
+
+    // A retry after the public image was written skips straight to the metadata.
+    if (!(await publicImageMatches(ticket))) await promoteStagedImage(ticket);
+    await storage.delete(ticket.uploadKey);
 
     const metadataSha256 = await writeMetadata(ticket);
     const done = await store.markCompleted(ticket.id, metadataSha256, new Date(now()));
     if (!done) throw new UploadStoreError('complete ticket', 'missing');
+    if (done.status === 'expired') throw expired();
     if (done.status !== 'completed') {
       throw new UploadHttpError(
         422,

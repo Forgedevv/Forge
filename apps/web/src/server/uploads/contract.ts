@@ -9,7 +9,19 @@ import { z } from 'zod';
  *   PUT  {ticket.image.uploadUrl} (to R2, write-once)
  *   POST /api/launchpads/{id}/uploads/{uploadId}/complete  { mint } -> UploadReceipt
  *
- * `{id}` is the launchpad slug (what client sites send) or its uuid.
+ * `{id}` is the launchpad slug (what client sites send) or its uuid. Both POSTs must carry the
+ * launchpad's server token in `X-Forge-Relay-Token` (the same per-launchpad token as the RPC
+ * relay's server tier, rpc/server-token.ts; the client site holds it as the server-only variable
+ * FORGE_RPC_RELAY_TOKEN). It identifies the calling site: limits are keyed on it and it must name
+ * the launchpad of the route.
+ *
+ * The presigned PUT targets a staging key (`pending/{slug}/{mint}.{ext}`), signed with
+ * `Content-Type`, `If-None-Match: *`, `x-amz-checksum-sha256` (all in `image.headers`) and
+ * `Content-Length` = `image.size` (not listed: HTTP clients derive it from the body, which must
+ * therefore be exactly `image.size` bytes, not chunked). `complete` verifies the staged bytes and
+ * only then writes the public image key (`image.publicUrl`) itself, so bytes that were never
+ * verified never appear at a public coin URL. Staged objects are deleted by `complete`, by the
+ * sweep (sweep.ts) and, as a second guard, by an R2 lifecycle rule on `pending/`.
  */
 
 export const UPLOAD_CONTRACT_VERSION = 1;
@@ -29,6 +41,11 @@ export const IMAGE_EXTENSIONS: Record<ImageType, string> = {
 export const TICKET_TTL_SECONDS = 10 * 60;
 /** `complete` is accepted this long after the ticket was issued. */
 export const COMPLETE_WINDOW_SECONDS = 60 * 60;
+/**
+ * The sweep waits this long past the presigned URL expiry (or the complete window) before
+ * cleaning a ticket's objects: covers clock skew and a `complete` still running.
+ */
+export const SWEEP_GRACE_SECONDS = 10 * 60;
 /** Metaplex caps the metadata URI at 200 bytes; the client site refuses longer URLs. */
 export const MAX_METADATA_URL_BYTES = 200;
 
@@ -114,12 +131,28 @@ export const UPLOAD_RATE_LIMITS = {
   complete: { limit: 10, windowMs: 60_000 },
 } as const;
 
+/**
+ * Per-instance limits checked by the route handlers before any database, storage or RPC work.
+ * Client-site servers share the Vercel egress IPs, hence the coarse per-IP rule; the real keys
+ * are the per-launchpad server tokens.
+ */
+export const UPLOAD_PRE_LIMITS = {
+  /** Requests per client IP, both routes together (valid or not). */
+  ip: { limit: 600, windowMs: 60_000 },
+  /** Ticket requests per launchpad server token (retries and refusals included). */
+  serverIssue: { limit: 240, windowMs: 10 * 60_000 },
+  /** `complete` calls per launchpad server token, across uploads. */
+  serverComplete: { limit: 600, windowMs: 10 * 60_000 },
+} as const;
+
 export type UploadErrorCode =
   | 'BAD_REQUEST'
   | 'UNSUPPORTED_MEDIA_TYPE'
   | 'PAYLOAD_TOO_LARGE'
   | 'AUTH_EXPIRED'
   | 'BAD_SIGNATURE'
+  | 'SERVER_TOKEN_REQUIRED'
+  | 'SERVER_TOKEN_MISMATCH'
   | 'HOST_MISMATCH'
   | 'LAUNCHPAD_NOT_FOUND'
   | 'LAUNCHPAD_NOT_LIVE'
@@ -131,6 +164,7 @@ export type UploadErrorCode =
   | 'IMAGE_MISSING'
   | 'IMAGE_REJECTED'
   | 'METADATA_CONFLICT'
+  | 'IMAGE_CONFLICT'
   | 'STORAGE_UNAVAILABLE'
   | 'CHAIN_UNAVAILABLE'
   | 'NOT_CONFIGURED'
