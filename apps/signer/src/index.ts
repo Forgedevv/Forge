@@ -15,13 +15,10 @@ import { keystoreOptionsFromEnv, openKeystore } from './keystore.js';
 import { describeError } from './jobs/shared.js';
 import { createSignerRuntime } from './runtime/runtime.js';
 import type { SignerJobModule } from './runtime/modules.js';
+import { buybackJobModule } from './runtime/buyback.js';
 
-/**
- * Optional job modules. Once the buyback job is merged:
- *   const EXTRA_JOBS = [buybackJobModule(await import('./jobs/buyback.js'))];
- * (with `import { buybackJobModule } from './runtime/buyback.js';`).
- */
-const EXTRA_JOBS: SignerJobModule[] = [];
+/** Optional job modules: the $FORGE buyback (simulation until a spending-limit withdrawer exists). */
+const EXTRA_JOBS: SignerJobModule[] = [buybackJobModule(await import('./jobs/buyback.js'))];
 
 const log = pino({ name: 'signer-main' });
 
