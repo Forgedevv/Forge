@@ -6,7 +6,7 @@ import { ClusterMismatchError, PriceUnavailableError, RpcUnavailableError } from
 import { MemoryLogger } from './log';
 import { MemoryPaymentsStore } from './memory-store';
 import { FixedPriceSource, type SolUsdPriceSource } from './price-source';
-import { createPaymentsService, QUOTE_TIMING, type QuoteResult } from './service';
+import { createPaymentsService, QUOTE_TIMING, receivedLamports, type QuoteResult } from './service';
 import {
   FakeChainGateway,
   landedPayment,
@@ -220,7 +220,7 @@ describe('createQuote', () => {
     expect(rows[0]!.status).toBe('expired');
   });
 
-  it('refuses to confirm a creation payment for a released draft and logs the signature', async () => {
+  it('refuses to confirm a creation payment for a released draft and records it for a refund', async () => {
     const ctx = setup();
     const quote = await quoteCreation(ctx);
     const signature = pay(ctx, quote, ctx.job.id);
@@ -230,12 +230,23 @@ describe('createQuote', () => {
       code: 'LAUNCHPAD_DISABLED',
     });
     expect(ctx.store.jobs.get(ctx.job.id)!.status).toBe('spec_ready');
-    expect(ctx.gateway.verifyCalls).toHaveLength(0);
+    expect(ctx.store.payments.get(quote.paymentId)!.txSignature).toBeNull();
     expect(
       ctx.logger.entries.some(
         (e) => e.event === 'confirm.launchpad_disabled' && e.fields.signature === signature,
       ),
     ).toBe(true);
+    expect([...ctx.store.anomalies.values()]).toEqual([
+      {
+        jobId: ctx.job.id,
+        paymentId: quote.paymentId,
+        wallet: OWNER_WALLET,
+        signature,
+        lamports: CREATION_LAMPORTS,
+        reason: 'launchpad_released',
+        note: null,
+      },
+    ]);
   });
 
   it('rejects when spec.ownerWallet differs from the launchpad owner', async () => {
@@ -453,6 +464,13 @@ describe('confirmPayment', () => {
       code: 'PAYMENT_AMOUNT_MISMATCH',
     });
     expect(ctx.store.payments.get(quote.paymentId)!.txSignature).toBeNull();
+    // The SOL reached the cashbox: recorded, with the amount actually paid, for a manual refund.
+    expect(ctx.store.anomalies.get(signature)).toMatchObject({
+      paymentId: quote.paymentId,
+      wallet: OWNER_WALLET,
+      lamports,
+      reason: 'amount_mismatch',
+    });
   });
 
   it('rejects a transfer to another recipient', async () => {
@@ -570,6 +588,21 @@ describe('confirmPayment', () => {
     });
     expect(ctx.store.jobs.get(ctx.job.id)!.status).toBe('spec_ready');
     expect(ctx.logger.entries.find((e) => e.event === 'confirm.late_payment')?.level).toBe('warn');
+    expect(ctx.store.anomalies.get(signature)).toEqual({
+      jobId: ctx.job.id,
+      paymentId: quote.paymentId,
+      wallet: OWNER_WALLET,
+      signature,
+      lamports: CREATION_LAMPORTS,
+      reason: 'late',
+      note: null,
+    });
+
+    // A retry answers the same and records nothing twice.
+    await expect(confirm(ctx, quote.paymentId, signature)).rejects.toMatchObject({
+      code: 'QUOTE_EXPIRED',
+    });
+    expect(ctx.store.anomalies.size).toBe(1);
   });
 
   it('rejects a transaction that predates the quote', async () => {
@@ -634,16 +667,35 @@ describe('confirmPayment', () => {
   it('records and flags a second valid payment for an already paid job', async () => {
     const ctx = setup();
     const q1 = await quoteCreation(ctx);
-    const q2 = await quoteCreation(ctx);
     const s1 = pay(ctx, q1, ctx.job.id);
+    // A second quote once the first one is too old to be handed out again.
+    ctx.clock.advance(61_000);
+    const q2 = await quoteCreation(ctx);
+    expect(q2.paymentId).not.toBe(q1.paymentId);
     const s2 = pay(ctx, q2, ctx.job.id);
     await confirm(ctx, q1.paymentId, s1);
+    expect(ctx.store.anomalies.size).toBe(0);
     await expect(confirm(ctx, q2.paymentId, s2)).resolves.toMatchObject({ status: 'confirmed' });
     expect(ctx.store.payments.get(q2.paymentId)!.txSignature).toBe(s2);
     expect(ctx.store.transitions).toHaveLength(1);
     expect(ctx.logger.entries.find((e) => e.event === 'confirm.duplicate_payment')?.level).toBe(
       'warn',
     );
+    expect([...ctx.store.anomalies.values()]).toEqual([
+      {
+        jobId: ctx.job.id,
+        paymentId: q2.paymentId,
+        wallet: OWNER_WALLET,
+        signature: s2,
+        lamports: CREATION_LAMPORTS,
+        reason: 'duplicate',
+        note: `job already paid by payment ${q1.paymentId}`,
+      },
+    ]);
+    // Retries record nothing twice.
+    await confirm(ctx, q2.paymentId, s2);
+    await confirm(ctx, q1.paymentId, s1);
+    expect(ctx.store.anomalies.size).toBe(1);
   });
 
   it('never moves a job that is already past paid', async () => {
@@ -679,5 +731,237 @@ describe('confirmPayment', () => {
     await expect(
       confirm(ctx, '00000000-0000-4000-8000-000000000000', randomSignature()),
     ).rejects.toMatchObject({ httpStatus: 404, code: 'NOT_FOUND' });
+  });
+});
+
+describe('payment anomalies (docs/DECISIONS.md D20)', () => {
+  it('records a second transaction paying an already paid quote, then refuses it', async () => {
+    const ctx = setup();
+    const quote = await quoteCreation(ctx);
+    const first = pay(ctx, quote, ctx.job.id);
+    const second = pay(ctx, quote, ctx.job.id);
+    await confirm(ctx, quote.paymentId, first);
+    await expect(confirm(ctx, quote.paymentId, second)).rejects.toMatchObject({
+      httpStatus: 409,
+      code: 'PAYMENT_ALREADY_CONFIRMED',
+    });
+    expect(ctx.store.anomalies.get(second)).toEqual({
+      jobId: ctx.job.id,
+      paymentId: quote.paymentId,
+      wallet: OWNER_WALLET,
+      signature: second,
+      lamports: CREATION_LAMPORTS,
+      reason: 'duplicate',
+      note: null,
+    });
+    expect(ctx.store.payments.get(quote.paymentId)!.txSignature).toBe(first);
+    await expect(confirm(ctx, quote.paymentId, second)).rejects.toMatchObject({
+      code: 'PAYMENT_ALREADY_CONFIRMED',
+    });
+    expect(ctx.store.anomalies.size).toBe(1);
+  });
+
+  it('keeps answering 202 while that second transaction is seen but not final', async () => {
+    const ctx = setup();
+    const quote = await quoteCreation(ctx);
+    await confirm(ctx, quote.paymentId, pay(ctx, quote, ctx.job.id));
+    const second = pay(ctx, quote, ctx.job.id);
+    ctx.gateway.notFinal.add(second);
+    await expect(confirm(ctx, quote.paymentId, second)).resolves.toEqual({
+      httpStatus: 202,
+      status: 'confirmed',
+    });
+    expect(ctx.store.anomalies.size).toBe(0);
+    ctx.gateway.notFinal.delete(second);
+    await expect(confirm(ctx, quote.paymentId, second)).rejects.toMatchObject({
+      code: 'PAYMENT_ALREADY_CONFIRMED',
+    });
+    expect(ctx.store.anomalies.get(second)?.reason).toBe('duplicate');
+  });
+
+  it('records nothing for a signature that moved no money of this payer to the cashbox', async () => {
+    const cases: [string, (ctx: Ctx) => ReturnType<typeof landedTx>][] = [
+      [
+        'another payer',
+        (ctx) =>
+          landedPayment({
+            payer: OTHER,
+            cashbox: CASHBOX,
+            lamports: CREATION_LAMPORTS - 1n,
+            jobId: ctx.job.id,
+            blockTime: ctx.clock.seconds(),
+          }),
+      ],
+      [
+        'another recipient',
+        (ctx) =>
+          landedPayment({
+            payer: OWNER,
+            cashbox: PublicKey.unique(),
+            lamports: CREATION_LAMPORTS - 1n,
+            jobId: ctx.job.id,
+            blockTime: ctx.clock.seconds(),
+          }),
+      ],
+      [
+        'a failed transaction',
+        (ctx) =>
+          landedTx({
+            feePayer: OWNER,
+            transfers: [{ from: OWNER, to: CASHBOX, lamports: CREATION_LAMPORTS - 1n }],
+            memos: [paymentMemo(ctx.job.id)],
+            memoSigners: [OWNER],
+            blockTime: ctx.clock.seconds(),
+            err: { InstructionError: [0, { Custom: 1 }] },
+          }),
+      ],
+      [
+        'the memo of another job',
+        (ctx) =>
+          landedPayment({
+            payer: OWNER,
+            cashbox: CASHBOX,
+            lamports: CREATION_LAMPORTS,
+            jobId: ctx.job.id,
+            memo: paymentMemo('11111111-2222-4333-8444-555555555555'),
+            blockTime: ctx.clock.seconds(),
+          }),
+      ],
+    ];
+    for (const [label, tx] of cases) {
+      const ctx = setup();
+      const quote = await quoteCreation(ctx);
+      const signature = randomSignature();
+      ctx.gateway.land(signature, tx(ctx));
+      await expect(confirm(ctx, quote.paymentId, signature), label).rejects.toBeInstanceOf(Error);
+      expect(ctx.store.anomalies.size, label).toBe(0);
+    }
+  });
+
+  it('records nothing for a released draft when the signature never landed', async () => {
+    const ctx = setup();
+    const quote = await quoteCreation(ctx);
+    ctx.store.launchpads.get(ctx.launchpad.id)!.status = 'disabled';
+    await expect(confirm(ctx, quote.paymentId, randomSignature())).rejects.toMatchObject({
+      code: 'LAUNCHPAD_DISABLED',
+    });
+    expect(ctx.store.anomalies.size).toBe(0);
+  });
+
+  it('records a wrong amount for a released draft under the released reason', async () => {
+    const ctx = setup();
+    const quote = await quoteCreation(ctx);
+    const signature = randomSignature();
+    ctx.gateway.land(
+      signature,
+      landedPayment({
+        payer: OWNER,
+        cashbox: CASHBOX,
+        lamports: CREATION_LAMPORTS + 5n,
+        jobId: ctx.job.id,
+        blockTime: ctx.clock.seconds(),
+      }),
+    );
+    ctx.store.launchpads.get(ctx.launchpad.id)!.status = 'disabled';
+    await expect(confirm(ctx, quote.paymentId, signature)).rejects.toMatchObject({
+      code: 'LAUNCHPAD_DISABLED',
+    });
+    expect(ctx.store.anomalies.get(signature)).toMatchObject({
+      reason: 'launchpad_released',
+      lamports: CREATION_LAMPORTS + 5n,
+      note: 'amount differs from the quote',
+    });
+  });
+
+  it('records one duplicate when two quotes of a job are confirmed concurrently', async () => {
+    const ctx = setup();
+    const q1 = await quoteCreation(ctx);
+    ctx.clock.advance(61_000);
+    const q2 = await quoteCreation(ctx);
+    expect(q2.paymentId).not.toBe(q1.paymentId);
+    const s1 = pay(ctx, q1, ctx.job.id);
+    const s2 = pay(ctx, q2, ctx.job.id);
+    await Promise.all([confirm(ctx, q1.paymentId, s1), confirm(ctx, q2.paymentId, s2)]);
+    expect(ctx.store.transitions).toHaveLength(1);
+    expect([...ctx.store.anomalies.values()].map((a) => [a.paymentId, a.reason])).toEqual([
+      [q2.paymentId, 'duplicate'],
+    ]);
+  });
+
+  it('records a paid quote confirmed for a job paid by an included modification', async () => {
+    const ctx = setup({ included: 0 });
+    const job = ctx.store.addJob({ launchpadId: ctx.launchpad.id, type: 'modify_launchpad' });
+    const quote = await ctx.service.createQuote({
+      wallet: OWNER_WALLET,
+      jobId: job.id,
+      kind: 'modification',
+    });
+    const signature = pay(ctx, quote, job.id);
+    // The job got paid meanwhile through an included modification (0 lamports).
+    const included = await ctx.store.insertQuote({
+      jobId: job.id,
+      payerWallet: OWNER_WALLET,
+      kind: 'modification',
+      usdAmount: 0,
+      lamports: 0n,
+      quoteExpiresAt: new Date(T0 + 120_000),
+    });
+    await ctx.store.confirmIncludedPayment(included.id);
+    ctx.store.jobs.get(job.id)!.status = 'paid';
+    await expect(confirm(ctx, quote.paymentId, signature)).resolves.toMatchObject({
+      status: 'confirmed',
+    });
+    expect(ctx.store.anomalies.get(signature)).toMatchObject({
+      paymentId: quote.paymentId,
+      reason: 'duplicate',
+      lamports: 36_666_667n,
+      note: `job already paid by payment ${included.id}`,
+    });
+  });
+
+  it('fails the request when the anomaly cannot be written, and records it on the retry', async () => {
+    const ctx = setup();
+    const quote = await quoteCreation(ctx);
+    const late = QUOTE_TIMING.validityMs + QUOTE_TIMING.blockTimeToleranceMs + 1_000;
+    const signature = pay(ctx, quote, ctx.job.id, { blockTime: ctx.clock.seconds(late) });
+    ctx.clock.advance(late + 5_000);
+    let failures = 1;
+    ctx.store.beforeStatement = (name) => {
+      if (name === 'recordPaymentAnomaly' && failures-- > 0) throw new Error('connection reset');
+    };
+    await expect(confirm(ctx, quote.paymentId, signature)).rejects.toThrow('connection reset');
+    expect(ctx.store.anomalies.size).toBe(0);
+    await expect(confirm(ctx, quote.paymentId, signature)).rejects.toMatchObject({
+      code: 'QUOTE_EXPIRED',
+    });
+    expect(ctx.store.anomalies.get(signature)?.reason).toBe('late');
+  });
+});
+
+describe('receivedLamports', () => {
+  const base = { signature: 'sig', slot: 1 } as const;
+  it('reads the amount of a mismatched transfer and ignores everything else', () => {
+    expect(
+      receivedLamports({
+        ...base,
+        status: 'invalid',
+        reason: 'amount_mismatch',
+        detail: 'Transfer of 219999999 lamports, expected 220000000',
+      }),
+    ).toBe(219_999_999n);
+    expect(
+      receivedLamports({
+        ...base,
+        status: 'invalid',
+        reason: 'amount_mismatch',
+        detail: 'The cashbox balance did not grow by the expected amount',
+      }),
+    ).toBeNull();
+    expect(
+      receivedLamports({ ...base, status: 'invalid', reason: 'memo_mismatch', detail: 'x' }),
+    ).toBeUndefined();
+    expect(
+      receivedLamports({ status: 'pending', signature: 'sig', reason: 'not_found' }),
+    ).toBeUndefined();
   });
 });

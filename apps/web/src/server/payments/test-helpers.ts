@@ -140,6 +140,8 @@ export class FakeChainGateway implements PaymentGateway {
   readonly txs = new Map<string, VersionedTransactionResponse>();
   readonly built: { payer: string; lamports: bigint; jobId: string }[] = [];
   readonly verifyCalls: string[] = [];
+  /** Landed signatures that have not reached the required commitment yet. */
+  readonly notFinal = new Set<string>();
   /** Thrown by every call when set (e.g. RpcUnavailableError, ClusterMismatchError). */
   failure: Error | null = null;
   /** Runs before each verification (tests land transactions during the wait loop). */
@@ -175,6 +177,9 @@ export class FakeChainGateway implements PaymentGateway {
     if (this.failure) throw this.failure;
     const tx = this.txs.get(signature);
     if (!tx) return { status: 'pending', signature, reason: 'not_found' };
+    if (this.notFinal.has(signature)) {
+      return { status: 'pending', signature, reason: 'below_commitment' };
+    }
     return checkPaymentTransaction(tx, signature, {
       cashbox: this.cashbox,
       payer: expected.payer,

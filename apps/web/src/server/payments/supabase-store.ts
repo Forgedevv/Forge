@@ -5,9 +5,12 @@ import {
   parseJobRow,
   parseLaunchpadRow,
   parsePaymentRow,
+  type AnomalyWriteResult,
   type ConfirmWriteResult,
   type JobContext,
   type NewPayment,
+  type NewPaymentAnomaly,
+  type OpenQuoteQuery,
   type PaymentRecord,
   type PaymentsStore,
 } from './store';
@@ -95,6 +98,56 @@ export class SupabasePaymentsStore implements PaymentsStore {
     if (res.error) fail('find confirmed payment', res.error);
     const row = (res.data ?? [])[0];
     return row ? parsePaymentRow(row) : null;
+  }
+
+  async listConfirmedPaymentsForJob(jobId: string): Promise<PaymentRecord[]> {
+    const res = await this.db
+      .from('payments')
+      .select('*')
+      .eq('job_id', jobId)
+      .eq('status', 'confirmed')
+      .order('created_at', { ascending: true })
+      .order('id', { ascending: true })
+      .limit(50);
+    if (res.error) fail('list confirmed payments', res.error);
+    return (res.data ?? []).map(parsePaymentRow);
+  }
+
+  async findOpenQuote(query: OpenQuoteQuery): Promise<PaymentRecord | null> {
+    const res = await this.db
+      .from('payments')
+      .select('*')
+      .eq('job_id', query.jobId)
+      .eq('payer_wallet', query.payerWallet)
+      .eq('kind', query.kind)
+      .eq('status', 'quoted')
+      .is('tx_signature', null)
+      .gt('lamports', 0)
+      .gt('quote_expires_at', query.expiresAfter.toISOString())
+      .order('created_at', { ascending: true })
+      .order('id', { ascending: true })
+      .limit(1);
+    if (res.error) fail('find open quote', res.error);
+    const row = (res.data ?? [])[0];
+    return row ? parsePaymentRow(row) : null;
+  }
+
+  async recordPaymentAnomaly(anomaly: NewPaymentAnomaly): Promise<AnomalyWriteResult> {
+    const res = await this.db.from('payment_anomalies').insert({
+      job_id: anomaly.jobId,
+      payment_id: anomaly.paymentId,
+      wallet: anomaly.wallet,
+      signature: anomaly.signature,
+      // bigint as a decimal string (see insertQuote).
+      lamports: anomaly.lamports === null ? null : anomaly.lamports.toString(),
+      reason: anomaly.reason,
+      note: anomaly.note,
+    });
+    if (res.error) {
+      if (res.error.code === UNIQUE_VIOLATION) return 'exists';
+      fail('record payment anomaly', res.error);
+    }
+    return 'recorded';
   }
 
   async insertQuote(payment: NewPayment): Promise<PaymentRecord> {
