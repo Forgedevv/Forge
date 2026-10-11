@@ -60,6 +60,7 @@ See `.env.example`. The site holds no secret: every variable is public and injec
 | `SOLANA_CLUSTER`, `NEXT_PUBLIC_SOLANA_CLUSTER` | `devnet` or `mainnet-beta` |
 | `NEXT_PUBLIC_FORGE_RPC_RELAY_URL` | FORGE RPC relay, the only RPC endpoint (browser and server) |
 | `NEXT_PUBLIC_FORGE_API_URL` | FORGE API base URL for coin uploads (defaults to the relay origin) |
+| `FORGE_RPC_RELAY_TOKEN` | optional, server only (never `NEXT_PUBLIC_`): per-launchpad token sent by `/api/upload` as `X-Forge-Relay-Token` to the relay and the upload endpoint (rate limit tier only) |
 | `NEXT_PUBLIC_POOL_CONFIG_KEY` | launchpad pool config(s), filters the coin lists |
 | `R2_PUBLIC_URL`, `NEXT_PUBLIC_R2_PUBLIC_URL` | public base URL of coin images and metadata (read only) |
 | `NEXT_PUBLIC_FORGE_JUPITER_REFERRAL_ACCOUNT` | Jupiter integrator fee account (30 bps after graduation) |
