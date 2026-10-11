@@ -1,7 +1,8 @@
 import { ClientError, type OnTxPhase, type TxPhase, type TxResult } from '@forge/shared';
-import { VersionedTransaction } from '@solana/web3.js';
-import { base64ToBytes, bytesToBase64 } from './base58';
+import { SendTransactionError, VersionedTransaction } from '@solana/web3.js';
+import { base58Encode, base64ToBytes, bytesToBase64 } from './base58';
 import { defaultMessage, errorMessage, isUserRejection, networkError } from './errors';
+import { getSessionSnapshot } from './session-store';
 import { getWalletBridge } from './wallet-bridge';
 
 export const CONFIRM_POLL_MS = 1000;
@@ -13,6 +14,57 @@ export function requireWallet() {
     throw new ClientError('UNAUTHORIZED', 'Connect your wallet first.');
   }
   return { publicKey: bridge.publicKey, signTransaction: bridge.signTransaction, bridge };
+}
+
+/**
+ * The connected wallet, which must be the signed-in (session) wallet: transactions are checked
+ * against the session wallet before the wallet is asked to sign.
+ */
+export function requireSessionWallet() {
+  const wallet = requireWallet();
+  const session = getSessionSnapshot();
+  if (!session) throw new ClientError('UNAUTHORIZED', defaultMessage('UNAUTHORIZED'));
+  if (wallet.publicKey.toBase58() !== session.wallet) {
+    throw new ClientError(
+      'WRONG_WALLET',
+      'The connected wallet is not the signed-in wallet. Reconnect the wallet you signed in with.',
+    );
+  }
+  return { ...wallet, address: session.wallet };
+}
+
+/** Reports a phase without letting a faulty listener break the flow. */
+export function safeReporter(onPhase: OnTxPhase): (phase: TxPhase) => void {
+  return (phase) => {
+    try {
+      onPhase(phase);
+    } catch {
+      // ignored
+    }
+  };
+}
+
+/** Base58 signature of the fee payer (the transaction id), or null when not signed yet. */
+export function feePayerSignature(tx: VersionedTransaction): string | null {
+  const first = tx.signatures[0];
+  if (!first || first.every((b) => b === 0)) return null;
+  return base58Encode(first);
+}
+
+/**
+ * The RPC node refused the transaction during preflight: it was NOT broadcast. Any other send
+ * failure (network error, timeout, 5xx from the relay) may hide a transaction that did go out.
+ */
+export function isPreflightRejection(err: unknown): err is SendTransactionError {
+  return err instanceof SendTransactionError;
+}
+
+/** Readable reason of a preflight rejection (the node's message, without the debugging hints). */
+export function preflightMessage(err: SendTransactionError): string {
+  const reason = err.transactionError.message?.trim();
+  return reason
+    ? `The network refused the transaction: ${reason}`
+    : 'The network refused the transaction.';
 }
 
 /** Decodes a base64 transaction received from the server. Never builds one client-side. */

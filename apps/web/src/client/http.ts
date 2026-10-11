@@ -1,6 +1,6 @@
 import { ClientError } from '@forge/shared';
 import type { z } from 'zod';
-import { mapHttpError, networkError } from './errors';
+import { mapHttpError, networkError, parseRetryAfter } from './errors';
 import { emitUnauthorized } from './session-store';
 
 export interface RequestOptions {
@@ -9,6 +9,8 @@ export interface RequestOptions {
   signal?: AbortSignal;
   /** Do not clear the stored session on a 401 (the caller handles it). */
   keepSessionOn401?: boolean;
+  /** Aborts the request after this delay; the failure is a (transient) NETWORK error. */
+  timeoutMs?: number;
 }
 
 async function readJson(res: Response): Promise<unknown> {
@@ -25,7 +27,21 @@ async function readJson(res: Response): Promise<unknown> {
 export async function rawRequest(path: string, opts: RequestOptions = {}): Promise<Response> {
   const method = opts.method ?? 'GET';
   const init: RequestInit = { method, credentials: 'same-origin' };
-  if (opts.signal) init.signal = opts.signal;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let timedOut = false;
+  if (opts.timeoutMs !== undefined) {
+    const ctrl = new AbortController();
+    const outer = opts.signal;
+    if (outer?.aborted) ctrl.abort();
+    outer?.addEventListener('abort', () => ctrl.abort(), { once: true });
+    timer = setTimeout(() => {
+      timedOut = true;
+      ctrl.abort();
+    }, opts.timeoutMs);
+    init.signal = ctrl.signal;
+  } else if (opts.signal) {
+    init.signal = opts.signal;
+  }
   if (opts.body !== undefined) {
     init.headers = { 'content-type': 'application/json' };
     init.body = JSON.stringify(opts.body);
@@ -34,10 +50,16 @@ export async function rawRequest(path: string, opts: RequestOptions = {}): Promi
   try {
     res = await fetch(path, init);
   } catch (err) {
-    throw networkError(err);
+    throw networkError(timedOut ? new Error('the request timed out') : err);
+  } finally {
+    if (timer) clearTimeout(timer);
   }
   if (!res.ok) {
-    const err = mapHttpError(res.status, await readJson(res));
+    const err = mapHttpError(
+      res.status,
+      await readJson(res),
+      parseRetryAfter(res.headers.get('retry-after')),
+    );
     if (err.code === 'UNAUTHORIZED' && !opts.keepSessionOn401) emitUnauthorized();
     throw err;
   }

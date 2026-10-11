@@ -1,83 +1,27 @@
 // @vitest-environment node
-import type { Quote, TxPhase } from '@forge/shared';
-import {
-  Keypair,
-  SystemProgram,
-  TransactionMessage,
-  VersionedTransaction,
-  type Connection,
-} from '@solana/web3.js';
+import { Keypair } from '@solana/web3.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   approvePreview,
   claimPartnerFees,
   confirmSpec,
   getOwnerTransactionSummary,
-  getQuote,
-  payQuote,
   reactivateLaunchpad,
   requestModification,
   signOwnerTransaction,
 } from '../actions';
-import { bytesToBase64, base58Encode } from '../base58';
-import { setWalletBridge } from '../wallet-bridge';
-
-const owner = Keypair.generate().publicKey;
-const SIG = base58Encode(new Uint8Array(64).fill(7));
-const id = () => crypto.randomUUID();
-
-function txB64(payer = owner): string {
-  const msg = new TransactionMessage({
-    payerKey: payer,
-    recentBlockhash: Keypair.generate().publicKey.toBase58(),
-    instructions: [
-      SystemProgram.transfer({
-        fromPubkey: payer,
-        toPubkey: Keypair.generate().publicKey,
-        lamports: 1,
-      }),
-    ],
-  }).compileToV0Message();
-  return bytesToBase64(new VersionedTransaction(msg).serialize());
-}
-
-const json = (body: unknown, status = 200) =>
-  new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
-
-type Handler = (url: string, init?: RequestInit) => Response | Promise<Response>;
-function mockFetch(handler: Handler) {
-  const fn = vi.fn((url: string, init?: RequestInit) => Promise.resolve(handler(url, init)));
-  vi.stubGlobal('fetch', fn);
-  return fn;
-}
-
-function fakeConnection(overrides: Partial<Record<string, unknown>> = {}) {
-  return {
-    sendRawTransaction: vi.fn().mockResolvedValue(SIG),
-    getSignatureStatuses: vi
-      .fn()
-      .mockResolvedValue({ value: [{ err: null, confirmationStatus: 'confirmed' }] }),
-    ...overrides,
-  } as unknown as Connection & {
-    sendRawTransaction: ReturnType<typeof vi.fn>;
-    getSignatureStatuses: ReturnType<typeof vi.fn>;
-  };
-}
-
-function setWallet(
-  signTransaction: (<T extends VersionedTransaction>(tx: T) => Promise<T>) | undefined,
-  connection: Connection | null = fakeConnection(),
-) {
-  setWalletBridge({ publicKey: owner, signTransaction, signMessage: undefined, connection });
-}
-
-function phases() {
-  const list: TxPhase[] = [];
-  return { list, on: (p: TxPhase) => void list.push(p) };
-}
-
-const rejection = () =>
-  Object.assign(new Error('User rejected the request.'), { name: 'WalletSignTransactionError' });
+import {
+  SIG,
+  fakeConnection,
+  id,
+  json,
+  mockFetch,
+  owner,
+  phases,
+  rejection,
+  setWallet,
+  txB64,
+} from './helpers';
 
 beforeEach(() => {
   setWallet(async (tx) => tx);
@@ -178,150 +122,6 @@ describe('simple actions', () => {
     expect((fetchFn.mock.calls[0] as [string])[0]).toBe(`/api/launchpads/${lp}/reactivate`);
     mockFetch(() => json({ message: 'Signups are paused', code: 'SIGNUPS_PAUSED' }, 503));
     await expect(reactivateLaunchpad(lp)).rejects.toMatchObject({ code: 'SIGNUPS_PAUSED' });
-  });
-});
-
-describe('getQuote + payQuote', () => {
-  function quoteResponse(overrides: Record<string, unknown> = {}) {
-    return {
-      paymentId: id(),
-      kind: 'creation',
-      lamports: '250000000',
-      usdAmount: 45,
-      expiresAt: new Date(Date.now() + 120_000).toISOString(),
-      transaction: txB64(),
-      ...overrides,
-    };
-  }
-
-  it('returns the quote without the transaction', async () => {
-    const q = quoteResponse();
-    mockFetch(() => json(q));
-    const quote = await getQuote(id(), 'creation');
-    expect(quote).toMatchObject({ paymentId: q.paymentId, lamports: '250000000', usdAmount: 45 });
-    expect('transaction' in quote).toBe(false);
-  });
-
-  it('signs, sends, confirms and reports phases in order', async () => {
-    const q = quoteResponse();
-    const connection = fakeConnection();
-    setWallet(async (tx) => tx, connection);
-    const fetchFn = mockFetch((url) =>
-      url === '/api/payments/quote' ? json(q) : json({ status: 'confirmed' }),
-    );
-    const quote = await getQuote(id(), 'creation');
-    const p = phases();
-    const result = await payQuote(quote, p.on);
-    expect(result).toEqual({ phase: 'confirmed', signature: SIG });
-    expect(p.list).toEqual(['awaiting_signature', 'sending', 'confirmed']);
-    expect(connection.sendRawTransaction).toHaveBeenCalledTimes(1);
-    const [url, init] = fetchFn.mock.calls[1] as [string, RequestInit];
-    expect(url).toBe('/api/payments/confirm');
-    expect(JSON.parse(init.body as string)).toEqual({ paymentId: q.paymentId, signature: SIG });
-  });
-
-  it('reports rejected (not error) when the user declines', async () => {
-    const q = quoteResponse();
-    setWallet(async () => {
-      throw rejection();
-    });
-    mockFetch(() => json(q));
-    const quote = await getQuote(id(), 'creation');
-    const p = phases();
-    const result = await payQuote(quote, p.on);
-    expect(result).toEqual({ phase: 'rejected' });
-    expect(p.list).toEqual(['awaiting_signature', 'rejected']);
-  });
-
-  it('returns an error phase when sending fails', async () => {
-    const q = quoteResponse();
-    setWallet(
-      async (tx) => tx,
-      fakeConnection({
-        sendRawTransaction: vi.fn().mockRejectedValue(new Error('blockhash not found')),
-      }),
-    );
-    mockFetch(() => json(q));
-    const quote = await getQuote(id(), 'creation');
-    const p = phases();
-    const result = await payQuote(quote, p.on);
-    expect(result).toEqual({ phase: 'error', error: 'blockhash not found' });
-    expect(p.list).toEqual(['awaiting_signature', 'sending', 'error']);
-  });
-
-  it('returns an error phase when the transaction fails on-chain', async () => {
-    const q = quoteResponse();
-    setWallet(
-      async (tx) => tx,
-      fakeConnection({
-        getSignatureStatuses: vi
-          .fn()
-          .mockResolvedValue({ value: [{ err: { InstructionError: [0, 'x'] } }] }),
-      }),
-    );
-    mockFetch(() => json(q));
-    const quote = await getQuote(id(), 'creation');
-    const result = await payQuote(quote, () => undefined);
-    expect(result.phase).toBe('error');
-  });
-
-  it('throws QUOTE_EXPIRED when the confirm route reports an expired payment', async () => {
-    const q = quoteResponse();
-    mockFetch((url) => (url === '/api/payments/quote' ? json(q) : json({ status: 'expired' })));
-    const quote = await getQuote(id(), 'creation');
-    const p = phases();
-    await expect(payQuote(quote, p.on)).rejects.toMatchObject({ code: 'QUOTE_EXPIRED' });
-    expect(p.list.at(-1)).toBe('error');
-  });
-
-  it('throws QUOTE_EXPIRED for an already expired quote, before any prompt', async () => {
-    const sign = vi.fn();
-    setWallet(sign);
-    const quote: Quote = {
-      paymentId: id(),
-      kind: 'creation',
-      lamports: '1',
-      usdAmount: 1,
-      expiresAt: new Date(Date.now() - 1000).toISOString(),
-    };
-    await expect(payQuote(quote, () => undefined)).rejects.toMatchObject({ code: 'QUOTE_EXPIRED' });
-    expect(sign).not.toHaveBeenCalled();
-  });
-
-  it('throws QUOTE_EXPIRED for an unknown quote (page reload)', async () => {
-    const quote: Quote = {
-      paymentId: id(),
-      kind: 'creation',
-      lamports: '1',
-      usdAmount: 1,
-      expiresAt: new Date(Date.now() + 60_000).toISOString(),
-    };
-    await expect(payQuote(quote, () => undefined)).rejects.toMatchObject({ code: 'QUOTE_EXPIRED' });
-  });
-
-  it('confirms a free quote without touching the wallet', async () => {
-    const sign = vi.fn();
-    setWallet(sign);
-    const q = quoteResponse({ lamports: '0', transaction: null });
-    mockFetch(() => json(q));
-    const quote = await getQuote(id(), 'modification');
-    const p = phases();
-    await expect(payQuote(quote, p.on)).resolves.toEqual({ phase: 'confirmed' });
-    expect(p.list).toEqual(['confirmed']);
-    expect(sign).not.toHaveBeenCalled();
-  });
-
-  it('requires a connected wallet', async () => {
-    const q = quoteResponse();
-    mockFetch(() => json(q));
-    const quote = await getQuote(id(), 'creation');
-    setWalletBridge({
-      publicKey: null,
-      signTransaction: undefined,
-      signMessage: undefined,
-      connection: null,
-    });
-    await expect(payQuote(quote, () => undefined)).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
   });
 });
 

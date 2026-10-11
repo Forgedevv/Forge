@@ -6,12 +6,15 @@ import {
   Suspense,
   useContext,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type ReactNode,
 } from 'react';
 import { useRouter } from 'next/navigation';
-import { ClientError, type WebClient } from '@forge/shared';
+import { ClientError } from '@forge/shared';
+import { withClientExtensions } from '@/client/extensions';
+import type { ForgeClientInput, ForgeWebClient } from '@/client/types';
 import { createMockController, type MockController } from '../mocks/client';
 import { formatSol, formatUsd, shortAddress, explorerTxUrl } from './format';
 import { common } from './content/common';
@@ -29,7 +32,7 @@ const unavailable = async () => {
   throw new ClientError('NETWORK', common.unavailableBody);
 };
 // A safe default for isolated components rendered outside the application provider.
-const unavailableClient: WebClient = {
+const unavailableClient: ForgeClientInput = {
   useSession: () => ({
     session: null,
     status: 'idle',
@@ -65,7 +68,7 @@ const unavailableClient: WebClient = {
   explorerTxUrl,
 };
 type Context = {
-  client: WebClient;
+  client: ForgeWebClient;
   available: boolean;
   demo: boolean;
   theme: 'dark' | 'light';
@@ -77,7 +80,7 @@ type Context = {
   navigate(path: string): void;
 };
 const WorkspaceContext = createContext<Context>({
-  client: unavailableClient,
+  client: withClientExtensions(unavailableClient),
   available: false,
   demo: false,
   theme: 'dark',
@@ -123,13 +126,14 @@ export function WorkspaceProvider({
 /** Shared interface state; the live wallet provider is mounted separately from preview mocks. */
 export function WorkspaceStateProvider({
   children,
-  client,
+  client: input,
   controller,
 }: {
   children: ReactNode;
-  client: WebClient;
+  client: ForgeClientInput;
   controller?: MockController;
 }) {
+  const client = useMemo(() => withClientExtensions(input), [input]);
   const router = useRouter();
   const [login, setLogin] = useState(false);
   const [message, setMessage] = useState('');

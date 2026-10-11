@@ -80,6 +80,8 @@ export const galleryCopy = {
         ['check-failed', 'Payment check rejected'],
         ['rejected', 'Signature declined'],
         ['included', 'Included change'],
+        ['confirming', 'Sent, still confirming'],
+        ['late', 'Paid after expiry: manual refund'],
       ],
     },
     {

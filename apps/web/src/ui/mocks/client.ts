@@ -3,7 +3,6 @@
 import { useSyncExternalStore } from 'react';
 import {
   ClientError,
-  type WebClient,
   type UseSessionResult,
   type UseGatingResult,
   type UseChatResult,
@@ -27,6 +26,7 @@ import {
   ownerSummary,
 } from './fixtures';
 import { formatSol, formatUsd, shortAddress, explorerTxUrl } from '../workspace/format';
+import type { ForgeClientInput, PendingPayment } from '@/client/types';
 
 type ChatState = Omit<UseChatResult, 'send'> & { turns: number };
 interface Snapshot {
@@ -280,7 +280,22 @@ export function createMockController(scenario = 'journey') {
     return { phase: 'confirmed', signature: 'demo-transaction-confirmation' };
   };
   let quoteSequence = 0;
-  const client: WebClient = {
+  // `payment:confirming` / `payment:late`: a payment was sent before the page was opened.
+  let sentPayment: PendingPayment | null =
+    scenario === 'payment:confirming' || scenario === 'payment:late'
+      ? {
+          jobId: 'demo-job',
+          paymentId: 'demo-quote-0',
+          signature: 'demo-payment-confirmation',
+          outcome: scenario === 'payment:late' ? 'late' : 'confirming',
+          message:
+            scenario === 'payment:late'
+              ? 'Your payment reached FORGE after the quote expired, so it cannot start the build. It will be refunded manually: contact support with the transaction signature below. Do not pay again.'
+              : null,
+        }
+      : null;
+  let confirmChecks = 0;
+  const client: ForgeClientInput = {
     useSession() {
       const s = useSnapshot();
       return {
@@ -532,6 +547,40 @@ export function createMockController(scenario = 'journey') {
     formatUsd,
     shortAddress,
     explorerTxUrl,
+    getPendingPayment(jobId) {
+      return sentPayment?.jobId === jobId ? sentPayment : null;
+    },
+    async resumePayment(jobId, onPhase) {
+      const pending = sentPayment?.jobId === jobId ? sentPayment : null;
+      if (!pending) return { phase: 'idle' };
+      if (pending.outcome !== 'confirming') {
+        onPhase('error');
+        return {
+          phase: 'error',
+          signature: pending.signature,
+          outcome: pending.outcome,
+          error: pending.message ?? undefined,
+        };
+      }
+      onPhase('sending');
+      await wait(900);
+      confirmChecks++;
+      // The first check is still pending; the next one confirms the same signature.
+      if (confirmChecks === 1) {
+        onPhase('error');
+        return {
+          phase: 'error',
+          signature: pending.signature,
+          outcome: 'confirming',
+          error:
+            'Your payment was sent and is still being confirmed. Check again in a moment: you will not be asked to pay again.',
+        };
+      }
+      sentPayment = null;
+      onPhase('confirmed');
+      updateJob(jobId, 'paid');
+      return { phase: 'confirmed', signature: pending.signature, outcome: 'confirmed' };
+    },
   };
   return {
     client,
