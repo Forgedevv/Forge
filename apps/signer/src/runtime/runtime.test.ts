@@ -503,6 +503,18 @@ describe('job scheduler', () => {
   });
 });
 
+describe('production command', () => {
+  it('is the start script: the entry point without a file watcher', async () => {
+    const pkg = JSON.parse(
+      await fs.readFile(new URL('../../package.json', import.meta.url), 'utf8'),
+    ) as { scripts: Record<string, string> };
+    expect(pkg.scripts.start).toBe('tsx src/index.ts');
+    expect(pkg.scripts.dev).toContain('watch');
+    const example = await fs.readFile(new URL('../../.env.example', import.meta.url), 'utf8');
+    expect(example).toContain('pnpm --filter @forge/signer start');
+  });
+});
+
 describe('runtime environment file', () => {
   it('starts with every variable of .env.example present, blanks meaning unset', async () => {
     const example = await fs.readFile(new URL('../../.env.example', import.meta.url), 'utf8');
