@@ -135,6 +135,8 @@ export const galleryCopy = {
         ['claim-confirmed', 'Claim successful'],
         ['claim-rejected', 'Claim rejected'],
         ['no-fees', 'Nothing to claim'],
+        ['onchain-unavailable', 'On-chain figures unavailable'],
+        ['load-error', 'Launchpads could not load'],
       ],
     },
     {

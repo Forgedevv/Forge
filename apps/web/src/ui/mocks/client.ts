@@ -9,7 +9,6 @@ import {
   type Job,
   type JobEvent,
   type JobStatus,
-  type LaunchpadSummary,
   type TxPhase,
   type TxResult,
 } from '@forge/shared';
@@ -26,7 +25,7 @@ import {
   ownerSummary,
 } from './fixtures';
 import { formatSol, formatUsd, shortAddress, explorerTxUrl } from '../workspace/format';
-import type { ForgeClientInput, PendingPayment } from '@/client/types';
+import type { ForgeClientInput, LaunchpadSummaryView, PendingPayment } from '@/client/types';
 
 type ChatState = Omit<UseChatResult, 'send'> & { turns: number };
 interface Snapshot {
@@ -37,7 +36,7 @@ interface Snapshot {
   networkError: boolean;
   jobs: Record<string, Job>;
   events: Record<string, JobEvent[]>;
-  pads: LaunchpadSummary[];
+  pads: LaunchpadSummaryView[];
   chats: Record<string, ChatState>;
   signupsPaused: boolean;
 }
@@ -160,6 +159,9 @@ export function createMockController(scenario = 'journey') {
                     ? 'demo-job'
                     : null,
                   status: scenario === 'dashboard:draft' ? 'draft' : 'live',
+                  ...(scenario === 'dashboard:onchain-unavailable'
+                    ? { onchainAvailable: false, claimablePartnerFeesLamports: '0', coinsCount: 0 }
+                    : {}),
                 },
               ],
     chats: {
@@ -508,7 +510,15 @@ export function createMockController(scenario = 'journey') {
     },
     useLaunchpads() {
       const s = useSnapshot();
-      return { launchpads: s.pads, loading: s.loading, refresh: () => notify({ loading: false }) };
+      return {
+        launchpads: scenario === 'dashboard:load-error' ? [] : s.pads,
+        loading: s.loading,
+        error:
+          scenario === 'dashboard:load-error'
+            ? 'Your launchpads could not be loaded. Please try again.'
+            : null,
+        refresh: () => notify({ loading: false }),
+      };
     },
     useLaunchpad(id) {
       const s = useSnapshot();

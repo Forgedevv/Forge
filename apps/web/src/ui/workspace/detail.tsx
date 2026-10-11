@@ -16,9 +16,10 @@ import { common } from './content/common';
 import { safeUrl } from './safe-url';
 
 export function DetailScreen({ launchpadId }: { launchpadId: string }) {
-  const { launchpad, loading } = useWebClient().useLaunchpad(launchpadId);
+  const { launchpad, loading, error, refresh } = useWebClient().useLaunchpad(launchpadId);
   if (loading) return <Loading />;
-  if (!launchpad) return <ErrorNotice message={common.missing} />;
+  if (!launchpad)
+    return <ErrorNotice message={error ?? common.missing} onRetry={error ? refresh : undefined} />;
   return (
     <>
       <Link className="fw-back" href="/dashboard">

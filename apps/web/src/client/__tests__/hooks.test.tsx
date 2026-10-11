@@ -30,6 +30,7 @@ import {
   useLaunchpads,
   useSession,
 } from '../hooks';
+import { resetLaunchpadReads } from '../launchpads';
 import { getSessionSnapshot, setSession } from '../session-store';
 
 const json = (body: unknown, status = 200) =>
@@ -432,54 +433,153 @@ describe('useJob', () => {
   });
 });
 
-describe('useLaunchpads / useLaunchpad', () => {
-  const lpRow = {
+describe('useLaunchpads / useLaunchpad (API)', () => {
+  const summary = (over: Record<string, unknown> = {}) => ({
     id: LP_ID,
+    name: 'Acme',
     slug: 'acme',
-    spec: {
-      name: 'Acme',
-      launchpadCoin: { name: 'Acme Coin', symbol: 'ACME', imageUrl: 'https://x.io/a.png' },
-    },
-    launchpad_config: null,
-    launchpad_coin_config: null,
-    launchpad_coin_mint: 'Mint111',
-    included_modifications_left: 2,
+    siteUrl: 'https://acme.clients.example',
     status: 'live',
-    created_at: '2026-01-01T00:00:00Z',
-  };
-
-  it('lists launchpads with their active job', async () => {
-    const sb = makeSb({ launchpads: [lpRow], jobs: [jobRow({ status: 'building' })] });
-    fakeSb.client = sb.client;
-    const { result } = renderHook(() => useLaunchpads());
-    await waitFor(() => expect(result.current.loading).toBe(false));
-    expect(result.current.launchpads[0]).toMatchObject({
-      id: LP_ID,
-      name: 'Acme',
-      slug: 'acme',
-      status: 'live',
-      coin: { name: 'Acme Coin', symbol: 'ACME', mint: 'Mint111', imageUrl: 'https://x.io/a.png' },
-      includedModificationsLeft: 2,
-      activeJobId: JOB_ID,
-    });
-    expect(typeof result.current.refresh).toBe('function');
+    coin: { name: 'Acme Coin', symbol: 'ACME', mint: 'Mint111', imageUrl: 'https://x.io/a.png' },
+    coinsCount: 3,
+    claimablePartnerFeesLamports: '1234567',
+    includedModificationsLeft: 2,
+    activeJobId: null,
+    onchainAvailable: true,
+    ...over,
+  });
+  const detail = (over: Record<string, unknown> = {}) => ({
+    ...summary(),
+    spec: { name: 'Acme', theme: { primaryColor: '#112233' } },
+    onchain: { launchpadConfig: 'Cfg1', launchpadCoinConfig: 'Cfg2', launchpadCoinMint: 'Mint111' },
+    versions: [
+      { jobId: JOB_ID, createdAt: '2026-01-02T00:00:00Z', request: 'Blue', previewUrl: null },
+    ],
+    jobs: [
+      {
+        id: JOB_ID,
+        launchpadId: LP_ID,
+        type: 'create_launchpad',
+        status: 'live',
+        attempts: 1,
+        failedStage: null,
+        error: null,
+        previewUrl: null,
+        createdAt: '2026-01-01T00:00:00Z',
+        updatedAt: '2026-01-02T00:00:00Z',
+      },
+    ],
+    quotas: { includedModificationsLeft: 2 },
+    ...over,
   });
 
-  it('returns the launchpad detail with jobs and versions', async () => {
-    const sb = makeSb({
-      launchpads: lpRow,
-      jobs: [jobRow({ status: 'live', preview_url: 'https://p.dev', request: 'Blue' })],
+  beforeEach(() => {
+    resetLaunchpadReads();
+    setSession({ wallet: 'Owner1111111111111111111111111111111111111' });
+  });
+
+  it('lists launchpads from GET /api/launchpads with the server figures', async () => {
+    const fetchFn = vi
+      .fn()
+      .mockResolvedValue(
+        json({ launchpads: [summary({ onchainAvailable: false, coinsCount: 0 })], quotas: {} }),
+      );
+    vi.stubGlobal('fetch', fetchFn);
+    const { result, unmount } = renderHook(() => useLaunchpads());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(fetchFn.mock.calls[0]?.[0]).toBe('/api/launchpads');
+    expect(result.current.launchpads[0]).toMatchObject({
+      id: LP_ID,
+      siteUrl: 'https://acme.clients.example',
+      coinsCount: 0,
+      claimablePartnerFeesLamports: '1234567',
+      onchainAvailable: false,
     });
+    expect(result.current.error).toBeNull();
+    unmount();
+  });
+
+  it('shares one request between components mounted together', async () => {
+    const fetchFn = vi.fn().mockResolvedValue(json({ launchpads: [summary()] }));
+    vi.stubGlobal('fetch', fetchFn);
+    const a = renderHook(() => useLaunchpads());
+    const b = renderHook(() => useLaunchpads());
+    await waitFor(() => expect(b.result.current.launchpads).toHaveLength(1));
+    expect(a.result.current.launchpads).toHaveLength(1);
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+    a.unmount();
+    b.unmount();
+  });
+
+  it('reports a failed read instead of an empty list, and refresh retries', async () => {
+    const fetchFn = vi
+      .fn()
+      .mockResolvedValueOnce(
+        json({ code: 'SERVER_ERROR', message: 'Temporarily unavailable.' }, 500),
+      )
+      .mockResolvedValue(json({ launchpads: [summary()] }));
+    vi.stubGlobal('fetch', fetchFn);
+    const { result, unmount } = renderHook(() => useLaunchpads());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.error).toBe('Temporarily unavailable.');
+    expect(result.current.launchpads).toEqual([]);
+    act(() => result.current.refresh());
+    await waitFor(() => expect(result.current.launchpads).toHaveLength(1));
+    expect(result.current.error).toBeNull();
+    unmount();
+  });
+
+  it('reads again after a Realtime change (debounced) through one shared channel', async () => {
+    const sb = makeSb({});
     fakeSb.client = sb.client;
-    const { result } = renderHook(() => useLaunchpad(LP_ID));
-    await waitFor(() => expect(result.current.launchpad).not.toBeNull());
-    expect(result.current.launchpad?.onchain.launchpadCoinMint).toBe('Mint111');
-    expect(result.current.launchpad?.jobs).toHaveLength(1);
-    expect(result.current.launchpad?.versions[0]).toMatchObject({
-      jobId: JOB_ID,
-      request: 'Blue',
-      previewUrl: 'https://p.dev',
+    let calls = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((url: string) => {
+        if (url !== '/api/launchpads') return Promise.resolve(json(detail()));
+        calls++;
+        return Promise.resolve(json({ launchpads: [summary({ coinsCount: calls })] }));
+      }),
+    );
+    const list = renderHook(() => useLaunchpads());
+    const other = renderHook(() => useLaunchpad(crypto.randomUUID()));
+    await waitFor(() => expect(list.result.current.launchpads[0]?.coinsCount).toBe(1));
+    expect(sb.client.channel).toHaveBeenCalledTimes(1);
+    const jobs = sb.handlers.find((h) => h.table === 'jobs');
+    act(() => jobs?.fn({ new: { launchpad_id: LP_ID } }));
+    act(() => jobs?.fn({ new: { launchpad_id: LP_ID } }));
+    await waitFor(() => expect(list.result.current.launchpads[0]?.coinsCount).toBe(2), {
+      timeout: 3000,
     });
-    expect(result.current.loading).toBe(false);
+    expect(calls).toBe(2);
+    list.unmount();
+    other.unmount();
+    expect(sb.client.removeChannel).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns the detail from GET /api/launchpads/:id, and null on 404', async () => {
+    const fetchFn = vi.fn((url: string) =>
+      Promise.resolve(
+        url === `/api/launchpads/${LP_ID}`
+          ? json(detail())
+          : json({ code: 'NOT_FOUND', message: 'Launchpad not found.' }, 404),
+      ),
+    );
+    vi.stubGlobal('fetch', fetchFn);
+    const { result, unmount } = renderHook(() => useLaunchpad(LP_ID));
+    await waitFor(() => expect(result.current.launchpad).not.toBeNull());
+    expect(result.current.launchpad).toMatchObject({
+      siteUrl: 'https://acme.clients.example',
+      coinsCount: 3,
+      onchain: { launchpadCoinMint: 'Mint111' },
+      versions: [{ jobId: JOB_ID, request: 'Blue' }],
+    });
+    expect(result.current.launchpad?.jobs).toHaveLength(1);
+    const missing = renderHook(() => useLaunchpad(crypto.randomUUID()));
+    await waitFor(() => expect(missing.result.current.loading).toBe(false));
+    expect(missing.result.current.launchpad).toBeNull();
+    expect(missing.result.current.error).toBeNull();
+    unmount();
+    missing.unmount();
   });
 });
