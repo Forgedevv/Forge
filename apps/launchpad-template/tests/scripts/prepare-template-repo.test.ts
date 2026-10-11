@@ -177,12 +177,23 @@ describe('prepare-template-repo: helpers', () => {
 });
 
 describe('prepare-template-repo: safety', () => {
-  it('never runs git, never touches the network', () => {
+  it('only runs `git ls-files`, never touches the network', () => {
     const source = readFileSync(scriptPath, 'utf8');
-    for (const forbidden of ['child_process', 'fetch(', 'http.request', 'https.request', 'spawn']) {
+    for (const forbidden of [
+      'fetch(',
+      'http.request',
+      'https.request',
+      'spawn',
+      'execSync',
+      'exec(',
+      'shell: true',
+    ]) {
       expect(source).not.toContain(forbidden);
     }
     const code = source.replace(/\/\*[\s\S]*?\*\//g, '');
     expect(code).not.toMatch(/git (push|remote|tag)/);
+    const calls = [...code.matchAll(/execFileSync\(([^)]*)/g)].map((match) => match[1]);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatch(/^'git', \['-C', sourceDir, 'ls-files'/);
   });
 });

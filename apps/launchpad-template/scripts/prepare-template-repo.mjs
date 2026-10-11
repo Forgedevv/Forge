@@ -6,6 +6,12 @@
  * never tags and never publishes: pushing the output to the template repository is a separate,
  * manual step.
  *
+ * What it copies: only the files tracked by git in this folder (`git ls-files`), never untracked or
+ * ignored files, minus a denylist that always applies (even to a file tracked by mistake): local
+ * `.npmrc`, assistant notes, `.env*` other than `.env.example`, keys, keypairs and `.state/`. The
+ * whole output is then scanned for secret shapes (registry tokens, private keys, keypair arrays,
+ * GitHub and API tokens, storage keys); one match and nothing is written.
+ *
  * What the output differs in:
  * - every `workspace:*` dependency is replaced by the exact version given with `--pin name=x.y.z`;
  * - `tsconfig.json` no longer extends the monorepo base (its options are inlined);
@@ -19,7 +25,16 @@
  *   node scripts/prepare-template-repo.mjs --out <dir> --pin @forge/core=0.1.0 --pin @forge/shared=0.1.0
  *     [--registry https://npm.pkg.github.com --scope @forgedevv] [--typescript 6.0.3] [--dry-run]
  */
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -51,8 +66,51 @@ const EXCLUDED_PATHS = new Set([
   'src/forge/claims/mock-core.ts',
   'src/forge/create/test-fixtures.ts',
 ]);
-const EXCLUDED_PATTERNS = [/\.tsbuildinfo$/, /\.(test|spec)\.[cm]?[jt]sx?$/, /^\.env(\..*)?$/];
+const EXCLUDED_PATTERNS = [/\.tsbuildinfo$/, /\.(test|spec)\.[cm]?[jt]sx?$/];
 const KEPT_ENV_FILE = '.env.example';
+
+/**
+ * Denylist that always applies, at any depth, even to a file tracked by git by mistake. The only
+ * `.npmrc` the output may hold is the generated one.
+ */
+const DENIED_DIRECTORIES = new Set(['.claude', '.state']);
+const DENIED_FILE_PATTERNS = [
+  /^\.npmrc$/i,
+  /^CLAUDE.*\.md$/i,
+  /^AGENTS\.md$/i,
+  /^\.env(\..*)?$/i,
+  /\.pem$/i,
+  /\.key$/i,
+  /^id_/i,
+  /keypair.*\.json$/i,
+];
+
+/**
+ * Secret shapes searched in every output file. A match fails the run; the message names the file
+ * and the kind of secret, never the value.
+ */
+export const SECRET_PATTERNS = [
+  { name: 'npm auth token', pattern: /_auth(Token)?\s*=|\bnpm_[A-Za-z0-9]{36}\b/ },
+  { name: 'PEM block', pattern: /-----BEGIN/ },
+  { name: 'secret key byte array', pattern: /\[\s*(?:\d{1,3}\s*,\s*){63}\d{1,3}\s*,?\s*\]/ },
+  {
+    name: 'GitHub token',
+    pattern: /\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}|\bgithub_pat_[A-Za-z0-9_]{20,}/,
+  },
+  { name: 'Anthropic API key', pattern: /\bsk-ant-[A-Za-z0-9_-]{10,}/ },
+  { name: 'AWS access key id', pattern: /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/ },
+  {
+    // R2 access key ids are 32 lowercase hex characters and secrets 64: both mix letters and digits.
+    name: 'R2 key',
+    pattern:
+      /(?<![A-Za-z0-9])(?=[0-9a-f]*[a-f])(?=[0-9a-f]*[0-9])(?:[0-9a-f]{64}|[0-9a-f]{32})(?![A-Za-z0-9])/,
+  },
+  {
+    name: 'storage secret assignment',
+    pattern:
+      /(?:aws|r2|s3)[\w-]*(?:secret|access[_-]?key)[\w-]*["']?\s*[:=]\s*["']?[A-Za-z0-9/+=]{20,}/i,
+  },
+];
 
 /** Dev dependencies that only the monorepo tests use. */
 const TEST_DEV_DEPENDENCIES = [
@@ -80,9 +138,42 @@ export function isIncluded(relPath) {
     if (EXCLUDED_PATHS.has(parts.slice(0, i).join('/'))) return false;
   }
   if (parts.some((part) => EXCLUDED_NAMES.has(part))) return false;
+  if (isDenied(relPath)) return false;
   const name = parts[parts.length - 1];
-  if (name === KEPT_ENV_FILE) return true;
   return !EXCLUDED_PATTERNS.some((pattern) => pattern.test(name));
+}
+
+/** True when a path hits the denylist (secrets, local config, assistant notes, state). */
+export function isDenied(relPath) {
+  const parts = relPath.split('/');
+  if (parts.some((part) => DENIED_DIRECTORIES.has(part))) return true;
+  const name = parts[parts.length - 1];
+  if (name === KEPT_ENV_FILE) return false;
+  return DENIED_FILE_PATTERNS.some((pattern) => pattern.test(name));
+}
+
+/** Names of the secret shapes found in a file content (empty when clean). */
+export function findSecrets(content) {
+  return SECRET_PATTERNS.filter(({ pattern }) => pattern.test(content)).map(({ name }) => name);
+}
+
+/**
+ * Files tracked by git in `sourceDir`, relative to it and `/` separated. Runs `git ls-files` only
+ * (read-only, no shell). Fails when the folder is not inside a git work tree.
+ */
+export function listTrackedFiles(sourceDir) {
+  let output;
+  try {
+    output = execFileSync('git', ['-C', sourceDir, 'ls-files', '-z', '--cached', '--', '.'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      maxBuffer: 64 * 1024 * 1024,
+    });
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new PrepareError(`Could not list the tracked files (git ls-files): ${reason}`);
+  }
+  return output.split('\0').filter((rel) => rel.length > 0);
 }
 
 /** Parses repeated `--pin name=version` values. Versions must be exact. */
@@ -178,16 +269,19 @@ export function buildNpmrc({ registry, scope }) {
   return `${scope}:registry=${url.toString().replace(/\/$/, '')}\n`;
 }
 
-function walk(dir, base = dir) {
-  const files = [];
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    const full = join(dir, entry.name);
-    const rel = relative(base, full).split(sep).join('/');
+/** Tracked files that exist on disk as regular files and pass the filters, sorted. */
+function selectFiles(sourceDir, tracked) {
+  const files = new Set();
+  for (const raw of tracked) {
+    const rel = raw.split(sep).join('/').replace(/^\.\//, '');
+    if (rel.split('/').some((part) => part === '..' || part === '' || part === '.')) continue;
     if (!isIncluded(rel)) continue;
-    if (entry.isDirectory()) files.push(...walk(full, base));
-    else if (entry.isFile()) files.push(rel);
+    const full = join(sourceDir, ...rel.split('/'));
+    // Symlinks are never followed: a tracked link could point at a secret outside the folder.
+    if (!existsSync(full) || !lstatSync(full).isFile()) continue;
+    files.add(rel);
   }
-  return files.sort();
+  return [...files].sort();
 }
 
 function isInside(parent, child) {
@@ -210,6 +304,7 @@ export function prepareTemplateRepo(options) {
     typescriptVersion,
     dryRun = false,
     sourceDir = SOURCE_DIR,
+    listFiles = listTrackedFiles,
   } = options;
   if (!out) throw new PrepareError('--out <dir> is required.');
   const outDir = resolve(out);
@@ -242,14 +337,29 @@ export function prepareTemplateRepo(options) {
     generated.set('tsconfig.json', stringify(tsconfig));
   }
 
-  const copied = walk(sourceDir).filter((rel) => !generated.has(rel));
+  const copied = selectFiles(sourceDir, listFiles(sourceDir)).filter((rel) => !generated.has(rel));
   const files = [...new Set([...copied, ...generated.keys()])].sort();
 
+  // Every output file is checked before anything is written.
+  const contents = new Map(
+    copied.map((rel) => [rel, readFileSync(join(sourceDir, ...rel.split('/')))]),
+  );
+  const findings = [];
+  for (const [rel, content] of [...contents, ...generated]) {
+    const text = typeof content === 'string' ? content : content.toString('utf8');
+    for (const name of findSecrets(text)) findings.push(`${rel} (${name})`);
+  }
+  if (findings.length > 0) {
+    throw new PrepareError(
+      `Possible secrets found, nothing was written: ${findings.join(', ')}. Remove them first.`,
+    );
+  }
+
   if (!dryRun) {
-    for (const rel of copied) {
+    for (const [rel, content] of contents) {
       const target = join(outDir, ...rel.split('/'));
       mkdirSync(dirname(target), { recursive: true });
-      writeFileSync(target, readFileSync(join(sourceDir, rel)));
+      writeFileSync(target, content);
     }
     for (const [rel, content] of generated) {
       const target = join(outDir, ...rel.split('/'));
