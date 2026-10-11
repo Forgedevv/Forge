@@ -8,6 +8,38 @@ launchpad template, the signer, the web app) pin an exact version, never a range
 First version meant for publication to GitHub Packages (`pnpm --filter @forge/core
 publish:packages`, which runs typecheck, lint, tests and build first). Not published yet.
 
+### Changed (wave 4 review)
+
+- **No referral on the first buy.** `buildLaunchCoinTx` no longer adds the FORGE Meteora referral
+  (`FORGE_METEORA_REFERRAL_ACCOUNT`) to the first buy, and refuses an explicit one
+  (`LaunchCoinError` `REFERRAL_UNSUPPORTED`) instead of silently dropping it. Why: with a referral
+  token account on the swap of `createPoolWithFirstBuy`, the DBC program does not apply the
+  first-swap minimum fee (`enableFirstSwapWithMinFee`); on devnet the first buy then paid the
+  anti-sniper fee and failed with `ExceededSlippage` even at 10% slippage, while the same launch
+  without a referral landed exactly at the quote (`scripts/devnet-tests/reports/signer-routes.md`,
+  reproduced in `scripts/devnet-tests/reports/core-launch.md`). The referral would only have
+  earned 20% of the protocol share of one minimum-fee swap. There is no opt-in: no devnet run
+  showed a referral first buy at the minimum fee. Swaps built by `swap.ts` keep the referral.
+  - `BuildLaunchCoinTxParams.referralTokenAccount` and `.env` are deprecated (kept so that callers
+    passing `null` / `{}` still compile); `LaunchCoinSummary.referralTokenAccount`,
+    `.referralSource` and `.referralOmittedForSize` are now always `null`, `'none'` and `false`.
+  - Removed: `defaultLaunchReferral`, `REFERRAL_TX_BYTES` and the `REFERRAL_INVALID` error code.
+  - The 32 bytes the referral took are free again: with a nonce held by the creator, a 32-byte
+    name, a 10-character symbol and a 106-byte URI fit in 1,232 bytes.
+
+### Added (wave 4 review)
+
+- `buildUserCoinLaunchTx({ connection, config, wallet, mint, name, symbol, metadataUri,
+  firstBuyLamports, slippageBps?, env?, computeUnitLimit?, computeUnitPriceMicroLamports? })`
+  returns `{ transaction, summary }` for a coin created by a user on the client's launchpad
+  config: the wallet is pool creator, rent payer, fee payer and buyer; the mint is the only other
+  signer; recent blockhash (no durable nonce); no referral on the first buy (same reason as
+  above); `env` is accepted but not read. Config checks (`assertUserCoinConfig`): SOL quote, SPL
+  token program for both tokens, `enableFirstSwapWithMinFee`; no owner or creator-share check.
+  `summary.costs` has the same figures as `LaunchCoinCosts` (rent read from the cluster; the
+  `owner*` fields are the wallet's, `creatorTotalLamports` is 0). A launch with short metadata is
+  950 bytes; the largest metadata (32 / 10 / 200 bytes) fits.
+
 ### Added
 
 - `addresses.ts`: FORGE addresses read from the environment, `requireAddresses([...])`.
@@ -57,5 +89,6 @@ client's debit equals the summary to the lamport.
 
 - The launch is a legacy transaction of at most 1,232 bytes: 1,120 bytes with short metadata, a
   nonce held by the creator and no priority fee, leaving 112 bytes for longer metadata (a 32-byte
-  name, a 10-character symbol and a 102-byte URI fit; a priority fee adds 12 bytes, a referral
-  32, a nonce authority other than the creator or the owner 96). `TX_TOO_LARGE` otherwise.
+  name, a 10-character symbol and a 102-byte URI fit; a priority fee adds 12 bytes, a nonce
+  authority other than the creator or the owner 96). `TX_TOO_LARGE` otherwise. (Before the wave 4
+  review the first buy also carried a 32-byte referral; see "Changed".)
