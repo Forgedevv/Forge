@@ -9,6 +9,7 @@
  */
 import type { Commitment, Connection, PublicKey } from '@solana/web3.js';
 import {
+  PROTOCOL_POOL_CREATION_FEE_PERCENT,
   StateService,
   type PoolConfig,
   type VirtualPool,
@@ -223,6 +224,52 @@ export function feeMetrics(state: Pick<DbcPoolState, 'virtualPool' | 'config'>):
   };
 }
 
+/** `creationFeeBits` flag set once the protocol claimed its share of the pool creation fee. */
+export const PROTOCOL_POOL_CREATION_FEE_CLAIMED_BIT = 0b01;
+
+/** `creationFeeBits` flag set once the partner claimed its share of the pool creation fee. */
+export const PARTNER_POOL_CREATION_FEE_CLAIMED_BIT = 0b10;
+
+/** Pure: partner share of a pool creation fee (the protocol keeps 10%, rounded down). */
+export function partnerPoolCreationFeeShare(poolCreationFeeLamports: bigint): bigint {
+  const protocol = (poolCreationFeeLamports * BigInt(PROTOCOL_POOL_CREATION_FEE_PERCENT)) / 100n;
+  return poolCreationFeeLamports - protocol;
+}
+
+/** The pool creation fee a coin paid at launch, and what the partner can still claim of it. */
+export interface PoolCreationFeeStatus {
+  /** Fee paid when the pool was created (the config's `poolCreationFee`), lamports. */
+  totalLamports: bigint;
+  /** Partner (client) share: the fee minus the protocol's 10%, rounded down, lamports. */
+  partnerShareLamports: bigint;
+  /** True once the partner claimed its share for this pool (`creationFeeBits` & 0b10). */
+  partnerClaimed: boolean;
+  /**
+   * Partner share still unclaimed, lamports: `partnerShareLamports`, or 0 once claimed (or when
+   * the config charges no creation fee). What `buildPartnerPoolCreationFeeClaimTx` would claim.
+   */
+  partnerUnclaimedLamports: bigint;
+}
+
+/**
+ * Pure: pool creation fee status of one pool, from the config's `poolCreationFee` (configs are
+ * immutable, so every pool of a config paid it) and the pool's `creationFeeBits`.
+ */
+export function poolCreationFeeStatus(
+  state: Pick<DbcPoolState, 'virtualPool' | 'config'>,
+): PoolCreationFeeStatus {
+  const totalLamports = toBigint(state.config.poolCreationFee);
+  const partnerShareLamports = partnerPoolCreationFeeShare(totalLamports);
+  const partnerClaimed =
+    (state.virtualPool.poolState.creationFeeBits & PARTNER_POOL_CREATION_FEE_CLAIMED_BIT) !== 0;
+  return {
+    totalLamports,
+    partnerShareLamports,
+    partnerClaimed,
+    partnerUnclaimedLamports: partnerClaimed ? 0n : partnerShareLamports,
+  };
+}
+
 /** One coin (pool) launched on a config. */
 export interface CoinOfConfig {
   pool: PublicKey;
@@ -232,6 +279,12 @@ export interface CoinOfConfig {
   graduation: GraduationStatus;
   progress: CurveProgress;
   fees: FeeMetrics;
+  /**
+   * Pool creation fee of this coin and the partner share still unclaimed
+   * (`poolCreationFee.partnerUnclaimedLamports`): the dashboard can add it to the claimable total
+   * without another read.
+   */
+  poolCreationFee: PoolCreationFeeStatus;
 }
 
 /** Pure: summary of one pool of a config. */
@@ -245,6 +298,7 @@ export function summarizeCoin(state: DbcPoolState): CoinOfConfig {
     graduation: graduationStatus(state),
     progress: curveProgress(state),
     fees: feeMetrics(state),
+    poolCreationFee: poolCreationFeeStatus(state),
   };
 }
 

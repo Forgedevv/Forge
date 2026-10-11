@@ -47,6 +47,14 @@ publish:packages`, which runs typecheck, lint, tests and build first). Not publi
   Pool and platform fees are excluded (they are
   in `fees`). On a single curve segment it equals `1 - sqrtPrice / nextSqrtPrice` (buy) and
   `1 - nextSqrtPrice / sqrtPrice` (sell), checked against the SDK in the tests.
+- `CoinOfConfig.poolCreationFee` (required field, `PoolCreationFeeStatus`): the coin's pool
+  creation fee (`totalLamports`, the config's `poolCreationFee`), the partner share
+  (`partnerShareLamports`, 90% rounded as the program does), whether the partner claimed it
+  (`partnerClaimed`, from the pool's `creationFeeBits` & `0b10`) and `partnerUnclaimedLamports`, so
+  the dashboard can add it to the claimable total without another read. Pure helper
+  `poolCreationFeeStatus(state)`; `PROTOCOL_POOL_CREATION_FEE_CLAIMED_BIT` (`0b01`) added.
+  `PARTNER_POOL_CREATION_FEE_CLAIMED_BIT` and `partnerPoolCreationFeeShare` moved to `reads.ts`
+  (still exported, same values).
 
 ### Added
 

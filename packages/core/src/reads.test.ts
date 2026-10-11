@@ -5,6 +5,8 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   CURVE_PROGRESS_FULL_BPS,
   DbcReadError,
+  PARTNER_POOL_CREATION_FEE_CLAIMED_BIT,
+  PROTOCOL_POOL_CREATION_FEE_CLAIMED_BIT,
   curveProgress,
   feeMetrics,
   getDbcPoolState,
@@ -12,6 +14,8 @@ import {
   isGraduated,
   isTransientRpcError,
   listCoinsOfConfig,
+  partnerPoolCreationFeeShare,
+  poolCreationFeeStatus,
   readCoin,
   retryRpc,
   type DbcPoolState,
@@ -247,6 +251,66 @@ describe('readCoin', () => {
     const coin = await readCoin(mockConnection().connection, key('test2Pool'), noRetry);
     expect(coin.graduation).toBe('migrated');
     expect(coin.baseMint.toBase58()).toBe('tzcZtpFfGoHVYF9TZBVm2Kaw5wRFzfomyjVABZ7YKH7');
+  });
+
+  it('includes the unclaimed partner share of the pool creation fee', async () => {
+    const coin = await readCoin(mockConnection().connection, key('test2Pool'), noRetry);
+    // Config fee 0.001 SOL, never claimed on this pool: the partner keeps 90%.
+    expect(coin.poolCreationFee).toEqual({
+      totalLamports: 1_000_000n,
+      partnerShareLamports: 900_000n,
+      partnerClaimed: false,
+      partnerUnclaimedLamports: 900_000n,
+    });
+  });
+});
+
+describe('poolCreationFeeStatus', () => {
+  const withBits = (s: DbcPoolState, creationFeeBits: number): DbcPoolState => ({
+    ...s,
+    virtualPool: { ...s.virtualPool, poolState: { ...s.virtualPool.poolState, creationFeeBits } },
+  });
+
+  it('reads the claim status from the pool creation fee bits', async () => {
+    const s = await state('test2Pool');
+    // Protocol claimed (0b01) only: the partner share is still there.
+    expect(poolCreationFeeStatus(withBits(s, PROTOCOL_POOL_CREATION_FEE_CLAIMED_BIT))).toEqual({
+      totalLamports: 1_000_000n,
+      partnerShareLamports: 900_000n,
+      partnerClaimed: false,
+      partnerUnclaimedLamports: 900_000n,
+    });
+    for (const bits of [
+      PARTNER_POOL_CREATION_FEE_CLAIMED_BIT,
+      PARTNER_POOL_CREATION_FEE_CLAIMED_BIT | PROTOCOL_POOL_CREATION_FEE_CLAIMED_BIT,
+    ]) {
+      const status = poolCreationFeeStatus(withBits(s, bits));
+      expect(status.partnerClaimed).toBe(true);
+      expect(status.partnerUnclaimedLamports).toBe(0n);
+      expect(status.partnerShareLamports).toBe(900_000n);
+    }
+  });
+
+  it('is zero on a config without a creation fee', async () => {
+    const status = poolCreationFeeStatus(await state('test1Pool'));
+    expect(status).toEqual({
+      totalLamports: 0n,
+      partnerShareLamports: 0n,
+      partnerClaimed: false,
+      partnerUnclaimedLamports: 0n,
+    });
+  });
+
+  it('leaves the protocol 10%, rounded down', () => {
+    expect(partnerPoolCreationFeeShare(1_000_000n)).toBe(900_000n);
+    expect(partnerPoolCreationFeeShare(1_000_009n)).toBe(900_009n);
+    expect(partnerPoolCreationFeeShare(0n)).toBe(0n);
+  });
+
+  it('is listed with every coin of a config', async () => {
+    const { connection } = mockConnection();
+    const [coin] = await listCoinsOfConfig(connection, key('test1Config'), noRetry);
+    expect(coin!.poolCreationFee.partnerUnclaimedLamports).toBe(0n);
   });
 });
 
