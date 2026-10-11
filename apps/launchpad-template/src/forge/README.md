@@ -17,7 +17,6 @@ This zone contains all the logic that touches money, the network or the chain:
 - `modes/`: static sleeping and disabled pages (and their minimal theme style). They import nothing from the free zones.
 - `AppProviders.tsx`: providers of the live site (data, wallet, toasts) and the colour mode provider.
 - `ModeBanner.tsx`: banner shown instead of an action when the site is sleeping or disabled.
-- `useSendTransaction.ts`: client-side transaction sending helper. Sends only through the FORGE RPC relay (there is no server-side send route and no RPC provider key in the site).
 - `data/`: Jupiter data API client and websocket stream.
 - `chart/`: TradingView chart (loads an external script and queries the data API).
 - `token-icon/`: token images (dynamic image URLs).
