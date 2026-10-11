@@ -144,7 +144,7 @@ describe('createGatingCheck', () => {
   it('is disabled without FORGE_MINT', async () => {
     const read = balanceOf(0n);
     const check = createGatingCheck({}, read);
-    expect(await check(WALLET)).toEqual({ enabled: false, ok: true });
+    expect(await check(WALLET)).toEqual({ enabled: false, ok: true, required: 0n, balance: 0n });
     expect(read).not.toHaveBeenCalled();
   });
 
@@ -158,7 +158,12 @@ describe('createGatingCheck', () => {
     let now = 0;
     const read = balanceOf(1000n);
     const check = createGatingCheck(env, read, () => now);
-    expect(await check(WALLET)).toEqual({ enabled: true, ok: true });
+    expect(await check(WALLET)).toEqual({
+      enabled: true,
+      ok: true,
+      required: 1000n,
+      balance: 1000n,
+    });
     await check(WALLET);
     expect(read).toHaveBeenCalledTimes(1);
     expect(read.mock.calls[0]?.[0]).toEqual(new PublicKey(WALLET));
@@ -169,7 +174,24 @@ describe('createGatingCheck', () => {
 
   it('refuses a short balance', async () => {
     const check = createGatingCheck(env, balanceOf(999n));
-    expect(await check(WALLET)).toEqual({ enabled: true, ok: false });
+    expect(await check(WALLET)).toEqual({
+      enabled: true,
+      ok: false,
+      required: 1000n,
+      balance: 999n,
+    });
+  });
+
+  it('requires nothing (and reads nothing) when FORGE_GATING_AMOUNT is 0', async () => {
+    const read = balanceOf(0n);
+    const check = createGatingCheck({ ...env, FORGE_GATING_AMOUNT: '0' }, read);
+    expect(await check(WALLET)).toEqual({ enabled: true, ok: true, required: 0n, balance: 0n });
+    expect(read).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when FORGE_GATING_AMOUNT is missing', async () => {
+    const check = createGatingCheck({ ...env, FORGE_GATING_AMOUNT: undefined }, balanceOf(1n));
+    await expect(check(WALLET)).rejects.toThrow('FORGE_GATING_AMOUNT is not configured');
   });
 
   it('fails closed when the RPC fails, without echoing the error', async () => {
