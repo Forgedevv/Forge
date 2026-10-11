@@ -130,4 +130,21 @@ describe('ModeGate in _app: the mode comes from forge.config.json only', () => {
     expect(screen.getByTestId('app-shell')).toBeInTheDocument();
     expect(screen.getByText('Full site page')).toBeInTheDocument();
   });
+
+  it('configures the wallet for the configured cluster and with this site metadata', () => {
+    h.mode = 'live';
+    render(<App {...props} />);
+    const config = h.walletConfigs[0] as {
+      env: string;
+      metadata: { name: string; description: string; url: string; iconUrls: string[] };
+    };
+    expect(config.env).toBe('devnet');
+    expect(config.metadata).toEqual({
+      name: 'Gate Pad',
+      description: 'Gate tagline',
+      url: window.location.origin,
+      iconUrls: [`${window.location.origin}/favicon.ico`],
+    });
+    expect(JSON.stringify(config.metadata)).not.toContain('jup.ag');
+  });
 });

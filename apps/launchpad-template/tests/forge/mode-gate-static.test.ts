@@ -48,3 +48,11 @@ describe('ModeGate: locked files only', () => {
     }
   });
 });
+
+describe('wallet provider config', () => {
+  it('has no hardcoded network or jup.ag metadata', () => {
+    const source = read('src/forge/AppProviders.tsx');
+    expect(source).not.toMatch(/env:\s*'/);
+    expect(source).not.toContain('jup.ag');
+  });
+});
