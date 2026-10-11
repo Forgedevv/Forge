@@ -107,6 +107,48 @@ const NET_SINKS = new Set(['fetch', 'WebSocket', 'EventSource', 'sendBeacon']);
 
 const TIMERS = new Set(['setTimeout', 'setInterval', 'setImmediate']);
 
+/**
+ * Next.js server-side data hooks. Through their context they hand page code the raw request and
+ * response objects, and a response can be written directly (`res.end('<script>...')`), bypassing
+ * every JSX and DOM rule. Free-zone pages are static: any mention of these names is refused.
+ */
+const SERVER_DATA_HOOKS = new Set(['getServerSideProps', 'getInitialProps']);
+/** Methods that only exist on a server response: refused on any receiver. */
+const RESPONSE_ONLY_NAMES = new Set([
+  'setHeader',
+  'writeHead',
+  'appendHeader',
+  'removeHeader',
+  'flushHeaders',
+  'writeContinue',
+  'writeEarlyHints',
+  'writeProcessing',
+  'addTrailers',
+  'sendFile',
+  'sendStatus',
+]);
+/**
+ * Output methods of a response (and the socket under it), refused on a response receiver, as is
+ * any `send*` method.
+ */
+const RESPONSE_OUTPUT_NAMES = new Set([
+  'end',
+  'write',
+  'pipe',
+  'cork',
+  'uncork',
+  'destroy',
+  'json',
+  'redirect',
+  'status',
+  'socket',
+  'connection',
+]);
+/** Response properties whose assignment changes what is sent: refused on any receiver. */
+const RESPONSE_PROPS = new Set(['statusCode', 'statusMessage']);
+/** Names conventionally given to a response object. */
+const RESPONSE_NAMES = new Set(['res', 'response']);
+
 const HTML_SINKS = new Set([
   'innerHTML',
   'outerHTML',
@@ -516,6 +558,114 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
     }
   }
   const isComponentName = (name: string): boolean => componentNames.get(name) === true;
+
+  /**
+   * Response objects: `res` / `response` (unless every declaration of the name is the result of a
+   * `fetch` call), anything destructured from a `res` property, and any variable initialized from
+   * one of those. Best effort: the data hooks that hand out the response are refused anyway.
+   */
+  const responseAliases = new Set<string>();
+  const fetchResultNames = new Set<string>();
+  /** True when `expr` may be a server response object (or something hanging off one). */
+  const isResponseLike = (expr: ts.Expression, depth = 0): boolean => {
+    if (depth > 16) return true;
+    const n = unwrap(expr);
+    if (ts.isIdentifier(n)) {
+      const name = ts.idText(n);
+      return responseAliases.has(name) || (RESPONSE_NAMES.has(name) && !fetchResultNames.has(name));
+    }
+    if (ts.isPropertyAccessExpression(n)) {
+      return ts.idText(n.name) === 'res' || isResponseLike(n.expression, depth + 1);
+    }
+    if (ts.isElementAccessExpression(n)) {
+      return (
+        folder.foldString(n.argumentExpression) === 'res' || isResponseLike(n.expression, depth + 1)
+      );
+    }
+    if (ts.isConditionalExpression(n)) {
+      return isResponseLike(n.whenTrue, depth + 1) || isResponseLike(n.whenFalse, depth + 1);
+    }
+    if (ts.isBinaryExpression(n)) {
+      const op = n.operatorToken.kind;
+      if (
+        op === ts.SyntaxKind.QuestionQuestionToken ||
+        op === ts.SyntaxKind.BarBarToken ||
+        op === ts.SyntaxKind.AmpersandAmpersandToken
+      ) {
+        return isResponseLike(n.left, depth + 1) || isResponseLike(n.right, depth + 1);
+      }
+      if (op === ts.SyntaxKind.CommaToken) return isResponseLike(n.right, depth + 1);
+    }
+    return false;
+  };
+  {
+    type DeclKind = 'fetch' | 'other';
+    const declKinds = new Map<string, Set<DeclKind>>();
+    const record = (name: string, kind: DeclKind): void => {
+      if (!RESPONSE_NAMES.has(name)) return;
+      const kinds = declKinds.get(name) ?? new Set<DeclKind>();
+      kinds.add(kind);
+      declKinds.set(name, kinds);
+    };
+    const isFetchCall = (expr: ts.Expression | undefined): boolean => {
+      if (!expr) return false;
+      let e = unwrap(expr);
+      if (ts.isAwaitExpression(e)) e = unwrap(e.expression);
+      if (!ts.isCallExpression(e)) return false;
+      const chain = memberChain(e.expression);
+      return chain === 'fetch' || chain === 'window.fetch' || chain === 'globalThis.fetch';
+    };
+    const assigned: Array<{ name: string; init: ts.Expression }> = [];
+    const walkDecls = (node: ts.Node): void => {
+      if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)) {
+        const name = ts.idText(node.name);
+        record(name, isFetchCall(node.initializer) ? 'fetch' : 'other');
+        if (node.initializer) assigned.push({ name, init: node.initializer });
+      } else if (ts.isBindingElement(node)) {
+        const key = node.propertyName
+          ? staticPropertyName(node.propertyName, folder)
+          : ts.isIdentifier(node.name)
+            ? ts.idText(node.name)
+            : UNKNOWN;
+        if (key === 'res') for (const n of bindingNames(node.name)) responseAliases.add(n);
+        for (const n of bindingNames(node.name)) record(n, 'other');
+      } else if (ts.isParameter(node)) {
+        for (const n of bindingNames(node.name)) record(n, 'other');
+      } else if (
+        (ts.isFunctionDeclaration(node) || ts.isClassDeclaration(node)) &&
+        node.name !== undefined
+      ) {
+        record(ts.idText(node.name), 'other');
+      } else if (ts.isImportClause(node) && node.name) {
+        record(ts.idText(node.name), 'other');
+      } else if (ts.isNamespaceImport(node) || ts.isImportSpecifier(node)) {
+        record(ts.idText(node.name), 'other');
+      } else if (ts.isBinaryExpression(node) && isAssign(node.operatorToken.kind)) {
+        const left = unwrap(node.left);
+        if (ts.isIdentifier(left)) {
+          const name = ts.idText(left);
+          record(name, isFetchCall(node.right) ? 'fetch' : 'other');
+          assigned.push({ name, init: node.right });
+        }
+      }
+      ts.forEachChild(node, walkDecls);
+    };
+    walkDecls(sf);
+    for (const [name, kinds] of declKinds) {
+      if (kinds.size === 1 && kinds.has('fetch')) fetchResultNames.add(name);
+    }
+    // Aliases of aliases (`const a = ctx.res; const b = a;`), to a fixed point.
+    for (let pass = 0; pass < 8; pass++) {
+      let grew = false;
+      for (const a of assigned) {
+        if (!responseAliases.has(a.name) && isResponseLike(a.init)) {
+          responseAliases.add(a.name);
+          grew = true;
+        }
+      }
+      if (!grew) break;
+    }
+  }
   const isReactRef = (expr: ts.Expression): boolean => {
     const n = unwrap(expr);
     return (
@@ -1052,6 +1202,13 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
     globalValueCheck(node, 'location');
   };
 
+  const serverHookFinding = (name: string, node: ts.Node): void =>
+    add(
+      'server-response',
+      node,
+      `"${name}" is not allowed: pages are static (server-side code can write the raw response)`,
+    );
+
   /** Rules for a property name used on some receiver (`recv.name`, `recv['name']`). */
   const memberRules = (
     name: string,
@@ -1062,6 +1219,19 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
     const callee = calleeOf(access);
     if (WALLET_NAMES.has(name))
       add('wallet-api', nameNode, `wallet/signing API "${name}" is not allowed outside src/forge/`);
+    if (SERVER_DATA_HOOKS.has(name)) serverHookFinding(name, nameNode);
+    if (RESPONSE_ONLY_NAMES.has(name))
+      add('server-response', nameNode, `server response manipulation (${name})`);
+    if (name === 'res') {
+      add('server-response', nameNode, 'access to the server response object ("res")');
+    } else if (
+      (RESPONSE_OUTPUT_NAMES.has(name) || /^send/.test(name)) &&
+      isResponseLike(receiver) &&
+      // `status` is also a plain property: reading it is fine, calling it is not.
+      (name !== 'status' || callee !== undefined)
+    ) {
+      add('server-response', nameNode, `server response output (res.${name})`);
+    }
     if (CODE_NAMES.has(name)) add('dynamic-code', nameNode, `"${name}" (dynamic code execution)`);
     if (name === '__proto__') add('dynamic-code', nameNode, '"__proto__" access');
     if (NET_FORBIDDEN.has(name)) add('network-api-forbidden', nameNode, `"${name}" is not allowed`);
@@ -1113,8 +1283,8 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
         navCheck(`router.${name}`, callee, callee.arguments?.[0]);
       if (name === 'redirect' || name === 'permanentRedirect')
         navCheck(name, callee, callee.arguments?.[0]);
-      if (['setHeader', 'writeHead', 'appendHeader'].includes(name))
-        add('server-response', callee, `response header manipulation (${name})`);
+      if (name === 'pipe' && (callee.arguments ?? []).some((a) => isResponseLike(a)))
+        add('server-response', callee, 'stream piped into the server response');
       if (name === 'setAttribute' || name === 'setAttributeNS')
         setAttributeCheck(callee, name === 'setAttributeNS');
       if (name === 'createElement' || name === 'createElementNS') {
@@ -1143,6 +1313,7 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
     if (HTML_SINKS.has(text))
       add('dangerous-html', node, `HTML sink name "${text}" used as a string`);
     if (text === '__proto__') add('dynamic-code', node, '"__proto__" used as a string');
+    if (SERVER_DATA_HOOKS.has(text)) serverHookFinding(text, node);
     if (DANGEROUS_TAG_STRINGS.has(text.toLowerCase())) {
       add(
         text.toLowerCase() === 'script' ? 'inline-script' : 'embed-external',
@@ -1178,6 +1349,15 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
       p.tagName === id
     )
       return;
+    // Declarations, export specifiers, object keys, class members...: wherever the name appears.
+    if (SERVER_DATA_HOOKS.has(name)) serverHookFinding(name, id);
+    if (
+      name === 'res' &&
+      ts.isBindingElement(p) &&
+      (p.propertyName === id || (p.propertyName === undefined && p.name === id))
+    ) {
+      add('server-response', id, 'destructuring of the server response object ("res")');
+    }
     if (
       nextScriptNames.has(name) &&
       isValueReference(id) &&
@@ -1617,6 +1797,18 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
         }
         if (prop === 'href')
           urlCheck('.href assignment', node, node.right, 'navigation', 'navigation-external');
+        if (RESPONSE_PROPS.has(prop))
+          add('server-response', node, `server response status set (.${prop} assignment)`);
+      }
+      if (ts.isObjectLiteralExpression(left)) {
+        for (const prop of left.properties) {
+          const key =
+            ts.isShorthandPropertyAssignment(prop) || ts.isPropertyAssignment(prop)
+              ? staticPropertyName(prop.name, folder)
+              : UNKNOWN;
+          if (key === 'res')
+            add('server-response', prop, 'destructuring of the server response object ("res")');
+        }
       }
     }
 
