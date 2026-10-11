@@ -55,7 +55,6 @@ import {
 import {
   CreatorService,
   DYNAMIC_BONDING_CURVE_PROGRAM_ID,
-  PROTOCOL_POOL_CREATION_FEE_PERCENT,
   PartnerService,
   TokenType,
   U64_MAX,
@@ -67,8 +66,8 @@ import {
   READ_COMMITMENT,
   feeMetrics,
   getDbcPoolState,
+  poolCreationFeeStatus,
   retryRpc,
-  toBigint,
   type DbcPoolState,
   type RetryOptions,
   type TokenAmounts,
@@ -77,8 +76,8 @@ import {
 /** Base fee per signature (lamports); claims set no priority fee. */
 export const CLAIM_LAMPORTS_PER_SIGNATURE = 5000n;
 
-/** `creationFeeBits` flag set once the partner claimed its share of the pool creation fee. */
-export const PARTNER_POOL_CREATION_FEE_CLAIMED_BIT = 0b10;
+// Pool creation fee helpers live in reads.ts (CoinOfConfig uses them); re-exported here.
+export { PARTNER_POOL_CREATION_FEE_CLAIMED_BIT, partnerPoolCreationFeeShare } from './reads.js';
 
 export type ClaimErrorCode =
   | 'not_pool_creator'
@@ -597,12 +596,6 @@ export interface PoolCreationFeeClaimTxResult {
   summary: PoolCreationFeeClaimSummary;
 }
 
-/** Pure: partner share of a pool creation fee (the protocol keeps 10%, rounded down). */
-export function partnerPoolCreationFeeShare(poolCreationFeeLamports: bigint): bigint {
-  const protocol = (poolCreationFeeLamports * BigInt(PROTOCOL_POOL_CREATION_FEE_PERCENT)) / 100n;
-  return poolCreationFeeLamports - protocol;
-}
-
 /**
  * Builds the claim of the partner's share of the pool creation fee of `pool`
  * (`claimPartnerPoolCreationFee`): the client claims the coin creation fees its launchpad charged.
@@ -630,10 +623,10 @@ export async function buildPartnerPoolCreationFeeClaimTx(
     );
   }
   const payer = params.payer ?? params.feeClaimer;
-  const poolCreationFeeLamports = toBigint(state.config.poolCreationFee);
-  const partnerShareLamports = partnerPoolCreationFeeShare(poolCreationFeeLamports);
-  const alreadyClaimed =
-    (state.virtualPool.poolState.creationFeeBits & PARTNER_POOL_CREATION_FEE_CLAIMED_BIT) !== 0;
+  const status = poolCreationFeeStatus(state);
+  const poolCreationFeeLamports = status.totalLamports;
+  const partnerShareLamports = status.partnerShareLamports;
+  const alreadyClaimed = status.partnerClaimed;
   const summary: PoolCreationFeeClaimSummary = {
     pool: params.pool,
     config: state.virtualPool.poolState.config,

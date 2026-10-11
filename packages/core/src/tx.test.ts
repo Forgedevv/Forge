@@ -15,15 +15,19 @@ import {
   ConfirmationTimeoutError,
   DurableNonceError,
   MAX_TRANSACTION_BYTES,
+  MAX_NONCE_SEED_BYTES,
   RentExemptionError,
   TransactionEncodingError,
   TransactionExpiredError,
   TransactionFailedError,
+  assertNonceSeed,
   assertRentExempt,
   assertSignedCopyOf,
   buildCreateNonceAccountTx,
+  buildCreateNonceAccountWithSeedTx,
   computeBudgetInstructions,
   confirmSignature,
+  deriveSeededNonceAccount,
   deserializeTransactionBase64,
   encodeBase58,
   missingSigners,
@@ -555,6 +559,137 @@ describe('buildCreateNonceAccountTx', () => {
     await expect(
       buildCreateNonceAccountTx({ connection, payer, nonceAccount: payer, authority: payer }),
     ).rejects.toThrow(RangeError);
+  });
+});
+
+describe('buildCreateNonceAccountWithSeedTx', () => {
+  const UUID_SEED = '6f1c2b3a4d5e4f60a7b8c9d0e1f20314'; // a launchpad UUID without its dashes
+
+  it('creates the nonce account at createWithSeed(base, seed), base = payer by default', async () => {
+    const base = Keypair.generate().publicKey;
+    const authority = Keypair.generate().publicKey;
+    const result = await buildCreateNonceAccountWithSeedTx({
+      connection: accountsConnection(new Map()) as unknown as Connection,
+      base,
+      seed: UUID_SEED,
+      authority,
+    });
+    const expected = await PublicKey.createWithSeed(base, UUID_SEED, SystemProgram.programId);
+    expect(result.nonceAccount.equals(expected)).toBe(true);
+    expect(result.base.equals(base)).toBe(true);
+    expect(result.seed).toBe(UUID_SEED);
+    expect(result.rentLamports).toBe(BigInt(rent(NONCE_ACCOUNT_LENGTH)));
+    expect(result.lastValidBlockHeight).toBe(77);
+    expect(result.transaction.feePayer!.equals(base)).toBe(true);
+    // Only the base signs: no keypair for the nonce account.
+    expect(result.signers.map(String)).toEqual([base.toBase58()]);
+    expect(missingSigners(result.transaction).map(String)).toEqual([base.toBase58()]);
+
+    const [create, init] = result.transaction.instructions;
+    expect(result.transaction.instructions).toHaveLength(2);
+    expect(SystemInstruction.decodeInstructionType(create!)).toBe('CreateWithSeed');
+    const created = SystemInstruction.decodeCreateWithSeed(create!);
+    expect(created.fromPubkey.equals(base)).toBe(true);
+    expect(created.newAccountPubkey.equals(expected)).toBe(true);
+    expect(created.basePubkey.equals(base)).toBe(true);
+    expect(created.seed).toBe(UUID_SEED);
+    expect(created.lamports).toBe(rent(NONCE_ACCOUNT_LENGTH));
+    expect(created.space).toBe(NONCE_ACCOUNT_LENGTH);
+    expect(created.programId.equals(SystemProgram.programId)).toBe(true);
+    const initialized = SystemInstruction.decodeNonceInitialize(init!);
+    expect(initialized.noncePubkey.equals(expected)).toBe(true);
+    expect(initialized.authorizedPubkey.equals(authority)).toBe(true);
+  });
+
+  it('is deterministic: the address is re-derived from base and seed alone', async () => {
+    const base = Keypair.generate().publicKey;
+    const connection = accountsConnection(new Map()) as unknown as Connection;
+    const first = await buildCreateNonceAccountWithSeedTx({
+      connection,
+      base,
+      seed: UUID_SEED,
+      authority: base,
+    });
+    const again = await deriveSeededNonceAccount(base, UUID_SEED);
+    expect(again.equals(first.nonceAccount)).toBe(true);
+    const other = await deriveSeededNonceAccount(base, `${UUID_SEED.slice(0, 31)}5`);
+    expect(other.equals(first.nonceAccount)).toBe(false);
+    const otherBase = await deriveSeededNonceAccount(Keypair.generate().publicKey, UUID_SEED);
+    expect(otherBase.equals(first.nonceAccount)).toBe(false);
+  });
+
+  it('lets a separate payer fund it: payer first, then the base', async () => {
+    const base = Keypair.generate();
+    const payer = Keypair.generate();
+    const result = await buildCreateNonceAccountWithSeedTx({
+      connection: accountsConnection(new Map()) as unknown as Connection,
+      base: base.publicKey,
+      seed: 'forge-launch-nonce',
+      authority: base.publicKey,
+      payer: payer.publicKey,
+      computeUnitPriceMicroLamports: 5,
+    });
+    expect(result.transaction.feePayer!.equals(payer.publicKey)).toBe(true);
+    expect(result.signers.map(String)).toEqual([payer.publicKey, base.publicKey].map(String));
+    const [budgetLimit, , create] = result.transaction.instructions;
+    expect(budgetLimit!.programId.equals(ComputeBudgetProgram.programId)).toBe(true);
+    const created = SystemInstruction.decodeCreateWithSeed(create!);
+    expect(created.fromPubkey.equals(payer.publicKey)).toBe(true);
+    expect(created.basePubkey.equals(base.publicKey)).toBe(true);
+    // Both sign; the signed transaction verifies.
+    result.transaction.sign(payer, base);
+    expect(result.transaction.verifySignatures(true)).toBe(true);
+  });
+
+  it('refuses an empty seed or one over 32 UTF-8 bytes, and accepts exactly 32', async () => {
+    const base = Keypair.generate().publicKey;
+    const connection = accountsConnection(new Map()) as unknown as Connection;
+    for (const seed of ['', 'x'.repeat(33), 'é'.repeat(17)]) {
+      await expect(
+        buildCreateNonceAccountWithSeedTx({ connection, base, seed, authority: base }),
+      ).rejects.toThrow(RangeError);
+      await expect(deriveSeededNonceAccount(base, seed)).rejects.toThrow(RangeError);
+    }
+    expect(() => assertNonceSeed('é'.repeat(16))).not.toThrow();
+    expect(MAX_NONCE_SEED_BYTES).toBe(32);
+    await expect(
+      buildCreateNonceAccountWithSeedTx({
+        connection,
+        base,
+        seed: 'x'.repeat(32),
+        authority: base,
+      }),
+    ).resolves.toBeDefined();
+  });
+
+  it('refuses keys that are not public keys', async () => {
+    const base = Keypair.generate().publicKey;
+    const connection = accountsConnection(new Map()) as unknown as Connection;
+    await expect(
+      buildCreateNonceAccountWithSeedTx({
+        connection,
+        base,
+        seed: UUID_SEED,
+        authority: base.toBase58() as unknown as PublicKey,
+      }),
+    ).rejects.toThrow(TypeError);
+  });
+
+  it('creates an account readNonce accepts once initialized', async () => {
+    const base = Keypair.generate().publicKey;
+    const address = await deriveSeededNonceAccount(base, UUID_SEED);
+    const data = Buffer.alloc(NONCE_ACCOUNT_LENGTH);
+    data.writeUInt32LE(1, 0);
+    data.writeUInt32LE(1, 4);
+    base.toBuffer().copy(data, 8);
+    new PublicKey(Buffer.alloc(32, 8)).toBuffer().copy(data, 40);
+    data.writeBigUInt64LE(5000n, 72);
+    const connection = accountsConnection(
+      new Map([[address.toBase58(), info(SystemProgram.programId, data)]]),
+    );
+    const read = await readNonce(connection, address, { expectedAuthority: base });
+    expect(read.nonceAccount.equals(address)).toBe(true);
+    expect(read.authority.equals(base)).toBe(true);
   });
 });
 
