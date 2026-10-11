@@ -38,6 +38,7 @@ export {
   quoteSwap,
   requiredSwapLamports,
   swapFeeAddresses,
+  swapPriceImpactBps,
 } from './swap.js';
 export type {
   BuildBuyTxParams,
@@ -46,6 +47,7 @@ export type {
   DbcSwapInstructionAccounts,
   FetchSwapContextParams,
   PoolSwapStatus,
+  PriceImpactInput,
   QuoteSwapParams,
   SlippageInput,
   SwapAccountSnapshot,

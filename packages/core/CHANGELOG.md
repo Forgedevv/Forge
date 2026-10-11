@@ -39,6 +39,14 @@ publish:packages`, which runs typecheck, lint, tests and build first). Not publi
   `summary.costs` has the same figures as `LaunchCoinCosts` (rent read from the cluster; the
   `owner*` fields are the wallet's, `creatorTotalLamports` is 0). A launch with short metadata is
   950 bytes; the largest metadata (32 / 10 / 200 bytes) fits.
+- `SwapQuote.priceImpactBps` (required field, integer bps 0 to 10,000, rounded up), computed by
+  the new pure `swapPriceImpactBps` from the pool state: with the spot price
+  `P = sqrtPrice^2 / 2^128`, `I` what enters the curve (after input-side fees) and `O` what the
+  curve returns (before output-side fees), a buy is `1 - O / (I / P)` and a sell
+  `1 - O / (I * P)`: one minus what the trade gets over what it would get at the spot price.
+  Pool and platform fees are excluded (they are
+  in `fees`). On a single curve segment it equals `1 - sqrtPrice / nextSqrtPrice` (buy) and
+  `1 - nextSqrtPrice / sqrtPrice` (sell), checked against the SDK in the tests.
 
 ### Added
 
