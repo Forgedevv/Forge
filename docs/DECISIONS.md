@@ -23,6 +23,10 @@ Kept up to date by the lead session. Agents read it, do not modify it.
 | D15 | Currency | SOL only in the MVP |
 | D16 | Migration threshold | 10 SOL |
 | D17 | Deferred | the agent's X account, custom domains, legal advice, written team agreement |
+| D19 | Partner fees | `feeClaimer` = `leftoverReceiver` = the client wallet on both configs; the client claims partner fees from the dashboard. The signer only claims FORGE's creator share (launchpad coin) to the multisig |
+| D20 | Payments | the client pays the exact quoted amount with the memo `forge:job:<jobId>`; overpayments and late payments are recorded for manual refund |
+| D21 | Client sites | client Vercel projects receive only public values (RPC through the FORGE relay, uploads through FORGE presigned URLs); Git-triggered deployments are disabled, only the builder deploys |
+| D22 | First buy | at most 10 SOL (the 10 SOL migration threshold) |
 | D18 | Failure after approval | a failure at the on-chain or deployment step is neither retried nor refunded automatically: alert + manual handling (configs may have been created) |
 
 ## Open (to be decided by the team)
@@ -36,6 +40,10 @@ Kept up to date by the lead session. Agents read it, do not modify it.
 | Q5 | First test clients | mainnet tests |
 | Q6 | Who handles support | public launch |
 | Q7 | Public launch date | planning |
+| Q8 | `@forge/core` distribution: publish publicly (recommended), vendor it into client repos, or a FORGE registry proxy. GitHub Packages also requires the scope to match the owner (`@forgedevv`) | client site builds |
+| Q9 | Migrated pool fee: fixed 0.25% (current) or equal to the trading fee | post-graduation revenue |
+| Q10 | Client previews public behind an unguessable URL (current), or protected | preview step |
+| Q11 | Creator fee claims allowed while a launchpad is sleeping (currently blocked) | sleeping mode |
 
 ## Devnet test results
 
