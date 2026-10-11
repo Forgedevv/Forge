@@ -147,6 +147,18 @@ describe('launchpad store', () => {
     ).rejects.toBeInstanceOf(StoreError);
   });
 
+  it('lists disabled launchpads page by page', async () => {
+    const stub = stubFetch([
+      { method: 'GET', path: '/rest/v1/launchpads', handler: () => json([launchpadFixture()]) },
+    ]);
+    const s = store(stub);
+    expect(await s.listDisabled(10)).toHaveLength(1);
+    await s.listDisabled(10, LAUNCHPAD_ID);
+    expect(stub.calls[0]!.query.get('status')).toBe('eq.disabled');
+    expect(stub.calls[0]!.query.get('order')).toBe('id.asc');
+    expect(stub.calls[1]!.query.get('id')).toBe(`gt.${LAUNCHPAD_ID}`);
+  });
+
   it('counts a job that failed after approval as blocking activity', async () => {
     const stub = stubFetch([{ method: 'GET', path: '/rest/v1/jobs', handler: () => json([]) }]);
     await store(stub).hasJobActivity(LAUNCHPAD_ID, '2026-01-01T00:00:00.000Z');

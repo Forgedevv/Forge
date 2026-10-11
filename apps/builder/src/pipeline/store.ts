@@ -96,6 +96,8 @@ export interface SleepStore extends LaunchpadStore {
   listDormant(cutoffIso: string, limit: number, afterId?: string): Promise<LaunchpadRecord[]>;
   /** `sleeping` launchpads that traded again since `cutoff`. */
   listWoken(cutoffIso: string, limit: number, afterId?: string): Promise<LaunchpadRecord[]>;
+  /** `disabled` launchpads (cut by the FORGE team), whose deployed site must be cut. */
+  listDisabled(limit: number, afterId?: string): Promise<LaunchpadRecord[]>;
   /**
    * True when a job of the launchpad is in flight, changed since `sinceIso`, or failed after
    * approval (stage `onchain` or `deploy`, whenever: manual handling, never redeployed around).
@@ -291,6 +293,17 @@ export function createSupabaseStore(opts: SupabaseStoreOptions): SleepStore & Jo
           'list_woken',
           'GET',
           `launchpads?status=eq.sleeping&last_trade_at=gte.${cutoffIso}${page(limit, afterId)}`,
+        ),
+      );
+    },
+
+    async listDisabled(limit, afterId) {
+      return rows(
+        'list_disabled',
+        await request(
+          'list_disabled',
+          'GET',
+          `launchpads?status=eq.disabled${page(limit, afterId)}`,
         ),
       );
     },

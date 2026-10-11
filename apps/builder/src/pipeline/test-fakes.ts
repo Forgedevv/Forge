@@ -1026,6 +1026,16 @@ export class FakeStore extends Recorder implements SleepStore {
     );
   }
 
+  listDisabled(limit = 500, afterId?: string): Promise<LaunchpadRecord[]> {
+    return this.around('listDisabled', () =>
+      this.page(
+        [...this.launchpads.values()].filter((lp) => lp.status === 'disabled'),
+        limit,
+        afterId,
+      ),
+    );
+  }
+
   hasJobActivity(launchpadId: string, sinceIso: string): Promise<boolean> {
     return this.around('hasJobActivity', () =>
       this.jobs.some(

@@ -337,36 +337,81 @@ export interface SleepScheduler {
   stop(): Promise<void>;
 }
 
-/** Runs `runSleepCycle` after `initialDelayMs`, then every `intervalMs` (default 24 h). */
+export interface SleepSchedulerOptions {
+  /** Sleep cycle period. Default 24 h. */
+  intervalMs?: number;
+  /** First sleep cycle after this delay. Default 10 minutes. */
+  initialDelayMs?: number;
+  /** Runs the sleep cycle (default true). The disabled sweep runs either way. */
+  sleepEnabled?: boolean;
+  /**
+   * Cuts the sites of disabled launchpads (disable.ts `enforceDisabledLaunchpads`). Runs at
+   * startup, before every sleep cycle, and every `disableIntervalMs` in between.
+   */
+  enforceDisabled?: (signal: AbortSignal) => Promise<unknown>;
+  /** Period of the disabled sweep between sleep cycles. Default: the sleep cycle period. */
+  disableIntervalMs?: number;
+}
+
+/**
+ * Runs the disabled sweep at startup, then, one task at a time: the sleep cycle after
+ * `initialDelayMs` and every `intervalMs` (each preceded by a disabled sweep), and the disabled
+ * sweep alone every `disableIntervalMs`.
+ */
 export function startSleepScheduler(
   deps: SleepDeps,
-  opts: { intervalMs?: number; initialDelayMs?: number } = {},
+  opts: SleepSchedulerOptions = {},
 ): SleepScheduler {
   const intervalMs = opts.intervalMs ?? DAY_MS;
+  const disableEvery = Math.max(1, opts.disableIntervalMs ?? intervalMs);
+  const sleepEnabled = opts.sleepEnabled ?? true;
+  const enforce = opts.enforceDisabled;
   const controller = new AbortController();
   let timer: NodeJS.Timeout | undefined;
   let running: Promise<void> | undefined;
   let stopped = false;
+  let nextSleep = Date.now() + (opts.initialDelayMs ?? 10 * 60_000);
+  let nextDisable = enforce ? Date.now() : Number.POSITIVE_INFINITY;
 
-  const schedule = (delay: number): void => {
+  const attempt = async (what: string, fn: () => Promise<unknown>): Promise<void> => {
+    try {
+      await fn();
+    } catch (err) {
+      if (err instanceof StepAbortedError) throw err;
+      deps.logger.error({ error: sanitizeError(err) }, `${what} failed`);
+    }
+  };
+
+  const tick = async (): Promise<void> => {
+    const now = Date.now();
+    const sleepDue = now >= nextSleep;
+    if (enforce && (sleepDue || now >= nextDisable)) {
+      await attempt('disabled sweep', () => enforce(controller.signal));
+      nextDisable = Date.now() + disableEvery;
+    }
+    if (sleepDue) {
+      if (sleepEnabled) await attempt('sleep cycle', () => runSleepCycle(deps, controller.signal));
+      nextSleep = Date.now() + intervalMs;
+    }
+  };
+
+  const schedule = (): void => {
     if (stopped) return;
-    timer = setTimeout(() => {
-      running = runSleepCycle(deps, controller.signal)
-        .then(
-          () => undefined,
-          (err: unknown) => {
-            if (err instanceof StepAbortedError) return;
-            deps.logger.error({ error: sanitizeError(err) }, 'sleep cycle failed');
-          },
-        )
-        .finally(() => {
-          running = undefined;
-          schedule(intervalMs);
-        });
-    }, delay);
+    const next = Math.min(nextSleep, nextDisable);
+    timer = setTimeout(
+      () => {
+        running = tick()
+          .catch(() => undefined)
+          .finally(() => {
+            running = undefined;
+            schedule();
+          });
+      },
+      Math.max(0, next - Date.now()),
+    );
     timer.unref?.();
   };
-  schedule(opts.initialDelayMs ?? 10 * 60_000);
+  schedule();
 
   return {
     async stop() {

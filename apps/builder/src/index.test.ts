@@ -172,6 +172,7 @@ describe('builder process', () => {
       { method: 'POST', path: '/rest/v1/rpc/take_post_approval_job', handler: () => json([]) },
       { method: 'POST', path: '/rest/v1/rpc/take_build_job', handler: () => json([]) },
       { method: 'GET', path: '/rest/v1/flags', handler: () => json([]) },
+      { method: 'GET', path: '/rest/v1/launchpads', handler: () => json([]) },
     ]);
     vi.stubGlobal('fetch', stub.fetch);
     const docker = fakeDocker();
@@ -213,6 +214,13 @@ describe('builder process', () => {
       }
       expect(stub.find('POST', '/rest/v1/rpc/take_build_job').length).toBeGreaterThan(0);
       expect(builder.scheduler).toBeDefined();
+      // Disabled launchpads are swept at startup.
+      for (let i = 0; i < 100 && stub.find('GET', '/rest/v1/launchpads').length === 0; i++) {
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      const sweep = stub.find('GET', '/rest/v1/launchpads');
+      expect(sweep.length).toBeGreaterThan(0);
+      expect(sweep[0]!.query.get('status')).toBe('eq.disabled');
     } finally {
       await builder.stop();
     }
