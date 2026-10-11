@@ -6,9 +6,10 @@ import { z } from 'zod';
  * The request carries a message signed by the wallet (`auth.ts`). The server checks it, generates
  * the mint, builds the launch transaction on this launchpad's config (`createPoolWithFirstBuy` when
  * there is a first buy; the user is pool creator, fee payer and buyer), signs it with the mint only,
- * stores the image and metadata (R2, write-once keys named after the mint) and returns the
- * transaction with a machine-readable summary. The user signs last. The browser never receives a
- * secret key.
+ * stores the image and metadata through the FORGE upload endpoint (write-once keys named after the
+ * mint, see `upload-client.ts`; the site holds no storage key) and returns the transaction with a
+ * machine-readable summary. The user signs last. The browser never receives a secret key.
+ * Server side: `prepare-handler.ts`.
  *
  * The browser does NOT trust the summary: `verify.ts` checks it against the form, decodes every
  * instruction of the transaction and simulates it before anything is shown as "ready to sign".
