@@ -22,6 +22,7 @@ export type PipelineGithub = Pick<
   | 'commitFiles'
   | 'readFile'
   | 'mergeBranch'
+  | 'compareCommits'
 >;
 
 /** Vercel calls the pipeline makes (vercel.ts implements them). */

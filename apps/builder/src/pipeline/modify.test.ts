@@ -153,6 +153,28 @@ describe('modify: building', () => {
     );
     expect(h.signer.calls.length).toBe(signerCalls);
   });
+
+  for (const [fake, op] of [
+    ['runner', 'run:build'],
+    ['github', 'commitFiles'],
+    ['vercel', 'createDeployment'],
+  ] as const) {
+    it(`converges when re-run after a crash at ${fake}.${op}`, async () => {
+      const h = await liveLaunchpad();
+      h[fake].fail(op, 'after');
+      await expect(run(h, modifyJob({ attempts: 1 }))).rejects.toThrow();
+      const { outcome } = await run(h, modifyJob({ attempts: 2 }));
+      const head = h.github.repos.get(REPO)!.branches.get(BRANCH)!;
+      const project = h.vercel.projectBySlug('moonpad')!;
+      const previews = h.vercel.deploymentsOf(project.id).filter((d) => d.sha === head);
+      expect(previews).toHaveLength(1);
+      expect(outcome).toEqual({ patch: { preview_url: previews[0]!.url } });
+      expect(JSON.parse(h.github.text(REPO, BRANCH, 'forge.config.json')!).theme.accentColor).toBe(
+        '#00FF88',
+      );
+      expect(h.github.count('ensureRepoFromTemplate')).toBe(1);
+    });
+  }
 });
 
 describe('modify: deploying', () => {
@@ -193,6 +215,25 @@ describe('modify: deploying', () => {
     expect(h.alerts).toContainEqual(
       expect.objectContaining({ level: 'high', code: `release_blocked:${MODIFY_JOB_ID}` }),
     );
+  });
+
+  it('refuses a release that edits src/forge after the preview', async () => {
+    const h = await liveLaunchpad();
+    await run(h, modifyJob());
+    await h.github.commitFiles({
+      repo: REPO,
+      branch: BRANCH,
+      message: 'late change',
+      files: [
+        { path: 'src/forge/BuyButton.tsx', content: 'export const BuyButton = () => null;\n' },
+      ],
+    });
+    const error = await run(h, modifyJob({ status: 'deploying' })).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(PolicyViolationError);
+    expect((error as PolicyViolationError).violations.map((v) => v.rule)).toContain(
+      'forge-locked-zone',
+    );
+    expect(h.github.count('mergeBranch')).toBe(1);
   });
 
   it('wakes a sleeping launchpad on release', async () => {

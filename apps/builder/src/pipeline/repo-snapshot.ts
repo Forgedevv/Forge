@@ -5,13 +5,27 @@ import { createHttpClient, ServiceError, type HttpClient, type HttpResponse } fr
 import type { WorkdirFile } from './workdir.js';
 
 /**
- * Reads every file of a client repository at a branch head, to prepare a job folder.
+ * Reads the files of a client repository at a branch head or a commit: to prepare a job folder,
+ * and to scan exactly what a release brings into the default branch.
  *
  * GitHub's git data API (commit -> recursive tree -> blobs) with an installation token scoped to
  * that single repository (docs/SECURITY.md §3). Blob contents are checked against their git object
- * id, so what is written in the job folder is exactly the commit that was read. Symlinks and
- * submodules are refused: the job folder only ever starts with regular files.
+ * id, so what is read is exactly the commit that was listed. Symlinks and submodules are refused:
+ * a job folder only ever starts with regular files.
  */
+
+export interface RepoTreeEntry {
+  path: string;
+  /** Git blob id of the content. */
+  sha: string;
+  executable: boolean;
+}
+
+export interface RepoTree {
+  /** Commit the tree belongs to. */
+  commitSha: string;
+  entries: RepoTreeEntry[];
+}
 
 export interface RepoSnapshot {
   /** Commit the files were read from. */
@@ -20,8 +34,12 @@ export interface RepoSnapshot {
 }
 
 export interface RepoSource {
-  /** Files of `repo` at the head of `branch`. */
-  snapshot(repo: string, branch: string): Promise<RepoSnapshot>;
+  /** Regular files of `repo` at the head of a branch, or at a commit sha. No content. */
+  listTree(repo: string, ref: string): Promise<RepoTree>;
+  /** Contents of some entries of a listed tree, checked against their blob ids. */
+  readBlobs(repo: string, entries: readonly RepoTreeEntry[]): Promise<Map<string, Buffer>>;
+  /** Every file of `repo` at a branch head or a commit sha. */
+  snapshot(repo: string, ref: string): Promise<RepoSnapshot>;
 }
 
 export const SNAPSHOT_LIMITS = {
@@ -30,6 +48,8 @@ export const SNAPSHOT_LIMITS = {
   maxTotalBytes: 100 * 1024 * 1024,
   concurrency: 6,
 } as const;
+
+const SHA_RE = /^[0-9a-f]{40}$/;
 
 const TreeSchema = z.object({
   sha: z.string(),
@@ -66,6 +86,30 @@ function parse<S extends z.ZodType>(schema: S, res: HttpResponse, what: string):
   return parsed.data;
 }
 
+function assertClientRepo(repo: string): void {
+  if (typeof repo !== 'string' || !/^lp-[a-z0-9]+(-[a-z0-9]+)*$/.test(repo)) {
+    throw new ServiceError('github', 'invalid_input', 'invalid client repository name');
+  }
+}
+
+/** Builds a snapshot from `listTree` + `readBlobs` (shared by the fakes). */
+export async function snapshotFrom(
+  source: Pick<RepoSource, 'listTree' | 'readBlobs'>,
+  repo: string,
+  ref: string,
+): Promise<RepoSnapshot> {
+  const tree = await source.listTree(repo, ref);
+  const contents = await source.readBlobs(repo, tree.entries);
+  return {
+    commitSha: tree.commitSha,
+    files: tree.entries.map((e) => {
+      const content = contents.get(e.path);
+      if (!content) throw new ServiceError('github', 'unexpected', `missing blob for ${e.path}`);
+      return { path: e.path, content, executable: e.executable };
+    }),
+  };
+}
+
 export function createGithubRepoSource(opts: GithubRepoSourceOptions): RepoSource {
   if (!/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/.test(opts.org)) {
     throw new ServiceError('github', 'invalid_input', 'invalid GitHub organization');
@@ -83,114 +127,138 @@ export function createGithubRepoSource(opts: GithubRepoSourceOptions): RepoSourc
     ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
   });
 
-  return {
-    async snapshot(repo, branch) {
-      if (typeof repo !== 'string' || !/^lp-[a-z0-9]+(-[a-z0-9]+)*$/.test(repo)) {
-        throw new ServiceError('github', 'invalid_input', 'invalid client repository name');
-      }
-      encodeBranch(branch);
-      const head = await opts.github.getBranchHead(repo, branch);
-      if (head === null) {
-        throw new ServiceError('github', 'not_found', `branch ${branch} not found`, {
-          status: 404,
-        });
-      }
-      const root = `/repos/${encodeURIComponent(opts.org)}/${encodeURIComponent(repo)}`;
-      // Re-read the token on each call: it is cached by the GitHub client until near expiry.
-      const authorization = async (): Promise<string> =>
-        `Bearer ${(await opts.github.createRepoToken(repo)).token}`;
+  const root = (repo: string): string =>
+    `/repos/${encodeURIComponent(opts.org)}/${encodeURIComponent(repo)}`;
+  // The token is cached by the GitHub client until shortly before it expires.
+  const auth = (repo: string) => async (): Promise<string> =>
+    `Bearer ${(await opts.github.createRepoToken(repo)).token}`;
 
-      const commit = parse(
-        CommitSchema,
-        await http.request({ method: 'GET', path: `${root}/git/commits/${head}`, authorization }),
-        'commit',
-      );
-      const tree = parse(
-        TreeSchema,
-        await http.request({
-          method: 'GET',
-          path: `${root}/git/trees/${commit.tree.sha}`,
-          query: { recursive: '1' },
-          authorization,
-        }),
-        'tree',
-      );
-      if (tree.truncated) {
-        throw new ServiceError('github', 'unexpected', 'repository tree too large to read');
+  async function listTree(repo: string, ref: string): Promise<RepoTree> {
+    assertClientRepo(repo);
+    let head: string | null;
+    if (SHA_RE.test(ref)) {
+      head = ref;
+    } else {
+      encodeBranch(ref);
+      head = await opts.github.getBranchHead(repo, ref);
+    }
+    if (head === null) {
+      throw new ServiceError('github', 'not_found', `branch ${ref} not found`, { status: 404 });
+    }
+    const authorization = auth(repo);
+    const commit = parse(
+      CommitSchema,
+      await http.request({
+        method: 'GET',
+        path: `${root(repo)}/git/commits/${head}`,
+        authorization,
+      }),
+      'commit',
+    );
+    const tree = parse(
+      TreeSchema,
+      await http.request({
+        method: 'GET',
+        path: `${root(repo)}/git/trees/${commit.tree.sha}`,
+        query: { recursive: '1' },
+        authorization,
+      }),
+      'tree',
+    );
+    if (tree.truncated) {
+      throw new ServiceError('github', 'unexpected', 'repository tree too large to read');
+    }
+    const entries: RepoTreeEntry[] = [];
+    let total = 0;
+    for (const entry of tree.tree) {
+      if (entry.type === 'tree') continue;
+      assertRepoPath(entry.path);
+      if (entry.type !== 'blob' || (entry.mode !== '100644' && entry.mode !== '100755')) {
+        const what =
+          entry.mode === '120000'
+            ? 'symlink'
+            : entry.type === 'commit'
+              ? 'submodule'
+              : `entry (mode ${entry.mode})`;
+        throw new ServiceError(
+          'github',
+          'unexpected',
+          `unsupported ${what} in the repository: ${entry.path.slice(0, 80)}`,
+        );
       }
+      if (!SHA_RE.test(entry.sha)) {
+        throw new ServiceError('github', 'invalid_response', 'invalid blob id in the tree');
+      }
+      if ((entry.size ?? 0) > SNAPSHOT_LIMITS.maxFileBytes) {
+        throw new ServiceError(
+          'github',
+          'unexpected',
+          `file too large: ${entry.path.slice(0, 80)}`,
+        );
+      }
+      total += entry.size ?? 0;
+      if (total > SNAPSHOT_LIMITS.maxTotalBytes) {
+        throw new ServiceError('github', 'unexpected', 'repository too large to read');
+      }
+      entries.push({ path: entry.path, sha: entry.sha, executable: entry.mode === '100755' });
+      if (entries.length > SNAPSHOT_LIMITS.maxFiles) {
+        throw new ServiceError('github', 'unexpected', 'too many files in the repository');
+      }
+    }
+    return { commitSha: head, entries };
+  }
 
-      const blobs: Array<{ path: string; sha: string; executable: boolean }> = [];
-      let total = 0;
-      for (const entry of tree.tree) {
-        if (entry.type === 'tree') continue;
-        assertRepoPath(entry.path);
-        if (entry.type !== 'blob' || (entry.mode !== '100644' && entry.mode !== '100755')) {
-          const what =
-            entry.mode === '120000'
-              ? 'symlink'
-              : entry.type === 'commit'
-                ? 'submodule'
-                : `entry (mode ${entry.mode})`;
+  async function readBlobs(
+    repo: string,
+    entries: readonly RepoTreeEntry[],
+  ): Promise<Map<string, Buffer>> {
+    assertClientRepo(repo);
+    const authorization = auth(repo);
+    const out = new Map<string, Buffer>();
+    let cursor = 0;
+    const worker = async (): Promise<void> => {
+      while (cursor < entries.length) {
+        const blob = entries[cursor++];
+        if (!blob) break;
+        if (!SHA_RE.test(blob.sha)) {
+          throw new ServiceError('github', 'invalid_input', 'invalid blob id');
+        }
+        const body = parse(
+          BlobSchema,
+          await http.request({
+            method: 'GET',
+            path: `${root(repo)}/git/blobs/${blob.sha}`,
+            authorization,
+          }),
+          'blob',
+        );
+        if (body.encoding !== 'base64') {
+          throw new ServiceError('github', 'invalid_response', 'unexpected blob encoding');
+        }
+        const content = Buffer.from(body.content.replace(/\s+/g, ''), 'base64');
+        if (content.byteLength > SNAPSHOT_LIMITS.maxFileBytes) {
+          throw new ServiceError('github', 'unexpected', `file too large: ${blob.path}`);
+        }
+        if (gitBlobSha(content) !== blob.sha) {
           throw new ServiceError(
             'github',
-            'unexpected',
-            `unsupported ${what} in the repository: ${entry.path.slice(0, 80)}`,
+            'invalid_response',
+            'blob content does not match its id',
           );
         }
-        if ((entry.size ?? 0) > SNAPSHOT_LIMITS.maxFileBytes) {
-          throw new ServiceError(
-            'github',
-            'unexpected',
-            `file too large: ${entry.path.slice(0, 80)}`,
-          );
-        }
-        total += entry.size ?? 0;
-        if (total > SNAPSHOT_LIMITS.maxTotalBytes) {
-          throw new ServiceError('github', 'unexpected', 'repository too large to read');
-        }
-        blobs.push({ path: entry.path, sha: entry.sha, executable: entry.mode === '100755' });
-        if (blobs.length > SNAPSHOT_LIMITS.maxFiles) {
-          throw new ServiceError('github', 'unexpected', 'too many files in the repository');
-        }
+        out.set(blob.path, content);
       }
+    };
+    await Promise.all(
+      Array.from({ length: Math.min(SNAPSHOT_LIMITS.concurrency, entries.length) }, worker),
+    );
+    return out;
+  }
 
-      const files: WorkdirFile[] = new Array(blobs.length);
-      let cursor = 0;
-      const worker = async (): Promise<void> => {
-        while (cursor < blobs.length) {
-          const index = cursor++;
-          const blob = blobs[index];
-          if (!blob) break;
-          const body = parse(
-            BlobSchema,
-            await http.request({
-              method: 'GET',
-              path: `${root}/git/blobs/${encodeURIComponent(blob.sha)}`,
-              authorization,
-            }),
-            'blob',
-          );
-          if (body.encoding !== 'base64') {
-            throw new ServiceError('github', 'invalid_response', 'unexpected blob encoding');
-          }
-          const content = Buffer.from(body.content.replace(/\s+/g, ''), 'base64');
-          if (content.byteLength > SNAPSHOT_LIMITS.maxFileBytes) {
-            throw new ServiceError('github', 'unexpected', `file too large: ${blob.path}`);
-          }
-          if (gitBlobSha(content) !== blob.sha) {
-            throw new ServiceError(
-              'github',
-              'invalid_response',
-              'blob content does not match its id',
-            );
-          }
-          files[index] = { path: blob.path, content, executable: blob.executable };
-        }
-      };
-      await Promise.all(
-        Array.from({ length: Math.min(SNAPSHOT_LIMITS.concurrency, blobs.length) }, worker),
-      );
-      return { commitSha: head, files };
-    },
+  const source: RepoSource = {
+    listTree,
+    readBlobs,
+    snapshot: (repo, ref) => snapshotFrom(source, repo, ref),
   };
+  return source;
 }

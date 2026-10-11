@@ -149,3 +149,23 @@ export function onchainBlock(input: {
 export function sameOnchain(a: unknown, b: unknown): boolean {
   return deepEqual(a, b);
 }
+
+/**
+ * Baseline given to the scan for `forge.config.json`: the locked fields of `next` (checked
+ * separately, against what the builder wrote) with the agent-editable fields (`theme`, `content`)
+ * of `reference` (the file the release or the agent started from). The scan then checks every
+ * theme and content value that differs from the reference, whoever wrote it (agent or spec), and
+ * never reports the builder's own fields. Returns `reference` when `next` is not a JSON object.
+ */
+export function configScanBaseline(reference: string | null, next: string): string | null {
+  const parsedNext = parseStrictJson(SITE_CONFIG_PATH, next);
+  if (!parsedNext.ok || !isPlainObject(parsedNext.value)) return reference;
+  const parsedRef = reference === null ? null : parseStrictJson(SITE_CONFIG_PATH, reference);
+  const ref = parsedRef?.ok && isPlainObject(parsedRef.value) ? parsedRef.value : {};
+  const out: RawSiteConfig = { ...parsedNext.value };
+  for (const key of AGENT_KEYS) {
+    if (key in ref) out[key] = ref[key];
+    else delete out[key];
+  }
+  return serializeSiteConfig(out);
+}

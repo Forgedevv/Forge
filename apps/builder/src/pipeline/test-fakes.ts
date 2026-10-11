@@ -11,8 +11,10 @@ import path from 'node:path';
 import { LaunchpadSpec, type JobRow, type LaunchpadStatus } from '@forge/shared';
 import {
   assertRepoPath,
+  gitBlobSha,
   repoNameForSlug,
   type CommitFilesInput,
+  type CompareResult,
   type CommitFilesResult,
   type MergeResult,
   type RepoInfo,
@@ -38,7 +40,7 @@ import {
 import type { JobContext, WorkerLogger } from '../worker.js';
 import type { AgentGateway } from './agent.js';
 import type { PipelineGithub, PipelineSigner, PipelineVercel } from './context.js';
-import type { RepoSnapshot, RepoSource } from './repo-snapshot.js';
+import type { RepoSnapshot, RepoSource, RepoTree, RepoTreeEntry } from './repo-snapshot.js';
 import type { LaunchpadPatch, LaunchpadRecord, SleepStore } from './store.js';
 
 // ---------------------------------------------------------------------------------------------
@@ -439,19 +441,8 @@ export class FakeGithub extends Recorder implements PipelineGithub, RepoSource {
       const baseSha = r.branches.get(input.base);
       const headSha = r.branches.get(input.head);
       if (!baseSha || !headSha) throw new ServiceError('github', 'not_found', 'branch not found');
-      const baseAncestors = this.ancestors(baseSha);
-      if (baseAncestors.has(headSha)) return { merged: false, sha: baseSha };
-      // Merge base: first ancestor of head (breadth first) that is also an ancestor of base.
-      let mergeBase: string | undefined;
-      const queue = [headSha];
-      const seen = new Set<string>();
-      while (queue.length > 0 && !mergeBase) {
-        const s = queue.shift()!;
-        if (seen.has(s)) continue;
-        seen.add(s);
-        if (baseAncestors.has(s)) mergeBase = s;
-        else queue.push(...(this.commits.get(s)?.parents ?? []));
-      }
+      if (this.ancestors(baseSha).has(headSha)) return { merged: false, sha: baseSha };
+      const mergeBase = this.mergeBase(baseSha, headSha);
       const ancestor = this.commits.get(mergeBase ?? '')?.files ?? new Map<string, FakeFile>();
       const base = this.commits.get(baseSha)!.files;
       const head = this.commits.get(headSha)!.files;
@@ -473,15 +464,81 @@ export class FakeGithub extends Recorder implements PipelineGithub, RepoSource {
     });
   }
 
-  snapshot(repo: string, branch: string): Promise<RepoSnapshot> {
+  /** First ancestor of head (breadth first) that is also an ancestor of base. */
+  private mergeBase(baseSha: string, headSha: string): string | undefined {
+    const baseAncestors = this.ancestors(baseSha);
+    const queue = [headSha];
+    const seen = new Set<string>();
+    while (queue.length > 0) {
+      const s = queue.shift()!;
+      if (seen.has(s)) continue;
+      seen.add(s);
+      if (baseAncestors.has(s)) return s;
+      queue.push(...(this.commits.get(s)?.parents ?? []));
+    }
+    return undefined;
+  }
+
+  private commitOf(repo: string, ref: string): FakeCommit {
+    const commit = this.resolve(this.repo(repo), ref);
+    if (!commit) throw new ServiceError('github', 'not_found', `ref ${ref} not found`);
+    return commit;
+  }
+
+  compareCommits(repo: string, base: string, head: string): Promise<CompareResult> {
+    return this.around('compareCommits', () => {
+      const baseSha = this.commitOf(repo, base).sha;
+      const headSha = this.commitOf(repo, head).sha;
+      const mergeBaseSha = this.mergeBase(baseSha, headSha);
+      if (!mergeBaseSha) throw new ServiceError('github', 'not_found', 'no common ancestor');
+      return {
+        status:
+          mergeBaseSha === headSha ? 'behind' : mergeBaseSha === baseSha ? 'ahead' : 'diverged',
+        aheadBy: 0,
+        behindBy: 0,
+        totalCommits: 0,
+        mergeBaseSha,
+        headSha,
+        files: [],
+        source: 'tree',
+      } satisfies CompareResult;
+    });
+  }
+
+  listTree(repo: string, ref: string): Promise<RepoTree> {
+    return this.around('listTree', () => {
+      const commit = this.commitOf(repo, ref);
+      const entries = [...commit.files.entries()]
+        .sort(([a], [b]) => (a < b ? -1 : 1))
+        .map(([p, f]) => ({ path: p, sha: gitBlobSha(f.content), executable: f.executable }));
+      return { commitSha: commit.sha, entries };
+    });
+  }
+
+  readBlobs(repo: string, entries: readonly RepoTreeEntry[]): Promise<Map<string, Buffer>> {
+    return this.around('readBlobs', () => {
+      this.repo(repo);
+      const byId = new Map<string, Buffer>();
+      for (const c of this.commits.values()) {
+        for (const f of c.files.values()) byId.set(gitBlobSha(f.content), f.content);
+      }
+      const out = new Map<string, Buffer>();
+      for (const e of entries) {
+        const content = byId.get(e.sha);
+        if (!content) throw new ServiceError('github', 'not_found', 'blob not found');
+        out.set(e.path, Buffer.from(content));
+      }
+      return out;
+    });
+  }
+
+  snapshot(repo: string, ref: string): Promise<RepoSnapshot> {
     return this.around('snapshot', () => {
-      const r = this.repo(repo);
-      const sha = r.branches.get(branch);
-      if (!sha) throw new ServiceError('github', 'not_found', 'branch not found');
-      const files = [...this.commits.get(sha)!.files.entries()]
+      const commit = this.commitOf(repo, ref);
+      const files = [...commit.files.entries()]
         .sort(([a], [b]) => (a < b ? -1 : 1))
         .map(([p, f]) => ({ path: p, content: Buffer.from(f.content), executable: f.executable }));
-      return { commitSha: sha, files };
+      return { commitSha: commit.sha, files };
     });
   }
 }

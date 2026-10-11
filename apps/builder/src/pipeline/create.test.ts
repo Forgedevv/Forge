@@ -3,6 +3,7 @@ import { readdir, symlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { JobRow } from '@forge/shared';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { ChangedFile } from '../scan/index.js';
 import { Worker } from '../worker.js';
 import { FakeJobsDb } from '../worker/fake-db.js';
 import { createPipelineHandler } from './index.js';
@@ -160,6 +161,41 @@ describe('create: building', () => {
     expect(await jobsRootEntries()).toEqual([]);
   });
 
+  it("gives the scan the agent's diff against the builder's baseline and obeys its verdict", async () => {
+    const h = harness();
+    const seen: ChangedFile[][] = [];
+    h.deps.scan = (files) => {
+      seen.push(files);
+      return {
+        ok: false,
+        violations: [
+          { rule: 'dynamic-code', file: 'src/components/Hero.tsx', line: 2, reason: 'x' },
+        ],
+      };
+    };
+    await expect(runStep(h, building())).rejects.toBeInstanceOf(PolicyViolationError);
+    expect(seen).toHaveLength(1);
+    const byPath = new Map(seen[0]!.map((f) => [f.path, f]));
+    expect([...byPath.keys()].sort()).toEqual([
+      'forge.config.json',
+      'src/components/Hero.tsx',
+      'src/pages/index.tsx',
+      'src/theme/theme.css',
+    ]);
+    expect(byPath.get('src/components/Hero.tsx')).toMatchObject({
+      status: 'added',
+      oldContent: null,
+    });
+    const config = byPath.get('forge.config.json')!;
+    expect(config.status).toBe('modified');
+    // The baseline is the builder's config from the spec, not the template's sample.
+    const before = JSON.parse(Buffer.from(config.oldContent as Uint8Array).toString('utf8'));
+    expect(before).toMatchObject({ name: 'MoonPad', slug: 'moonpad', mode: 'live' });
+    expect(before.onchain).toBeUndefined();
+    expect(h.runner.stepsRun()).toEqual(['agent']);
+    expect(h.github.count('commitFiles')).toBe(0);
+  });
+
   it('creates the Vercel project (git deployments off) before anything is pushed', async () => {
     const h = harness();
     const log = trace(h);
@@ -304,6 +340,19 @@ describe('create: building', () => {
     };
     await expect(runStep(h, building())).rejects.toBeInstanceOf(PipelineError);
     expect(h.github.repos.get(REPO)!.branches.has(BRANCH)).toBe(false);
+  });
+
+  it('scans the values written from the spec too, even when the agent leaves them', async () => {
+    const h = harness();
+    const spec = h.store.get(LAUNCHPAD_ID).spec as { theme: { tagline: string } };
+    spec.theme.tagline = '<script>alert(1)</script>';
+    h.runner.agent = async () => undefined;
+    const error = await runStep(h, building()).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(PolicyViolationError);
+    expect((error as PolicyViolationError).violations).toContainEqual(
+      expect.objectContaining({ rule: 'forge-config-unsafe-value', file: 'forge.config.json' }),
+    );
+    expect(h.runner.stepsRun()).toEqual(['agent']);
   });
 
   it('refuses a disabled launchpad before doing anything', async () => {
@@ -548,6 +597,36 @@ describe('create: deploying', () => {
     expect(h.store.get(LAUNCHPAD_ID).status).toBe('live');
     expect(outcome).toEqual({ message: 'Your launchpad is live at https://moonpad.clients.test' });
     expect(events).toEqual(['Publishing your launchpad', 'Connecting your domain']);
+  });
+
+  it('scans the release again: a file pushed to the job branch after the preview is refused', async () => {
+    const h = harness();
+    await prepareOnchain(h);
+    await h.github.commitFiles({
+      repo: REPO,
+      branch: BRANCH,
+      message: 'late change',
+      files: [
+        {
+          path: 'src/components/Tracker.tsx',
+          content:
+            'export function Tracker() {\n  return <script src="https://evil.example/x.js" />;\n}\n',
+        },
+      ],
+    });
+    const mainBefore = h.github.repos.get(REPO)!.branches.get('main');
+    const error = await runStep(h, deployingJob()).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(PolicyViolationError);
+    expect((error as PolicyViolationError).violations.map((v) => v.file)).toContain(
+      'src/components/Tracker.tsx',
+    );
+    expect(h.github.count('mergeBranch')).toBe(0);
+    expect(h.github.repos.get(REPO)!.branches.get('main')).toBe(mainBefore);
+    expect(h.vercel.deploymentsOf(h.vercel.projectBySlug('moonpad')!.id)).toHaveLength(1);
+    expect(h.alerts).toContainEqual(
+      expect.objectContaining({ level: 'high', code: `release_blocked:${CREATE_JOB_ID}` }),
+    );
+    expect(h.store.get(LAUNCHPAD_ID).status).toBe('draft');
   });
 
   it('refuses to release a branch without the on-chain section', async () => {

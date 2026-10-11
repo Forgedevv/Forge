@@ -14,6 +14,7 @@ import {
 } from './context.js';
 import { PipelineError, PolicyViolationError } from './errors.js';
 import { STEP_EVENTS } from './messages.js';
+import { scanRelease } from './release-scan.js';
 import {
   parseSiteConfig,
   sameOnchain,
@@ -103,20 +104,33 @@ export async function runDeployStep(
     if (!sameOnchain(branchConfig.onchain, mainConfig.onchain)) locked.push(lockedField('onchain'));
     if (branchConfig.name !== mainConfig.name) locked.push(lockedField('name'));
   }
-  if (locked.length > 0) {
+  // Second scan: exactly what the merge brings in, as stored on GitHub (merge base -> branch).
+  const release = await scanRelease(deps, repo.name, repo.defaultBranch, branch);
+  const blocked = [...locked, ...release.violations];
+  if (blocked.length > 0) {
     await safeAlert(
       deps,
       'high',
       `release_blocked:${job.id}`,
-      'Release blocked: forge.config.json locked fields differ',
+      'Release blocked: the job branch does not pass the release checks',
       {
         jobId: job.id,
         launchpad: spec.slug,
-        fields: locked.map((v) => v.reason).join('; '),
+        violations: blocked.length,
+        rules: [...new Set(blocked.map((v) => v.rule))].join(', '),
+        files: [...new Set(blocked.map((v) => v.file))].slice(0, 5).join(', '),
       },
     );
-    throw new PolicyViolationError(locked);
+    throw new PolicyViolationError(blocked);
   }
+  jobCtx.logger.info(
+    jobFields(job, {
+      mergeBase: release.mergeBaseSha,
+      head: release.headSha,
+      changed: release.changed,
+    }),
+    'release scan passed',
+  );
 
   // Merge (answers "already merged" on a re-run).
   await say(jobCtx, STEP_EVENTS.release);

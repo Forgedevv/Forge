@@ -35,9 +35,9 @@ import {
   typedSiteConfig,
   type OnchainConfig,
 } from './site-config.js';
+import { scanInput } from './scan-input.js';
 import {
   createWorkdir,
-  diffAgainstBaseline,
   readWorkdirTree,
   removeWorkdir,
   writeWorkdirFiles,
@@ -68,6 +68,8 @@ interface Baseline {
   map: Map<string, BaselineFile>;
   /** forge.config.json as written by the builder (the agent's version is checked against it). */
   configText: string;
+  /** forge.config.json whose theme/content the scan compares to (template sample, live site). */
+  configReference: string | null;
   onchain: OnchainConfig | undefined;
 }
 
@@ -100,7 +102,9 @@ export function prepareBaseline(
   });
   const map = new Map<string, BaselineFile>();
   for (const f of files) map.set(f.path, { content: f.content, executable: f.executable });
-  return { files, map, configText, onchain: config.onchain };
+  const configReference =
+    kind === 'create' ? (existing?.content.toString('utf8') ?? null) : configText;
+  return { files, map, configText, configReference, onchain: config.onchain };
 }
 
 /** Image URLs worth showing to the agent: only those the scan lets the site load. */
@@ -207,7 +211,11 @@ async function codeAndCheck(
     // 2. Blocking scan of everything the agent left, before anything is installed or built.
     await say(jobCtx, STEP_EVENTS.checkChanges);
     const tree = await readWorkdirTree(workdir);
-    const changes = diffAgainstBaseline(baseline.map, tree);
+    const changes = scanInput({
+      baseline: baseline.map,
+      tree,
+      configReference: baseline.configReference,
+    });
     const violations: Violation[] = [];
     const scan = deps.scan(changes, deps.config.scanOptions);
     if (!scan.ok) violations.push(...scan.violations);

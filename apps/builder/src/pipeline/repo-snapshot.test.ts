@@ -108,6 +108,17 @@ describe('repository snapshot', () => {
     );
   });
 
+  it('lists a tree at a commit sha and downloads only the requested blobs', async () => {
+    const stub = stubFetch(routes(entries));
+    const { src } = source(stub, null);
+    const tree = await src.listTree('lp-moonpad', HEAD);
+    expect(tree.commitSha).toBe(HEAD);
+    expect(tree.entries.map((e) => e.path)).toEqual(['package.json', 'src/a.ts', 'bin/run.sh']);
+    const blobs = await src.readBlobs('lp-moonpad', [tree.entries[1]!]);
+    expect([...blobs.keys()]).toEqual(['src/a.ts']);
+    expect(stub.find('GET', /\/git\/blobs\//)).toHaveLength(1);
+  });
+
   it('refuses unsafe paths, missing branches and non-client repositories', async () => {
     const unsafe = stubFetch(
       routes([{ path: '../x', mode: '100644', type: 'blob', sha: entries[0]!.sha }]),
