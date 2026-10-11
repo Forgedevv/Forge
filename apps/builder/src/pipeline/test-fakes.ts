@@ -41,7 +41,16 @@ import type { JobContext, WorkerLogger } from '../worker.js';
 import type { AgentGateway } from './agent.js';
 import type { PipelineGithub, PipelineSigner, PipelineVercel } from './context.js';
 import type { RepoSnapshot, RepoSource, RepoTree, RepoTreeEntry } from './repo-snapshot.js';
-import type { LaunchpadPatch, LaunchpadRecord, SleepStore } from './store.js';
+import {
+  BLOCKING_FAILED_STAGES,
+  launchpadStatusFilter,
+  LaunchpadStatusChangedError,
+  type BuilderLaunchpadStatus,
+  type LaunchpadPatch,
+  type LaunchpadRecord,
+  type LaunchpadWriteOptions,
+  type SleepStore,
+} from './store.js';
 
 // ---------------------------------------------------------------------------------------------
 // Fixtures
@@ -865,6 +874,7 @@ export interface FakeJobActivity {
   launchpadId: string;
   status: string;
   updatedAt: string;
+  failedStage?: string | null;
 }
 
 export class FakeStore extends Recorder implements SleepStore {
@@ -888,35 +898,61 @@ export class FakeStore extends Recorder implements SleepStore {
     });
   }
 
-  updateLaunchpad(id: string, patch: LaunchpadPatch): Promise<void> {
+  /** Called right before a write applies (tests change the row concurrently here). */
+  beforeWrite: ((id: string, patch: LaunchpadPatch) => void) | undefined;
+
+  updateLaunchpad(id: string, patch: LaunchpadPatch, opts?: LaunchpadWriteOptions): Promise<void> {
     return this.around('updateLaunchpad', () => {
+      // Same conditions as the PostgREST store.
+      const filter = launchpadStatusFilter(patch, opts);
+      this.beforeWrite?.(id, patch);
       const lp = this.launchpads.get(id);
       if (!lp) throw new Error('launchpad not found');
+      if (filter !== null) {
+        const ok =
+          filter === 'neq.disabled'
+            ? lp.status !== 'disabled'
+            : (opts?.expectStatus ?? []).includes(lp.status as BuilderLaunchpadStatus);
+        if (!ok) throw new LaunchpadStatusChangedError();
+      }
       Object.assign(lp, patch);
     });
   }
 
-  listDormant(cutoffIso: string): Promise<LaunchpadRecord[]> {
+  /** One page of `rows` ordered by id, after the cursor (same contract as the store). */
+  private page(rows: LaunchpadRecord[], limit: number, afterId?: string): LaunchpadRecord[] {
+    return rows
+      .filter((lp) => afterId === undefined || lp.id > afterId)
+      .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+      .slice(0, Math.max(1, Math.trunc(limit)))
+      .map((lp) => structuredClone(lp));
+  }
+
+  listDormant(cutoffIso: string, limit = 500, afterId?: string): Promise<LaunchpadRecord[]> {
     return this.around('listDormant', () =>
-      [...this.launchpads.values()]
-        .filter(
+      this.page(
+        [...this.launchpads.values()].filter(
           (lp) =>
             lp.status === 'live' &&
             ((lp.last_trade_at !== null && lp.last_trade_at < cutoffIso) ||
               (lp.last_trade_at === null && (lp.created_at ?? '') < cutoffIso)),
-        )
-        .map((lp) => structuredClone(lp)),
+        ),
+        limit,
+        afterId,
+      ),
     );
   }
 
-  listWoken(cutoffIso: string): Promise<LaunchpadRecord[]> {
+  listWoken(cutoffIso: string, limit = 500, afterId?: string): Promise<LaunchpadRecord[]> {
     return this.around('listWoken', () =>
-      [...this.launchpads.values()]
-        .filter(
+      this.page(
+        [...this.launchpads.values()].filter(
           (lp) =>
             lp.status === 'sleeping' && lp.last_trade_at !== null && lp.last_trade_at >= cutoffIso,
-        )
-        .map((lp) => structuredClone(lp)),
+        ),
+        limit,
+        afterId,
+      ),
     );
   }
 
@@ -926,7 +962,9 @@ export class FakeStore extends Recorder implements SleepStore {
         (j) =>
           j.launchpadId === launchpadId &&
           (j.updatedAt >= sinceIso ||
-            !['live', 'failed', 'refunded', 'spec_ready'].includes(j.status)),
+            !['live', 'failed', 'refunded', 'spec_ready'].includes(j.status) ||
+            (j.status === 'failed' &&
+              (BLOCKING_FAILED_STAGES as readonly string[]).includes(j.failedStage ?? ''))),
       ),
     );
   }

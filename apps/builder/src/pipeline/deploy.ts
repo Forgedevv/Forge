@@ -178,6 +178,9 @@ export async function runDeployStep(
   const ready = await deps.vercel.waitForDeployment(deployment.id, {
     timeoutMs: deps.config.deploymentTimeoutMs,
   });
+  // The build took minutes: the team may have disabled the launchpad meanwhile. Read it again
+  // right before production changes (loadLaunchpad refuses a disabled launchpad).
+  const current = await loadLaunchpad(deps, job);
   guard(signal);
   await deps.vercel.promoteToProduction(project.id, ready.id, {
     timeoutMs: deps.config.promotionTimeoutMs,
@@ -198,8 +201,9 @@ export async function runDeployStep(
       },
     );
   }
-  if (launchpad.status !== 'live') {
+  if (current.launchpad.status !== 'live') {
     guard(signal);
+    // Conditional: never applies to a launchpad disabled in the meantime (fails the step).
     await deps.store.updateLaunchpad(launchpad.id, { status: 'live' });
   }
   jobCtx.logger.info(

@@ -644,6 +644,28 @@ describe('create: deploying', () => {
     expect(h.store.get(LAUNCHPAD_ID).status).toBe('draft');
   });
 
+  it('does not promote when the launchpad is disabled while the production build runs', async () => {
+    const h = harness();
+    await prepareOnchain(h);
+    h.vercel.onCall = (op) => {
+      if (op === 'waitForDeployment') h.store.setStatus(LAUNCHPAD_ID, 'disabled');
+    };
+    await expect(runStep(h, deployingJob())).rejects.toThrow(/disabled/);
+    expect(h.vercel.count('promoteToProduction')).toBe(0);
+    expect(h.vercel.projectBySlug('moonpad')!.productionDeploymentId).toBeUndefined();
+    expect(h.store.get(LAUNCHPAD_ID).status).toBe('disabled');
+  });
+
+  it('never overwrites a disabled status set right before the final write', async () => {
+    const h = harness();
+    await prepareOnchain(h);
+    h.store.beforeWrite = (_id, patch) => {
+      if (patch.status === 'live') h.store.setStatus(LAUNCHPAD_ID, 'disabled');
+    };
+    await expect(runStep(h, deployingJob())).rejects.toThrow(/status changed/);
+    expect(h.store.get(LAUNCHPAD_ID).status).toBe('disabled');
+  });
+
   it('refuses to release on-chain addresses of another cluster', async () => {
     const h = harness();
     await prepareOnchain(h);
