@@ -233,8 +233,8 @@ export async function createSignerRuntime(options: SignerRuntimeOptions): Promis
       {
         store: createPostgrestRouteStore(db),
         core:
-          options.routeCore ??
-          createForgeRouteCore({ connection, meteoraReferralAccount: addresses.meteoraReferral }),
+          // No referral on the first buy (devnet finding, see createForgeRouteCore).
+          options.routeCore ?? createForgeRouteCore({ connection }),
         rpc,
         keystore,
         flags,

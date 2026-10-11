@@ -180,6 +180,7 @@ export async function handlePrepareLaunch(
         symbol: coin.symbol,
         metadataUri,
         firstBuyLamports,
+        referral: core.firstBuyReferral,
       }),
     );
 

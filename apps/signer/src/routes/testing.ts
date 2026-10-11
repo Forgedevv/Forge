@@ -94,6 +94,7 @@ export const LAUNCH_FEE_LAMPORTS_PER_SIGNATURE = 5_000n;
 /** In-memory chain: the routes' `SolanaRpc` and `RouteCore` at once. */
 export class FakeRouteChain implements SolanaRpc, RouteCore {
   readonly dbcProgramId = DYNAMIC_BONDING_CURVE_PROGRAM_ID;
+  readonly firstBuyReferral = null;
   height = 1_000;
   finalityLag = 32;
   defaultBehavior: SendBehavior = 'land';

@@ -97,7 +97,6 @@ function launchSetup() {
   );
   const core = createForgeRouteCore({
     connection: mockConnection(accounts),
-    meteoraReferralAccount: null,
   });
   const params = {
     config: CONFIG,
@@ -138,7 +137,6 @@ describe('config creation policy (real core)', () => {
   async function built(kind: 'launchpad' | 'launchpadCoin') {
     const core = createForgeRouteCore({
       connection: mockConnection(new Map()),
-      meteoraReferralAccount: null,
     });
     const payer = Keypair.generate().publicKey;
     const config = Keypair.generate().publicKey;
@@ -192,7 +190,6 @@ describe('config creation policy (real core)', () => {
   it('hashes the exact parameters: another fee, another hash', () => {
     const core = createForgeRouteCore({
       connection: mockConnection(new Map()),
-      meteoraReferralAccount: null,
     });
     const spec = testSpec(OWNER.toBase58());
     const a = core.configParamsHash(spec, 'launchpad');
@@ -206,7 +203,6 @@ describe('nonce account creation policy (real core)', () => {
   it('accepts core’s transaction and refuses another authority or amount', async () => {
     const core = createForgeRouteCore({
       connection: mockConnection(new Map()),
-      meteoraReferralAccount: null,
     });
     const payer = Keypair.generate().publicKey;
     const nonceAccount = Keypair.generate().publicKey;
@@ -246,6 +242,22 @@ describe('launch policy (real core, devnet config fixture)', () => {
       slot: 7,
     });
     expect(await core.readNonce(Keypair.generate().publicKey, creator, 'confirmed')).toBeNull();
+  });
+
+  it('never puts a referral on the first buy, whatever the environment says', async () => {
+    const { core, params } = launchSetup();
+    const previous = process.env.FORGE_METEORA_REFERRAL_ACCOUNT;
+    // An account that does not exist: core would refuse it (REFERRAL_INVALID) if it were used.
+    process.env.FORGE_METEORA_REFERRAL_ACCOUNT = Keypair.generate().publicKey.toBase58();
+    try {
+      const { summary } = await core.buildLaunchCoinTx(params);
+      expect(summary.referralSource).toBe('none');
+      expect(summary.referralTokenAccount).toBeNull();
+      expect(core.firstBuyReferral).toBeNull();
+    } finally {
+      if (previous === undefined) delete process.env.FORGE_METEORA_REFERRAL_ACCOUNT;
+      else process.env.FORGE_METEORA_REFERRAL_ACCOUNT = previous;
+    }
   });
 
   it('accepts a launch without a first buy', async () => {
