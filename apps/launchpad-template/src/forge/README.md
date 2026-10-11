@@ -13,7 +13,7 @@ This zone contains all the logic that touches money, the network or the chain:
 - `create/`: pure helpers of the creation flow (`validation`, `amounts`, `api`, `verify`, `chain`, `flow`).
 - `ClaimCreatorFees.tsx` and `claims/`: creator fee claims for the connected wallet (adapter to `@forge/core` in `claims/core-adapter.ts`).
 - `ModeBanner.tsx`: banner shown instead of an action when the site is sleeping or disabled.
-- `useSendTransaction.ts`: client-side transaction sending helper.
+- `useSendTransaction.ts`: client-side transaction sending helper. Sends only through the FORGE RPC relay (there is no server-side send route and no RPC provider key in the site).
 - `data/`: Jupiter data API client and websocket stream.
 - `chart/`: TradingView chart (loads an external script and queries the data API).
 - `token-icon/`: token images (dynamic image URLs).

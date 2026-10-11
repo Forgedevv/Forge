@@ -9,14 +9,19 @@ import {
   type Commitment as Web3Commitment,
 } from '@solana/web3.js';
 import { confirmSignature, describeChainError, type ChainClient } from './create/chain';
+import { getRelayConnection } from './trade/connection';
+import { readTradeEnv, resolveRelayUrl } from './trade/trade-config';
 
 /**
  * LOCKED ZONE. Client-side transaction sending helper: simulate, sign with the wallet, send, then
  * confirm by polling `getSignatureStatuses` with a deadline (no websocket subscription).
  *
- * The public API (`sendTransaction(transaction, connection, options)` and the returned
- * `{ sendTransaction, isLoading, error, signature }`) is unchanged; `VersionedTransaction` is also
- * accepted now.
+ * Everything goes through the FORGE RPC relay (`NEXT_PUBLIC_FORGE_RPC_RELAY_URL`, normalised like
+ * the trade panel). The site has no server-side send route and no RPC provider key. A connection to
+ * any other endpoint is refused; without a relay nothing is sent.
+ *
+ * `sendTransaction(transaction, connection?, options)`: `connection` is optional and, when given,
+ * must be the relay connection. `VersionedTransaction` is accepted.
  */
 
 type SendTransactionOptions = {
@@ -27,6 +32,45 @@ type SendTransactionOptions = {
   /** Polling deadline in milliseconds. Default 60 s. */
   confirmTimeoutMs?: number;
 };
+
+export class RelayRequiredError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'RelayRequiredError';
+  }
+}
+
+/**
+ * The connection every send uses: the relay connection. A caller-supplied connection is accepted
+ * only when it points at the relay endpoint. Throws `RelayRequiredError` otherwise.
+ */
+export function resolveSendConnection(
+  connection: Connection | undefined,
+  rawRelayUrl: string | undefined = readTradeEnv().relayUrl,
+  relayConnection: (raw: string | undefined) => Connection | null = getRelayConnection,
+): Connection {
+  const relay = resolveRelayUrl(rawRelayUrl);
+  if (!relay) {
+    throw new RelayRequiredError('Sending is not configured on this site (RPC relay missing).');
+  }
+  if (connection) {
+    if (sameEndpoint(connection.rpcEndpoint, relay)) return connection;
+    throw new RelayRequiredError('Transactions can only be sent through the FORGE RPC relay.');
+  }
+  const own = relayConnection(rawRelayUrl);
+  if (!own) {
+    throw new RelayRequiredError('Sending is not configured on this site (RPC relay missing).');
+  }
+  return own;
+}
+
+function sameEndpoint(a: string, b: string): boolean {
+  try {
+    return new URL(a).toString() === new URL(b).toString();
+  } catch {
+    return false;
+  }
+}
 
 /** Adapts a web3.js Connection to the polling interface. */
 export function connectionToChain(connection: Connection): Pick<ChainClient, 'getSignatureStatus'> {
@@ -51,7 +95,7 @@ export function useSendTransaction() {
 
   const sendTransaction = async (
     transaction: Transaction | VersionedTransaction,
-    connection: Connection,
+    requestedConnection?: Connection,
     options: SendTransactionOptions = {},
   ) => {
     if (!publicKey || !signTransaction) {
@@ -67,6 +111,7 @@ export function useSendTransaction() {
     setSignature(null);
 
     try {
+      const connection = resolveSendConnection(requestedConnection);
       // Prepare transaction. `lastValidBlockHeight` bounds the wait: past it the transaction can
       // never land, so we stop and say so instead of waiting for the deadline.
       let lastValidBlockHeight: number | undefined;
