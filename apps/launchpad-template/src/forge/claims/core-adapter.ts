@@ -15,7 +15,9 @@ import { getRelayConnection } from '../trade/connection';
  *    ones whose `creator` is the connected wallet and reads their claimable creator share from the
  *    `fees` of each coin;
  *  - `buildCreatorClaimTx` (claims.ts) builds the claim with `receiver` = the connected wallet; the
- *    legacy transaction it returns is wrapped in a `VersionedTransaction` for the signing flow.
+ *    legacy transaction it returns is wrapped in a `VersionedTransaction` for the signing flow, and
+ *    the costs the core computed (`summary.costs`: network fee, the coin account rent of a first
+ *    claim, the temporary WSOL rent) are handed over as they are, for the review and balance check.
  * Every chain read goes through the FORGE RPC relay connection. Names and symbols are not read
  * here (the UI falls back to the coin address).
  */
@@ -35,18 +37,38 @@ export interface CreatorCoin {
   baseDecimals: number;
 }
 
+/** What the claim costs the wallet (fee payer), lamports, as computed by `@forge/core`. */
+export interface CreatorClaimCosts {
+  /** Signature fees (no priority fee). */
+  networkFeeLamports: bigint;
+  /** Rent of the wallet's coin account, created on the first claim of a pool (0 when it exists). */
+  receiverTokenAccountRentLamports: bigint;
+  /** WSOL account rent advanced during the transaction and refunded in it. */
+  temporaryLamports: bigint;
+  /** What the wallet balance decreases by: network fee + one-time rent. */
+  payerTotalLamports: bigint;
+  /** Balance the wallet needs before signing: total + temporary. */
+  payerRequiredBalanceLamports: bigint;
+}
+
+export interface CreatorClaimBuild {
+  tx: VersionedTransaction;
+  costs: CreatorClaimCosts;
+}
+
 export interface ClaimsCore {
   /** Coins of this launchpad created by `creator`, with their claimable creator fees. */
   listCreatorCoins(creator: string): Promise<CreatorCoin[]>;
   /**
    * Builds the creator claim of one pool. `receiver` is always the connected wallet in this UI.
-   * The returned transaction has `creator` as fee payer and only the creator's signature missing.
+   * The returned transaction has `creator` as fee payer and only the creator's signature missing;
+   * `costs` are the core's figures for that transaction.
    */
   buildCreatorClaimTx(args: {
     pool: string;
     creator: string;
     receiver: string;
-  }): Promise<VersionedTransaction>;
+  }): Promise<CreatorClaimBuild>;
 }
 
 export interface CoreClaimsOptions {
@@ -110,8 +132,18 @@ export function createCoreClaimsCore(options: CoreClaimsOptions): ClaimsCore {
       if (!result.transaction) {
         throw new Error('There is nothing to claim for this coin.');
       }
+      const { costs } = result.summary;
       // Fee payer and blockhash are set by the core; no signature is attached yet.
-      return new VersionedTransaction(result.transaction.compileMessage());
+      return {
+        tx: new VersionedTransaction(result.transaction.compileMessage()),
+        costs: {
+          networkFeeLamports: costs.networkFeeLamports,
+          receiverTokenAccountRentLamports: costs.receiverTokenAccountRentLamports,
+          temporaryLamports: costs.temporaryLamports,
+          payerTotalLamports: costs.payerTotalLamports,
+          payerRequiredBalanceLamports: costs.payerRequiredBalanceLamports,
+        },
+      };
     },
   };
 }

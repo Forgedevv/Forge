@@ -110,13 +110,21 @@ describe('claims core backed by @forge/core', () => {
       blockhash: PublicKey.default.toBase58(),
       lastValidBlockHeight: 10,
     }).add(SystemProgram.transfer({ fromPubkey: creator.publicKey, toPubkey: other, lamports: 1 }));
+    const costs = {
+      networkFeeLamports: BigInt(5000),
+      receiverTokenAccountRentLamports: BigInt(2039280),
+      temporaryLamports: BigInt(2039280),
+      payerTotalLamports: BigInt(2044280),
+      payerRequiredBalanceLamports: BigInt(4083560),
+    };
     core.buildCreatorClaimTx.mockResolvedValue({
       transaction: legacy,
       lastValidBlockHeight: 10,
       skipReason: null,
+      summary: { costs, netLamports: BigInt(1) },
     });
 
-    const tx = await adapter().buildCreatorClaimTx({
+    const { tx, costs: returned } = await adapter().buildCreatorClaimTx({
       pool: poolKey.toBase58(),
       creator: creator.publicKey.toBase58(),
       receiver: creator.publicKey.toBase58(),
@@ -133,6 +141,8 @@ describe('claims core backed by @forge/core', () => {
     expect(tx).toBeInstanceOf(VersionedTransaction);
     expect(tx.message.staticAccountKeys[0]?.equals(creator.publicKey)).toBe(true);
     expect(tx.signatures.every((s) => s.every((byte) => byte === 0))).toBe(true);
+    // The core's costs (coin account rent and temporary WSOL rent included) are handed over.
+    expect(returned).toEqual(costs);
   });
 
   it('refuses to hand over an empty claim', async () => {
