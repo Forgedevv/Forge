@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { json, stubFetch } from '../http-mock.js';
 import { PersistentCostGatewayStore } from './cost-store.js';
-import { createSupabaseStore, StoreError, type JobCostStore } from './store.js';
+import {
+  createSupabaseStore,
+  LaunchpadStatusChangedError,
+  StoreError,
+  type JobCostStore,
+  type LaunchpadPatch,
+} from './store.js';
 import { launchpadFixture, LAUNCHPAD_ID } from './test-fakes.js';
 
 const URL = 'https://db.example.supabase.co';
@@ -45,9 +51,54 @@ describe('launchpad store', () => {
     await store(stub).updateLaunchpad(LAUNCHPAD_ID, { status: 'live', github_repo: 'lp-moonpad' });
     expect(stub.calls[0]!.body).toEqual({ status: 'live', github_repo: 'lp-moonpad' });
     expect(stub.calls[0]!.headers.prefer).toBe('return=representation');
-    await expect(store(stub).updateLaunchpad(LAUNCHPAD_ID, { status: 'live' })).rejects.toThrow(
-      /not found/,
+    await expect(
+      store(stub).updateLaunchpad(LAUNCHPAD_ID, { github_repo: 'lp-moonpad' }),
+    ).rejects.toThrow(/not found/);
+  });
+
+  it('makes every status write conditional: never over a disabled launchpad', async () => {
+    const stub = stubFetch([
+      {
+        method: 'PATCH',
+        path: '/rest/v1/launchpads',
+        handler: () => json([{ id: LAUNCHPAD_ID }]),
+        times: 3,
+      },
+      { method: 'PATCH', path: '/rest/v1/launchpads', handler: () => json([]) },
+    ]);
+    const s = store(stub);
+    await s.updateLaunchpad(LAUNCHPAD_ID, { status: 'live' });
+    expect(stub.calls[0]!.query.get('status')).toBe('neq.disabled');
+    await s.updateLaunchpad(LAUNCHPAD_ID, { status: 'sleeping' }, { expectStatus: ['live'] });
+    expect(stub.calls[1]!.query.get('status')).toBe('in.(live)');
+    // Other columns are written whatever the status.
+    await s.updateLaunchpad(LAUNCHPAD_ID, { vercel_project_id: 'prj_1' });
+    expect(stub.calls[2]!.query.has('status')).toBe(false);
+    // No row matched: the launchpad was disabled (or moved on) in the meantime.
+    await expect(s.updateLaunchpad(LAUNCHPAD_ID, { status: 'live' })).rejects.toBeInstanceOf(
+      LaunchpadStatusChangedError,
     );
+  });
+
+  it('refuses to write the disabled status or to expect it', async () => {
+    const stub = stubFetch([
+      { method: 'PATCH', path: '/rest/v1/launchpads', handler: () => json([{ id: 'x' }]) },
+    ]);
+    const s = store(stub);
+    await expect(
+      s.updateLaunchpad(LAUNCHPAD_ID, { status: 'disabled' } as unknown as LaunchpadPatch),
+    ).rejects.toBeInstanceOf(StoreError);
+    await expect(
+      s.updateLaunchpad(
+        LAUNCHPAD_ID,
+        { status: 'live' },
+        { expectStatus: ['disabled'] as unknown as ['live'] },
+      ),
+    ).rejects.toBeInstanceOf(StoreError);
+    await expect(
+      s.updateLaunchpad(LAUNCHPAD_ID, { status: 'live' }, { expectStatus: [] }),
+    ).rejects.toBeInstanceOf(StoreError);
+    expect(stub.calls).toHaveLength(0);
   });
 
   it('never puts the key in an error', async () => {
@@ -75,6 +126,45 @@ describe('launchpad store', () => {
     expect(stub.calls[1]!.query.get('status')).toBe('eq.sleeping');
     expect(stub.calls[1]!.query.get('last_trade_at')).toBe('gte.2026-01-01T00:00:00.000Z');
     await expect(s.listDormant('yesterday', 1)).rejects.toBeInstanceOf(StoreError);
+  });
+
+  it('pages the lists with a keyset cursor on the id', async () => {
+    const stub = stubFetch([
+      { method: 'GET', path: '/rest/v1/launchpads', handler: () => json([]) },
+    ]);
+    const s = store(stub);
+    await s.listDormant('2026-01-01T00:00:00.000Z', 50);
+    await s.listDormant('2026-01-01T00:00:00.000Z', 50, LAUNCHPAD_ID);
+    await s.listWoken('2026-01-01T00:00:00.000Z', 20, LAUNCHPAD_ID);
+    expect(stub.calls[0]!.query.get('order')).toBe('id.asc');
+    expect(stub.calls[0]!.query.get('limit')).toBe('50');
+    expect(stub.calls[0]!.query.has('id')).toBe(false);
+    expect(stub.calls[1]!.query.get('id')).toBe(`gt.${LAUNCHPAD_ID}`);
+    expect(stub.calls[2]!.query.get('id')).toBe(`gt.${LAUNCHPAD_ID}`);
+    expect(stub.calls[2]!.query.get('limit')).toBe('20');
+    await expect(
+      s.listDormant('2026-01-01T00:00:00.000Z', 50, 'x,or=(1.eq.1)'),
+    ).rejects.toBeInstanceOf(StoreError);
+  });
+
+  it('lists disabled launchpads page by page', async () => {
+    const stub = stubFetch([
+      { method: 'GET', path: '/rest/v1/launchpads', handler: () => json([launchpadFixture()]) },
+    ]);
+    const s = store(stub);
+    expect(await s.listDisabled(10)).toHaveLength(1);
+    await s.listDisabled(10, LAUNCHPAD_ID);
+    expect(stub.calls[0]!.query.get('status')).toBe('eq.disabled');
+    expect(stub.calls[0]!.query.get('order')).toBe('id.asc');
+    expect(stub.calls[1]!.query.get('id')).toBe(`gt.${LAUNCHPAD_ID}`);
+  });
+
+  it('counts a job that failed after approval as blocking activity', async () => {
+    const stub = stubFetch([{ method: 'GET', path: '/rest/v1/jobs', handler: () => json([]) }]);
+    await store(stub).hasJobActivity(LAUNCHPAD_ID, '2026-01-01T00:00:00.000Z');
+    expect(stub.calls[0]!.query.get('or')).toBe(
+      '(updated_at.gte.2026-01-01T00:00:00.000Z,status.in.(paid,building,preview_ready,approved,onchain_setup,awaiting_owner_signature,owner_signed,deploying),and(status.eq.failed,failed_stage.in.(onchain,deploy)))',
+    );
   });
 
   it('detects job activity', async () => {

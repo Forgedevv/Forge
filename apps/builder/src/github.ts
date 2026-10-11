@@ -263,6 +263,11 @@ export interface CommitFilesInput {
   deletePaths?: readonly string[];
   /** When true, every file of the base tree that is absent from `files` is deleted (workdir mirror). */
   deleteMissing?: boolean;
+  /**
+   * Compare-and-swap: the commit applies only on top of this branch head (the commit the caller
+   * read its content from). A branch that moved, or does not exist, answers a `conflict` error.
+   */
+  expectedHeadSha?: string;
 }
 
 export interface CommitFilesResult {
@@ -346,6 +351,7 @@ export interface GithubClient {
   compareCommits(repo: string, base: string, head: string): Promise<CompareResult>;
   /** Reads a text file at a ref; null when absent. */
   readFile(repo: string, path: string, ref: string): Promise<string | null>;
+  /** Merges `head` (a branch or a full commit sha) into the `base` branch. */
   mergeBranch(
     repo: string,
     input: { base: string; head: string; message: string },
@@ -815,6 +821,9 @@ export function createGithubClient(opts: GithubClientOptions): GithubClient {
     if (input.files.length > MAX_FILES) {
       throw new ServiceError('github', 'invalid_input', `too many files (max ${MAX_FILES})`);
     }
+    if (input.expectedHeadSha !== undefined && !/^[0-9a-f]{40}$/.test(input.expectedHeadSha)) {
+      throw new ServiceError('github', 'invalid_input', 'invalid expected head sha');
+    }
 
     // Validate and normalize the input.
     const wanted = new Map<string, { content: Buffer; executable: boolean; sha: string }>();
@@ -859,6 +868,14 @@ export function createGithubClient(opts: GithubClientOptions): GithubClient {
     // Resolve the parent commit.
     let parentSha = await getBranchHead(input.repo, input.branch);
     const branchExists = parentSha !== null;
+    if (input.expectedHeadSha !== undefined && parentSha !== input.expectedHeadSha) {
+      throw new ServiceError(
+        'github',
+        'conflict',
+        `branch ${input.branch} is not at the expected commit; retry`,
+        { status: 409 },
+      );
+    }
     if (parentSha === null) {
       const baseBranch = input.baseBranch ?? (await getRepoDefaultBranch(input.repo));
       parentSha = await getBranchHead(input.repo, baseBranch);
@@ -1186,7 +1203,8 @@ export function createGithubClient(opts: GithubClientOptions): GithubClient {
     input: { base: string; head: string; message: string },
   ): Promise<MergeResult> {
     encodeBranch(input.base);
-    encodeBranch(input.head);
+    // The head may be a commit sha: the release merges exactly the commit it scanned.
+    encodeBranchOrSha(input.head);
     const res = await withFreshTokenRetry(() =>
       http.request({
         method: 'POST',

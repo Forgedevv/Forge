@@ -26,6 +26,9 @@ export interface LaunchpadRecord {
   created_at: string | null;
 }
 
+/** Statuses the builder may write: `disabled` is set by the FORGE team only. */
+export type BuilderLaunchpadStatus = Exclude<LaunchpadStatus, 'disabled'>;
+
 /** Columns the builder writes. */
 export interface LaunchpadPatch {
   github_repo?: string;
@@ -33,22 +36,72 @@ export interface LaunchpadPatch {
   launchpad_config?: string;
   launchpad_coin_config?: string;
   launchpad_coin_mint?: string;
-  status?: LaunchpadStatus;
+  status?: BuilderLaunchpadStatus;
+}
+
+export interface LaunchpadWriteOptions {
+  /**
+   * The write applies only while the row is in one of these statuses (never `disabled`). Without
+   * it, a patch that sets `status` applies to any status but `disabled`.
+   */
+  expectStatus?: readonly BuilderLaunchpadStatus[];
 }
 
 export interface LaunchpadStore {
   getLaunchpad(id: string): Promise<LaunchpadRecord | null>;
-  /** Updates one row; throws when it does not exist. */
-  updateLaunchpad(id: string, patch: LaunchpadPatch): Promise<void>;
+  /**
+   * Updates one row; throws when it does not exist. A status write is conditional: it never
+   * applies to a `disabled` launchpad (or, with `expectStatus`, to one that left the expected
+   * statuses) and throws when no row matched, so the builder never overwrites a FORGE cut.
+   */
+  updateLaunchpad(id: string, patch: LaunchpadPatch, opts?: LaunchpadWriteOptions): Promise<void>;
 }
 
-/** Queries of the sleep cycle (src/sleep.ts). */
+/** Thrown when a conditional status write matched no row (launchpad disabled or moved on). */
+export class LaunchpadStatusChangedError extends Error {
+  constructor() {
+    super('the launchpad status changed (disabled by FORGE?): status not written');
+    this.name = 'LaunchpadStatusChangedError';
+  }
+}
+
+/** PostgREST status filter of a launchpad write (see `LaunchpadStore.updateLaunchpad`). */
+export function launchpadStatusFilter(
+  patch: LaunchpadPatch,
+  opts: LaunchpadWriteOptions = {},
+): string | null {
+  if ((patch.status as LaunchpadStatus | undefined) === 'disabled') {
+    throw new StoreError('the builder never writes the disabled status');
+  }
+  if (opts.expectStatus !== undefined) {
+    const allowed = opts.expectStatus.filter((s) => LaunchpadStatus.safeParse(s).success);
+    if (
+      allowed.length === 0 ||
+      allowed.length !== opts.expectStatus.length ||
+      allowed.includes('disabled' as BuilderLaunchpadStatus)
+    ) {
+      throw new StoreError('invalid expected launchpad status');
+    }
+    return `in.(${[...new Set(allowed)].join(',')})`;
+  }
+  return patch.status !== undefined ? 'neq.disabled' : null;
+}
+
+/**
+ * Queries of the sleep cycle (src/sleep.ts). Lists are pages ordered by id: `afterId` is the last
+ * id of the previous page (keyset pagination, stable while rows leave the list).
+ */
 export interface SleepStore extends LaunchpadStore {
   /** `live` launchpads with no trade (or, never traded, created) before `cutoff`. */
-  listDormant(cutoffIso: string, limit: number): Promise<LaunchpadRecord[]>;
+  listDormant(cutoffIso: string, limit: number, afterId?: string): Promise<LaunchpadRecord[]>;
   /** `sleeping` launchpads that traded again since `cutoff`. */
-  listWoken(cutoffIso: string, limit: number): Promise<LaunchpadRecord[]>;
-  /** True when a job of the launchpad is in flight, or changed since `sinceIso`. */
+  listWoken(cutoffIso: string, limit: number, afterId?: string): Promise<LaunchpadRecord[]>;
+  /** `disabled` launchpads (cut by the FORGE team), whose deployed site must be cut. */
+  listDisabled(limit: number, afterId?: string): Promise<LaunchpadRecord[]>;
+  /**
+   * True when a job of the launchpad is in flight, changed since `sinceIso`, or failed after
+   * approval (stage `onchain` or `deploy`, whenever: manual handling, never redeployed around).
+   */
   hasJobActivity(launchpadId: string, sinceIso: string): Promise<boolean>;
 }
 
@@ -85,6 +138,9 @@ const LaunchpadRowSchema = z.looseObject({
 const LAUNCHPAD_COLUMNS =
   'id,owner_wallet,slug,spec,github_repo,vercel_project_id,launchpad_config,launchpad_coin_config,launchpad_coin_mint,status,last_trade_at,created_at';
 
+/** Failed stages that need the team (D18): the site is not redeployed automatically after them. */
+export const BLOCKING_FAILED_STAGES = ['onchain', 'deploy'] as const;
+
 /** Statuses of a job that is still going somewhere (sleeping its site would race with it). */
 export const IN_FLIGHT_JOB_STATUSES = [
   'paid',
@@ -109,6 +165,14 @@ function assertId(id: string, what: string): void {
 
 function assertIso(value: string): void {
   if (!ISO_RE.test(value)) throw new StoreError('invalid timestamp');
+}
+
+/** Ordering, keyset cursor and limit of a launchpad list page. */
+function page(limit: number, afterId: string | undefined): string {
+  const n = Math.max(1, Math.min(500, Math.trunc(limit)));
+  if (afterId !== undefined) assertId(afterId, 'cursor');
+  const cursor = afterId !== undefined ? `&id=gt.${afterId}` : '';
+  return `${cursor}&order=id.asc&limit=${n}&select=${LAUNCHPAD_COLUMNS}`;
 }
 
 export interface SupabaseStoreOptions {
@@ -193,42 +257,53 @@ export function createSupabaseStore(opts: SupabaseStoreOptions): SleepStore & Jo
       return found[0] ?? null;
     },
 
-    async updateLaunchpad(id, patch) {
+    async updateLaunchpad(id, patch, opts) {
       assertId(id, 'launchpad');
+      const statusFilter = launchpadStatusFilter(patch, opts);
       if (Object.keys(patch).length === 0) return;
       const updated = await request(
         'update_launchpad',
         'PATCH',
-        `launchpads?id=eq.${id}&select=id`,
+        `launchpads?id=eq.${id}${statusFilter ? `&status=${statusFilter}` : ''}&select=id`,
         patch,
       );
       if (!Array.isArray(updated) || updated.length !== 1) {
-        throw new StoreError('update_launchpad: launchpad not found');
+        if (statusFilter === null) throw new StoreError('update_launchpad: launchpad not found');
+        throw new LaunchpadStatusChangedError();
       }
     },
 
-    async listDormant(cutoffIso, limit) {
+    async listDormant(cutoffIso, limit, afterId) {
       assertIso(cutoffIso);
-      const n = Math.max(1, Math.min(500, Math.trunc(limit)));
       return rows(
         'list_dormant',
         await request(
           'list_dormant',
           'GET',
-          `launchpads?status=eq.live&or=(last_trade_at.lt.${cutoffIso},and(last_trade_at.is.null,created_at.lt.${cutoffIso}))&order=created_at.asc&limit=${n}&select=${LAUNCHPAD_COLUMNS}`,
+          `launchpads?status=eq.live&or=(last_trade_at.lt.${cutoffIso},and(last_trade_at.is.null,created_at.lt.${cutoffIso}))${page(limit, afterId)}`,
         ),
       );
     },
 
-    async listWoken(cutoffIso, limit) {
+    async listWoken(cutoffIso, limit, afterId) {
       assertIso(cutoffIso);
-      const n = Math.max(1, Math.min(500, Math.trunc(limit)));
       return rows(
         'list_woken',
         await request(
           'list_woken',
           'GET',
-          `launchpads?status=eq.sleeping&last_trade_at=gte.${cutoffIso}&order=created_at.asc&limit=${n}&select=${LAUNCHPAD_COLUMNS}`,
+          `launchpads?status=eq.sleeping&last_trade_at=gte.${cutoffIso}${page(limit, afterId)}`,
+        ),
+      );
+    },
+
+    async listDisabled(limit, afterId) {
+      return rows(
+        'list_disabled',
+        await request(
+          'list_disabled',
+          'GET',
+          `launchpads?status=eq.disabled${page(limit, afterId)}`,
         ),
       );
     },
@@ -239,7 +314,7 @@ export function createSupabaseStore(opts: SupabaseStoreOptions): SleepStore & Jo
       const json = await request(
         'job_activity',
         'GET',
-        `jobs?launchpad_id=eq.${launchpadId}&or=(updated_at.gte.${sinceIso},status.in.(${IN_FLIGHT_JOB_STATUSES.join(',')}))&select=id&limit=1`,
+        `jobs?launchpad_id=eq.${launchpadId}&or=(updated_at.gte.${sinceIso},status.in.(${IN_FLIGHT_JOB_STATUSES.join(',')}),and(status.eq.failed,failed_stage.in.(${BLOCKING_FAILED_STAGES.join(',')})))&select=id&limit=1`,
       );
       if (!Array.isArray(json)) throw new StoreError('job_activity: unexpected response shape');
       return json.length > 0;

@@ -33,6 +33,7 @@ import {
   serializeSiteConfig,
   SITE_CONFIG_PATH,
   typedSiteConfig,
+  withMode,
   type OnchainConfig,
 } from './site-config.js';
 import { scanInput } from './scan-input.js';
@@ -87,6 +88,16 @@ export function prepareBaseline(
   } else {
     if (!existing) throw new PipelineError('forge.config.json is missing from the launchpad repo');
     configText = existing.content.toString('utf8');
+    const current = parseSiteConfig(configText);
+    const mode = typedSiteConfig(current).mode;
+    if (mode === 'disabled') {
+      throw new PipelineError('the site is disabled by FORGE: it cannot be modified');
+    }
+    if (mode === 'sleeping') {
+      // The modification is previewed, then released, as a live site (the release wakes it up):
+      // the builder's baseline says `live`, so the preview shows the site the client will get.
+      configText = serializeSiteConfig(withMode(current, 'live'));
+    }
   }
   const config = typedSiteConfig(parseSiteConfig(configText));
   if (config.slug !== ctx.spec.slug) {
@@ -333,16 +344,6 @@ export async function runBuildStep(
       description: `FORGE launchpad ${spec.slug}`,
     });
     repo = ensured.repo;
-    if (ensured.created) {
-      guard(signal);
-      const protection = await deps.github.protectDefaultBranch(repo.name);
-      if (!protection.applied) {
-        log.warn(
-          jobFields(job, { reason: protection.reason }),
-          'default branch protection not applied',
-        );
-      }
-    }
   } else {
     await say(jobCtx, STEP_EVENTS.openRepo);
     const found = await deps.github.getRepo(repoName);
@@ -350,6 +351,17 @@ export async function runBuildStep(
     repo = found;
   }
   if (repo.name !== repoName) throw new PipelineError('unexpected repository name');
+  // Default branch protection (no force-push, no deletion), on every build and not only when the
+  // repo was just created: a repo from an earlier attempt, or one whose protection failed or was
+  // removed, gets it back. The call is an idempotent PUT.
+  guard(signal);
+  const protection = await deps.github.protectDefaultBranch(repo.name);
+  if (!protection.applied) {
+    log.warn(
+      jobFields(job, { reason: protection.reason }),
+      'default branch protection not applied',
+    );
+  }
   if (launchpad.github_repo !== repo.name) {
     guard(signal);
     await deps.store.updateLaunchpad(launchpad.id, { github_repo: repo.name });
@@ -402,7 +414,7 @@ export async function runBuildStep(
   );
 
   // Preview deployment, created explicitly (git deployments are off).
-  await syncProjectEnv(deps, signal, project.id, poolConfigKeys(baseline.onchain));
+  await syncProjectEnv(deps, signal, project.id, spec.slug, poolConfigKeys(baseline.onchain));
   guard(signal);
   const deployment = await deps.vercel.createDeployment({
     project: { id: project.id, name: project.name },

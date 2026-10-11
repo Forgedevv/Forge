@@ -41,7 +41,16 @@ import type { JobContext, WorkerLogger } from '../worker.js';
 import type { AgentGateway } from './agent.js';
 import type { PipelineGithub, PipelineSigner, PipelineVercel } from './context.js';
 import type { RepoSnapshot, RepoSource, RepoTree, RepoTreeEntry } from './repo-snapshot.js';
-import type { LaunchpadPatch, LaunchpadRecord, SleepStore } from './store.js';
+import {
+  BLOCKING_FAILED_STAGES,
+  launchpadStatusFilter,
+  LaunchpadStatusChangedError,
+  type BuilderLaunchpadStatus,
+  type LaunchpadPatch,
+  type LaunchpadRecord,
+  type LaunchpadWriteOptions,
+  type SleepStore,
+} from './store.js';
 
 // ---------------------------------------------------------------------------------------------
 // Fixtures
@@ -330,6 +339,18 @@ export class FakeGithub extends Recorder implements PipelineGithub, RepoSource {
     return info;
   }
 
+  /**
+   * Commits `files` on top of a branch synchronously, outside the call log (a concurrent push by
+   * someone else, from inside an `onCall` hook). Returns the new head.
+   */
+  forceBranch(repo: string, branch: string, files: Map<string, FakeFile>, message: string): string {
+    const r = this.repo(repo);
+    const parent = r.branches.get(branch);
+    const sha = this.addCommit(new Map(files), parent ? [parent] : [], message);
+    r.branches.set(branch, sha);
+    return sha;
+  }
+
   /** Files of a ref (test assertions). */
   filesAt(repo: string, ref: string): Map<string, FakeFile> {
     const commit = this.resolve(this.repo(repo), ref);
@@ -353,8 +374,22 @@ export class FakeGithub extends Recorder implements PipelineGithub, RepoSource {
     return this.around('getRepo', () => this.repos.get(repo)?.info ?? null);
   }
 
-  protectDefaultBranch(): Promise<{ applied: boolean; reason?: 'plan' | 'permission' }> {
-    return this.around('protectDefaultBranch', () => ({ applied: false, reason: 'plan' as const }));
+  /** What protectDefaultBranch answers (the free plan refuses it on private repos). */
+  protection: { applied: boolean; reason?: 'plan' | 'permission' } = {
+    applied: false,
+    reason: 'plan',
+  };
+  /** Repos whose default branch protection was applied. */
+  readonly protectedRepos = new Set<string>();
+
+  protectDefaultBranch(
+    repo: string,
+  ): Promise<{ applied: boolean; reason?: 'plan' | 'permission' }> {
+    return this.around('protectDefaultBranch', () => {
+      this.repo(repo);
+      if (this.protection.applied) this.protectedRepos.add(repo);
+      return { ...this.protection };
+    });
   }
 
   getBranchHead(repo: string, branch: string): Promise<string | null> {
@@ -365,6 +400,11 @@ export class FakeGithub extends Recorder implements PipelineGithub, RepoSource {
     return this.around('commitFiles', () => {
       const r = this.repo(input.repo);
       const branchHead = r.branches.get(input.branch) ?? null;
+      if (input.expectedHeadSha !== undefined && branchHead !== input.expectedHeadSha) {
+        throw new ServiceError('github', 'conflict', `branch ${input.branch} moved`, {
+          status: 409,
+        });
+      }
       const parentSha = branchHead ?? r.branches.get(input.baseBranch ?? r.info.defaultBranch);
       if (!parentSha) throw new ServiceError('github', 'not_found', 'base branch not found');
       const parent = this.commits.get(parentSha)!;
@@ -439,7 +479,8 @@ export class FakeGithub extends Recorder implements PipelineGithub, RepoSource {
     return this.around('mergeBranch', () => {
       const r = this.repo(repo);
       const baseSha = r.branches.get(input.base);
-      const headSha = r.branches.get(input.head);
+      // The head may be a branch or a commit sha (the release merges the scanned commit).
+      const headSha = this.resolve(r, input.head)?.sha;
       if (!baseSha || !headSha) throw new ServiceError('github', 'not_found', 'branch not found');
       if (this.ancestors(baseSha).has(headSha)) return { merged: false, sha: baseSha };
       const mergeBase = this.mergeBase(baseSha, headSha);
@@ -464,19 +505,11 @@ export class FakeGithub extends Recorder implements PipelineGithub, RepoSource {
     });
   }
 
-  /** First ancestor of head (breadth first) that is also an ancestor of base. */
+  /** Best common ancestor, like git: a common ancestor that no other common ancestor descends from. */
   private mergeBase(baseSha: string, headSha: string): string | undefined {
     const baseAncestors = this.ancestors(baseSha);
-    const queue = [headSha];
-    const seen = new Set<string>();
-    while (queue.length > 0) {
-      const s = queue.shift()!;
-      if (seen.has(s)) continue;
-      seen.add(s);
-      if (baseAncestors.has(s)) return s;
-      queue.push(...(this.commits.get(s)?.parents ?? []));
-    }
-    return undefined;
+    const common = [...this.ancestors(headSha)].filter((c) => baseAncestors.has(c));
+    return common.find((c) => !common.some((d) => d !== c && this.ancestors(d).has(c)));
   }
 
   private commitOf(repo: string, ref: string): FakeCommit {
@@ -491,15 +524,43 @@ export class FakeGithub extends Recorder implements PipelineGithub, RepoSource {
       const headSha = this.commitOf(repo, head).sha;
       const mergeBaseSha = this.mergeBase(baseSha, headSha);
       if (!mergeBaseSha) throw new ServiceError('github', 'not_found', 'no common ancestor');
+      const fromBase = this.ancestors(baseSha);
+      const fromHead = this.ancestors(headSha);
+      const aheadBy = [...fromHead].filter((c) => !fromBase.has(c)).length;
+      const behindBy = [...fromBase].filter((c) => !fromHead.has(c)).length;
+      // Like GitHub: the files of the merge base -> head diff.
+      const before = this.commits.get(mergeBaseSha)!.files;
+      const after = this.commits.get(headSha)!.files;
+      const files: CompareResult['files'] = [];
+      for (const p of [...new Set([...before.keys(), ...after.keys()])].sort()) {
+        const a = before.get(p);
+        const b = after.get(p);
+        if (a && b && a.executable === b.executable && a.content.equals(b.content)) continue;
+        files.push({
+          path: p,
+          status: !a ? 'added' : !b ? 'removed' : 'modified',
+          previousPath: undefined,
+          additions: 0,
+          deletions: 0,
+          patch: undefined,
+          sha: gitBlobSha((b ?? a)!.content),
+        });
+      }
       return {
         status:
-          mergeBaseSha === headSha ? 'behind' : mergeBaseSha === baseSha ? 'ahead' : 'diverged',
-        aheadBy: 0,
-        behindBy: 0,
-        totalCommits: 0,
+          headSha === baseSha
+            ? 'identical'
+            : mergeBaseSha === headSha
+              ? 'behind'
+              : mergeBaseSha === baseSha
+                ? 'ahead'
+                : 'diverged',
+        aheadBy,
+        behindBy,
+        totalCommits: aheadBy,
         mergeBaseSha,
         headSha,
-        files: [],
+        files,
         source: 'tree',
       } satisfies CompareResult;
     });
@@ -552,6 +613,7 @@ interface FakeProject {
   name: string;
   linkedRepo: string;
   productionDeploymentId: string | undefined;
+  paused: boolean;
   env: Map<string, string>;
   domains: Set<string>;
 }
@@ -584,7 +646,7 @@ export class FakeVercel extends Recorder implements PipelineVercel {
       name: p.name,
       linkedRepo: p.linkedRepo,
       productionDeploymentId: p.productionDeploymentId,
-      paused: false,
+      paused: p.paused,
       gitDeploymentsDisabled: true,
     };
   }
@@ -606,6 +668,7 @@ export class FakeVercel extends Recorder implements PipelineVercel {
         name: projectNameForSlug(input.slug),
         linkedRepo: `forge-org/${repoNameForSlug(input.slug)}`,
         productionDeploymentId: undefined,
+        paused: false,
         env: new Map(),
         domains: new Set(),
       };
@@ -651,6 +714,7 @@ export class FakeVercel extends Recorder implements PipelineVercel {
         target,
         errorCode: undefined,
         errorMessage: undefined,
+        commitSha: input.sha,
         projectId: p.id,
         ref: input.ref,
         sha: input.sha,
@@ -658,6 +722,33 @@ export class FakeVercel extends Recorder implements PipelineVercel {
       };
       this.deployments.set(d.id, d);
       return { ...d };
+    });
+  }
+
+  /** By id or by URL (with or without the scheme), like the API. */
+  getDeployment(idOrUrl: string): Promise<VercelDeployment> {
+    return this.around('getDeployment', () => {
+      const host = idOrUrl.replace(/^https?:\/\//, '');
+      const d =
+        this.deployments.get(idOrUrl) ??
+        [...this.deployments.values()].find((x) => x.url.replace(/^https:\/\//, '') === host);
+      if (!d)
+        throw new ServiceError('vercel', 'not_found', 'deployment not found', { status: 404 });
+      return { ...d };
+    });
+  }
+
+  getProject(nameOrId: string): Promise<VercelProject | null> {
+    return this.around('getProject', () => {
+      const p =
+        this.projects.get(nameOrId) ?? [...this.projects.values()].find((x) => x.name === nameOrId);
+      return p ? this.view(p) : null;
+    });
+  }
+
+  pauseProject(projectId: string): Promise<void> {
+    return this.around('pauseProject', () => {
+      this.project(projectId).paused = true;
     });
   }
 
@@ -853,6 +944,7 @@ export interface FakeJobActivity {
   launchpadId: string;
   status: string;
   updatedAt: string;
+  failedStage?: string | null;
 }
 
 export class FakeStore extends Recorder implements SleepStore {
@@ -876,35 +968,71 @@ export class FakeStore extends Recorder implements SleepStore {
     });
   }
 
-  updateLaunchpad(id: string, patch: LaunchpadPatch): Promise<void> {
+  /** Called right before a write applies (tests change the row concurrently here). */
+  beforeWrite: ((id: string, patch: LaunchpadPatch) => void) | undefined;
+
+  updateLaunchpad(id: string, patch: LaunchpadPatch, opts?: LaunchpadWriteOptions): Promise<void> {
     return this.around('updateLaunchpad', () => {
+      // Same conditions as the PostgREST store.
+      const filter = launchpadStatusFilter(patch, opts);
+      this.beforeWrite?.(id, patch);
       const lp = this.launchpads.get(id);
       if (!lp) throw new Error('launchpad not found');
+      if (filter !== null) {
+        const ok =
+          filter === 'neq.disabled'
+            ? lp.status !== 'disabled'
+            : (opts?.expectStatus ?? []).includes(lp.status as BuilderLaunchpadStatus);
+        if (!ok) throw new LaunchpadStatusChangedError();
+      }
       Object.assign(lp, patch);
     });
   }
 
-  listDormant(cutoffIso: string): Promise<LaunchpadRecord[]> {
+  /** One page of `rows` ordered by id, after the cursor (same contract as the store). */
+  private page(rows: LaunchpadRecord[], limit: number, afterId?: string): LaunchpadRecord[] {
+    return rows
+      .filter((lp) => afterId === undefined || lp.id > afterId)
+      .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+      .slice(0, Math.max(1, Math.trunc(limit)))
+      .map((lp) => structuredClone(lp));
+  }
+
+  listDormant(cutoffIso: string, limit = 500, afterId?: string): Promise<LaunchpadRecord[]> {
     return this.around('listDormant', () =>
-      [...this.launchpads.values()]
-        .filter(
+      this.page(
+        [...this.launchpads.values()].filter(
           (lp) =>
             lp.status === 'live' &&
             ((lp.last_trade_at !== null && lp.last_trade_at < cutoffIso) ||
               (lp.last_trade_at === null && (lp.created_at ?? '') < cutoffIso)),
-        )
-        .map((lp) => structuredClone(lp)),
+        ),
+        limit,
+        afterId,
+      ),
     );
   }
 
-  listWoken(cutoffIso: string): Promise<LaunchpadRecord[]> {
+  listWoken(cutoffIso: string, limit = 500, afterId?: string): Promise<LaunchpadRecord[]> {
     return this.around('listWoken', () =>
-      [...this.launchpads.values()]
-        .filter(
+      this.page(
+        [...this.launchpads.values()].filter(
           (lp) =>
             lp.status === 'sleeping' && lp.last_trade_at !== null && lp.last_trade_at >= cutoffIso,
-        )
-        .map((lp) => structuredClone(lp)),
+        ),
+        limit,
+        afterId,
+      ),
+    );
+  }
+
+  listDisabled(limit = 500, afterId?: string): Promise<LaunchpadRecord[]> {
+    return this.around('listDisabled', () =>
+      this.page(
+        [...this.launchpads.values()].filter((lp) => lp.status === 'disabled'),
+        limit,
+        afterId,
+      ),
     );
   }
 
@@ -914,7 +1042,9 @@ export class FakeStore extends Recorder implements SleepStore {
         (j) =>
           j.launchpadId === launchpadId &&
           (j.updatedAt >= sinceIso ||
-            !['live', 'failed', 'refunded', 'spec_ready'].includes(j.status)),
+            !['live', 'failed', 'refunded', 'spec_ready'].includes(j.status) ||
+            (j.status === 'failed' &&
+              (BLOCKING_FAILED_STAGES as readonly string[]).includes(j.failedStage ?? ''))),
       ),
     );
   }

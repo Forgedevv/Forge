@@ -1,4 +1,5 @@
 /// <reference types="node" />
+import { createHmac } from 'node:crypto';
 import { readdir, symlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { JobRow } from '@forge/shared';
@@ -22,7 +23,14 @@ import {
   OWNER_TX,
   silentLogger,
 } from './test-fakes.js';
-import { agents, designAgent, makeHarness, type Harness } from './test-harness.js';
+import {
+  agents,
+  designAgent,
+  makeHarness,
+  TEST_RELAY_SECRET,
+  withPreviewUrl,
+  type Harness,
+} from './test-harness.js';
 
 const REPO = 'lp-moonpad';
 const BRANCH = jobBranch(CREATE_JOB_ID);
@@ -51,7 +59,7 @@ function harness(): Harness {
 
 async function runStep(h: Harness, job: JobRow, signal?: AbortSignal) {
   const { ctx, events } = jobContext(signal);
-  const outcome = await createPipelineHandler(h.deps).handle(job, ctx);
+  const outcome = await createPipelineHandler(h.deps).handle(withPreviewUrl(h, job), ctx);
   return { outcome, events };
 }
 
@@ -194,6 +202,21 @@ describe('create: building', () => {
     expect(before.onchain).toBeUndefined();
     expect(h.runner.stepsRun()).toEqual(['agent']);
     expect(h.github.count('commitFiles')).toBe(0);
+  });
+
+  it('gives the project its own server-only relay token', async () => {
+    const h = harness();
+    await runStep(h, building());
+    const project = h.vercel.projectBySlug('moonpad')!;
+    const expected = `v1.moonpad.${createHmac('sha256', TEST_RELAY_SECRET)
+      .update('forge-rpc-relay:v1:moonpad')
+      .digest('hex')}`;
+    expect(project.env.get('FORGE_RPC_RELAY_TOKEN')).toBe(expected);
+    expect(h.vercel.deploymentsOf(project.id)[0]!.env.FORGE_RPC_RELAY_TOKEN).toBe(expected);
+    for (const [key, value] of project.env) {
+      if (key.startsWith('NEXT_PUBLIC_')) expect(value).not.toBe(expected);
+      expect(value).not.toContain(TEST_RELAY_SECRET);
+    }
   });
 
   it('creates the Vercel project (git deployments off) before anything is pushed', async () => {
@@ -355,6 +378,21 @@ describe('create: building', () => {
     expect(h.runner.stepsRun()).toEqual(['agent']);
   });
 
+  it('protects the default branch on every attempt, not only when the repo was created', async () => {
+    const h = harness();
+    // First attempt: the repo is created, then the protection call fails.
+    h.github.fail('protectDefaultBranch');
+    await expect(runStep(h, building({ attempts: 1 }))).rejects.toThrow();
+    expect(h.github.repos.has(REPO)).toBe(true);
+    expect(h.github.protectedRepos.size).toBe(0);
+    // Second attempt: the repo already exists and the protection is applied anyway.
+    h.github.protection = { applied: true };
+    await runStep(h, building({ attempts: 2 }));
+    expect(h.github.count('ensureRepoFromTemplate')).toBe(2);
+    expect(h.github.count('protectDefaultBranch')).toBe(2);
+    expect(h.github.protectedRepos.has(REPO)).toBe(true);
+  });
+
   it('refuses a disabled launchpad before doing anything', async () => {
     const h = harness();
     h.store.setStatus(LAUNCHPAD_ID, 'disabled');
@@ -507,6 +545,20 @@ describe('create: onchain_setup', () => {
     expect(h.github.count('commitFiles')).toBe(commitsBefore);
   });
 
+  it('refuses to re-enter once the launch was prepared and recorded', async () => {
+    const h = harness();
+    await prepareOnchain(h);
+    const signerCalls = h.signer.calls.length;
+    const commits = h.github.commits.size;
+    // The team put a creation whose release failed back to `approved` instead of `owner_signed`.
+    await expect(runStep(h, onchainJob({ owner_tx: OWNER_TX }))).rejects.toThrow(/owner_signed/);
+    expect(h.signer.calls.length).toBe(signerCalls);
+    expect(h.github.commits.size).toBe(commits);
+    // A crash before owner_tx was stored is still resumed (addresses recorded, no owner_tx).
+    const { outcome } = await runStep(h, onchainJob({ owner_tx: null }));
+    expect(outcome).toEqual({ patch: { owner_tx: OWNER_TX } });
+  });
+
   it('fails before any signer call when the preview branch is missing', async () => {
     const h = harness();
     await expect(runStep(h, onchainJob())).rejects.toThrow();
@@ -627,6 +679,114 @@ describe('create: deploying', () => {
       expect.objectContaining({ level: 'high', code: `release_blocked:${CREATE_JOB_ID}` }),
     );
     expect(h.store.get(LAUNCHPAD_ID).status).toBe('draft');
+  });
+
+  it('does not promote when the launchpad is disabled while the production build runs', async () => {
+    const h = harness();
+    await prepareOnchain(h);
+    h.vercel.onCall = (op) => {
+      if (op === 'waitForDeployment') h.store.setStatus(LAUNCHPAD_ID, 'disabled');
+    };
+    await expect(runStep(h, deployingJob())).rejects.toThrow(/disabled/);
+    expect(h.vercel.count('promoteToProduction')).toBe(0);
+    expect(h.vercel.projectBySlug('moonpad')!.productionDeploymentId).toBeUndefined();
+    expect(h.store.get(LAUNCHPAD_ID).status).toBe('disabled');
+  });
+
+  it('never overwrites a disabled status set right before the final write', async () => {
+    const h = harness();
+    await prepareOnchain(h);
+    h.store.beforeWrite = (_id, patch) => {
+      if (patch.status === 'live') h.store.setStatus(LAUNCHPAD_ID, 'disabled');
+    };
+    await expect(runStep(h, deployingJob())).rejects.toThrow(/status changed/);
+    expect(h.store.get(LAUNCHPAD_ID).status).toBe('disabled');
+  });
+
+  it('merges the commit it checked, not what the branch points to by then', async () => {
+    const h = harness();
+    await prepareOnchain(h);
+    const checked = h.github.repos.get(REPO)!.branches.get(BRANCH)!;
+    h.github.onCall = (op) => {
+      if (op !== 'mergeBranch') return;
+      // A push lands on the job branch between the checks and the merge.
+      const files = new Map(h.github.filesAt(REPO, BRANCH));
+      files.set('src/components/Late.tsx', {
+        content: Buffer.from('export const Late = () => null;\n'),
+        executable: false,
+      });
+      h.github.forceBranch(REPO, BRANCH, files, 'late push');
+    };
+    await runStep(h, deployingJob());
+    expect(h.github.text(REPO, 'main', 'src/components/Late.tsx')).toBeUndefined();
+    const merge = h.github.commits.get(h.github.repos.get(REPO)!.branches.get('main')!)!;
+    expect(merge.parents).toContain(checked);
+  });
+
+  it('refuses a clean commit pushed to the job branch after the approved preview', async () => {
+    const h = harness();
+    await prepareOnchain(h);
+    await h.github.commitFiles({
+      repo: REPO,
+      branch: BRANCH,
+      message: 'late change',
+      files: [{ path: 'src/components/Note.tsx', content: 'export const Note = () => null;\n' }],
+    });
+    await expect(runStep(h, deployingJob())).rejects.toThrow(/approved preview/);
+    expect(h.github.count('mergeBranch')).toBe(0);
+    expect(h.alerts).toContainEqual(
+      expect.objectContaining({ level: 'high', code: `release_unapproved:${CREATE_JOB_ID}` }),
+    );
+  });
+
+  it('accepts only the on-chain section in the commit after the preview', async () => {
+    const h = harness();
+    await buildPreview(h);
+    // A commit that adds the on-chain block and changes the theme too.
+    const config = JSON.parse(h.github.text(REPO, BRANCH, 'forge.config.json')!);
+    const onchain = {
+      cluster: 'devnet',
+      launchpadConfig: LAUNCHPAD_CONFIG,
+      launchpadCoinConfig: LAUNCHPAD_COIN_CONFIG,
+      launchpadCoinMint: LAUNCHPAD_COIN_MINT,
+      ownerWallet: OWNER,
+      poolCreationFeeSol: 0.01,
+    };
+    await h.github.commitFiles({
+      repo: REPO,
+      branch: BRANCH,
+      message: 'onchain and more',
+      files: [
+        {
+          path: 'forge.config.json',
+          content: `${JSON.stringify({ ...config, onchain, theme: { ...config.theme, darkMode: false } }, null, 2)}\n`,
+        },
+      ],
+    });
+    await expect(runStep(h, deployingJob())).rejects.toThrow(/approved preview/);
+    expect(h.github.count('mergeBranch')).toBe(0);
+  });
+
+  it('refuses a release without an approved preview deployment', async () => {
+    const h = harness();
+    await prepareOnchain(h);
+    const handler = createPipelineHandler(h.deps);
+    const noPreview = deployingJob({ preview_url: null });
+    await expect(handler.handle(noPreview, jobContext().ctx)).rejects.toThrow(/no preview/);
+    const unknown = deployingJob({ preview_url: 'https://lp-other-1.vercel.test' });
+    await expect(handler.handle(unknown, jobContext().ctx)).rejects.toThrow(/not found/);
+    // A production deployment is not an approved preview.
+    const project = h.vercel.projectBySlug('moonpad')!;
+    const prod = await h.vercel.createDeployment({
+      project: { id: project.id, name: project.name },
+      repo: REPO,
+      ref: BRANCH,
+      sha: h.github.repos.get(REPO)!.branches.get(BRANCH)!,
+      target: 'production',
+    });
+    const asProduction = deployingJob({ preview_url: prod.url });
+    await expect(handler.handle(asProduction, jobContext().ctx)).rejects.toThrow(/not a preview/);
+    expect(h.github.count('mergeBranch')).toBe(0);
   });
 
   it('refuses to release on-chain addresses of another cluster', async () => {
@@ -783,6 +943,38 @@ describe('create: through the worker', () => {
     expect(h.signer.count('createConfigs')).toBe(1);
     expect(h.signer.count('prepareLaunchCoin')).toBe(1);
     expect(db.get(CREATE_JOB_ID).status).toBe('failed');
+  });
+
+  it('retries a failed release from owner_signed, never from approved', async () => {
+    const h = harness();
+    const db = new FakeJobsDb();
+    db.addJob({ id: CREATE_JOB_ID, launchpad_id: LAUNCHPAD_ID, status: 'paid' });
+    const { worker } = workerFor(h, db);
+    const step = async () => {
+      await worker.tick();
+      await worker.idle();
+    };
+    await step();
+    db.get(CREATE_JOB_ID).status = 'approved';
+    await step();
+    db.get(CREATE_JOB_ID).status = 'owner_signed';
+    h.vercel.fail('createDeployment');
+    await step();
+    expect(db.get(CREATE_JOB_ID)).toMatchObject({ status: 'failed', failed_stage: 'deploy' });
+    const prepares = h.signer.count('prepareLaunchCoin');
+
+    // Wrong retry status: the on-chain step refuses to prepare another launch.
+    db.get(CREATE_JOB_ID).status = 'approved';
+    await step();
+    expect(db.get(CREATE_JOB_ID)).toMatchObject({ status: 'failed', failed_stage: 'onchain' });
+    expect(db.get(CREATE_JOB_ID).error).toMatch(/owner_signed/);
+    expect(h.signer.count('prepareLaunchCoin')).toBe(prepares);
+
+    // Documented retry status for a creation release: owner_signed.
+    db.get(CREATE_JOB_ID).status = 'owner_signed';
+    await step();
+    expect(db.get(CREATE_JOB_ID)).toMatchObject({ status: 'live' });
+    expect(h.store.get(LAUNCHPAD_ID).status).toBe('live');
   });
 
   it('retries a scan rejection once, from a clean checkout, then gives up', async () => {

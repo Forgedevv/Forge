@@ -113,7 +113,47 @@ export function createSignerClient(opts: SignerClientOptions): SignerClient {
     createConfigs: (jobId) =>
       call(SIGNER_ROUTES.configs, { jobId }, (j) => SignerConfigsResponse.parse(j)),
     prepareLaunchCoin: (jobId) =>
-      call(SIGNER_ROUTES.launchCoinPrepare, { jobId }, (j) => SignerLaunchPrepareResponse.parse(j)),
-    health: () => call(SIGNER_ROUTES.health, undefined, (j) => SignerHealthResponse.parse(j)),
+      call(SIGNER_ROUTES.launchCoinPrepare, { jobId }, parseLaunchPrepareResponse),
+    health: () => call(SIGNER_ROUTES.health, undefined, parseHealthResponse),
   };
+}
+
+/** Fields of the prepare answer the builder relies on: always validated strictly. */
+const LaunchPrepareRequired = SignerLaunchPrepareResponse.pick({
+  partiallySignedTx: true,
+  mint: true,
+});
+
+/**
+ * `/v1/launch-coin/prepare` answer. The transaction and the mint are required and validated; the
+ * informational `summary` and `details` (shown by the web, not used by the builder) are kept when
+ * they match the shared schema and dropped one by one when they do not, so a newer signer adding
+ * or reshaping them never breaks a launch. Unknown keys are dropped.
+ */
+export function parseLaunchPrepareResponse(json: unknown): SignerLaunchPrepareResponse {
+  const full = SignerLaunchPrepareResponse.safeParse(json);
+  if (full.success) return full.data;
+  const required = LaunchPrepareRequired.parse(json);
+  const out: SignerLaunchPrepareResponse = { ...required };
+  const raw = json as Record<string, unknown>;
+  const summary = SignerLaunchPrepareResponse.shape.summary.safeParse(raw.summary);
+  if (summary.success && summary.data !== undefined) out.summary = summary.data;
+  const details = SignerLaunchPrepareResponse.shape.details.safeParse(raw.details);
+  if (details.success && details.data !== undefined) out.details = details.data;
+  return out;
+}
+
+/** `/v1/health` answer: `ok` is required; the optional fields are kept when well formed. */
+export function parseHealthResponse(json: unknown): SignerHealthResponse {
+  const full = SignerHealthResponse.safeParse(json);
+  if (full.success) return full.data;
+  const out: SignerHealthResponse = SignerHealthResponse.pick({ ok: true }).parse(json);
+  const raw = json as Record<string, unknown>;
+  for (const key of ['cluster', 'uptimeSeconds', 'jobs'] as const) {
+    const field = SignerHealthResponse.shape[key].safeParse(raw[key]);
+    if (field.success && field.data !== undefined) {
+      (out as Record<string, unknown>)[key] = field.data;
+    }
+  }
+  return out;
 }

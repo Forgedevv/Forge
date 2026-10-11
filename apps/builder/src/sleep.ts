@@ -12,7 +12,7 @@ import {
   withMode,
 } from './pipeline/site-config.js';
 import type { LaunchpadRecord, SleepStore } from './pipeline/store.js';
-import type { VercelClient } from './vercel.js';
+import { clientProjectVars, type VercelClient } from './vercel.js';
 import type { WorkerLogger } from './worker.js';
 import { sanitizeError } from './worker/messages.js';
 
@@ -46,6 +46,8 @@ export interface SleepDeps {
   >;
   /** Public variables of client projects (as for the pipeline). */
   projectEnv: Readonly<Record<string, string>>;
+  /** Signs the per-launchpad relay token of each project (relay-token.ts). */
+  rpcRelayTokenSecret: string;
   logger: WorkerLogger;
   /** `deploys_paused` kill switch: nothing is deployed while it is set. */
   isPaused?: () => Promise<boolean>;
@@ -53,7 +55,7 @@ export interface SleepDeps {
   now?: () => number;
   /** Default OPS.dormantDaysBeforeSleep. */
   dormantDays?: number;
-  /** Launchpads handled per direction and cycle. Default 50. */
+  /** Rows read per page of candidates (every page is read). Default 50. */
   batchSize?: number;
   deploymentTimeoutMs?: number;
   promotionTimeoutMs?: number;
@@ -70,9 +72,39 @@ export interface ModeChange {
 
 const DAY_MS = 86_400_000;
 
+/** `deploys_paused` was set (or could not be read): nothing more is deployed in this cycle. */
+export class DeploysPausedError extends Error {
+  readonly unreadable: boolean;
+  constructor(unreadable = false) {
+    super(
+      unreadable
+        ? 'deploys_paused could not be read: nothing is deployed'
+        : 'deploys_paused is set: nothing is deployed',
+    );
+    this.name = 'DeploysPausedError';
+    this.unreadable = unreadable;
+  }
+}
+
+/**
+ * Re-reads the `deploys_paused` kill switch right before a side effect. Fails closed: a switch that
+ * cannot be read counts as set.
+ */
+export async function assertNotPaused(deps: Pick<SleepDeps, 'isPaused'>): Promise<void> {
+  if (!deps.isPaused) return;
+  let paused: boolean;
+  try {
+    paused = await deps.isPaused();
+  } catch {
+    throw new DeploysPausedError(true);
+  }
+  if (paused) throw new DeploysPausedError();
+}
+
 /**
  * Puts one launchpad in `sleeping` or back to `live`: mode commit (when needed), production
- * deployment of that commit, promotion, status. Throws on any problem.
+ * deployment of that commit, promotion, status. Throws on any problem. `deploys_paused` is
+ * re-read before the commit, the deployment and the promotion (`DeploysPausedError`).
  */
 export async function setLaunchpadMode(
   deps: SleepDeps,
@@ -84,11 +116,15 @@ export async function setLaunchpadMode(
   if (!lp) throw new PipelineError('launchpad not found');
   if (lp.status === 'disabled') throw new PipelineError('launchpad is disabled by FORGE');
   if (lp.status === 'draft') throw new PipelineError('launchpad was never released');
+  const status: SleepTarget = lp.status;
   const repoName = repoNameForSlug(lp.slug);
   const repo = await deps.github.getRepo(repoName);
   if (!repo) throw new PipelineError('the launchpad repository does not exist');
 
-  const text = await deps.github.readFile(repo.name, SITE_CONFIG_PATH, repo.defaultBranch);
+  // Pin the head first: the config is read at that commit and the mode commit goes on top of it.
+  let sha = await deps.github.getBranchHead(repo.name, repo.defaultBranch);
+  if (sha === null) throw new PipelineError('the default branch does not exist');
+  const text = await deps.github.readFile(repo.name, SITE_CONFIG_PATH, sha);
   if (text === null)
     throw new PipelineError('forge.config.json is missing from the default branch');
   const raw = parseSiteConfig(text);
@@ -96,16 +132,16 @@ export async function setLaunchpadMode(
   if (config.mode === 'disabled') throw new PipelineError('the site is disabled by FORGE');
   if (config.slug !== lp.slug) throw new PipelineError('forge.config.json slug does not match');
 
-  let sha = await deps.github.getBranchHead(repo.name, repo.defaultBranch);
-  if (sha === null) throw new PipelineError('the default branch does not exist');
   let committed = false;
   if (config.mode !== target) {
+    await assertNotPaused(deps);
     guard(signal);
     const commit = await deps.github.commitFiles({
       repo: repo.name,
       branch: repo.defaultBranch,
       message: target === 'sleeping' ? 'Put the site to sleep' : 'Wake the site up',
       files: [{ path: SITE_CONFIG_PATH, content: serializeSiteConfig(withMode(raw, target)) }],
+      expectedHeadSha: sha,
     });
     sha = commit.commitSha;
     committed = commit.committed;
@@ -116,16 +152,16 @@ export async function setLaunchpadMode(
   if (!project.gitDeploymentsDisabled) {
     throw new PipelineError('git-triggered deployments are not disabled on the Vercel project');
   }
-  const vars: Record<string, string> = { ...deps.projectEnv };
-  const poolKeys = poolConfigKeys(config.onchain);
-  if (poolKeys) {
-    vars.POOL_CONFIG_KEY = poolKeys;
-    vars.NEXT_PUBLIC_POOL_CONFIG_KEY = poolKeys;
-  }
+  const vars = clientProjectVars(deps.projectEnv, {
+    slug: lp.slug,
+    poolKeys: poolConfigKeys(config.onchain),
+    relayTokenSecret: deps.rpcRelayTokenSecret,
+  });
   guard(signal);
   await deps.vercel.setEnv(project.id, vars);
   guard(signal);
   await deps.vercel.pruneEnv(project.id);
+  await assertNotPaused(deps);
   guard(signal);
   const deployment = await deps.vercel.createDeployment({
     project: { id: project.id, name: project.name },
@@ -137,13 +173,25 @@ export async function setLaunchpadMode(
   const ready = await deps.vercel.waitForDeployment(deployment.id, {
     timeoutMs: deps.deploymentTimeoutMs ?? 15 * 60_000,
   });
+  // Read the row and the switch again right before production changes: the team may have
+  // disabled the launchpad or paused deploys while the deployment was building.
+  const current = await deps.store.getLaunchpad(lp.id);
+  if (!current) throw new PipelineError('launchpad not found');
+  if (current.status === 'disabled') throw new PipelineError('launchpad is disabled by FORGE');
+  if (current.status !== status) {
+    throw new PipelineError(
+      `the launchpad status changed during the mode change (${current.status})`,
+    );
+  }
+  await assertNotPaused(deps);
   guard(signal);
   await deps.vercel.promoteToProduction(project.id, ready.id, {
     timeoutMs: deps.promotionTimeoutMs ?? 5 * 60_000,
   });
-  if (lp.status !== target) {
+  if (status !== target) {
     guard(signal);
-    await deps.store.updateLaunchpad(lp.id, { status: target });
+    // Conditional on the status read above: never overwrites a FORGE cut made meanwhile.
+    await deps.store.updateLaunchpad(lp.id, { status: target }, { expectStatus: [status] });
   }
   deps.logger.info(
     { launchpadId: lp.id, slug: lp.slug, mode: target, deployment: ready.id, sha },
@@ -163,41 +211,64 @@ export function wakeLaunchpad(deps: SleepDeps, launchpadId: string, signal?: Abo
 }
 
 export interface SleepCycleResult {
-  /** True when `deploys_paused` was set: nothing was done. */
+  /** True when `deploys_paused` was set: nothing (or nothing more) was done. */
   paused: boolean;
   slept: string[];
   woken: string[];
-  /** Launchpads skipped because a job is in flight or ran recently. */
+  /** Launchpads skipped because a job is in flight, ran recently or failed after approval. */
   skipped: string[];
   failed: Array<{ slug: string; error: string }>;
 }
 
+/** Pages read per direction and cycle at most (a guard against a runaway listing). */
+const MAX_PAGES = 1_000;
+
 /**
  * One daily pass: dormant `live` launchpads go to sleep, `sleeping` ones that traded again wake
- * up. A launchpad with a job in flight (or, for sleeping, a job in the dormancy window) is left
- * alone so the cycle never races a build or a release. One failure does not stop the others.
+ * up. A launchpad with a job in flight, a job in the dormancy window (for sleeping), or a job that
+ * failed after approval (on-chain or deploy stage: manual handling, D18) is left alone so the
+ * cycle never races a build or a release, nor redeploys a site the team is repairing. One failure
+ * does not stop the others.
+ *
+ * Candidates are read page by page (`batchSize` rows, keyset on the id) until the end of the
+ * list, so skipped or failing launchpads at the head of the list can never starve the others.
+ * `deploys_paused` is re-read before each launchpad: once it is set, the cycle stops.
  */
 export async function runSleepCycle(
   deps: SleepDeps,
   signal: AbortSignal = new AbortController().signal,
 ): Promise<SleepCycleResult> {
   const result: SleepCycleResult = { paused: false, slept: [], woken: [], skipped: [], failed: [] };
-  if (deps.isPaused && (await deps.isPaused())) {
-    deps.logger.warn({}, 'deploys_paused is set: sleep cycle skipped');
+  try {
+    await assertNotPaused(deps);
+  } catch (err) {
+    if (!(err instanceof DeploysPausedError)) throw err;
+    deps.logger.warn({ unreadable: err.unreadable }, `${err.message}: sleep cycle skipped`);
     return { ...result, paused: true };
   }
   const now = (deps.now ?? Date.now)();
   const days = deps.dormantDays ?? OPS.dormantDaysBeforeSleep;
   const cutoff = new Date(now - days * DAY_MS).toISOString();
   const nowIso = new Date(now).toISOString();
-  const batch = deps.batchSize ?? 50;
+  const batch = Math.max(1, Math.trunc(deps.batchSize ?? 50));
 
-  const apply = async (lp: LaunchpadRecord, target: SleepTarget): Promise<void> => {
+  /** False when the cycle must stop (deploys paused). */
+  const apply = async (lp: LaunchpadRecord, target: SleepTarget): Promise<boolean> => {
     try {
+      await assertNotPaused(deps);
       await setLaunchpadMode(deps, lp.id, target, signal);
       (target === 'sleeping' ? result.slept : result.woken).push(lp.slug);
+      return true;
     } catch (err) {
       if (err instanceof StepAbortedError) throw err;
+      if (err instanceof DeploysPausedError) {
+        deps.logger.warn(
+          { launchpadId: lp.id, slug: lp.slug, unreadable: err.unreadable },
+          `${err.message}: sleep cycle stopped`,
+        );
+        result.paused = true;
+        return false;
+      }
       const error = sanitizeError(err);
       result.failed.push({ slug: lp.slug, error });
       deps.logger.error(
@@ -212,32 +283,50 @@ export async function runSleepCycle(
           })
           .catch(() => undefined);
       }
+      return true;
     }
   };
 
-  for (const lp of await deps.store.listDormant(cutoff, batch)) {
-    guard(signal);
-    if (await deps.store.hasJobActivity(lp.id, cutoff)) {
-      result.skipped.push(lp.slug);
-      continue;
+  const pass = async (
+    list: (after: string | undefined) => Promise<LaunchpadRecord[]>,
+    target: SleepTarget,
+    activitySince: string,
+  ): Promise<boolean> => {
+    let after: string | undefined;
+    for (let page = 0; page < MAX_PAGES; page++) {
+      guard(signal);
+      const rows = await list(after);
+      for (const lp of rows) {
+        guard(signal);
+        if (await deps.store.hasJobActivity(lp.id, activitySince)) {
+          result.skipped.push(lp.slug);
+          continue;
+        }
+        if (!(await apply(lp, target))) return false;
+      }
+      const last = rows.at(-1);
+      if (rows.length < batch || !last) return true;
+      after = last.id;
     }
-    await apply(lp, 'sleeping');
-  }
-  for (const lp of await deps.store.listWoken(cutoff, batch)) {
-    guard(signal);
-    // Only a job in flight blocks a wake-up (a modification release wakes the site itself).
-    if (await deps.store.hasJobActivity(lp.id, nowIso)) {
-      result.skipped.push(lp.slug);
-      continue;
-    }
-    await apply(lp, 'live');
-  }
+    deps.logger.warn({ target, pages: MAX_PAGES }, 'sleep cycle stopped at the page limit');
+    return true;
+  };
+
+  const goOn = await pass(
+    (after) => deps.store.listDormant(cutoff, batch, after),
+    'sleeping',
+    cutoff,
+  );
+  // Only a job in flight (or a failed release) blocks a wake-up: a modification release wakes the
+  // site itself.
+  if (goOn) await pass((after) => deps.store.listWoken(cutoff, batch, after), 'live', nowIso);
   deps.logger.info(
     {
       slept: result.slept.length,
       woken: result.woken.length,
       skipped: result.skipped.length,
       failed: result.failed.length,
+      paused: result.paused,
     },
     'sleep cycle done',
   );
@@ -249,36 +338,81 @@ export interface SleepScheduler {
   stop(): Promise<void>;
 }
 
-/** Runs `runSleepCycle` after `initialDelayMs`, then every `intervalMs` (default 24 h). */
+export interface SleepSchedulerOptions {
+  /** Sleep cycle period. Default 24 h. */
+  intervalMs?: number;
+  /** First sleep cycle after this delay. Default 10 minutes. */
+  initialDelayMs?: number;
+  /** Runs the sleep cycle (default true). The disabled sweep runs either way. */
+  sleepEnabled?: boolean;
+  /**
+   * Cuts the sites of disabled launchpads (disable.ts `enforceDisabledLaunchpads`). Runs at
+   * startup, before every sleep cycle, and every `disableIntervalMs` in between.
+   */
+  enforceDisabled?: (signal: AbortSignal) => Promise<unknown>;
+  /** Period of the disabled sweep between sleep cycles. Default: the sleep cycle period. */
+  disableIntervalMs?: number;
+}
+
+/**
+ * Runs the disabled sweep at startup, then, one task at a time: the sleep cycle after
+ * `initialDelayMs` and every `intervalMs` (each preceded by a disabled sweep), and the disabled
+ * sweep alone every `disableIntervalMs`.
+ */
 export function startSleepScheduler(
   deps: SleepDeps,
-  opts: { intervalMs?: number; initialDelayMs?: number } = {},
+  opts: SleepSchedulerOptions = {},
 ): SleepScheduler {
   const intervalMs = opts.intervalMs ?? DAY_MS;
+  const disableEvery = Math.max(1, opts.disableIntervalMs ?? intervalMs);
+  const sleepEnabled = opts.sleepEnabled ?? true;
+  const enforce = opts.enforceDisabled;
   const controller = new AbortController();
   let timer: NodeJS.Timeout | undefined;
   let running: Promise<void> | undefined;
   let stopped = false;
+  let nextSleep = Date.now() + (opts.initialDelayMs ?? 10 * 60_000);
+  let nextDisable = enforce ? Date.now() : Number.POSITIVE_INFINITY;
 
-  const schedule = (delay: number): void => {
+  const attempt = async (what: string, fn: () => Promise<unknown>): Promise<void> => {
+    try {
+      await fn();
+    } catch (err) {
+      if (err instanceof StepAbortedError) throw err;
+      deps.logger.error({ error: sanitizeError(err) }, `${what} failed`);
+    }
+  };
+
+  const tick = async (): Promise<void> => {
+    const now = Date.now();
+    const sleepDue = now >= nextSleep;
+    if (enforce && (sleepDue || now >= nextDisable)) {
+      await attempt('disabled sweep', () => enforce(controller.signal));
+      nextDisable = Date.now() + disableEvery;
+    }
+    if (sleepDue) {
+      if (sleepEnabled) await attempt('sleep cycle', () => runSleepCycle(deps, controller.signal));
+      nextSleep = Date.now() + intervalMs;
+    }
+  };
+
+  const schedule = (): void => {
     if (stopped) return;
-    timer = setTimeout(() => {
-      running = runSleepCycle(deps, controller.signal)
-        .then(
-          () => undefined,
-          (err: unknown) => {
-            if (err instanceof StepAbortedError) return;
-            deps.logger.error({ error: sanitizeError(err) }, 'sleep cycle failed');
-          },
-        )
-        .finally(() => {
-          running = undefined;
-          schedule(intervalMs);
-        });
-    }, delay);
+    const next = Math.min(nextSleep, nextDisable);
+    timer = setTimeout(
+      () => {
+        running = tick()
+          .catch(() => undefined)
+          .finally(() => {
+            running = undefined;
+            schedule();
+          });
+      },
+      Math.max(0, next - Date.now()),
+    );
     timer.unref?.();
   };
-  schedule(opts.initialDelayMs ?? 10 * 60_000);
+  schedule();
 
   return {
     async stop() {

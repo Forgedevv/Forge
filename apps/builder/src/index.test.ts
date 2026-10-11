@@ -18,6 +18,7 @@ const SECRET_VALUES = {
   SUPABASE_SERVICE_ROLE_KEY: 'service-role-secret-value',
   ANTHROPIC_API_KEY: 'sk-ant-api-key-secret-value-0123',
   SIGNER_HMAC_SECRET: 'h'.repeat(48),
+  RPC_RELAY_TOKEN_SECRET: 'r'.repeat(40),
   VERCEL_TOKEN: 'vercel-token-secret-value',
   GITHUB_APP_PRIVATE_KEY: '-----BEGIN PRIVATE KEY-----\\nabc\\n-----END PRIVATE KEY-----',
 };
@@ -82,6 +83,22 @@ describe('builder environment', () => {
     expect(message).toContain('BUILDER_AGENT_MODEL');
     expect(message).not.toContain('too-short');
     for (const value of Object.values(SECRET_VALUES)) expect(message).not.toContain(value);
+  });
+
+  it('requires the relay token secret, at least 32 bytes, without printing it', () => {
+    for (const value of [undefined, '', 'short-relay-secret']) {
+      const message = errorOf(() => loadBuilderEnv(baseEnv({ RPC_RELAY_TOKEN_SECRET: value })));
+      expect(message).toContain('RPC_RELAY_TOKEN_SECRET');
+      if (value) expect(message).not.toContain(value);
+    }
+  });
+
+  it('never copies the relay token or its secret from the environment into client projects', () => {
+    const { projectEnv } = checkStartupConfig(
+      baseEnv({ FORGE_RPC_RELAY_TOKEN: `v1.moonpad.${'a'.repeat(64)}` }),
+    );
+    expect(Object.keys(projectEnv)).not.toContain('FORGE_RPC_RELAY_TOKEN');
+    expect(Object.keys(projectEnv)).not.toContain('RPC_RELAY_TOKEN_SECRET');
   });
 
   it('checks the FORGE addresses with @forge/core', () => {
@@ -172,6 +189,7 @@ describe('builder process', () => {
       { method: 'POST', path: '/rest/v1/rpc/take_post_approval_job', handler: () => json([]) },
       { method: 'POST', path: '/rest/v1/rpc/take_build_job', handler: () => json([]) },
       { method: 'GET', path: '/rest/v1/flags', handler: () => json([]) },
+      { method: 'GET', path: '/rest/v1/launchpads', handler: () => json([]) },
     ]);
     vi.stubGlobal('fetch', stub.fetch);
     const docker = fakeDocker();
@@ -213,6 +231,13 @@ describe('builder process', () => {
       }
       expect(stub.find('POST', '/rest/v1/rpc/take_build_job').length).toBeGreaterThan(0);
       expect(builder.scheduler).toBeDefined();
+      // Disabled launchpads are swept at startup.
+      for (let i = 0; i < 100 && stub.find('GET', '/rest/v1/launchpads').length === 0; i++) {
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      const sweep = stub.find('GET', '/rest/v1/launchpads');
+      expect(sweep.length).toBeGreaterThan(0);
+      expect(sweep[0]!.query.get('status')).toBe('eq.disabled');
     } finally {
       await builder.stop();
     }

@@ -22,6 +22,8 @@ import { buildSite, createSandboxRunner, loadSandboxConfig } from './sandbox/ind
 import type { SpawnFn } from './sandbox/docker.js';
 import { scanDiff } from './scan/index.js';
 import { createSignerClient } from './signer-client.js';
+import { enforceDisabledLaunchpads } from './disable.js';
+import { isRelayTokenSecret } from './relay-token.js';
 import { startSleepScheduler, type SleepScheduler } from './sleep.js';
 import { createVercelClient, pickProjectEnv, vercelOptionsFromEnv } from './vercel.js';
 import type { Worker, WorkerLogger } from './worker.js';
@@ -70,6 +72,8 @@ const BuilderEnvSchema = z.object({
   BUILDER_AGENT_MAX_TURNS: intFromEnv(AGENT_DEFAULTS.maxTurns, 5, 500),
   BUILDER_AGENT_MEMORY_MB: intFromEnv(AGENT_DEFAULTS.memoryMb, 512, 16_384),
   BUILDER_AGENT_CPUS: z.coerce.number().min(0.5).max(8).default(AGENT_DEFAULTS.cpus),
+  /** Signs the per-launchpad relay token of each client project (at least 32 bytes). */
+  RPC_RELAY_TOKEN_SECRET: z.string().refine(isRelayTokenSecret, 'at least 32 bytes'),
   SIGNER_URL: z.url(),
   SIGNER_HMAC_SECRET: z.string().min(32),
   /** The configs route waits for on-chain confirmations. */
@@ -80,6 +84,8 @@ const BuilderEnvSchema = z.object({
   GITHUB_PACKAGES_TOKEN: z.string().min(1).optional(),
   BUILDER_SLEEP_ENABLED: boolFromEnv(true),
   BUILDER_SLEEP_INTERVAL_HOURS: intFromEnv(24, 1, 24 * 7),
+  /** Disabled launchpads: their sites are cut at startup, every sleep cycle and this often. */
+  BUILDER_DISABLED_SWEEP_MINUTES: intFromEnv(15, 1, 24 * 60),
   BUILDER_LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
   TELEGRAM_BOT_TOKEN: z.string().min(1).optional(),
   TELEGRAM_CHAT_ID: z.string().min(1).optional(),
@@ -144,7 +150,10 @@ export interface BuilderProcess {
   worker: Worker;
   gateway: Gateway;
   scheduler: SleepScheduler | undefined;
-  /** Graceful shutdown: sleep cycle, worker (running jobs get their grace period), gateway. */
+  /**
+   * Graceful shutdown: site upkeep (disabled sweep, sleep cycle), worker (running jobs get their
+   * grace period), gateway.
+   */
   stop(): Promise<void>;
 }
 
@@ -239,6 +248,7 @@ export async function startBuilder(opts: StartBuilderOptions = {}): Promise<Buil
     config: {
       cluster: config.SOLANA_CLUSTER,
       projectEnv,
+      rpcRelayTokenSecret: config.RPC_RELAY_TOKEN_SECRET,
       scanOptions: {
         ...(projectEnv.NEXT_PUBLIC_FORGE_RPC_RELAY_URL
           ? { rpcRelayHost: new URL(projectEnv.NEXT_PUBLIC_FORGE_RPC_RELAY_URL).hostname }
@@ -271,25 +281,38 @@ export async function startBuilder(opts: StartBuilderOptions = {}): Promise<Buil
     handleSignals: false,
   });
 
-  let scheduler: SleepScheduler | undefined;
-  if (config.BUILDER_SLEEP_ENABLED) {
-    const flags = createSupabaseJobsDb({
-      url: config.SUPABASE_URL,
-      serviceRoleKey: config.SUPABASE_SERVICE_ROLE_KEY,
-    });
-    scheduler = startSleepScheduler(
-      {
-        store,
-        github,
-        vercel,
-        projectEnv,
-        logger,
-        alerter,
-        isPaused: () => flags.getFlag('deploys_paused'),
-      },
-      { intervalMs: config.BUILDER_SLEEP_INTERVAL_HOURS * 3_600_000 },
-    );
-  }
+  // Site upkeep: disabled launchpads are cut (always, from startup on), and the sleep cycle runs
+  // when enabled.
+  const flags = createSupabaseJobsDb({
+    url: config.SUPABASE_URL,
+    serviceRoleKey: config.SUPABASE_SERVICE_ROLE_KEY,
+  });
+  const isPaused = () => flags.getFlag('deploys_paused');
+  const verified = new Map<string, string>();
+  const rpcRelayTokenSecret = config.RPC_RELAY_TOKEN_SECRET;
+  const scheduler: SleepScheduler | undefined = startSleepScheduler(
+    { store, github, vercel, projectEnv, rpcRelayTokenSecret, logger, alerter, isPaused },
+    {
+      intervalMs: config.BUILDER_SLEEP_INTERVAL_HOURS * 3_600_000,
+      sleepEnabled: config.BUILDER_SLEEP_ENABLED,
+      disableIntervalMs: config.BUILDER_DISABLED_SWEEP_MINUTES * 60_000,
+      enforceDisabled: (signal) =>
+        enforceDisabledLaunchpads(
+          {
+            store,
+            github,
+            vercel,
+            projectEnv,
+            rpcRelayTokenSecret,
+            logger,
+            alerter,
+            isPaused,
+            verified,
+          },
+          signal,
+        ),
+    },
+  );
 
   let stopping: Promise<void> | undefined;
   const stop = (): Promise<void> => {

@@ -2,6 +2,7 @@
 /** Test helper: a full pipeline wired to the fakes of test-fakes.ts. */
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import path from 'node:path';
+import type { JobRow } from '@forge/shared';
 import { buildSite } from '../sandbox/index.js';
 import { scanDiff } from '../scan/index.js';
 import type { AgentConfig } from './agent.js';
@@ -30,6 +31,9 @@ export const TEST_PROJECT_ENV: Record<string, string> = {
   R2_PUBLIC_URL: 'https://cdn.forge.test',
   NEXT_PUBLIC_R2_PUBLIC_URL: 'https://cdn.forge.test',
 };
+
+/** Secret of the per-launchpad relay tokens in tests (32 bytes, not a real one). */
+export const TEST_RELAY_SECRET = 'test-relay-token-secret-0123456789abcdef';
 
 export const TEST_AGENT: AgentConfig = {
   bin: 'claude',
@@ -84,6 +88,7 @@ export function makeHarness(jobsRoot: string, over: Partial<PipelineConfig> = {}
     config: {
       cluster: 'devnet',
       projectEnv: TEST_PROJECT_ENV,
+      rpcRelayTokenSecret: TEST_RELAY_SECRET,
       scanOptions: { rpcRelayHost: 'forge.test', r2PublicHost: 'cdn.forge.test' },
       agent: TEST_AGENT,
       deploymentTimeoutMs: 1_000,
@@ -199,3 +204,16 @@ export const agents = {
     });
   }) satisfies AgentBehaviour,
 };
+
+/**
+ * `jobs.preview_url` as the worker would have stored it: the URL of the job's latest preview
+ * deployment. Fills it in for a `deploying` job built by the test, like the claimed DB row.
+ */
+export function withPreviewUrl(h: Harness, job: JobRow): JobRow {
+  if (job.status !== 'deploying' || job.preview_url !== null) return job;
+  const branch = `forge/${job.id}`;
+  const preview = [...h.vercel.deployments.values()]
+    .filter((d) => d.target === 'preview' && d.ref === branch)
+    .at(-1);
+  return preview ? { ...job, preview_url: preview.url } : job;
+}
