@@ -33,12 +33,12 @@ import {
   assertRoutesNotPaused,
   creationEnv,
   ensureCreatorWallet,
-  loadOnchainSetup,
   metadataUriFor,
   payerOf,
   recordLaunchpadColumns,
   type KeyRefWithAddress,
   type RouteRuntime,
+  withLaunchpadLock,
 } from './context.js';
 import { createEphemeralKey } from './ephemeral.js';
 import { fail } from './errors.js';
@@ -95,9 +95,7 @@ export async function handlePrepareLaunch(
   rt: RouteRuntime,
   jobId: string,
 ): Promise<SignerLaunchPrepareResult> {
-  const outside = await loadOnchainSetup(rt, jobId);
-  return rt.locks.run(outside.launchpad.id, async () => {
-    const setup = await loadOnchainSetup(rt, jobId);
+  return withLaunchpadLock(rt, jobId, async (setup) => {
     const { launchpad, spec, owner } = setup;
     const launchpadId = launchpad.id;
     const { core } = rt;

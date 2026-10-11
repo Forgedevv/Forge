@@ -26,10 +26,10 @@ import { admitLaunchpad } from './budget.js';
 import {
   creationEnv,
   ensureCreatorWallet,
-  loadOnchainSetup,
   payerOf,
   recordLaunchpadColumns,
   type RouteRuntime,
+  withLaunchpadLock,
 } from './context.js';
 import { fail } from './errors.js';
 import type { ConfigsJournalEntry } from './journal.js';
@@ -44,10 +44,8 @@ export async function handleCreateConfigs(
   rt: RouteRuntime,
   jobId: string,
 ): Promise<SignerConfigsResponse> {
-  // Cheap refusal before queuing on the launchpad lock; everything is re-read inside it.
-  const outside = await loadOnchainSetup(rt, jobId);
-  return rt.locks.run(outside.launchpad.id, async () => {
-    const setup = await loadOnchainSetup(rt, jobId);
+  // Everything is re-read inside the launchpad lock (and must still be that launchpad).
+  return withLaunchpadLock(rt, jobId, async (setup) => {
     const { launchpad, spec, owner } = setup;
     const key = launchpad.id;
     await assertCreationPaid(rt, setup);

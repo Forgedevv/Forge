@@ -266,6 +266,35 @@ export async function loadOnchainSetup(rt: RouteRuntime, jobId: string): Promise
   return { job, launchpad, spec, owner, payments: confirmed };
 }
 
+/**
+ * Runs `fn` under the lock of the job's launchpad, with everything re-read inside the lock.
+ * The launchpad is resolved once outside (a cheap refusal before queuing) and again inside; a job
+ * that points at another launchpad by then is refused (409, alerted): `fn` must never act on a
+ * launchpad whose lock it does not hold.
+ */
+export async function withLaunchpadLock<T>(
+  rt: RouteRuntime,
+  jobId: string,
+  fn: (setup: OnchainSetup) => Promise<T>,
+): Promise<T> {
+  const outside = await loadOnchainSetup(rt, jobId);
+  const locked = outside.launchpad.id;
+  return rt.locks.run(locked, async () => {
+    const setup = await loadOnchainSetup(rt, jobId);
+    if (setup.launchpad.id !== locked || setup.job.launchpadId !== locked) {
+      await rt.alert(
+        'high',
+        'job_launchpad_changed',
+        'A creation job points at another launchpad than a moment ago: request refused, manual check needed',
+        { jobId, lockedLaunchpadId: locked, launchpadId: setup.launchpad.id },
+        `job_launchpad_changed:${jobId}`,
+      );
+      fail(409, 'launchpad_changed');
+    }
+    return fn(setup);
+  });
+}
+
 // ---------------------------------------------------------------------------------------
 // Keys
 
