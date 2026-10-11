@@ -24,7 +24,7 @@ import {
   type PaymentCheck,
 } from './core-adapter';
 import { ClusterMismatchError, PaymentConfigError, RpcUnavailableError } from './errors';
-import { createCorePaymentGateway, translateCoreError } from './gateway';
+import { createCorePaymentGateway, PAYMENT_COMMITMENT, translateCoreError } from './gateway';
 import { landedPayment, landedTx, randomSignature, TEST_BLOCKHASH } from './test-helpers';
 
 const PAYER = PublicKey.unique();
@@ -346,7 +346,7 @@ describe('gateway', () => {
     const previous = process.env.FORGE_CASHBOX_WALLET;
     process.env.FORGE_CASHBOX_WALLET = OTHER.toBase58();
     try {
-      const { connection, rpc } = fakeConnection();
+      const { connection, rpc } = fakeConnection({ status: { confirmationStatus: 'finalized' } });
       const gateway = createCorePaymentGateway({
         connection,
         cluster: 'devnet',
@@ -367,6 +367,39 @@ describe('gateway', () => {
       if (previous === undefined) delete process.env.FORGE_CASHBOX_WALLET;
       else process.env.FORGE_CASHBOX_WALLET = previous;
     }
+  });
+
+  it('verifies payments at the finalized commitment only', async () => {
+    expect(PAYMENT_COMMITMENT).toBe('finalized');
+    const notFinal = fakeConnection({ status: { confirmationStatus: 'confirmed' } });
+    const gateway = createCorePaymentGateway({
+      connection: notFinal.connection,
+      cluster: 'devnet',
+      cashbox: CASHBOX,
+      retry: NO_RETRY,
+    });
+    const expected = { payer: PAYER, lamports: LAMPORTS, jobId: JOB };
+    await expect(gateway.verify(randomSignature(), expected)).resolves.toMatchObject({
+      status: 'pending',
+      reason: 'below_commitment',
+    });
+    expect(notFinal.rpc.getTransaction).not.toHaveBeenCalled();
+
+    const final = fakeConnection({ status: { confirmationStatus: 'finalized' } });
+    const finalGateway = createCorePaymentGateway({
+      connection: final.connection,
+      cluster: 'devnet',
+      cashbox: CASHBOX,
+      retry: NO_RETRY,
+    });
+    await expect(finalGateway.verify(randomSignature(), expected)).resolves.toMatchObject({
+      status: 'confirmed',
+      confirmationStatus: 'finalized',
+    });
+    expect(final.rpc.getTransaction).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ commitment: 'finalized' }),
+    );
   });
 
   it('never builds a transaction for another cluster', async () => {

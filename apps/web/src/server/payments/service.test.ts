@@ -677,6 +677,27 @@ describe('confirmPayment', () => {
     expect(ctx.store.payments.get(quote.paymentId)!.status).toBe('expired');
   });
 
+  it('keeps a landed but not yet finalized payment pending, even past the grace period', async () => {
+    const ctx = setup();
+    const quote = await quoteCreation(ctx);
+    const signature = pay(ctx, quote, ctx.job.id, { blockTime: ctx.clock.seconds(100_000) });
+    ctx.gateway.notFinal.add(signature);
+    ctx.clock.advance(QUOTE_TIMING.validityMs + QUOTE_TIMING.notFoundGraceMs + 1);
+    await expect(confirm(ctx, quote.paymentId, signature)).resolves.toEqual({
+      httpStatus: 202,
+      status: 'quoted',
+    });
+    expect(ctx.store.payments.get(quote.paymentId)!.status).toBe('quoted');
+
+    // Finalized at the next poll: it landed inside the window, so it pays the job.
+    ctx.gateway.notFinal.delete(signature);
+    await expect(confirm(ctx, quote.paymentId, signature)).resolves.toEqual({
+      httpStatus: 200,
+      status: 'confirmed',
+    });
+    expect(ctx.store.jobs.get(ctx.job.id)!.status).toBe('paid');
+  });
+
   it('accepts a payment that landed in time even when confirmed after the expiry', async () => {
     const ctx = setup();
     const quote = await quoteCreation(ctx);

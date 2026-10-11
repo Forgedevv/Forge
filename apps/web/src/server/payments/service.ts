@@ -47,7 +47,10 @@ export const QUOTE_TIMING = {
   reuseMinRemainingMs: 60_000,
 } as const;
 
-/** The confirm route waits this long for a transaction that is not yet confirmed. */
+/**
+ * The confirm route waits this long for a transaction that is not final yet (finalization takes
+ * about 13 s after confirmation), then answers 202 and the client asks again (Retry-After).
+ */
 export const CONFIRM_WAIT = { totalMs: 10_000, pollMs: 1_000 } as const;
 
 export interface QuoteResult {
@@ -624,7 +627,9 @@ export function createPaymentsService(deps: PaymentsServiceDeps): PaymentsServic
     const verification = await verifyWithWait(signature, expectedFor(payment));
 
     if (isPending(verification)) {
-      if (now() > payment.quoteExpiresAt + QUOTE_TIMING.notFoundGraceMs) {
+      // Only a signature the cluster does not know expires the quote: one that landed and is not
+      // finalized yet (PAYMENT_COMMITMENT) may still have landed in time, so it stays pending.
+      if (isUnseen(verification) && now() > payment.quoteExpiresAt + QUOTE_TIMING.notFoundGraceMs) {
         return expire(payment, 'confirm.expired_unseen', signature);
       }
       return { httpStatus: 202, status: payment.status };
