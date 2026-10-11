@@ -333,16 +333,6 @@ export async function runBuildStep(
       description: `FORGE launchpad ${spec.slug}`,
     });
     repo = ensured.repo;
-    if (ensured.created) {
-      guard(signal);
-      const protection = await deps.github.protectDefaultBranch(repo.name);
-      if (!protection.applied) {
-        log.warn(
-          jobFields(job, { reason: protection.reason }),
-          'default branch protection not applied',
-        );
-      }
-    }
   } else {
     await say(jobCtx, STEP_EVENTS.openRepo);
     const found = await deps.github.getRepo(repoName);
@@ -350,6 +340,14 @@ export async function runBuildStep(
     repo = found;
   }
   if (repo.name !== repoName) throw new PipelineError('unexpected repository name');
+  // Default branch protection (no force-push, no deletion), on every build and not only when the
+  // repo was just created: a repo from an earlier attempt, or one whose protection failed or was
+  // removed, gets it back. The call is an idempotent PUT.
+  guard(signal);
+  const protection = await deps.github.protectDefaultBranch(repo.name);
+  if (!protection.applied) {
+    log.warn(jobFields(job, { reason: protection.reason }), 'default branch protection not applied');
+  }
   if (launchpad.github_repo !== repo.name) {
     guard(signal);
     await deps.store.updateLaunchpad(launchpad.id, { github_repo: repo.name });

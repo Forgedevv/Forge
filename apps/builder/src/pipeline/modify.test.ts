@@ -97,6 +97,16 @@ describe('modify: building', () => {
     expect(preview.env.POOL_CONFIG_KEY).toContain(LAUNCHPAD_CONFIG);
   });
 
+  it('applies the default branch protection on a repo created without it', async () => {
+    const h = await liveLaunchpad();
+    expect(h.github.protectedRepos.size).toBe(0); // the plan refused it at creation
+    h.github.protection = { applied: true };
+    const before = h.github.count('protectDefaultBranch');
+    await run(h, modifyJob());
+    expect(h.github.count('protectDefaultBranch')).toBe(before + 1);
+    expect(h.github.protectedRepos.has(REPO)).toBe(true);
+  });
+
   it('cannot touch forge.config.json#onchain', async () => {
     const h = await liveLaunchpad();
     h.runner.agent = agents.changeOnchain;

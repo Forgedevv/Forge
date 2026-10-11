@@ -353,8 +353,20 @@ export class FakeGithub extends Recorder implements PipelineGithub, RepoSource {
     return this.around('getRepo', () => this.repos.get(repo)?.info ?? null);
   }
 
-  protectDefaultBranch(): Promise<{ applied: boolean; reason?: 'plan' | 'permission' }> {
-    return this.around('protectDefaultBranch', () => ({ applied: false, reason: 'plan' as const }));
+  /** What protectDefaultBranch answers (the free plan refuses it on private repos). */
+  protection: { applied: boolean; reason?: 'plan' | 'permission' } = {
+    applied: false,
+    reason: 'plan',
+  };
+  /** Repos whose default branch protection was applied. */
+  readonly protectedRepos = new Set<string>();
+
+  protectDefaultBranch(repo: string): Promise<{ applied: boolean; reason?: 'plan' | 'permission' }> {
+    return this.around('protectDefaultBranch', () => {
+      this.repo(repo);
+      if (this.protection.applied) this.protectedRepos.add(repo);
+      return { ...this.protection };
+    });
   }
 
   getBranchHead(repo: string, branch: string): Promise<string | null> {

@@ -355,6 +355,21 @@ describe('create: building', () => {
     expect(h.runner.stepsRun()).toEqual(['agent']);
   });
 
+  it('protects the default branch on every attempt, not only when the repo was created', async () => {
+    const h = harness();
+    // First attempt: the repo is created, then the protection call fails.
+    h.github.fail('protectDefaultBranch');
+    await expect(runStep(h, building({ attempts: 1 }))).rejects.toThrow();
+    expect(h.github.repos.has(REPO)).toBe(true);
+    expect(h.github.protectedRepos.size).toBe(0);
+    // Second attempt: the repo already exists and the protection is applied anyway.
+    h.github.protection = { applied: true };
+    await runStep(h, building({ attempts: 2 }));
+    expect(h.github.count('ensureRepoFromTemplate')).toBe(2);
+    expect(h.github.count('protectDefaultBranch')).toBe(2);
+    expect(h.github.protectedRepos.has(REPO)).toBe(true);
+  });
+
   it('refuses a disabled launchpad before doing anything', async () => {
     const h = harness();
     h.store.setStatus(LAUNCHPAD_ID, 'disabled');
