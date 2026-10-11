@@ -20,6 +20,12 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
  *   the secret revokes all tokens at once.
  * - Browsers cannot send it cross-origin (the header is not in Access-Control-Allow-Headers), and a
  *   request carrying both an Origin and a token is refused.
+ * - The coin upload routes (src/server/uploads/handlers.ts) require the same token in the same
+ *   header: it identifies the calling site and keys their limits.
+ *
+ * `deriveRelayToken` is the one implementation of the derivation in apps/web; the builder needs
+ * the same function to inject FORGE_RPC_RELAY_TOKEN (it cannot import apps/web, see the change
+ * request to move it to packages/shared).
  */
 
 export const RELAY_TOKEN_HEADER = 'x-forge-relay-token';
@@ -31,7 +37,7 @@ function mac(secret: Buffer, slug: string): Buffer {
   return createHmac('sha256', secret).update(`forge-rpc-relay:${VERSION}:${slug}`).digest();
 }
 
-/** Token of one launchpad (used by tests; the builder computes the same value). */
+/** Token of one launchpad (used by tests and tooling; the builder computes the same value). */
 export function deriveRelayToken(secret: Buffer, slug: string): string {
   if (!SLUG_RE.test(slug)) throw new Error('invalid slug');
   return `${VERSION}.${slug}.${mac(secret, slug).toString('hex')}`;
@@ -48,4 +54,20 @@ export function verifyRelayToken(secret: Buffer, token: string): string | null {
   const given = Buffer.from(hex, 'hex');
   if (given.length !== expected.length || !timingSafeEqual(given, expected)) return null;
   return slug;
+}
+
+/** Same secret as the relay's server tier (config.ts): at least this many bytes. */
+export const MIN_SERVER_TOKEN_SECRET_BYTES = 32;
+
+/**
+ * RPC_RELAY_TOKEN_SECRET as bytes, null when unset or empty, or `'invalid'` when too short. Used
+ * by every route that accepts the per-launchpad server token (RPC relay, coin uploads).
+ */
+export function readServerTokenSecret(
+  env: Readonly<Record<string, string | undefined>>,
+): Buffer | null | 'invalid' {
+  const raw = env.RPC_RELAY_TOKEN_SECRET;
+  if (raw === undefined || raw === '') return null;
+  const bytes = Buffer.from(raw, 'utf8');
+  return bytes.length < MIN_SERVER_TOKEN_SECRET_BYTES ? 'invalid' : bytes;
 }

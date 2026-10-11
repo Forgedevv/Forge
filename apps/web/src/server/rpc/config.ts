@@ -5,6 +5,7 @@ import {
   type BucketRule,
   type RelayLimits,
 } from './limits';
+import { MIN_SERVER_TOKEN_SECRET_BYTES, readServerTokenSecret } from './server-token';
 
 /*
  * Environment of the RPC relay (`POST /api/rpc`). Read lazily at the first request so that a build
@@ -63,7 +64,7 @@ export interface RelayConfig {
   limits: RelayLimits;
 }
 
-export const MIN_TOKEN_SECRET_BYTES = 32;
+export const MIN_TOKEN_SECRET_BYTES = MIN_SERVER_TOKEN_SECRET_BYTES;
 
 function trimmed(env: Env, name: string): string | undefined {
   const value = env[name]?.trim();
@@ -138,15 +139,13 @@ function readClientsDomain(env: Env): string | null {
 }
 
 function readTokenSecret(env: Env): Buffer | null {
-  const raw = env.RPC_RELAY_TOKEN_SECRET;
-  if (raw === undefined || raw === '') return null;
-  const bytes = Buffer.from(raw, 'utf8');
-  if (bytes.length < MIN_TOKEN_SECRET_BYTES) {
+  const secret = readServerTokenSecret(env);
+  if (secret === 'invalid') {
     throw new RelayConfigError(
       `RPC_RELAY_TOKEN_SECRET must be at least ${MIN_TOKEN_SECRET_BYTES} bytes`,
     );
   }
-  return bytes;
+  return secret;
 }
 
 function readAnonymous(env: Env): boolean {
