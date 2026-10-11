@@ -54,11 +54,13 @@ describe('no runtime secrets in the client site', () => {
         'SOLANA_CLUSTER',
         'NEXT_PUBLIC_SOLANA_CLUSTER',
         'NEXT_PUBLIC_FORGE_RPC_RELAY_URL',
-        'POOL_CONFIG_KEY',
+        'NEXT_PUBLIC_FORGE_API_URL',
         'NEXT_PUBLIC_POOL_CONFIG_KEY',
         'R2_PUBLIC_URL',
         'NEXT_PUBLIC_R2_PUBLIC_URL',
         'NEXT_PUBLIC_FORGE_JUPITER_REFERRAL_ACCOUNT',
+        'NEXT_PUBLIC_FORGE_PLATFORM_FEE_WALLET',
+        'NEXT_PUBLIC_FORGE_METEORA_REFERRAL_ACCOUNT',
       ]),
     );
   });

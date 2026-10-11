@@ -14,8 +14,8 @@
     "lint": "eslint ."
   },
   "dependencies": {
+    "@forge/core": "workspace:*",
     "@forge/shared": "workspace:*",
-    "@aws-sdk/client-s3": "3.1147.0",
     "@coral-xyz/anchor": "0.31.1",
     "@iconify-json/ic": "1.2.4",
     "@iconify-json/ph": "1.2.2",
