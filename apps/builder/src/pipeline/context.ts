@@ -4,7 +4,7 @@ import { repoNameForSlug, type GithubClient } from '../github.js';
 import type { BuildSiteOptions, BuildSiteResult, SandboxRunner } from '../sandbox/index.js';
 import type { ChangedFile, ScanOptions, ScanResult } from '../scan/index.js';
 import type { SignerClient } from '../signer-client.js';
-import type { VercelClient } from '../vercel.js';
+import { clientProjectVars, type VercelClient } from '../vercel.js';
 import type { JobContext, WorkerLogger } from '../worker.js';
 import type { AgentConfig, AgentGateway } from './agent.js';
 import { PipelineError } from './errors.js';
@@ -52,6 +52,8 @@ export interface PipelineConfig {
   cluster: SolanaCluster;
   /** Public variables of every client Vercel project (`pickProjectEnv` of vercel.ts). */
   projectEnv: Readonly<Record<string, string>>;
+  /** Signs the per-launchpad relay token of each project (relay-token.ts). Never sent anywhere. */
+  rpcRelayTokenSecret: string;
   /** Options of the blocking scan (RPC relay host, R2 public host...). */
   scanOptions: ScanOptions;
   agent: AgentConfig;
@@ -147,18 +149,22 @@ export function poolConfigKeys(onchain: OnchainConfig | undefined): string | und
   return [onchain.launchpadConfig, onchain.launchpadCoinConfig].join(',');
 }
 
-/** Pushes the public variables to the project (before every deployment) and prunes the rest. */
+/**
+ * Pushes the project variables (public ones, pool keys, the launchpad's relay token) before every
+ * deployment, and prunes the rest.
+ */
 export async function syncProjectEnv(
   deps: PipelineDeps,
   signal: AbortSignal,
   projectId: string,
+  slug: string,
   poolKeys: string | undefined,
 ): Promise<void> {
-  const vars: Record<string, string> = { ...deps.config.projectEnv };
-  if (poolKeys) {
-    vars.POOL_CONFIG_KEY = poolKeys;
-    vars.NEXT_PUBLIC_POOL_CONFIG_KEY = poolKeys;
-  }
+  const vars = clientProjectVars(deps.config.projectEnv, {
+    slug,
+    poolKeys,
+    relayTokenSecret: deps.config.rpcRelayTokenSecret,
+  });
   guard(signal);
   await deps.vercel.setEnv(projectId, vars);
   guard(signal);

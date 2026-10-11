@@ -12,7 +12,12 @@ import {
 } from './pipeline/site-config.js';
 import type { LaunchpadRecord, SleepStore } from './pipeline/store.js';
 import { assertNotPaused } from './sleep.js';
-import { projectNameForSlug, type VercelClient, type VercelProject } from './vercel.js';
+import {
+  clientProjectVars,
+  projectNameForSlug,
+  type VercelClient,
+  type VercelProject,
+} from './vercel.js';
 import type { WorkerLogger } from './worker.js';
 import { sanitizeError } from './worker/messages.js';
 
@@ -49,6 +54,8 @@ export interface DisableDeps {
   >;
   /** Public variables of client projects (as for the pipeline). */
   projectEnv: Readonly<Record<string, string>>;
+  /** Signs the per-launchpad relay token of each project (relay-token.ts). */
+  rpcRelayTokenSecret: string;
   logger: WorkerLogger;
   /** `deploys_paused`: while set, the cut uses the pause (no deployment). */
   isPaused?: () => Promise<boolean>;
@@ -143,12 +150,11 @@ async function deployMaintenance(
     committed = commit.committed;
   }
 
-  const vars: Record<string, string> = { ...deps.projectEnv };
-  const poolKeys = poolConfigKeys(config.onchain);
-  if (poolKeys) {
-    vars.POOL_CONFIG_KEY = poolKeys;
-    vars.NEXT_PUBLIC_POOL_CONFIG_KEY = poolKeys;
-  }
+  const vars = clientProjectVars(deps.projectEnv, {
+    slug: lp.slug,
+    poolKeys: poolConfigKeys(config.onchain),
+    relayTokenSecret: deps.rpcRelayTokenSecret,
+  });
   guard(signal);
   await deps.vercel.setEnv(project.id, vars);
   guard(signal);

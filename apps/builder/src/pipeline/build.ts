@@ -414,7 +414,7 @@ export async function runBuildStep(
   );
 
   // Preview deployment, created explicitly (git deployments are off).
-  await syncProjectEnv(deps, signal, project.id, poolConfigKeys(baseline.onchain));
+  await syncProjectEnv(deps, signal, project.id, spec.slug, poolConfigKeys(baseline.onchain));
   guard(signal);
   const deployment = await deps.vercel.createDeployment({
     project: { id: project.id, name: project.name },

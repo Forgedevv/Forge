@@ -22,7 +22,7 @@ import {
   specFixture,
   templateFiles,
 } from './pipeline/test-fakes.js';
-import { TEST_PROJECT_ENV } from './pipeline/test-harness.js';
+import { TEST_PROJECT_ENV, TEST_RELAY_SECRET } from './pipeline/test-harness.js';
 import { startSleepScheduler } from './sleep.js';
 
 const REPO = 'lp-moonpad';
@@ -84,6 +84,7 @@ async function setup(opts: { released?: boolean; status?: 'disabled' | 'live' } 
     github,
     vercel,
     projectEnv: TEST_PROJECT_ENV,
+    rpcRelayTokenSecret: TEST_RELAY_SECRET,
     logger: silentLogger(),
     isPaused: async () => paused,
     alerter: {
@@ -243,6 +244,7 @@ describe('disabled launchpads', () => {
         github: h.github,
         vercel: h.vercel,
         projectEnv: TEST_PROJECT_ENV,
+        rpcRelayTokenSecret: TEST_RELAY_SECRET,
         logger: silentLogger(),
       },
       {
@@ -270,6 +272,7 @@ describe('disabled launchpads', () => {
         github: h.github,
         vercel: h.vercel,
         projectEnv: TEST_PROJECT_ENV,
+        rpcRelayTokenSecret: TEST_RELAY_SECRET,
         logger: silentLogger(),
       },
       {

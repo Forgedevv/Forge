@@ -12,7 +12,7 @@ import {
   withMode,
 } from './pipeline/site-config.js';
 import type { LaunchpadRecord, SleepStore } from './pipeline/store.js';
-import type { VercelClient } from './vercel.js';
+import { clientProjectVars, type VercelClient } from './vercel.js';
 import type { WorkerLogger } from './worker.js';
 import { sanitizeError } from './worker/messages.js';
 
@@ -46,6 +46,8 @@ export interface SleepDeps {
   >;
   /** Public variables of client projects (as for the pipeline). */
   projectEnv: Readonly<Record<string, string>>;
+  /** Signs the per-launchpad relay token of each project (relay-token.ts). */
+  rpcRelayTokenSecret: string;
   logger: WorkerLogger;
   /** `deploys_paused` kill switch: nothing is deployed while it is set. */
   isPaused?: () => Promise<boolean>;
@@ -150,12 +152,11 @@ export async function setLaunchpadMode(
   if (!project.gitDeploymentsDisabled) {
     throw new PipelineError('git-triggered deployments are not disabled on the Vercel project');
   }
-  const vars: Record<string, string> = { ...deps.projectEnv };
-  const poolKeys = poolConfigKeys(config.onchain);
-  if (poolKeys) {
-    vars.POOL_CONFIG_KEY = poolKeys;
-    vars.NEXT_PUBLIC_POOL_CONFIG_KEY = poolKeys;
-  }
+  const vars = clientProjectVars(deps.projectEnv, {
+    slug: lp.slug,
+    poolKeys: poolConfigKeys(config.onchain),
+    relayTokenSecret: deps.rpcRelayTokenSecret,
+  });
   guard(signal);
   await deps.vercel.setEnv(project.id, vars);
   guard(signal);

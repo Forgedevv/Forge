@@ -215,7 +215,7 @@ export async function runDeployStep(
   }
 
   // Production deployment of exactly that commit, then promotion.
-  await syncProjectEnv(deps, signal, project.id, poolConfigKeys(released.onchain));
+  await syncProjectEnv(deps, signal, project.id, spec.slug, poolConfigKeys(released.onchain));
   guard(signal);
   const deployment = await deps.vercel.createDeployment({
     project: { id: project.id, name: project.name },

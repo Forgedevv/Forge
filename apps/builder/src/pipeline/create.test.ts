@@ -1,4 +1,5 @@
 /// <reference types="node" />
+import { createHmac } from 'node:crypto';
 import { readdir, symlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { JobRow } from '@forge/shared';
@@ -22,7 +23,14 @@ import {
   OWNER_TX,
   silentLogger,
 } from './test-fakes.js';
-import { agents, designAgent, makeHarness, withPreviewUrl, type Harness } from './test-harness.js';
+import {
+  agents,
+  designAgent,
+  makeHarness,
+  TEST_RELAY_SECRET,
+  withPreviewUrl,
+  type Harness,
+} from './test-harness.js';
 
 const REPO = 'lp-moonpad';
 const BRANCH = jobBranch(CREATE_JOB_ID);
@@ -194,6 +202,21 @@ describe('create: building', () => {
     expect(before.onchain).toBeUndefined();
     expect(h.runner.stepsRun()).toEqual(['agent']);
     expect(h.github.count('commitFiles')).toBe(0);
+  });
+
+  it('gives the project its own server-only relay token', async () => {
+    const h = harness();
+    await runStep(h, building());
+    const project = h.vercel.projectBySlug('moonpad')!;
+    const expected = `v1.moonpad.${createHmac('sha256', TEST_RELAY_SECRET)
+      .update('forge-rpc-relay:v1:moonpad')
+      .digest('hex')}`;
+    expect(project.env.get('FORGE_RPC_RELAY_TOKEN')).toBe(expected);
+    expect(h.vercel.deploymentsOf(project.id)[0]!.env.FORGE_RPC_RELAY_TOKEN).toBe(expected);
+    for (const [key, value] of project.env) {
+      if (key.startsWith('NEXT_PUBLIC_')) expect(value).not.toBe(expected);
+      expect(value).not.toContain(TEST_RELAY_SECRET);
+    }
   });
 
   it('creates the Vercel project (git deployments off) before anything is pushed', async () => {

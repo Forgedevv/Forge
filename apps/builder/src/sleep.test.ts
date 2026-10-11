@@ -20,7 +20,7 @@ import {
   specFixture,
   templateFiles,
 } from './pipeline/test-fakes.js';
-import { TEST_PROJECT_ENV } from './pipeline/test-harness.js';
+import { TEST_PROJECT_ENV, TEST_RELAY_SECRET } from './pipeline/test-harness.js';
 import type { SiteMode } from '@forge/shared';
 import {
   DeploysPausedError,
@@ -76,6 +76,7 @@ async function setup(opts: { mode?: SiteMode; lastTradeDaysAgo?: number | null }
     github,
     vercel,
     projectEnv: TEST_PROJECT_ENV,
+    rpcRelayTokenSecret: TEST_RELAY_SECRET,
     logger: silentLogger(),
     isPaused: async () => paused,
     alerter: {
@@ -105,6 +106,7 @@ describe('sleep mode', () => {
     const production = vercel.deployments.get(project.productionDeploymentId!)!;
     expect(production).toMatchObject({ target: 'production', sha: main, readyState: 'READY' });
     expect(production.env.POOL_CONFIG_KEY).toBe(`${LAUNCHPAD_CONFIG},${LAUNCHPAD_COIN_CONFIG}`);
+    expect(production.env.FORGE_RPC_RELAY_TOKEN).toMatch(/^v1\.moonpad\.[0-9a-f]{64}$/);
     expect(store.get(LAUNCHPAD_ID).status).toBe('sleeping');
   });
 

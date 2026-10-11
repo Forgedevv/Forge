@@ -32,6 +32,9 @@ export const TEST_PROJECT_ENV: Record<string, string> = {
   NEXT_PUBLIC_R2_PUBLIC_URL: 'https://cdn.forge.test',
 };
 
+/** Secret of the per-launchpad relay tokens in tests (32 bytes, not a real one). */
+export const TEST_RELAY_SECRET = 'test-relay-token-secret-0123456789abcdef';
+
 export const TEST_AGENT: AgentConfig = {
   bin: 'claude',
   model: 'claude-sonnet-5-5',
@@ -85,6 +88,7 @@ export function makeHarness(jobsRoot: string, over: Partial<PipelineConfig> = {}
     config: {
       cluster: 'devnet',
       projectEnv: TEST_PROJECT_ENV,
+      rpcRelayTokenSecret: TEST_RELAY_SECRET,
       scanOptions: { rpcRelayHost: 'forge.test', r2PublicHost: 'cdn.forge.test' },
       agent: TEST_AGENT,
       deploymentTimeoutMs: 1_000,
