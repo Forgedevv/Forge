@@ -10,7 +10,7 @@ import {
   serverErrorResponse,
 } from './http';
 import { issueChallenge, NONCE_TTL_SECONDS, verifySignIn } from './sign-in';
-import { clearSession, requireSession, setSession, getSession } from './session';
+import { betaRefusal, clearSession, requireSession, setSession } from './session';
 import { mintSupabaseAccessToken } from './supabase-token';
 
 /*
@@ -91,6 +91,14 @@ export async function handleVerify(request: Request): Promise<Response> {
       return errorResponse(401, 'UNAUTHORIZED', VERIFY_FAILURE_MESSAGE);
     }
 
+    // Private beta: only allowlisted wallets get a session. Checked after the signature, so only
+    // the owner of a wallet learns whether it is invited.
+    const refused = betaRefusal(result.wallet);
+    if (refused) {
+      refused.headers.append('Set-Cookie', serializeCookie(request, NONCE_COOKIE, '', 0));
+      return refused;
+    }
+
     const response = jsonResponse({ wallet: result.wallet });
     setSession(response, request, result.wallet);
     response.headers.append('Set-Cookie', serializeCookie(request, NONCE_COOKIE, '', 0));
@@ -107,15 +115,11 @@ export function handleLogout(request: Request): Response {
   return clearSession(jsonResponse({ ok: true }), request);
 }
 
-/** GET /api/auth/session -> `{ wallet }` or 401. */
+/** GET /api/auth/session -> `{ wallet }`, 401, or 403 BETA_NOT_INVITED. */
 export function handleSession(request: Request): Response {
-  try {
-    const session = getSession(request);
-    if (session === null) return errorResponse(401, 'UNAUTHORIZED', 'Not signed in.');
-    return jsonResponse(session);
-  } catch (error) {
-    return serverErrorResponse(error);
-  }
+  const session = requireSession(request, 'Not signed in.');
+  if (session instanceof Response) return session;
+  return jsonResponse(session);
 }
 
 /** GET /api/auth/supabase-token -> `{ accessToken, expiresAt }` (session required). */
