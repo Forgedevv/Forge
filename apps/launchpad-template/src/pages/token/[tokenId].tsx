@@ -24,8 +24,13 @@ const SwapWidget = () => {
     return null;
   }
 
+  // Indexer decimals are a display fallback only: the panel reads the decimals of the on-chain mint.
   return (
-    <CoinTradePanel mint={tokenId} symbol={baseAsset?.symbol} tokenDecimals={baseAsset?.decimals} />
+    <CoinTradePanel
+      mint={tokenId}
+      symbol={baseAsset?.symbol}
+      displayDecimals={baseAsset?.decimals}
+    />
   );
 };
 

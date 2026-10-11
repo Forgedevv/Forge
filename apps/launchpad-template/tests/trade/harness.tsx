@@ -20,10 +20,28 @@ export interface FakeConnection {
   getSignatureStatuses: ReturnType<typeof vi.fn>;
 }
 
+/** On-chain account of an initialized SPL mint with these decimals. */
+export function mintAccount(decimals: number, owner = SPL_TOKEN_PROGRAM) {
+  const data = new Uint8Array(82);
+  data[44] = decimals;
+  data[45] = 1;
+  return { data, owner: new PublicKey(owner), lamports: 1_461_600, executable: false };
+}
+
+export const SPL_TOKEN_PROGRAM = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
+
+/** Account reads by address: the coin mint (6 decimals by default), any other account from `others`. */
+export function accountsByAddress(
+  others: (address: string) => unknown = () => null,
+  mint: unknown = mintAccount(6),
+) {
+  return async (address: PublicKey) => (address.toBase58() === keys.mint ? mint : others(address.toBase58()));
+}
+
 export function createFakeConnection(): FakeConnection {
   return {
     getBalance: vi.fn(async () => 5_000_000_000),
-    getAccountInfo: vi.fn(async () => null),
+    getAccountInfo: vi.fn(accountsByAddress()),
     getMinimumBalanceForRentExemption: vi.fn(async () => 2_039_280),
     getLatestBlockhash: vi.fn(async () => ({
       blockhash: '11111111111111111111111111111111',

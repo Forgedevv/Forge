@@ -20,13 +20,13 @@ vi.mock('../../src/forge/trade/pool-address', () => ({
 }));
 
 vi.mock('../../src/forge/TradePanel', () => ({
-  TradePanel: (p: { mint: string; pool: string; symbol?: string; tokenDecimals?: number }) => (
+  TradePanel: (p: { mint: string; pool: string; symbol?: string; displayDecimals?: number }) => (
     <div
       data-testid="trade-panel"
       data-mint={p.mint}
       data-pool={p.pool}
       data-symbol={p.symbol ?? ''}
-      data-decimals={p.tokenDecimals === undefined ? 'default' : String(p.tokenDecimals)}
+      data-decimals={p.displayDecimals === undefined ? 'default' : String(p.displayDecimals)}
     />
   ),
 }));
@@ -40,7 +40,7 @@ afterEach(() => {
 
 describe('CoinTradePanel', () => {
   it('renders the FORGE TradePanel with the pool derived from the launchpad config', () => {
-    render(<CoinTradePanel mint="MINT" symbol="MOON" tokenDecimals={6} />);
+    render(<CoinTradePanel mint="MINT" symbol="MOON" displayDecimals={6} />);
     const panel = screen.getByTestId('trade-panel');
     expect(panel.dataset.mint).toBe('MINT');
     expect(panel.dataset.pool).toBe('POOL');

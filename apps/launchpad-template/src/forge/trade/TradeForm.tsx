@@ -8,6 +8,7 @@ import { TradeError } from './errors';
 import { QuoteSummary } from './QuoteSummary';
 import { explorerTxUrl, resolveCluster } from './trade-config';
 import { BUSY_STATUSES, useTradeExecution } from './useTradeExecution';
+import { useMintDecimals } from './useMintDecimals';
 import { useQuote } from './useQuote';
 import { estimateNetworkFee, useWalletBalances } from './useWalletBalances';
 import type { ConfirmOptions } from './confirm';
@@ -17,7 +18,11 @@ export interface TradeFormProps {
   mint: string;
   pool: string;
   symbol: string;
-  tokenDecimals?: number;
+  /**
+   * Decimals from a data API, for display only while the on-chain mint is being read. Raw amounts
+   * (sell input, Max) always use the decimals of the on-chain mint.
+   */
+  displayDecimals?: number;
   /** Called once a trade is confirmed on-chain. */
   onConfirmed?: (signature: string) => void;
   /** Called when the chain says the pool graduated (the panel then switches to Jupiter). */
@@ -55,7 +60,7 @@ export function TradeForm(props: TradeFormProps) {
     mint,
     pool,
     symbol,
-    tokenDecimals = DEFAULT_TOKEN_DECIMALS,
+    displayDecimals = DEFAULT_TOKEN_DECIMALS,
     onConfirmed,
     onGraduated,
     quoteDebounceMs,
@@ -76,8 +81,18 @@ export function TradeForm(props: TradeFormProps) {
   const [touched, setTouched] = useState(false);
   const [balanceVersion, setBalanceVersion] = useState(0);
 
-  const inputDecimals = side === 'buy' ? SOL_DECIMALS : tokenDecimals;
-  const amount = useMemo(() => parseAmount(amountText, inputDecimals), [amountText, inputDecimals]);
+  // The coin's decimals come from its on-chain mint; the data API value only fills the display.
+  const { state: mintDecimals, retry: retryMintDecimals } = useMintDecimals(connection, mintKey);
+  const chainDecimals = mintDecimals.status === 'ready' ? mintDecimals.decimals : null;
+  const tokenDecimals = chainDecimals ?? displayDecimals;
+  const inputDecimals = side === 'buy' ? SOL_DECIMALS : chainDecimals;
+  const amount = useMemo(
+    (): ReturnType<typeof parseAmount> =>
+      inputDecimals === null
+        ? { ok: false, reason: 'empty' }
+        : parseAmount(amountText, inputDecimals),
+    [amountText, inputDecimals],
+  );
   const slippage = useMemo(() => parseSlippagePercent(slippageText), [slippageText]);
 
   const busy = BUSY_STATUSES.includes(execution.status);
@@ -118,7 +133,10 @@ export function TradeForm(props: TradeFormProps) {
   };
 
   // Inputs
-  const amountError = !touched || amountText === '' ? null : amountErrorText(amount, inputDecimals);
+  const amountError =
+    !touched || amountText === '' || inputDecimals === null
+      ? null
+      : amountErrorText(amount, inputDecimals);
   const slippageError = slippageErrorText(slippage);
 
   // Balance check (skipped silently when the balance could not be read).
@@ -143,6 +161,7 @@ export function TradeForm(props: TradeFormProps) {
       return;
     }
     if (!poolKey || !quote || !amount.ok || !slippage.ok) return;
+    if (side === 'sell' && chainDecimals === null) return;
     const result = await execution.execute({
       connection,
       pool: poolKey,
@@ -178,6 +197,7 @@ export function TradeForm(props: TradeFormProps) {
     insufficient,
     side,
     symbol,
+    sellDecimals: side === 'sell' ? mintDecimals.status : null,
   });
 
   const cluster = resolveCluster();
@@ -251,12 +271,12 @@ export function TradeForm(props: TradeFormProps) {
                 </button>
               ))
             : null}
-          {side === 'sell' && balances ? (
+          {side === 'sell' && balances && chainDecimals !== null ? (
             <button
               type="button"
               disabled={busy || balances.token === BigInt(0)}
               onClick={() =>
-                editAmount(formatUnits(balances.token, tokenDecimals).replace(/,/g, ''))
+                editAmount(formatUnits(balances.token, chainDecimals).replace(/,/g, ''))
               }
               className="rounded-[var(--radius)] border border-[var(--color-border)] px-2 py-1 text-xs text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
             >
@@ -272,6 +292,14 @@ export function TradeForm(props: TradeFormProps) {
             </span>
           ) : null}
         </div>
+        {side === 'sell' && mintDecimals.status === 'error' ? (
+          <div role="alert" className="flex flex-col gap-1 text-xs" data-testid="mint-error">
+            <p className="text-[var(--color-danger)]">{mintDecimals.error}</p>
+            <button type="button" onClick={retryMintDecimals} className="self-start underline">
+              Retry
+            </button>
+          </div>
+        ) : null}
       </div>
 
       <fieldset className="flex flex-col gap-1.5">
@@ -430,11 +458,17 @@ function buttonState(args: {
   insufficient: boolean;
   side: TradeSide;
   symbol: string;
+  /** Status of the on-chain mint read, on the sell side only. */
+  sellDecimals: 'idle' | 'loading' | 'ready' | 'error' | null;
 }): { label: string; disabled: boolean } {
   if (args.misconfigured) return { label: 'Trading unavailable', disabled: true };
   if (args.busyStatus) {
     return { label: STATUS_LABEL[args.busyStatus] ?? 'Working...', disabled: true };
   }
+  if (args.sellDecimals === 'idle' || args.sellDecimals === 'loading') {
+    return { label: 'Reading the coin...', disabled: true };
+  }
+  if (args.sellDecimals === 'error') return { label: 'Coin unavailable', disabled: true };
   if (!args.amountOk) return { label: 'Enter an amount', disabled: true };
   if (!args.slippageOk) return { label: 'Fix slippage', disabled: true };
   if (args.quoteStatus === 'loading' || args.quoteStatus === 'idle') {
