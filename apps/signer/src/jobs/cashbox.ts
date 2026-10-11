@@ -18,7 +18,8 @@
  * a recent unfinalized `forge:cashbox-sweep` transaction on the cashbox (e.g. sent by another
  * instance or before a lost journal) blocks planning, and the refunds job (the only other
  * spender) shares the same, required, `walletLock`. Dry-run mode computes and logs the plan
- * without signing. Kill switches: env `paused`, flag `cashbox_sweep_paused` (fail closed).
+ * without signing. Kill switches: env `paused`, flag `cashbox_sweep_paused` (fail closed), read
+ * before waiting on the wallet lock, again once it is held, and again right before signing.
  */
 import { PublicKey } from '@solana/web3.js';
 import { z } from 'zod';
@@ -282,7 +283,23 @@ export function createCashboxJob(deps: CashboxDeps): CashboxJob {
     };
   }
 
+  /**
+   * Reads the kill switches (env `paused`, flag `cashbox_sweep_paused`, fail closed). Null when the
+   * sweep may go on, else the `paused` report (abnormal pauses raise an alert).
+   */
+  async function pausedReport(): Promise<CashboxRunReport | null> {
+    const pause = await checkPaused(deps.flags, JOB_FLAGS.cashbox, config.paused, log);
+    if (!pause.paused) return null;
+    log.info({ reason: pause.reason }, 'cashbox sweep paused');
+    await alertAbnormalPause(alerter, log, 'cashbox', JOB_FLAGS.cashbox, pause.reason);
+    return { status: 'paused', reason: pause.reason };
+  }
+
   async function runUnlocked(): Promise<CashboxRunReport> {
+    // The switch may have been turned on while this run waited for the wallet lock.
+    const pausedAtStart = await pausedReport();
+    if (pausedAtStart) return pausedAtStart;
+
     let cashboxRef: string | undefined;
     if (!config.dryRun) {
       try {
@@ -402,6 +419,9 @@ export function createCashboxJob(deps: CashboxDeps): CashboxJob {
       lamports: plan.amount,
       memo: SWEEP_MEMO,
     });
+    // The kill switch may have been turned on since the run started: re-read it before signing.
+    const pausedBeforeSigning = await pausedReport();
+    if (pausedBeforeSigning) return pausedBeforeSigning;
     const { raw, signature } = await signWithKeystore(keystore, tx, [
       { ref: cashboxRef, expected: config.cashbox },
     ]);
@@ -441,12 +461,9 @@ export function createCashboxJob(deps: CashboxDeps): CashboxJob {
       if (running) return { status: 'busy' };
       running = true;
       try {
-        const pause = await checkPaused(deps.flags, JOB_FLAGS.cashbox, config.paused, log);
-        if (pause.paused) {
-          log.info({ reason: pause.reason }, 'cashbox sweep paused');
-          await alertAbnormalPause(alerter, log, 'cashbox', JOB_FLAGS.cashbox, pause.reason);
-          return { status: 'paused', reason: pause.reason };
-        }
+        // Read before waiting on the lock (no wait when paused), then again inside it.
+        const paused = await pausedReport();
+        if (paused) return paused;
         try {
           return await deps.walletLock.runExclusive(runUnlocked);
         } catch (err) {
