@@ -8,14 +8,13 @@ import {
   SIGNER_TIMESTAMP_HEADER,
   SignerConfigsRequest,
   SignerConfigsResponse,
-  SignerHealthResponse,
   SignerLaunchPrepareRequest,
-  SignerLaunchPrepareResponse,
 } from '@forge/shared';
 import { DEFAULT_MAX_BODY_BYTES, readRawBody } from './http/body.js';
 import { assertHmacSecret, checkTimestamp, verifySignature } from './http/hmac.js';
 import { createIpFilter, parseAllowedIps } from './http/ip.js';
 import { ReplayCache } from './http/replay.js';
+import { SignerHealthReport, SignerLaunchPrepareResult } from './routes/schemas.js';
 
 export { signRequest, MIN_HMAC_SECRET_BYTES } from './http/hmac.js';
 export { parseAllowedIps } from './http/ip.js';
@@ -42,12 +41,16 @@ export { parseAllowedIps } from './http/ip.js';
 export type SignerRouteResult<T> =
   { ok: true; body: T } | { ok: false; status: number; error: string };
 
+/**
+ * Route handlers (routes/index.ts). The launch and health answers are the shared responses plus
+ * optional non-secret fields (routes/schemas.ts), which the builder's client ignores.
+ */
 export interface SignerRouteHandlers {
   configs(input: SignerConfigsRequest): Promise<SignerRouteResult<SignerConfigsResponse>>;
   launchCoinPrepare(
     input: SignerLaunchPrepareRequest,
-  ): Promise<SignerRouteResult<SignerLaunchPrepareResponse>>;
-  health(): Promise<SignerRouteResult<SignerHealthResponse>>;
+  ): Promise<SignerRouteResult<SignerLaunchPrepareResult>>;
+  health(): Promise<SignerRouteResult<SignerHealthReport>>;
 }
 
 /** Wave 1 handlers: the two signing routes are not implemented yet. */
@@ -158,14 +161,14 @@ function buildRoutes(handlers: SignerRouteHandlers): RouteEntry[] {
       run: async (raw) => {
         const input = parseJsonBody(SignerLaunchPrepareRequest, raw);
         if (input === undefined) return 'bad_request';
-        return toResponse(await handlers.launchCoinPrepare(input), SignerLaunchPrepareResponse);
+        return toResponse(await handlers.launchCoinPrepare(input), SignerLaunchPrepareResult);
       },
     },
     {
       ...SIGNER_ROUTES.health,
       run: async (raw) => {
         if (raw.length !== 0) return 'bad_request';
-        return toResponse(await handlers.health(), SignerHealthResponse);
+        return toResponse(await handlers.health(), SignerHealthReport);
       },
     },
   ];

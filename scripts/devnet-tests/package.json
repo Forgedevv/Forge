@@ -18,7 +18,8 @@
     "summary": "tsx src/summary.ts",
     "core:config-pool": "tsx src/core-config-pool.ts",
     "core:swap": "tsx src/core-swap.ts",
-    "core:reads": "tsx src/core-reads.ts"
+    "core:reads": "tsx src/core-reads.ts",
+    "signer:routes": "tsx src/signer-routes.ts"
   },
   "dependencies": {
     "@forge/shared": "workspace:*",
