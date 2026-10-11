@@ -12,9 +12,10 @@ import {
   resumePayment,
   signOwnerTransaction,
 } from './actions';
-import type { ForgeClientInput } from './types';
+import type { ForgeWebClient } from './types';
 import { explorerTxUrl, formatSol, formatUsd, shortAddress } from './format';
 import {
+  useBetaAccess,
   useChat,
   useFlags,
   useGating,
@@ -41,6 +42,7 @@ export {
   resumePayment,
   shortAddress,
   signOwnerTransaction,
+  useBetaAccess,
   useChat,
   useFlags,
   useGating,
@@ -51,7 +53,7 @@ export {
 };
 
 /** The real implementation of the whole client, as one object (swappable with the UI mocks). */
-export const realClient: ForgeClientInput = {
+export const realClient: ForgeWebClient = {
   useSession,
   useFlags,
   useGating,
@@ -74,6 +76,7 @@ export const realClient: ForgeClientInput = {
   explorerTxUrl,
   getPendingPayment,
   resumePayment,
+  useBetaAccess,
 };
 
 /** The extended client still implements the shared contract. */

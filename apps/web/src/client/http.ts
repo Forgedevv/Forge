@@ -1,7 +1,7 @@
 import { ClientError } from '@forge/shared';
 import type { z } from 'zod';
 import { mapHttpError, networkError, parseRetryAfter } from './errors';
-import { emitUnauthorized } from './session-store';
+import { emitBetaNotInvited, emitUnauthorized } from './session-store';
 
 export interface RequestOptions {
   method?: 'GET' | 'POST';
@@ -60,7 +60,9 @@ export async function rawRequest(path: string, opts: RequestOptions = {}): Promi
       await readJson(res),
       parseRetryAfter(res.headers.get('retry-after')),
     );
-    if (err.code === 'UNAUTHORIZED' && !opts.keepSessionOn401) emitUnauthorized();
+    // Private beta: whatever route answered, this wallet has no session here.
+    if (err.code === 'BETA_NOT_INVITED') emitBetaNotInvited();
+    else if (err.code === 'UNAUTHORIZED' && !opts.keepSessionOn401) emitUnauthorized();
     throw err;
   }
   return res;

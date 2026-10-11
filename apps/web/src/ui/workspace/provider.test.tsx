@@ -327,3 +327,27 @@ it('retains dialog focus when successful authentication replaces the login contr
   fireEvent.keyDown(document.activeElement!, { key: 'Escape' });
   expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
 });
+
+it('shows the private beta notice when the real sign-in is refused for this wallet', async () => {
+  fetchApi.mockImplementation((path: string) => {
+    if (path === WEB_API_ROUTES.authNonce.path)
+      return Promise.resolve(
+        json({
+          nonce: 'n',
+          message: 'Sign in to the frontend test.',
+          expiresAt: '2030-01-01T00:00:00Z',
+        }),
+      );
+    if (path === WEB_API_ROUTES.authVerify.path)
+      return Promise.resolve(
+        json({ code: 'BETA_NOT_INVITED', message: 'FORGE is in private beta.' }, 403),
+      );
+    if (path === WEB_API_ROUTES.flags.path) return Promise.resolve(json({ signupsPaused: false }));
+    return Promise.resolve(json({}, 401));
+  });
+  mount();
+  fireEvent.click(await screen.findByRole('button', { name: copy.choose }, { timeout: 10000 }));
+  const notices = await screen.findAllByRole('alert');
+  expect(notices.some((n) => n.textContent?.includes(copy.betaTitle))).toBe(true);
+  expect(screen.queryByText('Protected workshop')).not.toBeInTheDocument();
+});

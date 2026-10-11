@@ -39,6 +39,7 @@ interface Snapshot {
   pads: LaunchpadSummaryView[];
   chats: Record<string, ChatState>;
   signupsPaused: boolean;
+  betaNotInvited: boolean;
 }
 
 export function createMockController(scenario = 'journey') {
@@ -124,7 +125,8 @@ export function createMockController(scenario = 'journey') {
     session:
       scenario === 'journey' ||
       (scenario.startsWith('session:') && scenario !== 'session:connected') ||
-      scenario === 'global:disconnected'
+      scenario === 'global:disconnected' ||
+      scenario === 'global:beta'
         ? null
         : { wallet: scenario === 'launch:wrong-wallet' ? otherWallet : mockWallet },
     sessionStatus:
@@ -180,6 +182,7 @@ export function createMockController(scenario = 'journey') {
           : emptyChat(true),
     },
     signupsPaused: scenario === 'home:paused',
+    betaNotInvited: scenario === 'session:beta' || scenario === 'global:beta',
   };
   const notify = (patch: Partial<Snapshot>) => {
     if (disposed) return;
@@ -314,6 +317,10 @@ export function createMockController(scenario = 'journey') {
           if (scenario === 'session:error') {
             notify({ sessionStatus: 'error' });
             throw new ClientError('NETWORK', 'The wallet connection could not be completed.');
+          }
+          if (scenario === 'session:beta-sign-in') {
+            notify({ sessionStatus: 'error', betaNotInvited: true });
+            throw new ClientError('BETA_NOT_INVITED', 'FORGE is in private beta.');
           }
           notify({ session: { wallet: mockWallet }, sessionStatus: 'idle' });
         },
@@ -580,6 +587,12 @@ export function createMockController(scenario = 'journey') {
     formatUsd,
     shortAddress,
     explorerTxUrl,
+    useBetaAccess() {
+      return {
+        notInvited: useSnapshot().betaNotInvited,
+        dismiss: () => notify({ betaNotInvited: false }),
+      };
+    },
     getPendingPayment(jobId) {
       return sentPayment?.jobId === jobId ? sentPayment : null;
     },

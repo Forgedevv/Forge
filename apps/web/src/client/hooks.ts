@@ -46,14 +46,19 @@ import {
   type LaunchpadChange,
 } from './launchpads';
 import {
+  clearBetaNotInvited,
+  getBetaSnapshot,
+  getServerBetaSnapshot,
   getServerSessionSnapshot,
   getSessionSnapshot,
   setSession,
+  subscribeBeta,
   subscribeSession,
 } from './session-store';
 import { readChatStream } from './stream';
 import { getServerSupabaseSnapshot, getSupabaseSnapshot, subscribeSupabase } from './supabase';
 import type {
+  BetaAccess,
   LaunchpadDetailView,
   LaunchpadSummaryView,
   UseLaunchpadView,
@@ -108,6 +113,8 @@ export function useSession(): UseSessionResult {
   const connect = useCallback(async () => {
     setStatus('idle');
     epoch.current += 1;
+    // A new attempt (possibly another wallet): the beta notice comes back if it is refused again.
+    clearBetaNotInvited();
     try {
       if (!wallet.connected) {
         if (!wallet.wallet) {
@@ -176,6 +183,15 @@ export function useSession(): UseSessionResult {
   }, [wallet]);
 
   return { session, connect, disconnect, status };
+}
+
+/**
+ * Whether the server refused this wallet because FORGE is in private beta (BETA_NOT_INVITED from
+ * any call: sign-in, session restore, Supabase token, ...). The local session is already cleared.
+ */
+export function useBetaAccess(): BetaAccess {
+  const notInvited = useSyncExternalStore(subscribeBeta, getBetaSnapshot, getServerBetaSnapshot);
+  return { notInvited, dismiss: clearBetaNotInvited };
 }
 
 // ---------------------------------------------------------------------------

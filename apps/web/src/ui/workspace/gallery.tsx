@@ -166,7 +166,7 @@ function ScenarioContent({ scenario }: { scenario: string }) {
     case 'global':
       return state === 'loading' ? (
         <Loading />
-      ) : state === 'disconnected' ? (
+      ) : state === 'disconnected' || state === 'beta' ? (
         <SessionGate>
           <DashboardScreen />
         </SessionGate>
