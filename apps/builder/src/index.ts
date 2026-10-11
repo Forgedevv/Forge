@@ -29,7 +29,7 @@ import { sanitizeError } from './worker/messages.js';
 import { createWorkerLogger, runWorker } from './worker/run.js';
 
 /**
- * Builder process (VPS 1): the AI gateway, the job worker with the creation and modification
+ * Builder process (VPS 1): the model gateway, the job worker with the creation and modification
  * pipelines, and the daily sleep cycle. Configuration: apps/builder/.env.example.
  *
  * Start-up checks, in order, before any job is picked up: environment (zod, names only in
