@@ -6,6 +6,8 @@ export const dashboardCopy = {
   emptyBody: 'One idea is all it takes.',
   coins: 'Coins',
   fees: 'Fees to claim',
+  unknown: '—',
+  feesUnavailable: 'On-chain figures are unavailable right now.',
   changes: 'Changes left',
   overview: 'Launchpad summary',
   overviewEyebrow: 'OVERVIEW',

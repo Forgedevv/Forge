@@ -1,13 +1,8 @@
 'use client';
 import Link from 'next/link';
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
-import {
-  JOB_STATUS_LABELS,
-  type Job,
-  type LaunchpadStatus,
-  type LaunchpadSummary,
-  type TxPhase,
-} from '@forge/shared';
+import { JOB_STATUS_LABELS, type Job, type LaunchpadStatus, type TxPhase } from '@forge/shared';
+import type { LaunchpadSummaryView } from '@/client/types';
 import { useWebClient, useWorkspace } from './provider';
 import {
   ActionLink,
@@ -21,7 +16,7 @@ import {
 } from './components';
 import { dashboardCopy as copy } from './content/dashboard';
 import { common } from './content/common';
-import { safeUrl } from './safe-url';
+import { safeUrl, siteHost } from './safe-url';
 import { Muse, museColorsFor, museMoodForJob, type MuseMood } from '../muse';
 import { MuseHero, type HeroAction } from './muse-hero';
 import { LaunchpadArt } from './launchpad-art';
@@ -36,7 +31,7 @@ export function DashboardScreen({
   heroFallback?: boolean;
 }) {
   const api = useWebClient();
-  const { launchpads, loading, refresh } = api.useLaunchpads();
+  const { launchpads, loading, refresh, error: loadError } = api.useLaunchpads();
   const { signupsPaused } = api.useFlags();
   const [colors, setColors] = useState<Record<string, PadColors>>({});
   const [filter, setFilter] = useState<
@@ -99,7 +94,11 @@ export function DashboardScreen({
               />
               <PulseMetric
                 label={copy.coins}
-                value={launchpads.reduce((sum, pad) => sum + pad.coinsCount, 0)}
+                value={
+                  launchpads.some((pad) => pad.onchainAvailable === false)
+                    ? null
+                    : launchpads.reduce((sum, pad) => sum + pad.coinsCount, 0)
+                }
               />
               <PulseMetric
                 label={copy.activeBuilds}
@@ -128,6 +127,11 @@ export function DashboardScreen({
         <>
           <h1 className="fw-dashboard-title">{copy.title}</h1>
           <Loading />
+        </>
+      ) : loadError && launchpads.length === 0 ? (
+        <>
+          <h1 className="fw-dashboard-title">{copy.title}</h1>
+          <ErrorNotice message={loadError} onRetry={refresh} />
         </>
       ) : (
         <>
@@ -212,11 +216,11 @@ export function DashboardScreen({
   );
 }
 
-function PulseMetric({ label, value }: { label: string; value: number }) {
+function PulseMetric({ label, value }: { label: string; value: number | null }) {
   return (
     <div className="fw-pulse-metric">
       <dt>{label}</dt>
-      <dd>{value.toLocaleString()}</dd>
+      <dd>{value === null ? copy.unknown : value.toLocaleString()}</dd>
     </div>
   );
 }
@@ -249,7 +253,7 @@ function LaunchpadCard({
   claimPhase,
   onColors,
 }: {
-  pad: LaunchpadSummary;
+  pad: LaunchpadSummaryView;
   refresh(): void;
   claimPhase?: TxPhase;
   onColors(id: string, colors: PadColors): void;
@@ -264,6 +268,7 @@ function LaunchpadCard({
   const [busy, setBusy] = useState(false),
     [error, setError] = useState('');
   const url = safeUrl(pad.siteUrl);
+  const onchainKnown = pad.onchainAvailable !== false;
   const latestJob = launchpad?.jobs.reduce<Job | undefined>(
     (latest, job) =>
       !latest || Date.parse(job.updatedAt) > Date.parse(latest.updatedAt) ? job : latest,
@@ -271,10 +276,16 @@ function LaunchpadCard({
   );
   return (
     <Card className="fw-pad-card">
-      <Link className="fw-pad-cover-link" href={`/launchpads/${pad.id}`} aria-label={copy.openPad(pad.name)}>
+      <Link
+        className="fw-pad-cover-link"
+        href={`/launchpads/${pad.id}`}
+        aria-label={copy.openPad(pad.name)}
+      >
         <LaunchpadArt name={pad.name} slug={pad.slug} primary={primary} accent={accent} />
         <span className={`fw-badge fw-badge-${pad.status}`}>{copy.status[pad.status]}</span>
-        <span className="fw-pad-cover-arrow" aria-hidden="true">↗</span>
+        <span className="fw-pad-cover-arrow" aria-hidden="true">
+          ↗
+        </span>
       </Link>
       <div className="fw-pad-main">
         <div className="fw-pad-titleline">
@@ -289,10 +300,12 @@ function LaunchpadCard({
           </span>
           <div className="fw-pad-name">
             <h2>{pad.name}</h2>
-            <p className="fw-pad-subtitle">{pad.coin.name} <span>{pad.coin.symbol}</span></p>
+            <p className="fw-pad-subtitle">
+              {pad.coin.name} <span>{pad.coin.symbol}</span>
+            </p>
             {url && (
               <Link className="fw-site-url" href={url} target="_blank" rel="noreferrer">
-                {pad.slug}.forgepads.xyz <span aria-hidden="true">↗</span>
+                {siteHost(url)} <span aria-hidden="true">↗</span>
               </Link>
             )}
           </div>
@@ -300,18 +313,31 @@ function LaunchpadCard({
       </div>
       <div className="fw-pad-side">
         <div className="fw-pad-metrics" aria-label={copy.padStats}>
-          <div><span>{copy.coins}</span><strong>{pad.coinsCount.toString().padStart(2, '0')}</strong></div>
-          <div><span>{copy.changes}</span><strong>{pad.includedModificationsLeft.toString().padStart(2, '0')}</strong></div>
+          <div>
+            <span>{copy.coins}</span>
+            <strong>
+              {onchainKnown ? pad.coinsCount.toString().padStart(2, '0') : copy.unknown}
+            </strong>
+          </div>
+          <div>
+            <span>{copy.changes}</span>
+            <strong>{pad.includedModificationsLeft.toString().padStart(2, '0')}</strong>
+          </div>
         </div>
       </div>
       <div className="fw-pad-revenue">
         <div>
           <p>{copy.fees}</p>
-          <Amount lamports={pad.claimablePartnerFeesLamports} />
+          {onchainKnown ? (
+            <Amount lamports={pad.claimablePartnerFeesLamports} />
+          ) : (
+            <p className="fw-muted">{copy.feesUnavailable}</p>
+          )}
         </div>
         <ClaimButton
           launchpadId={pad.id}
           lamports={pad.claimablePartnerFeesLamports}
+          amountKnown={onchainKnown}
           initialPhase={claimPhase}
           onSuccess={() => {
             refresh();
@@ -320,18 +346,18 @@ function LaunchpadCard({
         />
       </div>
       {latestJob && (
-          <div className="fw-pad-activity">
-            <span className="fw-activity-dot" aria-hidden="true" />
-            <div>
-              <span>{copy.latestActivity}</span>
-              <strong>{JOB_STATUS_LABELS[latestJob.status]}</strong>
-            </div>
-            <time dateTime={latestJob.updatedAt}>
-              {new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' }).format(
-                new Date(latestJob.updatedAt),
-              )}
-            </time>
+        <div className="fw-pad-activity">
+          <span className="fw-activity-dot" aria-hidden="true" />
+          <div>
+            <span>{copy.latestActivity}</span>
+            <strong>{JOB_STATUS_LABELS[latestJob.status]}</strong>
           </div>
+          <time dateTime={latestJob.updatedAt}>
+            {new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' }).format(
+              new Date(latestJob.updatedAt),
+            )}
+          </time>
+        </div>
       )}
       {pad.status === 'sleeping' && (
         <div className="fw-notice fw-pad-notice">

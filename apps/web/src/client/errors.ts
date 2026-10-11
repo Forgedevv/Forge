@@ -21,6 +21,66 @@ export function defaultMessage(code: ClientErrorCode): string {
   return DEFAULT_MESSAGES[code];
 }
 
+export interface ApiErrorInfo {
+  /** HTTP status of the response. */
+  status: number;
+  /** The `code` of the JSON body as sent by the server (may be outside CLIENT_ERROR_CODES). */
+  serverCode: string | null;
+  /** Other fields of the JSON body (e.g. `signature`, `status`). */
+  details: Record<string, unknown>;
+  /** `Retry-After` of the response, in milliseconds. */
+  retryAfterMs: number | null;
+}
+
+/**
+ * A failed HTTP response. Its `code` is a ClientErrorCode (what screens switch on); the raw server
+ * code, the body and `Retry-After` are kept for the flows that retry or resume.
+ */
+export class ApiError extends ClientError implements ApiErrorInfo {
+  readonly status: number;
+  readonly serverCode: string | null;
+  readonly details: Record<string, unknown>;
+  readonly retryAfterMs: number | null;
+
+  constructor(code: ClientErrorCode, message: string, info: ApiErrorInfo) {
+    super(code, message);
+    this.name = 'ApiError';
+    this.status = info.status;
+    this.serverCode = info.serverCode;
+    this.details = info.details;
+    this.retryAfterMs = info.retryAfterMs;
+  }
+}
+
+/** The raw server code of an error (`ALREADY_SIGNED`, `CONFIRMATION_PENDING`, ...), if any. */
+export function serverCodeOf(err: unknown): string | null {
+  return err instanceof ApiError ? err.serverCode : null;
+}
+
+/** A network failure or a timeout: the request may not have reached the server. */
+export class NetworkFailure extends ClientError {
+  constructor(message: string) {
+    super('NETWORK', message);
+    this.name = 'NetworkFailure';
+  }
+}
+
+/** Worth retrying unchanged: network failure, timeout, 429 or 5xx. */
+export function isTransientError(err: unknown): boolean {
+  if (err instanceof NetworkFailure) return true;
+  if (err instanceof ApiError) return err.status === 429 || err.status >= 500;
+  return false;
+}
+
+/** Parses a `Retry-After` header (seconds or HTTP date) into milliseconds. */
+export function parseRetryAfter(value: string | null, now = Date.now()): number | null {
+  if (!value) return null;
+  const trimmed = value.trim();
+  if (/^\d+$/.test(trimmed)) return Number(trimmed) * 1000;
+  const at = Date.parse(trimmed);
+  return Number.isNaN(at) ? null : Math.max(0, at - now);
+}
+
 function pickMessage(body: unknown): string | undefined {
   if (body && typeof body === 'object') {
     const b = body as Record<string, unknown>;
@@ -36,11 +96,18 @@ function pickMessage(body: unknown): string | undefined {
  * Maps a failed HTTP response to a ClientError. A `code` in the JSON body wins; otherwise the
  * status decides. Unknown failures are reported as NETWORK with the server message if any.
  */
-export function mapHttpError(status: number, body: unknown): ClientError {
+export function mapHttpError(
+  status: number,
+  body: unknown,
+  retryAfterMs: number | null = null,
+): ApiError {
   const message = pickMessage(body);
   let code: ClientErrorCode;
-  const bodyCode =
-    body && typeof body === 'object' ? (body as Record<string, unknown>).code : undefined;
+  const record =
+    body && typeof body === 'object' && !Array.isArray(body)
+      ? (body as Record<string, unknown>)
+      : {};
+  const bodyCode = record.code;
   if (isCode(bodyCode)) code = bodyCode;
   else if (status === 401) code = 'UNAUTHORIZED';
   else if (status === 429) code = 'RATE_LIMITED';
@@ -50,12 +117,20 @@ export function mapHttpError(status: number, body: unknown): ClientError {
   else if (typeof bodyCode === 'string' && bodyCode.length > 0) code = 'NETWORK';
   else if (status === 402 || status === 403) code = 'GATING_REQUIRED';
   else code = 'NETWORK';
-  return new ClientError(code, message ?? defaultMessage(code));
+  const details = Object.fromEntries(
+    Object.entries(record).filter(([key]) => key !== 'code' && key !== 'message'),
+  );
+  return new ApiError(code, message ?? defaultMessage(code), {
+    status,
+    serverCode: typeof bodyCode === 'string' && bodyCode.length > 0 ? bodyCode : null,
+    details,
+    retryAfterMs,
+  });
 }
 
 export function networkError(cause?: unknown): ClientError {
   const detail = cause instanceof Error && cause.message ? ` (${cause.message})` : '';
-  return new ClientError('NETWORK', `${defaultMessage('NETWORK')}${detail}`);
+  return new NetworkFailure(`${defaultMessage('NETWORK')}${detail}`);
 }
 
 /** Wallet adapters reject with several shapes when the user cancels. */

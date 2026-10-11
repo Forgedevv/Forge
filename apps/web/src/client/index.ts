@@ -4,14 +4,18 @@ import {
   claimPartnerFees,
   confirmSpec,
   getOwnerTransactionSummary,
+  getPendingPayment,
   getQuote,
   payQuote,
   reactivateLaunchpad,
   requestModification,
+  resumePayment,
   signOwnerTransaction,
 } from './actions';
+import type { ForgeWebClient } from './types';
 import { explorerTxUrl, formatSol, formatUsd, shortAddress } from './format';
 import {
+  useBetaAccess,
   useChat,
   useFlags,
   useGating,
@@ -30,12 +34,15 @@ export {
   formatSol,
   formatUsd,
   getOwnerTransactionSummary,
+  getPendingPayment,
   getQuote,
   payQuote,
   reactivateLaunchpad,
   requestModification,
+  resumePayment,
   shortAddress,
   signOwnerTransaction,
+  useBetaAccess,
   useChat,
   useFlags,
   useGating,
@@ -46,7 +53,7 @@ export {
 };
 
 /** The real implementation of the whole client, as one object (swappable with the UI mocks). */
-export const realClient: WebClient = {
+export const realClient: ForgeWebClient = {
   useSession,
   useFlags,
   useGating,
@@ -67,7 +74,13 @@ export const realClient: WebClient = {
   formatUsd,
   shortAddress,
   explorerTxUrl,
+  getPendingPayment,
+  resumePayment,
+  useBetaAccess,
 };
+
+/** The extended client still implements the shared contract. */
+export const sharedContractClient: WebClient = realClient;
 
 /**
  * Dev-only flag: when true, the UI should use its own mocks (src/ui/mocks) instead of

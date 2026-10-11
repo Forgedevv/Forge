@@ -11,6 +11,7 @@ import {
 } from 'react';
 import {
   JOB_STATUS_LABELS,
+  type ClaimTransactionSummary,
   type Job,
   type Lamports,
   type TxPhase,
@@ -272,53 +273,188 @@ export function JobStepTracker({ job }: { job: Job }) {
     </ol>
   );
 }
+/** Claims are made pool by pool; this bounds one click (the server reports what is left). */
+export const MAX_CLAIM_ROUNDS = 10;
+
+interface ClaimReviewState {
+  summary: ClaimTransactionSummary | null;
+  decide(sign: boolean): void;
+}
+
+function claimedLamports(summary: ClaimTransactionSummary): Lamports {
+  return (BigInt(summary.tradingFeesLamports) + BigInt(summary.poolCreationFeeLamports)).toString();
+}
+
+/** What one claim transaction collects and costs, shown before the wallet is asked to sign. */
+function ClaimReview({ review }: { review: ClaimReviewState }) {
+  const { summary } = review;
+  return (
+    <div className="fw-notice fw-claim-review" role="group" aria-label={common.claimReview}>
+      {summary ? (
+        <dl className="fw-review-list">
+          <div>
+            <dt>{common.claimAmount}</dt>
+            <dd>
+              <Amount lamports={claimedLamports(summary)} />
+            </dd>
+          </div>
+          <div>
+            <dt>{common.claimCost}</dt>
+            <dd>
+              <Amount lamports={summary.ownerCostLamports} />
+            </dd>
+          </div>
+          {summary.remainingPools > 0 && (
+            <div>
+              <dt>{common.claimRemaining}</dt>
+              <dd>{summary.remainingPools}</dd>
+            </div>
+          )}
+        </dl>
+      ) : (
+        <p>{common.claimNoSummary}</p>
+      )}
+      <p className="fw-caption">
+        {summary && summary.remainingPools > 0 ? common.claimEachPool : common.claimToWallet}
+      </p>
+      <div className="fw-actions">
+        <Button onClick={() => review.decide(true)}>{common.claimSign}</Button>
+        <Button variant="quiet" onClick={() => review.decide(false)}>
+          {common.cancel}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 export function ClaimButton({
   launchpadId,
   lamports,
   onSuccess,
   initialPhase = 'idle',
+  amountKnown = true,
 }: {
   launchpadId: string;
   lamports: Lamports;
   onSuccess?(): void;
   initialPhase?: TxPhase;
+  /** False when the claimable amount could not be read: claiming is still offered. */
+  amountKnown?: boolean;
 }) {
   const api = useWebClient();
   const [phase, setPhase] = useState<TxPhase>(initialPhase);
   const [result, setResult] = useState<TxResult | null>(null);
-  const busy = phase === 'awaiting_signature' || phase === 'sending';
+  const [preparing, setPreparing] = useState(false);
+  const [review, setReview] = useState<ClaimReviewState | null>(null);
+  const [claimed, setClaimed] = useState<{ lamports: Lamports | null; signature?: string }[]>([]);
+  const [stalled, setStalled] = useState(false);
+  const busy =
+    preparing || review !== null || phase === 'awaiting_signature' || phase === 'sending';
+  const nothing = amountKnown && lamports === '0';
   const lock = useRef(false);
+  const claim = async () => {
+    if (lock.current || nothing) return;
+    lock.current = true;
+    setStalled(false);
+    setClaimed([]);
+    const seenPools = new Set<string>();
+    let confirmed = false;
+    try {
+      // One transaction per pool; each one is reviewed and signed on its own.
+      for (let round = 1; round <= MAX_CLAIM_ROUNDS; round++) {
+        setPreparing(true);
+        let repeated = false;
+        const next = await api.claimPartnerFees(launchpadId, setPhase, {
+          review: (summary) =>
+            new Promise<boolean>((resolve) => {
+              setPreparing(false);
+              // The same pool again: its fees are not refreshed yet, never claim it twice.
+              if (summary && seenPools.has(summary.pool)) {
+                repeated = true;
+                resolve(false);
+                return;
+              }
+              setReview({
+                summary,
+                decide: (sign) => {
+                  setReview(null);
+                  resolve(sign);
+                },
+              });
+            }),
+        });
+        setPreparing(false);
+        if (repeated) {
+          setStalled(true);
+          setPhase(confirmed ? 'confirmed' : 'idle');
+          break;
+        }
+        if (next.phase === 'idle') {
+          setPhase(confirmed ? 'confirmed' : 'idle');
+          break;
+        }
+        setResult(next);
+        setPhase(next.phase);
+        if (next.phase !== 'confirmed') break;
+        confirmed = true;
+        const summary = next.summary ?? null;
+        if (summary) seenPools.add(summary.pool);
+        setClaimed((list) => [
+          ...list,
+          {
+            lamports: summary ? claimedLamports(summary) : null,
+            ...(next.signature ? { signature: next.signature } : {}),
+          },
+        ]);
+        if (!summary || summary.remainingPools === 0) break;
+      }
+    } catch (error) {
+      setPhase('error');
+      setResult({ phase: 'error', error: readableError(error) });
+    } finally {
+      setPreparing(false);
+      setReview(null);
+      lock.current = false;
+      if (confirmed) onSuccess?.();
+    }
+  };
   return (
-    <div>
+    <div className="fw-claim">
       <p className="fw-caption">{common.claimExplanation}</p>
-      <Button
-        disabled={lamports === '0' || busy || phase === 'confirmed'}
-        onClick={async () => {
-          if (lock.current || lamports === '0') return;
-          lock.current = true;
-          try {
-            const next = await api.claimPartnerFees(launchpadId, setPhase);
-            setResult(next);
-            setPhase(next.phase);
-            if (next.phase === 'confirmed') onSuccess?.();
-          } catch (error) {
-            setPhase('error');
-            setResult({ phase: 'error', error: readableError(error) });
-          } finally {
-            lock.current = false;
-          }
-        }}
-      >
-        {phase === 'confirmed'
-          ? common.confirmed
-          : busy
-            ? phase === 'sending'
-              ? common.sending
-              : common.sign
-            : lamports === '0'
-              ? common.noFees
-              : common.claim}
-      </Button>
+      {review ? (
+        <ClaimReview review={review} />
+      ) : (
+        <Button disabled={nothing || busy || phase === 'confirmed'} onClick={claim}>
+          {phase === 'confirmed'
+            ? common.confirmed
+            : preparing
+              ? common.claimPreparing
+              : busy
+                ? phase === 'sending'
+                  ? common.sending
+                  : common.sign
+                : nothing
+                  ? common.noFees
+                  : common.claim}
+        </Button>
+      )}
+      {claimed.length > 0 && (
+        <ol className="fw-claim-log" aria-label={common.claimLog}>
+          {claimed.map((entry, i) => (
+            <li key={entry.signature ?? i}>
+              <span>
+                {common.claimDone} {entry.lamports ? api.formatSol(entry.lamports) : ''}
+              </span>
+              {entry.signature && (
+                <Link href={api.explorerTxUrl(entry.signature)} target="_blank" rel="noreferrer">
+                  {common.receipt} ↗
+                </Link>
+              )}
+            </li>
+          ))}
+        </ol>
+      )}
+      {stalled && <p className="fw-caption">{common.claimStalled}</p>}
       <TransactionState phase={phase} result={result} />
     </div>
   );

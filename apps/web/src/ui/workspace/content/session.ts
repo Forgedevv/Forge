@@ -12,4 +12,10 @@ export const sessionCopy = {
   rejected: 'Login cancelled. You can choose a wallet and try again.',
   error: 'We could not connect your wallet.',
   continue: 'Enter the workshop',
+  betaEyebrow: 'PRIVATE BETA',
+  betaTitle: 'FORGE is in private beta.',
+  betaBody:
+    'This wallet is not on the invite list yet. Connect an invited wallet, or ask the FORGE team for an invite.',
+  betaSwitch: 'Use another wallet',
+  betaHelp: 'How to get an invite',
 } as const;

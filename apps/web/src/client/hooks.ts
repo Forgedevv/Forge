@@ -15,17 +15,13 @@ import {
   type Gating,
   type Job,
   type JobEvent,
-  type LaunchpadDetail,
   type LaunchpadSpecDraft,
-  type LaunchpadSummary,
   type SpecValidation,
   type UiChatMessage,
   type UseChatOptions,
   type UseChatResult,
   type UseGatingResult,
   type UseJobResult,
-  type UseLaunchpadResult,
-  type UseLaunchpadsResult,
   type UseSessionResult,
 } from '@forge/shared';
 import { useWallet } from '@solana/wallet-adapter-react';
@@ -36,8 +32,6 @@ import { base58Encode } from './base58';
 import {
   fetchJob,
   fetchJobEvents,
-  fetchLaunchpad,
-  fetchLaunchpads,
   JobEventRowSchema,
   JobRowSchema,
   mapJob,
@@ -46,13 +40,30 @@ import {
 import { errorMessage, isUserRejection } from './errors';
 import { rawRequest, request, validateBody } from './http';
 import {
+  fetchLaunchpadDetail,
+  fetchLaunchpadList,
+  subscribeLaunchpadChanges,
+  type LaunchpadChange,
+} from './launchpads';
+import {
+  clearBetaNotInvited,
+  getBetaSnapshot,
+  getServerBetaSnapshot,
   getServerSessionSnapshot,
   getSessionSnapshot,
   setSession,
+  subscribeBeta,
   subscribeSession,
 } from './session-store';
 import { readChatStream } from './stream';
 import { getServerSupabaseSnapshot, getSupabaseSnapshot, subscribeSupabase } from './supabase';
+import type {
+  BetaAccess,
+  LaunchpadDetailView,
+  LaunchpadSummaryView,
+  UseLaunchpadView,
+  UseLaunchpadsView,
+} from './types';
 
 function useSupabaseClient(): SupabaseClient | null {
   return useSyncExternalStore(subscribeSupabase, getSupabaseSnapshot, getServerSupabaseSnapshot);
@@ -102,6 +113,8 @@ export function useSession(): UseSessionResult {
   const connect = useCallback(async () => {
     setStatus('idle');
     epoch.current += 1;
+    // A new attempt (possibly another wallet): the beta notice comes back if it is refused again.
+    clearBetaNotInvited();
     try {
       if (!wallet.connected) {
         if (!wallet.wallet) {
@@ -170,6 +183,15 @@ export function useSession(): UseSessionResult {
   }, [wallet]);
 
   return { session, connect, disconnect, status };
+}
+
+/**
+ * Whether the server refused this wallet because FORGE is in private beta (BETA_NOT_INVITED from
+ * any call: sign-in, session restore, Supabase token, ...). The local session is already cleared.
+ */
+export function useBetaAccess(): BetaAccess {
+  const notInvited = useSyncExternalStore(subscribeBeta, getBetaSnapshot, getServerBetaSnapshot);
+  return { notInvited, dismiss: clearBetaNotInvited };
 }
 
 // ---------------------------------------------------------------------------
@@ -390,76 +412,106 @@ export function useJob(jobId: string): UseJobResult {
 }
 
 // ---------------------------------------------------------------------------
-// Launchpads
+// Launchpads (API reads, refreshed on Realtime changes)
 // ---------------------------------------------------------------------------
 
-export function useLaunchpads(): UseLaunchpadsResult {
-  const sb = useSupabaseClient();
-  const [launchpads, setLaunchpads] = useState<LaunchpadSummary[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [tick, setTick] = useState(0);
-  const refresh = useCallback(() => setTick((t) => t + 1), []);
+/** Bursts of Realtime changes (a job moving through statuses) are read once. */
+export const LAUNCHPAD_REFRESH_DEBOUNCE_MS = 1_000;
 
+/**
+ * Calls `onChange(at)` after Realtime changes matching `filter` (debounced); `at` is the time of
+ * the first change of the burst, so the read that follows ignores older shared reads.
+ */
+function useLaunchpadChanges(
+  sb: SupabaseClient | null,
+  filter: (change: LaunchpadChange) => boolean,
+  onChange: (at: number) => void,
+): void {
+  const latest = useRef({ filter, onChange });
+  latest.current = { filter, onChange };
   useEffect(() => {
     if (!sb) return;
-    let active = true;
-    fetchLaunchpads(sb)
-      .then((l) => active && setLaunchpads(l))
-      .catch(() => undefined)
-      .finally(() => {
-        if (active) setLoading(false);
-      });
-    const channel = sb
-      .channel('launchpads-list')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'launchpads' }, () => {
-        if (active) setTick((t) => t + 1);
-      })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'jobs' }, () => {
-        if (active) setTick((t) => t + 1);
-      })
-      .subscribe();
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let since = 0;
+    const off = subscribeLaunchpadChanges(sb, (change) => {
+      if (!latest.current.filter(change)) return;
+      if (timer) return;
+      since = change.at;
+      timer = setTimeout(() => {
+        timer = null;
+        latest.current.onChange(since);
+      }, LAUNCHPAD_REFRESH_DEBOUNCE_MS);
+    });
     return () => {
-      active = false;
-      void sb.removeChannel(channel);
+      off();
+      if (timer) clearTimeout(timer);
     };
-  }, [sb, tick]);
-
-  return { launchpads, loading, refresh };
+  }, [sb]);
 }
 
-export function useLaunchpad(id: string): UseLaunchpadResult {
+export function useLaunchpads(): UseLaunchpadsView {
   const sb = useSupabaseClient();
-  const [launchpad, setLaunchpad] = useState<LaunchpadDetail | null>(null);
+  const [launchpads, setLaunchpads] = useState<LaunchpadSummaryView[]>([]);
   const [loading, setLoading] = useState(true);
-  const [tick, setTick] = useState(0);
+  const [error, setError] = useState<string | null>(null);
+  // `notBefore` of the next read: 0 on mount (a recent shared read is fine), then fresher.
+  const [readSince, setReadSince] = useState<number | null>(null);
+  const refresh = useCallback(() => setReadSince(Date.now()), []);
+  useLaunchpadChanges(sb, () => true, setReadSince);
 
   useEffect(() => {
-    if (!sb) return;
     let active = true;
-    fetchLaunchpad(sb, id)
-      .then((l) => active && setLaunchpad(l))
-      .catch(() => undefined)
+    fetchLaunchpadList(readSince === null ? {} : { notBefore: readSince })
+      .then((list) => {
+        if (!active) return;
+        setLaunchpads(list);
+        setError(null);
+      })
+      .catch((err: unknown) => {
+        if (active) setError(errorMessage(err));
+      })
       .finally(() => {
         if (active) setLoading(false);
       });
-    const channel = sb
-      .channel(`launchpad:${id}`)
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'launchpads', filter: `id=eq.${id}` },
-        () => active && setTick((t) => t + 1),
-      )
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'jobs', filter: `launchpad_id=eq.${id}` },
-        () => active && setTick((t) => t + 1),
-      )
-      .subscribe();
     return () => {
       active = false;
-      void sb.removeChannel(channel);
     };
-  }, [sb, id, tick]);
+  }, [readSince]);
 
-  return { launchpad, loading };
+  return { launchpads, loading, refresh, error };
+}
+
+export function useLaunchpad(id: string): UseLaunchpadView {
+  const sb = useSupabaseClient();
+  const [launchpad, setLaunchpad] = useState<LaunchpadDetailView | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [readSince, setReadSince] = useState<number | null>(null);
+  const refresh = useCallback(() => setReadSince(Date.now()), []);
+  useLaunchpadChanges(
+    sb,
+    (change) => change.launchpadId === null || change.launchpadId === id,
+    setReadSince,
+  );
+
+  useEffect(() => {
+    let active = true;
+    fetchLaunchpadDetail(id, readSince === null ? {} : { notBefore: readSince })
+      .then((detail) => {
+        if (!active) return;
+        setLaunchpad(detail);
+        setError(null);
+      })
+      .catch((err: unknown) => {
+        if (active) setError(errorMessage(err));
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [id, readSince]);
+
+  return { launchpad, loading, error, refresh };
 }

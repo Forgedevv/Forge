@@ -47,8 +47,15 @@ export function shortAddress(a: string): string {
   return `${a.slice(0, 4)}...${a.slice(-4)}`;
 }
 
+/**
+ * Explorer link of a transaction on the cluster named by NEXT_PUBLIC_SOLANA_CLUSTER. When it is
+ * not set, a production build links to mainnet (a devnet link is never guessed there); a
+ * development build links to devnet, the default cluster.
+ */
 export function explorerTxUrl(sig: string): string {
-  const cluster = process.env.NEXT_PUBLIC_SOLANA_CLUSTER;
+  const cluster = (process.env.NEXT_PUBLIC_SOLANA_CLUSTER ?? '').trim();
   const base = `https://explorer.solana.com/tx/${encodeURIComponent(sig)}`;
-  return cluster === 'mainnet-beta' || cluster === 'mainnet' ? base : `${base}?cluster=devnet`;
+  if (cluster === 'mainnet-beta' || cluster === 'mainnet') return base;
+  if (cluster === 'devnet' || cluster === 'testnet') return `${base}?cluster=${cluster}`;
+  return process.env.NODE_ENV === 'production' ? base : `${base}?cluster=devnet`;
 }

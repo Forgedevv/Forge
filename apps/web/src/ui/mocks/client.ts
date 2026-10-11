@@ -3,14 +3,12 @@
 import { useSyncExternalStore } from 'react';
 import {
   ClientError,
-  type WebClient,
   type UseSessionResult,
   type UseGatingResult,
   type UseChatResult,
   type Job,
   type JobEvent,
   type JobStatus,
-  type LaunchpadSummary,
   type TxPhase,
   type TxResult,
 } from '@forge/shared';
@@ -27,6 +25,8 @@ import {
   ownerSummary,
 } from './fixtures';
 import { formatSol, formatUsd, shortAddress, explorerTxUrl } from '../workspace/format';
+import { ApiError } from '@/client/errors';
+import type { ForgeClientInput, LaunchpadSummaryView, PendingPayment } from '@/client/types';
 
 type ChatState = Omit<UseChatResult, 'send'> & { turns: number };
 interface Snapshot {
@@ -37,9 +37,10 @@ interface Snapshot {
   networkError: boolean;
   jobs: Record<string, Job>;
   events: Record<string, JobEvent[]>;
-  pads: LaunchpadSummary[];
+  pads: LaunchpadSummaryView[];
   chats: Record<string, ChatState>;
   signupsPaused: boolean;
+  betaNotInvited: boolean;
 }
 
 export function createMockController(scenario = 'journey') {
@@ -125,7 +126,8 @@ export function createMockController(scenario = 'journey') {
     session:
       scenario === 'journey' ||
       (scenario.startsWith('session:') && scenario !== 'session:connected') ||
-      scenario === 'global:disconnected'
+      scenario === 'global:disconnected' ||
+      scenario === 'global:beta'
         ? null
         : { wallet: scenario === 'launch:wrong-wallet' ? otherWallet : mockWallet },
     sessionStatus:
@@ -160,6 +162,9 @@ export function createMockController(scenario = 'journey') {
                     ? 'demo-job'
                     : null,
                   status: scenario === 'dashboard:draft' ? 'draft' : 'live',
+                  ...(scenario === 'dashboard:onchain-unavailable'
+                    ? { onchainAvailable: false, claimablePartnerFeesLamports: '0', coinsCount: 0 }
+                    : {}),
                 },
               ],
     chats: {
@@ -178,6 +183,7 @@ export function createMockController(scenario = 'journey') {
           : emptyChat(true),
     },
     signupsPaused: scenario === 'home:paused',
+    betaNotInvited: scenario === 'session:beta' || scenario === 'global:beta',
   };
   const notify = (patch: Partial<Snapshot>) => {
     if (disposed) return;
@@ -280,7 +286,23 @@ export function createMockController(scenario = 'journey') {
     return { phase: 'confirmed', signature: 'demo-transaction-confirmation' };
   };
   let quoteSequence = 0;
-  const client: WebClient = {
+  // `payment:confirming` / `payment:late`: a payment was sent before the page was opened.
+  let sentPayment: PendingPayment | null =
+    scenario === 'payment:confirming' || scenario === 'payment:late'
+      ? {
+          jobId: 'demo-job',
+          paymentId: 'demo-quote-0',
+          signature: 'demo-payment-confirmation',
+          outcome: scenario === 'payment:late' ? 'late' : 'confirming',
+          message:
+            scenario === 'payment:late'
+              ? 'Your payment reached FORGE after the quote expired, so it cannot start the build. It will be refunded manually: contact support with the transaction signature below. Do not pay again.'
+              : null,
+        }
+      : null;
+  let confirmChecks = 0;
+  let claimRound = 0;
+  const client: ForgeClientInput = {
     useSession() {
       const s = useSnapshot();
       return {
@@ -296,6 +318,10 @@ export function createMockController(scenario = 'journey') {
           if (scenario === 'session:error') {
             notify({ sessionStatus: 'error' });
             throw new ClientError('NETWORK', 'The wallet connection could not be completed.');
+          }
+          if (scenario === 'session:beta-sign-in') {
+            notify({ sessionStatus: 'error', betaNotInvited: true });
+            throw new ClientError('BETA_NOT_INVITED', 'FORGE is in private beta.');
           }
           notify({ session: { wallet: mockWallet }, sessionStatus: 'idle' });
         },
@@ -479,7 +505,23 @@ export function createMockController(scenario = 'journey') {
     async getOwnerTransactionSummary(id) {
       await wait();
       if (!state.jobs[id]) throw new Error('Job not found.');
-      return ownerSummary;
+      if (scenario === 'launch:already-signed') {
+        throw new ApiError('NETWORK', 'This launch has already been signed.', {
+          status: 409,
+          serverCode: 'ALREADY_SIGNED',
+          details: { status: 'owner_signed' },
+          retryAfterMs: null,
+        });
+      }
+      return {
+        ...ownerSummary,
+        simulation:
+          scenario === 'launch:simulation-failed'
+            ? 'failed'
+            : scenario === 'launch:simulation-unavailable'
+              ? 'unavailable'
+              : 'ok',
+      };
     },
     async signOwnerTransaction(id, onPhase) {
       if (state.session?.wallet !== mockWallet)
@@ -493,7 +535,15 @@ export function createMockController(scenario = 'journey') {
     },
     useLaunchpads() {
       const s = useSnapshot();
-      return { launchpads: s.pads, loading: s.loading, refresh: () => notify({ loading: false }) };
+      return {
+        launchpads: scenario === 'dashboard:load-error' ? [] : s.pads,
+        loading: s.loading,
+        error:
+          scenario === 'dashboard:load-error'
+            ? 'Your launchpads could not be loaded. Please try again.'
+            : null,
+        refresh: () => notify({ loading: false }),
+      };
     },
     useLaunchpad(id) {
       const s = useSnapshot();
@@ -508,17 +558,31 @@ export function createMockController(scenario = 'journey') {
         loading: s.loading,
       };
     },
-    async claimPartnerFees(id, onPhase) {
+    async claimPartnerFees(id, onPhase, options) {
       const pad = state.pads.find((p) => p.id === id);
       if (!pad || pad.claimablePartnerFeesLamports === '0') return { phase: 'idle' };
+      // `dashboard:claim-multi`: the fees sit in two pools, claimed one transaction each.
+      const pools = scenario === 'dashboard:claim-multi' ? 2 : 1;
+      const total = BigInt(pad.claimablePartnerFeesLamports);
+      const share = claimRound + 1 < pools ? total / BigInt(pools) : total;
+      const summary = {
+        pool: `demo-pool-${claimRound + 1}`,
+        tradingFeesLamports: share.toString(),
+        poolCreationFeeLamports: '0',
+        ownerCostLamports: '2044280',
+        remainingPools: pools - claimRound - 1,
+      };
+      if (options?.review && !(await options.review(summary))) return { phase: 'idle', summary };
       const result = await transaction(onPhase);
-      if (result.phase === 'confirmed')
+      if (result.phase === 'confirmed') {
+        claimRound++;
         notify({
           pads: state.pads.map((p) =>
-            p.id === id ? { ...p, claimablePartnerFeesLamports: '0' } : p,
+            p.id === id ? { ...p, claimablePartnerFeesLamports: (total - share).toString() } : p,
           ),
         });
-      return result;
+      }
+      return { ...result, summary };
     },
     async reactivateLaunchpad(id) {
       await wait(700);
@@ -532,6 +596,46 @@ export function createMockController(scenario = 'journey') {
     formatUsd,
     shortAddress,
     explorerTxUrl,
+    useBetaAccess() {
+      return {
+        notInvited: useSnapshot().betaNotInvited,
+        dismiss: () => notify({ betaNotInvited: false }),
+      };
+    },
+    getPendingPayment(jobId) {
+      return sentPayment?.jobId === jobId ? sentPayment : null;
+    },
+    async resumePayment(jobId, onPhase) {
+      const pending = sentPayment?.jobId === jobId ? sentPayment : null;
+      if (!pending) return { phase: 'idle' };
+      if (pending.outcome !== 'confirming') {
+        onPhase('error');
+        return {
+          phase: 'error',
+          signature: pending.signature,
+          outcome: pending.outcome,
+          error: pending.message ?? undefined,
+        };
+      }
+      onPhase('sending');
+      await wait(900);
+      confirmChecks++;
+      // The first check is still pending; the next one confirms the same signature.
+      if (confirmChecks === 1) {
+        onPhase('error');
+        return {
+          phase: 'error',
+          signature: pending.signature,
+          outcome: 'confirming',
+          error:
+            'Your payment was sent and is still being confirmed. Check again in a moment: you will not be asked to pay again.',
+        };
+      }
+      sentPayment = null;
+      onPhase('confirmed');
+      updateJob(jobId, 'paid');
+      return { phase: 'confirmed', signature: pending.signature, outcome: 'confirmed' };
+    },
   };
   return {
     client,

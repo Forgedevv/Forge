@@ -20,4 +20,16 @@ export const paymentCopy = {
   loading: 'Preparing your quote…',
   signing:
     'You are signing the displayed payment amount. Your wallet shows the network fee separately.',
+  confirming: 'Confirming your payment with the network…',
+  stillConfirming: 'Your payment is still confirming.',
+  stillConfirmingBody:
+    'The payment was sent. Check again in a moment: you will not be asked to pay again.',
+  checkAgain: 'Check again',
+  checking: 'Checking…',
+  needsSupport: 'This payment needs our help.',
+  needsSupportBody:
+    'Contact support with the transaction signature below. Do not pay again for this launchpad.',
+  signature: 'Transaction signature',
+  explorer: 'View on the explorer',
+  support: 'Contact support',
 } as const;
