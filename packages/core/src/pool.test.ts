@@ -26,11 +26,12 @@ import {
 } from '@solana/web3.js';
 import BN from 'bn.js';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { OwnerTransactionSummary } from '@forge/shared';
+import { OwnerTransactionSummary, type LaunchpadSpec } from '@forge/shared';
 import { MIGRATION_THRESHOLD_LAMPORTS, SOL_QUOTE_MINT, solToLamports } from './constants.js';
 import {
   DEFAULT_FIRST_BUY_SLIPPAGE_BPS,
   LAUNCH_COIN_COMPUTE_UNITS,
+  LAUNCH_METADATA_BUDGET_BYTES,
   LaunchCoinError,
   MAX_FIRST_BUY_LAMPORTS,
   METADATA_ACCOUNT_SIZE,
@@ -38,9 +39,11 @@ import {
   assertFirstBuyLamports,
   assertLaunchCoinConfig,
   assertLaunchMetadata,
+  assertSpecLaunchable,
   assertUserCoinConfig,
   buildLaunchCoinTx,
   buildUserCoinLaunchTx,
+  launchMetadataBytes,
   toOwnerTransactionSummary,
   type BuildLaunchCoinTxParams,
   type BuildUserCoinLaunchTxParams,
@@ -237,6 +240,35 @@ async function setup(
     ...overrides,
   };
   return { creator, mint: mint, nonceAuthority: creator, nonceAccount, connection, params };
+}
+
+/** A launchpad spec with this coin name and symbol (first buy 0.01 SOL). */
+function coinSpec(name: string, symbol: string): LaunchpadSpec {
+  return {
+    version: 1,
+    ownerWallet: OWNER.toBase58(),
+    name: 'MoonPad',
+    slug: 'moonpad',
+    quote: 'SOL',
+    tradingFeeBps: 100,
+    coinCreatorSharePct: 25,
+    poolCreationFeeSol: 0.001,
+    antiSniper: true,
+    theme: {
+      primaryColor: '#7C3AED',
+      accentColor: '#F59E0B',
+      darkMode: true,
+      tagline: '',
+      designNotes: '',
+    },
+    launchpadCoin: {
+      name,
+      symbol,
+      description: '',
+      imageUrl: 'https://example.com/moon.png',
+      firstBuySol: 0.01,
+    },
+  };
 }
 
 async function expectLaunchError(
@@ -813,6 +845,37 @@ describe('buildLaunchCoinTx — size', () => {
     const error = await expectLaunchError(buildLaunchCoinTx(params), 'TX_TOO_LARGE');
     expect(error.message).toContain('1240 bytes');
   });
+
+  it.each([
+    ['N'.repeat(32), 'S'.repeat(10), 106],
+    ['N', 'SS', 145],
+    ['é'.repeat(16), 'S'.repeat(10), 106],
+    ['Moon Coin', 'MOON', 135],
+  ] as const)(
+    'holds exactly LAUNCH_METADATA_BUDGET_BYTES of name + symbol + URI (%j, %j, %d-byte URI)',
+    async (name, symbol, uriBytes) => {
+      const uri = (bytes: number) => `https://example.com/${'a'.repeat(bytes - 25)}.json`;
+      const spec = coinSpec(name, symbol);
+      const fits = uri(uriBytes);
+      expect(launchMetadataBytes(name, symbol, fits)).toBe(LAUNCH_METADATA_BUDGET_BYTES);
+      expect(() => assertSpecLaunchable(spec, fits)).not.toThrow();
+      const { params } = await setup({ name, symbol, metadataUri: fits });
+      expect((await buildLaunchCoinTx(params)).summary.txBytes).toBe(MAX_TRANSACTION_BYTES);
+
+      // One more byte does not fit: assertSpecLaunchable refuses it up front, as the builder does.
+      const over = uri(uriBytes + 1);
+      let refused: unknown = null;
+      try {
+        assertSpecLaunchable(spec, over);
+      } catch (error) {
+        refused = error;
+      }
+      expect(refused).toBeInstanceOf(LaunchCoinError);
+      expect((refused as LaunchCoinError).code).toBe('TX_TOO_LARGE');
+      const tooLarge = await setup({ name, symbol, metadataUri: over });
+      await expectLaunchError(buildLaunchCoinTx(tooLarge.params), 'TX_TOO_LARGE');
+    },
+  );
 });
 
 describe('buildLaunchCoinTx — costs', () => {

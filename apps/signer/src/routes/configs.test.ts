@@ -2,6 +2,10 @@ import { SystemProgram } from '@solana/web3.js';
 import { describe, expect, it, vi } from 'vitest';
 import { creatorRole } from '../keystore.js';
 import { JobError, type Journal } from '../jobs/shared.js';
+import { LaunchCoinError } from '@forge/core';
+import { handleCreateConfigs } from './configs.js';
+import { createRouteRuntime } from './context.js';
+import { classifyError } from './errors.js';
 import { dbcAccounts, ok, refused, setup, useTestKeystore } from './harness.js';
 import type { ConfigsJournalEntry } from './journal.js';
 import { randomKey } from './testing.js';
@@ -317,5 +321,49 @@ describe('POST /v1/configs', () => {
       error: 'creator_ref_mismatch',
     });
     expect(h.chain.built.config).toBe(0);
+  });
+
+  it('refuses a coin name the launch would refuse before creating anything', async () => {
+    const h = await setup(ks.keystore);
+    const spec = h.store.launchpads.get(h.launchpadId)!.spec as { launchpadCoin: { name: string } };
+    spec.launchpadCoin.name = ' Moon';
+    expect(refused(await h.routes.configs({ jobId: h.jobId }))).toEqual({
+      status: 422,
+      error: 'invalid_spec',
+    });
+    expect(h.chain.built.config).toBe(0);
+    expect(await ks.keystore.findRef(creatorRole(h.launchpadId))).toBeUndefined();
+  });
+
+  it('checks the real name + symbol + metadata URI against the launch budget first', async () => {
+    const h = await setup(ks.keystore);
+    const spec = h.store.launchpads.get(h.launchpadId)!.spec as {
+      launchpadCoin: { name: string; symbol: string };
+    };
+    spec.launchpadCoin.name = 'N'.repeat(32);
+    spec.launchpadCoin.symbol = 'S'.repeat(10);
+    // A template only the startup check stands in front of (106 bytes with the slug "moonpad").
+    const rt = createRouteRuntime(h.deps);
+    const long = {
+      ...rt,
+      metadataUriTemplate: `https://meta.forge.test/${'p'.repeat(70)}/{slug}.json`,
+    };
+    const error = await handleCreateConfigs(long, h.jobId).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(LaunchCoinError);
+    expect((error as LaunchCoinError).code).toBe('TX_TOO_LARGE');
+    // The same answer /v1/launch-coin/prepare would give, and nothing was created or recorded.
+    expect(classifyError(error)).toMatchObject({ status: 422, code: 'launch_tx_too_large' });
+    expect(h.chain.built.config).toBe(0);
+    expect(h.chain.sendAttempts).toHaveLength(0);
+    expect(await h.journals.configs.get(h.launchpadId)).toBeUndefined();
+    expect(await ks.keystore.findRef(creatorRole(h.launchpadId))).toBeUndefined();
+
+    // One byte shorter fits: the configs are created.
+    const fits = {
+      ...rt,
+      metadataUriTemplate: `https://meta.forge.test/${'p'.repeat(69)}/{slug}.json`,
+    };
+    const body = await handleCreateConfigs(fits, h.jobId);
+    expect(body.launchpadConfig).not.toBe(body.launchpadCoinConfig);
   });
 });

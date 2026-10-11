@@ -4,8 +4,13 @@
  *
  * 1. Re-reads and checks the job, the launchpad, the spec (core validation) and the payment, and
  *    the `deploys_paused` kill switch (context.ts). Nothing from the request but the job id.
- *    The creation payment is then proven on-chain at finalized commitment (payment.ts), and a
- *    launchpad the routes never created anything for must fit in the daily cap (budget.ts).
+ *    The creation payment is then proven on-chain at finalized commitment (payment.ts). The
+ *    launchpad coin must be launchable with its real name, symbol and metadata URI (core
+ *    `assertSpecLaunchable`: metadata rules and the launch transaction byte budget), otherwise
+ *    the configs would be paid for a launch that can only fail at /v1/launch-coin/prepare
+ *    (refused with the codes prepare would answer: 422 `launch_input_invalid` /
+ *    `launch_tx_too_large`). A launchpad the routes never created anything for must then fit in
+ *    the daily cap (budget.ts).
  * 2. Creates the launchpad's creator wallet in the keystore if absent (`creator:<launchpadId>`).
  * 3. Creates the launchpad config, then the launchpad coin config, each built by core from the
  *    spec, checked by the config policy, signed by a one-time config key and the payer wallet,
@@ -18,7 +23,7 @@
  * rather than risking a second pair.
  */
 import type { PublicKey } from '@solana/web3.js';
-import type { ConfigKind } from '@forge/core';
+import { assertSpecLaunchable, type ConfigKind } from '@forge/core';
 import type { SignerConfigsResponse } from '@forge/shared';
 import { configCreationTarget } from './targets.js';
 import { ensureAccountCreated } from './accounts.js';
@@ -26,6 +31,7 @@ import { admitLaunchpad } from './budget.js';
 import {
   creationEnv,
   ensureCreatorWallet,
+  metadataUriFor,
   payerOf,
   recordLaunchpadColumns,
   type RouteRuntime,
@@ -49,6 +55,8 @@ export async function handleCreateConfigs(
     const { launchpad, spec, owner } = setup;
     const key = launchpad.id;
     await assertCreationPaid(rt, setup);
+    // Before anything is created: the exact metadata the launch will carry must fit in it.
+    assertSpecLaunchable(spec, metadataUriFor(rt.metadataUriTemplate, launchpad));
 
     const journaled = await rt.journals.configs.get(key);
     if (!journaled) {

@@ -64,13 +64,13 @@ import BN from 'bn.js';
 import type { OwnerTransactionSummary } from '@forge/shared';
 import type { AddressEnv } from './addresses.js';
 import { quoteFirstBuyOnConfig, type FirstBuyQuote } from './config.js';
+import { FEES, MIGRATION_THRESHOLD_LAMPORTS, SOL_QUOTE_MINT } from './constants.js';
 import {
-  FEES,
-  MAX_FIRST_BUY_SOL,
-  MIGRATION_THRESHOLD_LAMPORTS,
-  SOL_QUOTE_MINT,
-  solToLamports,
-} from './constants.js';
+  LaunchCoinError,
+  assertFirstBuyLamports,
+  assertLaunchMetadata,
+  type LaunchCoinErrorCode,
+} from './launch-metadata.js';
 import {
   MAX_TRANSACTION_BYTES,
   computeBudgetInstructions,
@@ -80,6 +80,20 @@ import {
   transactionSize,
   type NonceInfo,
 } from './tx.js';
+
+// The metadata and first buy checks live in launch-metadata.ts (shared with config.ts); they
+// stay part of this module's public surface.
+export {
+  LAUNCH_METADATA_BUDGET_BYTES,
+  LaunchCoinError,
+  MAX_FIRST_BUY_LAMPORTS,
+  METADATA_LIMITS,
+  assertFirstBuyLamports,
+  assertLaunchMetadata,
+  assertSpecLaunchable,
+  launchMetadataBytes,
+  type LaunchCoinErrorCode,
+} from './launch-metadata.js';
 
 // ---------------------------------------------------------------------------------------------
 // Constants
@@ -97,12 +111,6 @@ export const DEFAULT_FIRST_BUY_SLIPPAGE_BPS = 100;
 /** Highest slippage accepted on the first buy. */
 export const MAX_FIRST_BUY_SLIPPAGE_BPS = 1000;
 
-/** Largest first buy (the spec bound, `launchpadCoin.firstBuySol` <= 10 SOL). */
-export const MAX_FIRST_BUY_LAMPORTS = solToLamports(MAX_FIRST_BUY_SOL);
-
-/** Metaplex token metadata limits, in UTF-8 bytes. */
-export const METADATA_LIMITS = { name: 32, symbol: 10, uri: 200 } as const;
-
 /** Size of the Metaplex metadata account created with the pool (measured on devnet). */
 export const METADATA_ACCOUNT_SIZE = 607;
 
@@ -114,37 +122,6 @@ export const METAPLEX_CREATE_METADATA_FEE_LAMPORTS = 10_000_000n;
 
 /** Base fee per signature when the cluster does not answer `getFeeForMessage`. */
 export const FALLBACK_LAMPORTS_PER_SIGNATURE = 5000n;
-
-const SYMBOL_RE = /^[A-Z0-9]{2,10}$/;
-
-// ---------------------------------------------------------------------------------------------
-// Errors
-// ---------------------------------------------------------------------------------------------
-
-export type LaunchCoinErrorCode =
-  | 'INVALID_INPUT'
-  | 'CONFIG_NOT_FOUND'
-  | 'CONFIG_MISMATCH'
-  | 'POOL_EXISTS'
-  | 'MINT_EXISTS'
-  /** A referral was given for the first buy: it would lose the first-swap minimum fee. */
-  | 'REFERRAL_UNSUPPORTED'
-  | 'RENT_PAYER_REFUSED'
-  | 'FIRST_BUY_EXCEEDS_CURVE'
-  | 'QUOTE_FAILED'
-  | 'UNEXPECTED_SIGNERS'
-  | 'TX_TOO_LARGE';
-
-/** The launch transaction cannot be built. Nothing has been sent. */
-export class LaunchCoinError extends Error {
-  readonly code: LaunchCoinErrorCode;
-
-  constructor(code: LaunchCoinErrorCode, message: string) {
-    super(message);
-    this.name = 'LaunchCoinError';
-    this.code = code;
-  }
-}
 
 // ---------------------------------------------------------------------------------------------
 // Types
@@ -174,7 +151,11 @@ export interface BuildLaunchCoinTxParams {
   owner: PublicKey;
   /** Base mint keypair (or its public key): a fresh key held by the signer, which signs. */
   mint: PublicKey | { publicKey: PublicKey };
-  /** Token metadata (Metaplex limits: 32 / 10 / 200 bytes). */
+  /**
+   * Token metadata: Metaplex limits (32 / 10 / 200 bytes) and, together, at most
+   * `LAUNCH_METADATA_BUDGET_BYTES` (148) bytes of name + symbol + URI with the durable nonce and a
+   * first buy (`assertSpecLaunchable`); beyond that the transaction is `TX_TOO_LARGE`.
+   */
   name: string;
   symbol: string;
   metadataUri: string;
@@ -283,56 +264,8 @@ export interface LaunchCoinTx {
 // Input checks (pure)
 // ---------------------------------------------------------------------------------------------
 
-function utf8Length(value: string): number {
-  return Buffer.byteLength(value, 'utf8');
-}
-
 function fail(code: LaunchCoinErrorCode, message: string): never {
   throw new LaunchCoinError(code, message);
-}
-
-/**
- * Checks the token metadata against the Metaplex limits and the spec rules (symbol 2-10
- * uppercase letters or digits, https metadata URI).
- *
- * @throws LaunchCoinError `INVALID_INPUT`.
- */
-export function assertLaunchMetadata(name: string, symbol: string, metadataUri: string): void {
-  if (typeof name !== 'string' || name.trim().length === 0 || name !== name.trim()) {
-    fail('INVALID_INPUT', 'name must be a non-empty string without surrounding spaces');
-  }
-  if (utf8Length(name) > METADATA_LIMITS.name) {
-    fail('INVALID_INPUT', `name must be at most ${METADATA_LIMITS.name} bytes`);
-  }
-  if (typeof symbol !== 'string' || !SYMBOL_RE.test(symbol)) {
-    fail('INVALID_INPUT', 'symbol must be 2 to 10 uppercase letters or digits');
-  }
-  if (typeof metadataUri !== 'string' || utf8Length(metadataUri) > METADATA_LIMITS.uri) {
-    fail('INVALID_INPUT', `metadataUri must be at most ${METADATA_LIMITS.uri} bytes`);
-  }
-  let url: URL;
-  try {
-    url = new URL(metadataUri);
-  } catch {
-    fail('INVALID_INPUT', 'metadataUri must be an absolute URL');
-  }
-  if (url.protocol !== 'https:' || url.href !== metadataUri) {
-    fail('INVALID_INPUT', 'metadataUri must be a canonical https URL');
-  }
-}
-
-/**
- * Checks the first buy amount: a bigint between 0 and `MAX_FIRST_BUY_LAMPORTS`.
- *
- * @throws LaunchCoinError `INVALID_INPUT`.
- */
-export function assertFirstBuyLamports(firstBuyLamports: bigint): void {
-  if (typeof firstBuyLamports !== 'bigint') {
-    fail('INVALID_INPUT', 'firstBuyLamports must be a bigint (lamports)');
-  }
-  if (firstBuyLamports < 0n || firstBuyLamports > MAX_FIRST_BUY_LAMPORTS) {
-    fail('INVALID_INPUT', `firstBuyLamports must be between 0 and ${MAX_FIRST_BUY_LAMPORTS}`);
-  }
 }
 
 function assertDistinctKeys(entries: readonly (readonly [string, PublicKey])[]): void {
@@ -917,7 +850,7 @@ export interface BuildUserCoinLaunchTxParams {
   wallet: PublicKey;
   /** Fresh base mint keypair (or its public key); the only other signer. */
   mint: PublicKey | { publicKey: PublicKey };
-  /** Token metadata (Metaplex limits: 32 / 10 / 200 bytes). */
+  /** Token metadata (Metaplex limits: 32 / 10 / 200 bytes, all of them fit in this launch). */
   name: string;
   symbol: string;
   metadataUri: string;

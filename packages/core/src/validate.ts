@@ -96,6 +96,8 @@ export type ViolationCode =
   | 'TOKEN_DECIMAL_INVALID'
   | 'ACTIVATION_TYPE_INVALID'
   | 'FIRST_SWAP_MIN_FEE_REQUIRED'
+  /** Coin name + symbol + metadata URI exceed the launch transaction budget. */
+  | 'LAUNCH_METADATA_TOO_LONG'
   | 'SPEC_INVALID'
   | 'SDK_REJECTED';
 

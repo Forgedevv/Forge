@@ -54,6 +54,7 @@ import {
   SOL_QUOTE_MINT,
   solToLamports,
 } from './constants.js';
+import { LaunchCoinError, assertSpecLaunchable } from './launch-metadata.js';
 import { computeBudgetInstructions } from './tx.js';
 import {
   ValidationError,
@@ -225,17 +226,57 @@ export function curveParamsFor(spec: LaunchpadSpec, kind: ConfigKind): BuildCurv
   };
 }
 
+export interface ConfigParamsOptions {
+  /**
+   * Metadata URI the launchpad coin will be launched with, when known (the signer knows it from
+   * SIGNER_COIN_METADATA_URL): name + symbol + URI must then fit `LAUNCH_METADATA_BUDGET_BYTES`.
+   * Without it, only the name, symbol and first buy rules are checked.
+   */
+  metadataUri?: string;
+}
+
 /**
- * Builds and validates one of the two configs. Pure: same spec, same result.
+ * Refuses a spec whose launchpad coin could never be launched (`assertSpecLaunchable`), as a
+ * `ValidationError`: both configs are created before the launch, so they must not be created
+ * for a coin the launch transaction cannot hold.
+ */
+function assertCoinLaunchable(
+  spec: LaunchpadSpec,
+  kind: ConfigKind,
+  metadataUri: string | undefined,
+): void {
+  try {
+    assertSpecLaunchable(spec, metadataUri ?? null);
+  } catch (error) {
+    if (!(error instanceof LaunchCoinError)) throw error;
+    throw new ValidationError(`${kind} config`, [
+      {
+        field: 'launchpadCoin',
+        code: error.code === 'TX_TOO_LARGE' ? 'LAUNCH_METADATA_TOO_LONG' : 'SPEC_INVALID',
+        message: error.message,
+      },
+    ]);
+  }
+}
+
+/**
+ * Builds and validates one of the two configs. Pure: same spec, same result. Either kind first
+ * checks that the launchpad coin can be launched (`assertSpecLaunchable`, with
+ * `options.metadataUri` when given).
  *
  * @throws ValidationError when the spec or the resulting parameters break a bound.
  */
-export function buildConfigParams(spec: LaunchpadSpec, kind: ConfigKind): LaunchpadConfigParams {
+export function buildConfigParams(
+  spec: LaunchpadSpec,
+  kind: ConfigKind,
+  options: ConfigParamsOptions = {},
+): LaunchpadConfigParams {
   if (kind !== 'launchpad' && kind !== 'launchpadCoin') {
     throw new TypeError(`unknown config kind: ${String(kind)}`);
   }
   const parsed = parseLaunchpadSpec(spec);
   const owner = ownerKeyOf(parsed);
+  assertCoinLaunchable(parsed, kind, options.metadataUri);
 
   let curve: ConfigParameters;
   try {
@@ -418,6 +459,8 @@ export interface BuildCreateConfigTxParams {
   /** The spec the config is built from (re-validated here). */
   spec: LaunchpadSpec;
   kind: ConfigKind;
+  /** Metadata URI of the launchpad coin, when known (see `ConfigParamsOptions`). */
+  metadataUri?: string;
   /**
    * The config keypair (or its public key). Generated and stored by the caller (apps/signer),
    * never here; only its public key is read. It signs the transaction later.
@@ -454,7 +497,11 @@ export async function buildCreateConfigTx(
 ): Promise<CreateConfigTx> {
   const configAddress =
     params.config instanceof PublicKey ? params.config : params.config.publicKey;
-  const configParams = buildConfigParams(params.spec, params.kind);
+  const configParams = buildConfigParams(
+    params.spec,
+    params.kind,
+    params.metadataUri !== undefined ? { metadataUri: params.metadataUri } : {},
+  );
 
   if (
     configAddress.equals(params.payer) ||
