@@ -198,7 +198,7 @@ describeDb('RLS isolation', () => {
 
   it('anon sees only flags', async () => {
     await as('anon', null, async (c) => {
-      expect((await c.query('select key from flags')).rowCount).toBe(3);
+      expect((await c.query('select key from flags')).rowCount).toBe(6);
       for (const t of [
         'users',
         'launchpads',
@@ -220,7 +220,10 @@ describeDb('RLS isolation', () => {
       const rows = (await c.query('select key, value from flags order by key')).rows;
       expect(rows).toEqual([
         { key: 'buyback_paused', value: false },
+        { key: 'cashbox_sweep_paused', value: false },
+        { key: 'claims_paused', value: false },
         { key: 'deploys_paused', value: false },
+        { key: 'refunds_paused', value: false },
         { key: 'signups_paused', value: false },
       ]);
     });
@@ -355,9 +358,17 @@ describeDb('enum checks', () => {
 describeDb('job functions', () => {
   // Jobs with a very old created_at so they sort before anything else in the dev database.
   const created: string[] = [];
+  const createdLaunchpads: string[] = [];
+  // A launchpad has at most one creation job (0005_wave3.sql), so each job gets its own launchpad.
   async function mkJob(status: string, extra: Record<string, unknown> = {}): Promise<string> {
+    const launchpadId = await q1(
+      admin,
+      `insert into launchpads (owner_wallet, slug, spec) values ($1, $2, '{}') returning id`,
+      [A, `t-job-${createdLaunchpads.length}-${run}`],
+    );
+    createdLaunchpads.push(launchpadId);
     const cols = {
-      launchpad_id: ids.lpA,
+      launchpad_id: launchpadId,
       type: 'create_launchpad',
       status,
       created_at: '1999-01-01',
@@ -374,9 +385,13 @@ describeDb('job functions', () => {
   }
   beforeAll(() => {
     created.length = 0;
+    createdLaunchpads.length = 0;
   });
   afterAll(async () => {
     if (created.length) await admin.query('delete from jobs where id = any($1)', [created]);
+    if (createdLaunchpads.length) {
+      await admin.query('delete from launchpads where id = any($1)', [createdLaunchpads]);
+    }
   });
 
   it('take_build_job never returns the same job twice under concurrency', async () => {
