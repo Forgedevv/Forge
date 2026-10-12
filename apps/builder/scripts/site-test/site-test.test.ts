@@ -27,8 +27,8 @@ describe('site test tool', () => {
     const o = parseCli(['all', '--out', '/tmp/x', '--brief', 'b.json']);
     expect(o).toMatchObject({ command: 'all', sitePort: 3100, rpcPort: 3101 });
     expect(o.agent).toMatchObject({ bin: 'claude', model: 'claude-sonnet-5-5', maxTurns: 80 });
-    expect(parseCli(['agent', '--out', '/tmp/x', '--model', 'claude-opus-5-5']).agent.model).toBe(
-      'claude-opus-5-5',
+    expect(parseCli(['agent', '--out', '/tmp/x', '--model', 'other-model']).agent.model).toBe(
+      'other-model',
     );
     expect(() => parseCli(['prepare', '--out', '/tmp/x'])).toThrow(/--brief/);
     expect(() => parseCli(['nope', '--out', '/tmp/x'])).toThrow(/usage/);
