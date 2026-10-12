@@ -4,14 +4,19 @@ import type { SnapshotLoader } from './origins';
 /*
  * Loads the launchpad directory snapshot from Supabase (service role: `launchpads` is not readable
  * by anon under RLS). Two bounded queries per refresh, whatever the traffic:
- * - active launchpads (`draft` or `live`): id + slug, paged;
- * - jobs waiting for the client's approval (`preview_ready`) with their preview URL.
+ * - launchpads whose site may call the relay: id + slug + status, paged. Active ones (`draft` or
+ *   `live`) get every tier; sleeping ones only the browser origin of their site, for the creator
+ *   fee claim (decision D29);
+ * - jobs waiting for the client's approval (`preview_ready`) with their preview URL (active
+ *   launchpads only).
  */
 
 const PAGE_SIZE = 1000;
 const MAX_PAGES = 20;
 const MAX_PREVIEWS = 1000;
 const ACTIVE_STATUSES = ['draft', 'live'];
+const SLEEPING_STATUS = 'sleeping';
+const LISTED_STATUSES = [...ACTIVE_STATUSES, SLEEPING_STATUS];
 const SLUG_RE = /^[a-z0-9-]{3,32}$/;
 
 export class DirectoryLoadError extends Error {
@@ -36,19 +41,24 @@ export function previewOriginOf(previewUrl: unknown): string | null {
 export function createSupabaseSnapshotLoader(db: SupabaseClient): SnapshotLoader {
   return async () => {
     const slugById = new Map<string, string>();
+    const sleepingSlugs = new Set<string>();
     for (let page = 0; page < MAX_PAGES; page++) {
       const from = page * PAGE_SIZE;
       const { data, error } = await db
         .from('launchpads')
-        .select('id, slug')
-        .in('status', ACTIVE_STATUSES)
+        .select('id, slug, status')
+        .in('status', LISTED_STATUSES)
         .order('id', { ascending: true })
         .range(from, from + PAGE_SIZE - 1);
       if (error) throw new DirectoryLoadError('launchpads select');
-      const rows = (data ?? []) as { id?: unknown; slug?: unknown }[];
+      const rows = (data ?? []) as { id?: unknown; slug?: unknown; status?: unknown }[];
       for (const row of rows) {
-        if (typeof row.id === 'string' && typeof row.slug === 'string' && SLUG_RE.test(row.slug)) {
+        if (typeof row.id !== 'string' || typeof row.slug !== 'string') continue;
+        if (!SLUG_RE.test(row.slug)) continue;
+        if (typeof row.status === 'string' && ACTIVE_STATUSES.includes(row.status)) {
           slugById.set(row.id, row.slug);
+        } else if (row.status === SLEEPING_STATUS) {
+          sleepingSlugs.add(row.slug);
         }
       }
       if (rows.length < PAGE_SIZE) break;
@@ -70,6 +80,9 @@ export function createSupabaseSnapshotLoader(db: SupabaseClient): SnapshotLoader
       if (slug && origin) previewOrigins.set(origin, slug);
     }
 
-    return { activeSlugs: new Set(slugById.values()), previewOrigins };
+    const activeSlugs = new Set(slugById.values());
+    // Slugs are unique; should a row ever say otherwise, the active status wins.
+    for (const slug of activeSlugs) sleepingSlugs.delete(slug);
+    return { activeSlugs, sleepingSlugs, previewOrigins };
   };
 }

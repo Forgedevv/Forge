@@ -19,9 +19,14 @@ const POLICY: OriginPolicy = {
 };
 const PREVIEW = 'https://forge-moonpad-abc123def-forge-team.vercel.app';
 
-function staticDirectory(slugs: string[], previews: [string, string][] = []): LaunchpadDirectory {
+function staticDirectory(
+  slugs: string[],
+  previews: [string, string][] = [],
+  sleeping: string[] = [],
+): LaunchpadDirectory {
   const snapshot: DirectorySnapshot = {
     activeSlugs: new Set(slugs),
+    sleepingSlugs: new Set(sleeping),
     previewOrigins: new Map(previews),
     loadedAt: 0,
   };
@@ -90,6 +95,36 @@ describe('decideOrigin', () => {
     expect(decision.allowed).toBe(false);
   });
 
+  it('allows sleeping client sites as their own kind (creator fee claim only, D29)', async () => {
+    const withSleeping = staticDirectory(['moonpad'], [], ['sleepy-pad']);
+    await expect(
+      decideOrigin('https://sleepy-pad.forge-sites.app', POLICY, withSleeping),
+    ).resolves.toEqual({
+      allowed: true,
+      kind: 'sleeping',
+      origin: 'https://sleepy-pad.forge-sites.app',
+      slug: 'sleepy-pad',
+    });
+    await expect(
+      decideOrigin('https://moonpad.forge-sites.app', POLICY, withSleeping),
+    ).resolves.toMatchObject({ allowed: true, kind: 'client' });
+    // Without the directory saying so, a sleeping slug is unknown (disabled sites stay cut off).
+    await expect(decideOrigin('https://sleepy-pad.forge-sites.app', POLICY, dir)).resolves.toEqual({
+      allowed: false,
+      reason: 'unknown',
+    });
+    // The same strict origin rules apply to sleeping sites.
+    for (const origin of [
+      'http://sleepy-pad.forge-sites.app',
+      'https://sleepy-pad.forge-sites.app:8443',
+      'https://x.sleepy-pad.forge-sites.app',
+    ]) {
+      await expect(decideOrigin(origin, POLICY, withSleeping)).resolves.toMatchObject({
+        allowed: false,
+      });
+    }
+  });
+
   it('allows the exact origin of a preview waiting for approval', async () => {
     await expect(decideOrigin(PREVIEW, POLICY, dir)).resolves.toMatchObject({
       allowed: true,
@@ -149,6 +184,7 @@ describe('decideOrigin', () => {
 describe('CachedLaunchpadDirectory', () => {
   const snapshot = (slugs: string[]) => ({
     activeSlugs: new Set(slugs),
+    sleepingSlugs: new Set<string>(),
     previewOrigins: new Map(),
   });
 
@@ -242,9 +278,9 @@ describe('Supabase snapshot loader', () => {
   it('loads active slugs and preview origins of active launchpads', async () => {
     const { db, calls } = fakeDb({
       launchpads: [
-        { id: 'l1', slug: 'moonpad' },
-        { id: 'l2', slug: 'sun-pad' },
-        { id: 'l3', slug: 'BAD SLUG' },
+        { id: 'l1', slug: 'moonpad', status: 'live' },
+        { id: 'l2', slug: 'sun-pad', status: 'draft' },
+        { id: 'l3', slug: 'BAD SLUG', status: 'live' },
       ],
       jobs: [
         { launchpad_id: 'l1', preview_url: `${PREVIEW}/some/path` },
@@ -256,18 +292,39 @@ describe('Supabase snapshot loader', () => {
     const loaded = await createSupabaseSnapshotLoader(db)();
     expect([...loaded.activeSlugs].sort()).toEqual(['moonpad', 'sun-pad']);
     expect([...loaded.previewOrigins]).toEqual([[PREVIEW, 'moonpad']]);
-    expect(calls[0]?.filters).toContainEqual(['in', 'status', ['draft', 'live']]);
+    expect([...loaded.sleepingSlugs]).toEqual([]);
+    expect(calls[0]?.filters).toContainEqual(['in', 'status', ['draft', 'live', 'sleeping']]);
     expect(calls[1]?.filters).toContainEqual(['eq', 'status', 'preview_ready']);
+  });
+
+  it('loads sleeping launchpads apart, without their previews', async () => {
+    const { db } = fakeDb({
+      launchpads: [
+        { id: 'l1', slug: 'moonpad', status: 'live' },
+        { id: 'l2', slug: 'sleepy-pad', status: 'sleeping' },
+        { id: 'l3', slug: 'cut-pad', status: 'disabled' },
+        { id: 'l4', slug: 'odd-pad', status: null },
+        { id: 'l5', slug: 'BAD SLUG', status: 'sleeping' },
+      ],
+      jobs: [{ launchpad_id: 'l2', preview_url: `${PREVIEW}/x` }],
+    });
+    const loaded = await createSupabaseSnapshotLoader(db)();
+    expect([...loaded.activeSlugs]).toEqual(['moonpad']);
+    expect([...loaded.sleepingSlugs]).toEqual(['sleepy-pad']);
+    // A sleeping launchpad's preview is not served (only its live site, for the claim).
+    expect([...loaded.previewOrigins]).toEqual([]);
   });
 
   it('pages through launchpads', async () => {
     const launchpads = Array.from({ length: 2500 }, (_, i) => ({
       id: `id-${i}`,
       slug: `pad-${i}`,
+      status: i % 2 === 0 ? 'live' : 'sleeping',
     }));
     const { db, calls } = fakeDb({ launchpads, jobs: [] });
     const loaded = await createSupabaseSnapshotLoader(db)();
-    expect(loaded.activeSlugs.size).toBe(2500);
+    expect(loaded.activeSlugs.size).toBe(1250);
+    expect(loaded.sleepingSlugs.size).toBe(1250);
     expect(calls.filter((c) => c.table === 'launchpads')).toHaveLength(3);
   });
 

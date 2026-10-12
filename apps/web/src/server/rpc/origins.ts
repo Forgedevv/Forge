@@ -5,8 +5,10 @@
  * - the FORGE site (origin of NEXT_PUBLIC_APP_URL);
  * - outside production only: http://localhost:<port>, http://127.0.0.1:<port>, http://[::1]:<port>;
  * - client sites: exactly `https://<slug>.<CLIENTS_DOMAIN>` (one label, default port) where `slug`
- *   is an active launchpad (status draft or live; sleeping sites serve a static page without RPC
- *   and disabled sites are cut off);
+ *   is an active launchpad (status draft or live), or a sleeping one (kind `sleeping`): a sleeping
+ *   site serves a static page whose one action is the creator fee claim (decision D29), so the
+ *   relay serves it the claim's methods only (handler.ts, SLEEPING_SITE_METHODS). Disabled sites
+ *   are cut off;
  * - client previews: the exact origin of `jobs.preview_url` for jobs waiting for the client's
  *   approval (`preview_ready`). Vercel URLs are never matched by pattern: anyone can create a
  *   `*.vercel.app` project with a look-alike name.
@@ -18,6 +20,11 @@
 export interface DirectorySnapshot {
   /** Slugs of launchpads whose site may call the relay (draft or live). */
   activeSlugs: ReadonlySet<string>;
+  /**
+   * Slugs of sleeping launchpads: their site may call the relay from the browser for the creator
+   * fee claim only. Never used by the server-token tier (no uploads while sleeping).
+   */
+  sleepingSlugs: ReadonlySet<string>;
   /** Exact preview origin -> slug of its launchpad. */
   previewOrigins: ReadonlyMap<string, string>;
   loadedAt: number;
@@ -122,7 +129,7 @@ export interface OriginPolicy {
 
 export type OriginDecision =
   | { allowed: true; kind: 'forge' | 'local'; origin: string }
-  | { allowed: true; kind: 'client' | 'preview'; origin: string; slug: string }
+  | { allowed: true; kind: 'client' | 'sleeping' | 'preview'; origin: string; slug: string }
   | { allowed: false; reason: 'malformed' | 'unknown' | 'directory_unavailable' };
 
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
@@ -177,9 +184,9 @@ export async function decideOrigin(
     return { allowed: false, reason: 'directory_unavailable' };
   }
   if (slug !== null) {
-    return snapshot.activeSlugs.has(slug)
-      ? { allowed: true, kind: 'client', origin, slug }
-      : { allowed: false, reason: 'unknown' };
+    if (snapshot.activeSlugs.has(slug)) return { allowed: true, kind: 'client', origin, slug };
+    if (snapshot.sleepingSlugs.has(slug)) return { allowed: true, kind: 'sleeping', origin, slug };
+    return { allowed: false, reason: 'unknown' };
   }
   const previewSlug = snapshot.previewOrigins.get(origin);
   return previewSlug !== undefined

@@ -1,6 +1,13 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest';
-import { checkCall, errorForAll, MAX_BATCH_SIZE, parseBody, RPC_ERRORS } from '../jsonrpc';
+import {
+  checkCall,
+  errorForAll,
+  MAX_BATCH_SIZE,
+  parseBody,
+  restrictCalls,
+  RPC_ERRORS,
+} from '../jsonrpc';
 import { call, PK } from './helpers';
 
 describe('parseBody', () => {
@@ -90,5 +97,29 @@ describe('errorForAll', () => {
       id: null,
       error: RPC_ERRORS.internal,
     });
+  });
+});
+
+describe('restrictCalls', () => {
+  it('refuses valid calls outside the allowed methods, keeps the others', () => {
+    const parsed = parseBody(
+      JSON.stringify([
+        call('getBalance', [PK], 1),
+        call('getSlot', [], 2),
+        call('getBalance', ['bad key'], 3),
+      ]),
+    );
+    if (!parsed.ok) throw new Error('unexpected');
+    const [balance, slot, invalid] = restrictCalls(parsed.calls, new Set(['getBalance']));
+    expect(balance).toMatchObject({ ok: true, id: 1, method: 'getBalance' });
+    expect(slot).toEqual({
+      ok: false,
+      index: 1,
+      id: 2,
+      method: 'getSlot',
+      error: RPC_ERRORS.methodNotAllowed,
+    });
+    // Already refused: its own error is kept.
+    expect(invalid).toMatchObject({ ok: false, id: 3, error: { code: -32602 } });
   });
 });

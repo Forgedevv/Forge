@@ -119,6 +119,19 @@ function lockedShellReason(lower: string): string | null {
   return null;
 }
 
+/**
+ * Routes FORGE serves on every live site, whose content lives in the locked zone: the route file is
+ * a single re-export of a `src/forge/` page, so the agent cannot replace, wrap or delete it (free
+ * zones may still link to it). Any file or folder that maps to the same route is locked too.
+ * - `/creator-fees`: the creator fee claim page (`src/forge/pages/CreatorFeesPage.tsx`).
+ */
+const LOCKED_ROUTE_RE = /^src\/pages\/(creator-fees)(?:\.|\/|$)/;
+
+function lockedPageReason(lower: string): string | null {
+  const route = LOCKED_ROUTE_RE.exec(lower);
+  return route ? `src/pages/${route[1]} is locked (FORGE page: creator fee claims)` : null;
+}
+
 /** Classifies a normalized path. */
 export function classifyPath(path: string): ZoneClass {
   const lower = path.toLowerCase();
@@ -155,6 +168,8 @@ export function classifyPath(path: string): ZoneClass {
   }
   const shell = lockedShellReason(lower);
   if (shell !== null) return { zone: 'blocked', rule: 'app-shell-locked', reason: shell };
+  const page = lockedPageReason(lower);
+  if (page !== null) return { zone: 'blocked', rule: 'forge-page-locked', reason: page };
 
   const inSrcZone = SRC_ZONES.some((z) => path.startsWith(z));
   const inPublic = path.startsWith('public/');

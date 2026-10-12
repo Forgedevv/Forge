@@ -139,6 +139,67 @@ describe('locked zones', () => {
     }
   });
 
+  it('regression: locks the /creator-fees route of every live site', () => {
+    const route = "export { default } from '@/forge/pages/CreatorFeesPage';\n";
+    // The route file and anything else Next.js would serve at /creator-fees.
+    for (const p of [
+      'src/pages/creator-fees.tsx',
+      'src/pages/creator-fees.ts',
+      'src/pages/creator-fees.js',
+      'src/pages/creator-fees.jsx',
+      'src/pages/Creator-Fees.tsx',
+      'src/pages/creator-fees/index.tsx',
+      'src/pages/creator-fees/[pool].tsx',
+    ]) {
+      expect(
+        rulesOf(scan([modified(p, route, 'export default function P() { return null; }\n')])),
+        p,
+      ).toContain('forge-page-locked');
+      expect(
+        rulesOf(scan([added(p, 'export default function P() { return null; }\n')])),
+        p,
+      ).toContain('forge-page-locked');
+      expect(rulesOf(scan([deleted(p, route)])), p).toContain('forge-page-locked');
+    }
+    expect(
+      rulesOf(scan([renamed('src/pages/creator-fees.tsx', 'src/pages/fees.tsx', route)])),
+    ).toContain('forge-page-locked');
+    expect(
+      rulesOf(scan([renamed('src/pages/about.tsx', 'src/pages/creator-fees.tsx', 'x')])),
+    ).toContain('forge-page-locked');
+    // The locked page itself is in src/forge/.
+    expect(rulesOf(scan([modified('src/forge/pages/CreatorFeesPage.tsx', 'a', 'b')]))).toContain(
+      'forge-locked-zone',
+    );
+    // Neighbours stay free.
+    for (const p of [
+      'src/pages/creator.tsx',
+      'src/pages/creator-feesx.tsx',
+      'src/pages/fees.tsx',
+    ]) {
+      expect(rulesOf(scan([added(p, 'export const A = 1;\n')])), p).not.toContain(
+        'forge-page-locked',
+      );
+    }
+  });
+
+  it('lets free-zone pages and components link to /creator-fees', () => {
+    const page = [
+      "import Link from 'next/link';",
+      'export default function About() {',
+      '  return (',
+      '    <main>',
+      '      <Link href="/creator-fees">Claim your creator fees</Link>',
+      '      <a href="/creator-fees">Creator fees</a>',
+      '    </main>',
+      '  );',
+      '}',
+      '',
+    ].join('\n');
+    expect(scan([added('src/pages/about.tsx', page)])).toEqual({ ok: true });
+    expect(scan([added('src/components/FeesLink.tsx', page)])).toEqual({ ok: true });
+  });
+
   it('keeps the site mode a builder-only field of forge.config.json', () => {
     for (const mode of ['live', 'sleeping']) {
       const disabled = editConfig((c) => {

@@ -42,6 +42,7 @@ export type RuleId =
   | 'zone-outside-allowed'
   | 'api-route'
   | 'app-shell-locked'
+  | 'forge-page-locked'
   | 'special-file'
   | 'file-type-not-allowed'
   | 'file-mode'

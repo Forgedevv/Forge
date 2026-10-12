@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const core = vi.hoisted(() => ({
   listCoinsOfConfig: vi.fn(),
+  listCoinsOfCreator: vi.fn(),
   buildCreatorClaimTx: vi.fn(),
 }));
 
@@ -18,7 +19,7 @@ vi.mock('@forge/core', async (importOriginal) => ({
   ...core,
 }));
 
-import { ClaimError, DbcReadError } from '@forge/core';
+import { ClaimError } from '@forge/core';
 import { createCoreClaimsCore } from '../../src/forge/claims/core-adapter';
 
 const connection = {} as Connection;
@@ -50,15 +51,25 @@ function adapter(configs: string[] = [config.toBase58()], conn: Connection | nul
 }
 
 describe('claims core backed by @forge/core', () => {
-  it('lists only the coins of the wallet, with their creator share', async () => {
+  it('lists only the coins of the wallet on this launchpad, with their creator share', async () => {
     const mine = coin();
     const migrated = coin({ graduation: 'migrated' });
+    // Re-checked here too: a coin of another creator or another config is never shown.
     const notMine = coin({ creator: other });
-    core.listCoinsOfConfig.mockResolvedValue([mine, notMine, migrated]);
+    const otherConfig = coin({ config: Keypair.generate().publicKey });
+    core.listCoinsOfCreator.mockResolvedValue([mine, notMine, migrated, otherConfig]);
 
     const coins = await adapter().listCreatorCoins(creator.publicKey.toBase58());
 
-    expect(core.listCoinsOfConfig).toHaveBeenCalledTimes(1);
+    expect(core.listCoinsOfCreator).toHaveBeenCalledTimes(1);
+    const [conn, owner, configs] = core.listCoinsOfCreator.mock.calls[0] as [
+      Connection,
+      PublicKey,
+      PublicKey[],
+    ];
+    expect(conn).toBe(connection);
+    expect(owner.equals(creator.publicKey)).toBe(true);
+    expect(configs.map((c) => c.toBase58())).toEqual([config.toBase58()]);
     expect(coins).toEqual([
       {
         pool: mine.pool.toBase58(),
@@ -72,21 +83,27 @@ describe('claims core backed by @forge/core', () => {
     ]);
   });
 
-  it('reads every configured launchpad config', async () => {
-    const second = Keypair.generate().publicKey;
-    core.listCoinsOfConfig.mockResolvedValue([]);
-    await adapter([config.toBase58(), second.toBase58()]).listCreatorCoins(
-      creator.publicKey.toBase58(),
-    );
-    expect(core.listCoinsOfConfig).toHaveBeenCalledTimes(2);
+  it('regression: never lists a whole config (the relay refuses that program scan)', async () => {
+    core.listCoinsOfCreator.mockResolvedValue([]);
+    await adapter().listCreatorCoins(creator.publicKey.toBase58());
+    expect(core.listCoinsOfConfig).not.toHaveBeenCalled();
   });
 
-  it('shows no coin when the config does not exist yet, and fails on other read errors', async () => {
-    core.listCoinsOfConfig.mockRejectedValueOnce(
-      new DbcReadError('config_not_found', 'DBC config not found'),
+  it('reads every configured launchpad config in one creator query', async () => {
+    const second = Keypair.generate().publicKey;
+    const onSecond = coin({ config: second });
+    core.listCoinsOfCreator.mockResolvedValue([onSecond]);
+    const coins = await adapter([config.toBase58(), second.toBase58()]).listCreatorCoins(
+      creator.publicKey.toBase58(),
     );
-    await expect(adapter().listCreatorCoins(creator.publicKey.toBase58())).resolves.toEqual([]);
-    core.listCoinsOfConfig.mockRejectedValueOnce(new Error('rpc down'));
+    expect(core.listCoinsOfCreator).toHaveBeenCalledTimes(1);
+    const configs = (core.listCoinsOfCreator.mock.calls[0] as [unknown, unknown, PublicKey[]])[2];
+    expect(configs.map((c) => c.toBase58())).toEqual([config.toBase58(), second.toBase58()]);
+    expect(coins.map((c) => c.pool)).toEqual([onSecond.pool.toBase58()]);
+  });
+
+  it('fails on read errors', async () => {
+    core.listCoinsOfCreator.mockRejectedValueOnce(new Error('rpc down'));
     await expect(adapter().listCreatorCoins(creator.publicKey.toBase58())).rejects.toThrow(
       'rpc down',
     );
@@ -94,7 +111,7 @@ describe('claims core backed by @forge/core', () => {
 
   it('does not call the chain without a launchpad config', async () => {
     await expect(adapter([]).listCreatorCoins(creator.publicKey.toBase58())).resolves.toEqual([]);
-    expect(core.listCoinsOfConfig).not.toHaveBeenCalled();
+    expect(core.listCoinsOfCreator).not.toHaveBeenCalled();
   });
 
   it('fails loudly when the RPC relay is not configured', async () => {

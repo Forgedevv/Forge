@@ -335,6 +335,71 @@ export async function listCoinsOfConfig(
     .sort((a, b) => compareStrings(a.pool.toBase58(), b.pool.toBase58()));
 }
 
+/**
+ * Byte offset of `creator` in a DBC pool account (`VirtualPool` and `TransferHookPool`: 8-byte
+ * account discriminator, then `PoolState` with `config` at 72, `creator` at 104, `baseMint` at 136).
+ * The SDK's `getPoolsByCreator` filters on it; the FORGE RPC relay accepts exactly that query.
+ */
+export const DBC_POOL_CREATOR_OFFSET = 104;
+
+/** Byte offset of `config` in a DBC pool account (the SDK's `getPoolsByConfig` filter). */
+export const DBC_POOL_CONFIG_OFFSET = 72;
+
+/**
+ * Lists the coins (pools) created by `creator` on any of `configs`, through the SDK's
+ * `getPoolsByCreator` (one `getProgramAccounts` per pool account variant, filtered on the creator
+ * at offset 104: the narrow query the FORGE RPC relay allows, unlike a whole-config listing).
+ *
+ * The decoded data is checked again: a pool is kept only when its `creator` is `creator` and its
+ * `config` is one of `configs`, so a pool another launchpad (or a wrong RPC answer) hands back is
+ * never shown. Only the configs that have such a pool are read. Sorted by pool address, without
+ * duplicates. No RPC call when `configs` is empty.
+ * @throws DbcReadError when the config of a matching pool does not exist.
+ */
+export async function listCoinsOfCreator(
+  connection: Connection,
+  creator: PublicKey,
+  configs: readonly PublicKey[],
+  options: ReadOptions = {},
+): Promise<CoinOfConfig[]> {
+  const wanted = new Set(configs.map((c) => c.toBase58()));
+  if (wanted.size === 0) return [];
+  const state = stateService(connection, options.commitment ?? READ_COMMITMENT);
+  const pools = await retryRpc(() => state.getPoolsByCreator(creator), options.retry);
+
+  const byPool = new Map<string, { address: PublicKey; virtualPool: VirtualPool }>();
+  for (const p of pools) {
+    const poolState = p.account.poolState;
+    if (!poolState.creator.equals(creator)) continue;
+    if (!wanted.has(poolState.config.toBase58())) continue;
+    byPool.set(p.publicKey.toBase58(), { address: p.publicKey, virtualPool: p.account });
+  }
+  if (byPool.size === 0) return [];
+
+  const configKeys = new Map<string, PublicKey>();
+  for (const { virtualPool } of byPool.values()) {
+    configKeys.set(virtualPool.poolState.config.toBase58(), virtualPool.poolState.config);
+  }
+  const configStates = new Map<string, PoolConfig>();
+  for (const [id, address] of configKeys) {
+    const configState = await retryRpc(() => state.getPoolConfig(address), options.retry);
+    if (!configState) {
+      throw new DbcReadError('config_not_found', `DBC config not found: ${id}`);
+    }
+    configStates.set(id, configState);
+  }
+
+  return [...byPool.values()]
+    .map(({ address, virtualPool }) =>
+      summarizeCoin({
+        address,
+        virtualPool,
+        config: configStates.get(virtualPool.poolState.config.toBase58()) as PoolConfig,
+      }),
+    )
+    .sort((a, b) => compareStrings(a.pool.toBase58(), b.pool.toBase58()));
+}
+
 function compareStrings(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
 }

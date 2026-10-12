@@ -62,7 +62,9 @@ Every protection below is **mandatory** in the MVP. Agents that touch one of the
 
 ## 11. RPC relay abused
 
-**Protections** (agent 3): JSON-RPC method allowlist, per-IP rate limit, bounded request size.
+**Protections** (agent 3): JSON-RPC method allowlist with strict params, per-IP rate limit weighted per method, bounded request and response size.
+- `getProgramAccounts` is refused in every shape but one: the creator pools query of the creator fee claim (Meteora SDK `getPoolsByCreator`): the DBC program, a pool account discriminator at offset 0 and exactly one 32-byte creator key at offset 104, base64 data, no dataSlice, dataSize, withContext or extra filter. It weighs 20 units (an account read weighs 1) and keeps the response size cap. Any other shape answers "method not allowed".
+- Callers: the FORGE site, draft and live client sites, previews awaiting approval, and sleeping client sites. A sleeping site's origin gets only the methods of the creator fee claim (D29); the server-token tier (client server routes, uploads) serves draft and live launchpads only.
 
 ## 12. Scam launchpads
 

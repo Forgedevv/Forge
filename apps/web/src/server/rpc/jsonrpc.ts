@@ -98,10 +98,33 @@ export function checkCall(raw: unknown, index: number): CheckedCall {
   const spec = METHODS[method];
   const reason = spec ? spec.validate(obj.params) : 'unknown method';
   if (reason !== null) {
+    // A method allowed in one narrow shape is refused like any other method outside of it.
+    if (spec?.narrow) return invalid(RPC_ERRORS.methodNotAllowed);
     return invalid({ ...RPC_ERRORS.invalidParams, data: { reason } });
   }
   const params = Array.isArray(obj.params) ? (obj.params as unknown[]) : [];
   return { ok: true, index, id, method, params };
+}
+
+/**
+ * Narrows checked calls to `allowed` methods: any other valid call becomes a refused one
+ * (-32601), as if the method were not on the allowlist. Already refused calls are kept as they are.
+ */
+export function restrictCalls(
+  calls: readonly CheckedCall[],
+  allowed: ReadonlySet<string>,
+): CheckedCall[] {
+  return calls.map((c) =>
+    c.ok && !allowed.has(c.method)
+      ? {
+          ok: false,
+          index: c.index,
+          id: c.id,
+          method: c.method,
+          error: RPC_ERRORS.methodNotAllowed,
+        }
+      : c,
+  );
 }
 
 /** Parses the raw request text into checked calls. */

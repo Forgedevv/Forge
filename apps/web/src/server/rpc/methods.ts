@@ -7,8 +7,12 @@ import { z } from 'zod';
  * coin creation, creator claims, its server route /api/upload), @forge/core helpers it runs, and
  * the FORGE site's browser client (wallet adapter, launch signing, partner fee claims). Each entry
  * says who needs it. Everything else is refused with -32601, in particular:
- * - getProgramAccounts (scans a whole program: very expensive, unbounded responses; the coin lists
- *   come from the Jupiter data API);
+ * - getProgramAccounts in any shape but one (a program scan is very expensive and its response is
+ *   unbounded; the coin lists come from the Jupiter data API). The one shape allowed is the query
+ *   of the Meteora SDK's `getPoolsByCreator`, which the creator fee claim runs to find the coins a
+ *   wallet created: the DBC program, a pool account discriminator at offset 0 and one 32-byte
+ *   creator key at offset 104, base64 data, nothing else (no dataSlice, dataSize, withContext,
+ *   minContextSlot or extra filter). Any other shape answers -32601 too, like a refused method;
  * - getSignaturesForAddress / getTransaction (history indexing; payment checks run server side on
  *   FORGE's own connection, not through the relay);
  * - requestAirdrop, subscriptions, getLargestAccounts, getTokenLargestAccounts, getVoteAccounts...
@@ -89,6 +93,84 @@ const SendConfig = z.strictObject({
   minContextSlot: Slot.optional(),
 });
 
+/**
+ * Meteora Dynamic Bonding Curve program (same id on devnet and mainnet). Kept here so the relay
+ * route does not load the transaction core; a test checks it against @forge/core.
+ */
+export const DBC_PROGRAM_ID = 'dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN';
+
+/**
+ * Anchor account discriminators of the two DBC pool accounts (`VirtualPool`, `TransferHookPool`,
+ * IDL of SDK 1.5.13): `getPoolsByCreator` sends one query for each.
+ */
+export const DBC_POOL_DISCRIMINATORS: readonly (readonly number[])[] = [
+  [213, 224, 5, 209, 98, 69, 119, 92],
+  [237, 219, 184, 23, 42, 189, 169, 35],
+];
+
+/** Offset of the pool creator in a DBC pool account (8-byte discriminator + `PoolState`). */
+export const DBC_POOL_CREATOR_OFFSET = 104;
+
+/** Rate-limit units of one creator pool query (a program scan, about 10x an account read). */
+export const CREATOR_POOLS_WEIGHT = 20;
+
+const BASE58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+
+/** Decodes a short base58 string (at most 64 characters), or null when it is not base58. */
+export function decodeBase58(value: string): Uint8Array | null {
+  if (value.length === 0 || value.length > 64) return null;
+  let n = BigInt(0);
+  for (const char of value) {
+    const digit = BASE58_ALPHABET.indexOf(char);
+    if (digit < 0) return null;
+    n = n * BigInt(58) + BigInt(digit);
+  }
+  const bytes: number[] = [];
+  while (n > BigInt(0)) {
+    bytes.unshift(Number(n & BigInt(0xff)));
+    n >>= BigInt(8);
+  }
+  for (const char of value) {
+    if (char !== '1') break;
+    bytes.unshift(0);
+  }
+  return Uint8Array.from(bytes);
+}
+
+function sameBytes(a: Uint8Array, b: readonly number[]): boolean {
+  return a.length === b.length && a.every((byte, i) => byte === b[i]);
+}
+
+/** A memcmp filter at exactly `offset`, base58 bytes (web3.js adds `encoding: 'base58'`). */
+const memcmpAt = (offset: number, bytes: z.ZodType<string>) =>
+  z.strictObject({
+    memcmp: z.strictObject({
+      offset: z.literal(offset),
+      bytes,
+      encoding: z.literal('base58').optional(),
+    }),
+  });
+
+const PoolDiscriminator = z.string().refine((value) => {
+  const bytes = decodeBase58(value);
+  return bytes !== null && DBC_POOL_DISCRIMINATORS.some((d) => sameBytes(bytes, d));
+}, 'not a DBC pool account discriminator');
+
+const CreatorKey = z.string().refine((value) => {
+  const bytes = decodeBase58(value);
+  return bytes !== null && bytes.length === 32;
+}, 'not a 32-byte key');
+
+/**
+ * Config of the creator pool query, exactly as web3.js 1.x sends the SDK's `getPoolsByCreator`:
+ * `{ encoding: 'base64', commitment?, filters: [discriminator @0, creator @104] }`.
+ */
+const CreatorPoolsConfig = z.strictObject({
+  encoding: z.literal('base64'),
+  commitment: Commitment.optional(),
+  filters: z.tuple([memcmpAt(0, PoolDiscriminator), memcmpAt(DBC_POOL_CREATOR_OFFSET, CreatorKey)]),
+});
+
 /** Positional params: `required` first, then up to `optional.length` more. */
 function positional(required: z.ZodType[], optional: z.ZodType[] = []) {
   return (params: unknown): string | null => {
@@ -122,6 +204,11 @@ export interface MethodSpec {
   isSend?: true;
   /** Safe to retry upstream on a transport error (reads and simulations). */
   retryable: boolean;
+  /**
+   * Invalid params answer -32601 (method not allowed) instead of -32602, without a reason: the
+   * method is allowed in one narrow shape only, and every other use of it is a refused method.
+   */
+  narrow?: true;
 }
 
 const one = () => 1;
@@ -233,6 +320,14 @@ export const METHODS: Readonly<Record<string, MethodSpec>> = {
     weight: one,
     retryable: true,
   },
+  getProgramAccounts: {
+    usedBy:
+      'template creator fee claim: core listCoinsOfCreator (SDK getPoolsByCreator), DBC pools of one creator only',
+    validate: positional([z.literal(DBC_PROGRAM_ID), CreatorPoolsConfig]),
+    weight: () => CREATOR_POOLS_WEIGHT,
+    retryable: true,
+    narrow: true,
+  },
 };
 
 export function isAllowedMethod(method: string): boolean {
@@ -240,3 +335,27 @@ export function isAllowedMethod(method: string): boolean {
 }
 
 export const ALLOWED_METHODS: readonly string[] = Object.freeze(Object.keys(METHODS));
+
+/**
+ * What the browser of a sleeping site may call (origins.ts, kind `sleeping`): the one action left
+ * on a sleeping site is the creator fee claim (decision D29, template `ClaimCreatorFees`), so only
+ * the methods that claim sends are served. Everything else (trades, simulations, coin creation)
+ * answers -32601.
+ */
+export const SLEEPING_SITE_METHODS: ReadonlySet<string> = new Set([
+  // Coins of the wallet: core listCoinsOfCreator (SDK getPoolsByCreator).
+  'getProgramAccounts',
+  // Pool and config (SDK fetchers), the wallet's coin account (SDK getOrCreateATAInstruction).
+  'getAccountInfo',
+  // Core claim build: the receiver's coin account, the temporary WSOL account, the receiver.
+  'getMultipleAccounts',
+  // Core claim build: token account rent, read from the cluster.
+  'getMinimumBalanceForRentExemption',
+  // Core claim build: the claim transaction's blockhash.
+  'getLatestBlockhash',
+  // Template chain client: balance check before signing.
+  'getBalance',
+  // Template chain client: the signed claim, then confirmation by polling.
+  'sendTransaction',
+  'getSignatureStatuses',
+]);
