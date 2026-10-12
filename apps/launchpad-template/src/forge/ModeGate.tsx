@@ -8,9 +8,10 @@ import { SleepingPage } from './modes/SleepingPage';
  * LOCKED ZONE. App-level mode gate, rendered by `src/pages/_app.tsx`.
  *
  * The mode is read only from the builder-written forge.config.json, through `./config` (never from
- * the free-zone `@/content`). Anything but `live` renders the static sleeping or disabled page and
- * nothing else: `children` (the free-zone app shell and pages, wallet, data providers, RPC,
- * Jupiter) is never rendered. An unknown mode fails closed to the disabled page.
+ * the free-zone `@/content`). Anything but `live` renders the sleeping or disabled page and nothing
+ * else: `children` (the free-zone app shell and pages, data providers, Jupiter) is never rendered.
+ * The sleeping page keeps one action, the creator fee claim (decision D29), with its own wallet
+ * provider; the disabled page has none. An unknown mode fails closed to the disabled page.
  */
 export function ModeGate({ children }: { children: ReactNode }) {
   const mode: string = currentMode();

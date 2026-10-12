@@ -224,7 +224,18 @@ describe('ClaimCreatorFees', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent(/not configured/);
   });
 
-  it.each(['sleeping', 'disabled'] as const)('is unavailable in %s mode', (mode) => {
+  it('stays available in sleeping mode (D29)', async () => {
+    const s = setup([mockCoin({ name: 'Moon Coin', symbol: 'MOON' })]);
+    renderClaims(s, { mode: 'sleeping' });
+    fireEvent.click(await screen.findByRole('button', { name: 'Claim fees for Moon Coin' }));
+    await screen.findByLabelText('Claim summary');
+    fireEvent.click(screen.getByRole('button', { name: 'Sign and claim' }));
+    expect(await screen.findByText(/Claimed 1.5 SOL/)).toBeInTheDocument();
+    expect(s.chain.sendRawTransaction).toHaveBeenCalledTimes(1);
+  });
+
+  it('is unavailable in disabled mode', () => {
+    const mode = 'disabled';
     const s = setup([mockCoin()]);
     const list = vi.spyOn(s.core, 'listCreatorCoins');
     renderClaims(s, { mode });
