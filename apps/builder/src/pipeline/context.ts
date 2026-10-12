@@ -19,6 +19,7 @@ export type PipelineGithub = Pick<
   | 'getRepo'
   | 'protectDefaultBranch'
   | 'getBranchHead'
+  | 'resetJobBranch'
   | 'commitFiles'
   | 'readFile'
   | 'mergeBranch'

@@ -3,6 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { setSwapCore } from '../../src/forge/trade/core-adapter';
 import { createMockSwapCore, type MockSwapCore } from '../../src/forge/trade/core-adapter.mock';
+import { clearPendingTrade } from '../../src/forge/trade/send';
 import {
   accountsByAddress,
   connectionRef,
@@ -10,6 +11,7 @@ import {
   keys,
   mintAccount,
   okSigner,
+  SIGNED_SIGNATURE,
   site,
   wallet,
   type FakeConnection,
@@ -61,6 +63,7 @@ let restore: () => void;
 beforeEach(() => {
   site.mode = 'live';
   wallet.publicKey = keys.user;
+  clearPendingTrade(keys.user.toBase58());
   wallet.signTransaction = okSigner();
   wallet.setShowModal.mockReset();
   connection = createFakeConnection();
@@ -306,9 +309,9 @@ describe('buy and sell execution', () => {
     expect(simulateOrder).toBeLessThan(signOrder);
 
     const link = within(success).getByRole('link') as HTMLAnchorElement;
-    expect(link.href).toBe('https://explorer.solana.com/tx/SIGNATURE_1?cluster=devnet');
+    expect(link.href).toBe(`https://explorer.solana.com/tx/${SIGNED_SIGNATURE}?cluster=devnet`);
     expect(link.rel).toContain('noopener');
-    expect(onTradeConfirmed).toHaveBeenCalledWith('SIGNATURE_1');
+    expect(onTradeConfirmed).toHaveBeenCalledWith(SIGNED_SIGNATURE);
   });
 
   it('sells: uses the token balance and the sell builder', async () => {
@@ -439,7 +442,7 @@ describe('error mapping', () => {
     fireEvent.click(submit());
     const alert = await screen.findByTestId('trade-error');
     expect(alert.getAttribute('data-code')).toBe('tx_failed');
-    expect(within(alert).getByRole('link').getAttribute('href')).toContain('SIGNATURE_1');
+    expect(within(alert).getByRole('link').getAttribute('href')).toContain(SIGNED_SIGNATURE);
   });
 
   it('reports a confirmation timeout with the signature', async () => {
@@ -449,7 +452,78 @@ describe('error mapping', () => {
     fireEvent.click(submit());
     const alert = await screen.findByTestId('trade-error');
     expect(alert.getAttribute('data-code')).toBe('confirm_timeout');
-    expect(within(alert).getByRole('link').getAttribute('href')).toContain('SIGNATURE_1');
+    expect(within(alert).getByRole('link').getAttribute('href')).toContain(SIGNED_SIGNATURE);
+  });
+
+  it('takes the signature from the signed bytes and finds a trade whose send call failed', async () => {
+    connection.sendRawTransaction.mockRejectedValue(new TypeError('Failed to fetch'));
+    const onTradeConfirmed = vi.fn();
+    renderPanel({ onTradeConfirmed });
+    await readyToTrade('0.1', /Buy MOON/);
+    fireEvent.click(submit());
+    await screen.findByTestId('trade-success');
+    expect(onTradeConfirmed).toHaveBeenCalledWith(SIGNED_SIGNATURE);
+    expect(connection.getSignatureStatuses).toHaveBeenCalledWith([SIGNED_SIGNATURE], {
+      searchTransactionHistory: true,
+    });
+  });
+
+  it('never builds a second trade while the first one may still land', async () => {
+    connection.sendRawTransaction.mockRejectedValue(new TypeError('Failed to fetch'));
+    connection.getSignatureStatuses.mockResolvedValue({ context: { slot: 1 }, value: [null] });
+    const build = vi.spyOn(core, 'buildBuyTx');
+    renderPanel({ confirmOptions: { intervalMs: 1, timeoutMs: 30 } });
+    await readyToTrade('0.1', /Buy MOON/);
+    fireEvent.click(submit());
+    const first = await screen.findByTestId('trade-error');
+    expect(first.getAttribute('data-code')).toBe('confirm_timeout');
+    expect(within(first).getByRole('link').getAttribute('href')).toContain(SIGNED_SIGNATURE);
+    const sends = connection.sendRawTransaction.mock.calls.length;
+    // Every attempt re-sent the same signed bytes.
+    for (const call of connection.sendRawTransaction.mock.calls) {
+      expect(call[0]).toEqual(new Uint8Array([1, 2, 3]));
+    }
+
+    await waitFor(() => expect(submit().disabled).toBe(false));
+    fireEvent.click(submit());
+    await waitFor(() =>
+      expect(screen.getByTestId('trade-error').getAttribute('data-code')).toBe(
+        'previous_trade_pending',
+      ),
+    );
+    expect(build).toHaveBeenCalledTimes(1);
+    expect(wallet.signTransaction).toHaveBeenCalledTimes(1);
+    expect(connection.sendRawTransaction.mock.calls.length).toBe(sends);
+
+    // Once its blockhash expired without the signature landing, a new trade may be built.
+    connection.getBlockHeight.mockResolvedValue(101);
+    connection.sendRawTransaction.mockResolvedValue('IGNORED');
+    connection.getSignatureStatuses.mockImplementation(
+      async (_sigs: string[], config?: unknown) => ({
+        context: { slot: 1 },
+        value: [config ? null : { err: null, confirmationStatus: 'confirmed' }],
+      }),
+    );
+    fireEvent.click(submit());
+    await screen.findByTestId('trade-success');
+    expect(build).toHaveBeenCalledTimes(2);
+  });
+
+  it('allows a new trade at once when the node rejected the first in preflight', async () => {
+    connection.sendRawTransaction.mockRejectedValueOnce(
+      new Error('failed to send transaction: Transaction simulation failed: Blockhash not found'),
+    );
+    const build = vi.spyOn(core, 'buildBuyTx');
+    renderPanel();
+    await readyToTrade('0.1', /Buy MOON/);
+    fireEvent.click(submit());
+    const alert = await screen.findByTestId('trade-error');
+    expect(alert.getAttribute('data-code')).toBe('blockhash_expired');
+    expect(within(alert).queryByRole('link')).toBeNull();
+    await waitFor(() => expect(submit().disabled).toBe(false));
+    fireEvent.click(submit());
+    await screen.findByTestId('trade-success');
+    expect(build).toHaveBeenCalledTimes(2);
   });
 
   it('maps a relay outage while quoting', async () => {

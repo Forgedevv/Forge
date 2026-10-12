@@ -92,7 +92,10 @@ export function subdomainFor(slug: string, clientsDomain: string): string {
  * only ever receives public values:
  *
  * - `NEXT_PUBLIC_*` values the browser needs (cluster, RPC relay origin, Jupiter referral account,
- *   public bucket URL, pool config keys);
+ *   platform fee wallet and Meteora referral account of the curve swap, public bucket URL, pool
+ *   config keys). The template reads them as literal `process.env.NEXT_PUBLIC_*` (inlined at
+ *   build time): a name the builder does not set is `undefined` in the browser, and trading
+ *   breaks (vercel.template-env.test.ts checks the template source against this list);
  * - the public on-chain FORGE addresses and the cluster, which `@forge/core` reads from
  *   `process.env` on the server (addresses, not credentials);
  * - the public R2 URL and the pool config key read by server routes.
@@ -119,6 +122,8 @@ export const PROJECT_ENV_ALLOWLIST: ReadonlySet<string> = new Set<string>([
   'FORGE_PLATFORM_FEE_WALLET',
   'FORGE_JUPITER_REFERRAL_ACCOUNT',
   'NEXT_PUBLIC_FORGE_JUPITER_REFERRAL_ACCOUNT',
+  'NEXT_PUBLIC_FORGE_PLATFORM_FEE_WALLET',
+  'NEXT_PUBLIC_FORGE_METEORA_REFERRAL_ACCOUNT',
   'NEXT_PUBLIC_FORGE_RPC_RELAY_URL',
   'R2_PUBLIC_URL',
   'NEXT_PUBLIC_R2_PUBLIC_URL',
@@ -155,14 +160,21 @@ export const PROJECT_ENV_REQUIRED: readonly string[] = [
   'FORGE_PLATFORM_FEE_WALLET',
   'FORGE_JUPITER_REFERRAL_ACCOUNT',
   'NEXT_PUBLIC_FORGE_JUPITER_REFERRAL_ACCOUNT',
+  'NEXT_PUBLIC_FORGE_PLATFORM_FEE_WALLET',
+  'NEXT_PUBLIC_FORGE_METEORA_REFERRAL_ACCOUNT',
   'NEXT_PUBLIC_FORGE_RPC_RELAY_URL',
   'R2_PUBLIC_URL',
 ];
 
-/** Public `NEXT_PUBLIC_*` twins derived from a FORGE-side variable when not given explicitly. */
+/**
+ * Public `NEXT_PUBLIC_*` twins derived from a FORGE-side variable when not given explicitly. A twin
+ * given explicitly must equal its source: the browser and the server must use the same accounts.
+ */
 const DERIVED_ENV: ReadonlyArray<readonly [string, string]> = [
   ['NEXT_PUBLIC_SOLANA_CLUSTER', 'SOLANA_CLUSTER'],
   ['NEXT_PUBLIC_FORGE_JUPITER_REFERRAL_ACCOUNT', 'FORGE_JUPITER_REFERRAL_ACCOUNT'],
+  ['NEXT_PUBLIC_FORGE_PLATFORM_FEE_WALLET', 'FORGE_PLATFORM_FEE_WALLET'],
+  ['NEXT_PUBLIC_FORGE_METEORA_REFERRAL_ACCOUNT', 'FORGE_METEORA_REFERRAL_ACCOUNT'],
   ['NEXT_PUBLIC_R2_PUBLIC_URL', 'R2_PUBLIC_URL'],
   ['NEXT_PUBLIC_POOL_CONFIG_KEY', 'POOL_CONFIG_KEY'],
 ];
@@ -199,6 +211,8 @@ const VALUE_CHECKS: Readonly<Record<string, (value: string) => boolean>> = {
   FORGE_PLATFORM_FEE_WALLET: (v) => BASE58_ADDRESS.test(v),
   FORGE_JUPITER_REFERRAL_ACCOUNT: (v) => BASE58_ADDRESS.test(v),
   NEXT_PUBLIC_FORGE_JUPITER_REFERRAL_ACCOUNT: (v) => BASE58_ADDRESS.test(v),
+  NEXT_PUBLIC_FORGE_PLATFORM_FEE_WALLET: (v) => BASE58_ADDRESS.test(v),
+  NEXT_PUBLIC_FORGE_METEORA_REFERRAL_ACCOUNT: (v) => BASE58_ADDRESS.test(v),
   NEXT_PUBLIC_FORGE_RPC_RELAY_URL: isPublicUrl,
   R2_PUBLIC_URL: isPublicUrl,
   NEXT_PUBLIC_R2_PUBLIC_URL: isPublicUrl,
@@ -251,11 +265,15 @@ export function pickProjectEnv(
     const v = source[key];
     if (typeof v === 'string' && v !== '') vars[key] = v;
   }
+  const invalid = new Set<string>();
   for (const [target, from] of DERIVED_ENV) {
     const v = vars[from];
     if (vars[target] === undefined && v !== undefined) vars[target] = v;
+    else if (vars[target] !== undefined && v !== undefined && vars[target] !== v) {
+      // An explicit twin that disagrees with its source: the browser would use other accounts.
+      invalid.add(target);
+    }
   }
-  const invalid = new Set<string>();
   for (const [key, value] of Object.entries(vars)) {
     if (projectEnvProblem(key, value) !== undefined) invalid.add(key);
   }
@@ -450,6 +468,10 @@ export interface VercelClient {
   pruneEnv(projectId: string): Promise<{ removed: string[] }>;
   /** Restricts deployments to the REST API (no git webhook deployment) and verifies it. */
   disableGitDeployments(projectId: string): Promise<VercelProject>;
+  /**
+   * Creates a deployment from a git ref. A production one is staged: it never takes the
+   * production domains by itself, only `promoteToProduction` does (after the caller's checks).
+   */
   createDeployment(input: CreateDeploymentInput): Promise<VercelDeployment>;
   getDeployment(idOrUrl: string): Promise<VercelDeployment>;
   /** Polls until READY; throws `deployment_failed` on ERROR/CANCELED and `timeout` past the deadline. */
@@ -510,6 +532,8 @@ const DeploymentSchema = z.object({
   projectId: z.string().optional(),
   gitSource: z.object({ sha: z.string().optional() }).nullish(),
   meta: z.object({ githubCommitSha: z.string().optional() }).nullish(),
+  /** Echo of the create option ("applies to custom domains only, defaults to `true`"). */
+  autoAssignCustomDomains: z.boolean().nullish(),
 });
 
 const COMMIT_SHA_RE = /^[0-9a-f]{40}$/;
@@ -530,6 +554,9 @@ function parseBody<S extends z.ZodType>(schema: S, res: HttpResponse, what: stri
   }
   return parsed.data;
 }
+
+/** States after which a deployment never changes (READY already got whatever it was assigned). */
+const FINAL_STATES = new Set<string>(['READY', 'ERROR', 'CANCELED', 'DELETED']);
 
 const READY_STATES = new Set<string>([
   'QUEUED',
@@ -850,6 +877,7 @@ export function createVercelClient(opts: VercelClientOptions): VercelClient {
     if (input.sha !== undefined && !/^[0-9a-f]{40}$/.test(input.sha)) {
       throw new ServiceError('vercel', 'invalid_input', 'invalid commit sha');
     }
+    const production = input.target === 'production';
     const res = await call({
       method: 'POST',
       path: '/v13/deployments',
@@ -858,7 +886,11 @@ export function createVercelClient(opts: VercelClientOptions): VercelClient {
       body: {
         name: input.project.name,
         project: input.project.id,
-        ...(input.target === 'production' ? { target: 'production' } : {}),
+        // A staged production deployment: built for production, but the production domains are
+        // only assigned by the explicit promotion, after the caller's post-READY checks (the
+        // launchpad may have been disabled, or deploys paused, while it was building). Same
+        // field as `vercel deploy --prod --skip-domain` (the Vercel CLI sends it in this body).
+        ...(production ? { target: 'production', autoAssignCustomDomains: false } : {}),
         gitSource: {
           type: 'github',
           org: githubOrg,
@@ -869,7 +901,28 @@ export function createVercelClient(opts: VercelClientOptions): VercelClient {
       },
       idempotent: true,
     });
-    return toDeployment(parseBody(DeploymentSchema, res, 'deployment'));
+    const body = parseBody(DeploymentSchema, res, 'deployment');
+    const deployment = toDeployment(body);
+    if (
+      production &&
+      body.autoAssignCustomDomains === true &&
+      !FINAL_STATES.has(deployment.readyState)
+    ) {
+      // Vercel did not stage it: once READY it would take the production domains before the
+      // checks. Cancel it (best effort) and fail; the caller alerts.
+      await call({
+        method: 'PATCH',
+        path: `/v12/deployments/${seg(deployment.id, 'deployment')}/cancel`,
+        idempotent: true,
+        allowStatus: [400, 404, 409],
+      }).catch(() => undefined);
+      throw new ServiceError(
+        'vercel',
+        'unexpected',
+        `production deployment ${deployment.id} was not staged (domains would be assigned automatically)`,
+      );
+    }
+    return deployment;
   }
 
   async function getDeployment(idOrUrl: string): Promise<VercelDeployment> {

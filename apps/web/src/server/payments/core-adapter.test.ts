@@ -24,7 +24,7 @@ import {
   type PaymentCheck,
 } from './core-adapter';
 import { ClusterMismatchError, PaymentConfigError, RpcUnavailableError } from './errors';
-import { createCorePaymentGateway, translateCoreError } from './gateway';
+import { createCorePaymentGateway, PAYMENT_COMMITMENT, translateCoreError } from './gateway';
 import { landedPayment, landedTx, randomSignature, TEST_BLOCKHASH } from './test-helpers';
 
 const PAYER = PublicKey.unique();
@@ -43,8 +43,9 @@ const CHECK: PaymentCheck = {
   confirmationStatus: 'confirmed',
 };
 
+/** Checks `tx` under its own id (first signature), as `verifyPayment` looks it up. */
 function check(tx: VersionedTransactionResponse, overrides: Partial<PaymentCheck> = {}) {
-  return checkPaymentTransaction(tx, 'sig', { ...CHECK, ...overrides });
+  return checkPaymentTransaction(tx, tx.transaction.signatures[0]!, { ...CHECK, ...overrides });
 }
 
 function paymentTx(overrides: Partial<Parameters<typeof landedTx>[0]> = {}) {
@@ -80,15 +81,21 @@ function fakeConnection(options: FakeRpcOptions = {}) {
             ? null
             : {
                 slot: 1_000,
-                confirmations: 1,
+                confirmations: null,
                 err: null,
-                confirmationStatus: 'confirmed',
+                confirmationStatus: 'finalized',
                 ...options.status,
               },
         ],
       }),
     ),
-    getTransaction: vi.fn(() => fail(options.tx === undefined ? paymentTx() : options.tx)),
+    // Served under the signature looked up (its first signature), as a real node does.
+    getTransaction: vi.fn((signature: string) => {
+      const tx = options.tx === undefined ? paymentTx() : options.tx;
+      return fail(
+        tx === null ? null : { ...tx, transaction: { ...tx.transaction, signatures: [signature] } },
+      );
+    }),
     getBalance: vi.fn(() => fail(options.balance ?? 5_000_000)),
     getMinimumBalanceForRentExemption: vi.fn(() => fail(options.rent ?? 890_880)),
     getLatestBlockhash: vi.fn(() =>
@@ -168,7 +175,7 @@ describe('checkPaymentTransaction', () => {
     const keys = message.staticAccountKeys;
     const pre = keys.map(() => 10_000_000_000);
     const post = keys.map((k, i) => (k.equals(CASHBOX) ? pre[i]! + Number(LAMPORTS) : pre[i]!));
-    const tx = { ...base, transaction: { message, signatures: ['sig'] } };
+    const tx = { ...base, transaction: { message, signatures: [randomSignature()] } };
     tx.meta = { ...base.meta!, preBalances: pre, postBalances: post };
     expect(check(tx)).toMatchObject({ status: 'confirmed' });
   });
@@ -274,16 +281,33 @@ describe('verifyPayment', () => {
   const expected = { payer: PAYER, lamports: LAMPORTS, jobId: JOB };
   const options = { env: ENV, retry: NO_RETRY };
 
-  it('confirms a confirmed transaction', async () => {
-    const { connection, rpc } = fakeConnection();
+  it('confirms a confirmed transaction when asked for that commitment', async () => {
+    const { connection, rpc } = fakeConnection({ status: { confirmationStatus: 'confirmed' } });
     await expect(
-      verifyPayment(connection, randomSignature(), expected, options),
+      verifyPayment(connection, randomSignature(), expected, {
+        ...options,
+        commitment: 'confirmed',
+      }),
     ).resolves.toMatchObject({
       status: 'confirmed',
       confirmationStatus: 'confirmed',
     });
     expect(rpc.getTransaction).toHaveBeenCalledWith(expect.any(String), {
       commitment: 'confirmed',
+      maxSupportedTransactionVersion: 0,
+    });
+  });
+
+  it('confirms a finalized transaction at the finalized commitment', async () => {
+    const { connection, rpc } = fakeConnection();
+    await expect(
+      verifyPayment(connection, randomSignature(), expected, {
+        ...options,
+        commitment: 'finalized',
+      }),
+    ).resolves.toMatchObject({ status: 'confirmed', confirmationStatus: 'finalized' });
+    expect(rpc.getTransaction).toHaveBeenCalledWith(expect.any(String), {
+      commitment: 'finalized',
       maxSupportedTransactionVersion: 0,
     });
   });
@@ -346,7 +370,7 @@ describe('gateway', () => {
     const previous = process.env.FORGE_CASHBOX_WALLET;
     process.env.FORGE_CASHBOX_WALLET = OTHER.toBase58();
     try {
-      const { connection, rpc } = fakeConnection();
+      const { connection, rpc } = fakeConnection({ status: { confirmationStatus: 'finalized' } });
       const gateway = createCorePaymentGateway({
         connection,
         cluster: 'devnet',
@@ -367,6 +391,39 @@ describe('gateway', () => {
       if (previous === undefined) delete process.env.FORGE_CASHBOX_WALLET;
       else process.env.FORGE_CASHBOX_WALLET = previous;
     }
+  });
+
+  it('verifies payments at the finalized commitment only', async () => {
+    expect(PAYMENT_COMMITMENT).toBe('finalized');
+    const notFinal = fakeConnection({ status: { confirmationStatus: 'confirmed' } });
+    const gateway = createCorePaymentGateway({
+      connection: notFinal.connection,
+      cluster: 'devnet',
+      cashbox: CASHBOX,
+      retry: NO_RETRY,
+    });
+    const expected = { payer: PAYER, lamports: LAMPORTS, jobId: JOB };
+    await expect(gateway.verify(randomSignature(), expected)).resolves.toMatchObject({
+      status: 'pending',
+      reason: 'below_commitment',
+    });
+    expect(notFinal.rpc.getTransaction).not.toHaveBeenCalled();
+
+    const final = fakeConnection({ status: { confirmationStatus: 'finalized' } });
+    const finalGateway = createCorePaymentGateway({
+      connection: final.connection,
+      cluster: 'devnet',
+      cashbox: CASHBOX,
+      retry: NO_RETRY,
+    });
+    await expect(finalGateway.verify(randomSignature(), expected)).resolves.toMatchObject({
+      status: 'confirmed',
+      confirmationStatus: 'finalized',
+    });
+    expect(final.rpc.getTransaction).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ commitment: 'finalized' }),
+    );
   });
 
   it('never builds a transaction for another cluster', async () => {

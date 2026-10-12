@@ -10,7 +10,8 @@ Every protection below is **mandatory** in the MVP. Agents that touch one of the
 - `@forge/core` installed from the private registry at a pinned version. The scan rejects any change to `package.json` on this dependency, any `patch-package`, any file in `node_modules`.
 - The template clearly separates `src/forge/` (untouchable, wired to `@forge/core`) from the rest (design, pages, content).
 - **Blocking scan before every push**:
-  - no modification under `src/forge/`, `forge.config.json#onchain`, `next.config.*` (security headers), `package.json#dependencies['@forge/core']`;
+  - no modification under `src/forge/` (which holds the mode gate and the mode pages), `src/pages/_app.*`, `src/pages/_document.*`, `src/components/modes/**`, `forge.config.json#onchain` and `#mode`, `next.config.*` (security headers), `package.json#dependencies['@forge/core']`;
+  - free-zone pages are static: no `getServerSideProps` or `getInitialProps`, no use of the response object (`res.end`, `res.write`, headers...), no second React root (`react-dom/client`);
   - no added base58 string of 32 to 44 characters (Solana address);
   - no external `<script src=`, no `fetch`/`import` to a domain outside the allowlist;
   - no use of `approve`, `setAuthority`, `createApproveInstruction`, `signAllTransactions` outside `src/forge/`;
@@ -65,4 +66,4 @@ Every protection below is **mandatory** in the MVP. Agents that touch one of the
 
 ## 12. Scam launchpads
 
-**Protections**: terms of use; per-launchpad `disabled` flag that cuts the site (we host it); the coin stays on-chain but the site disappears.
+**Protections**: terms of use; per-launchpad `disabled` flag that cuts the site (we host it): the builder deploys the maintenance page and pauses the Vercel project (D24), and a sweep every 15 minutes checks that every disabled project is paused. The coin stays on-chain but the site disappears. Re-enabling needs the mode set back to `live`, a release and an unpause.

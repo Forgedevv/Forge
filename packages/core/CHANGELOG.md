@@ -8,6 +8,35 @@ launchpad template, the signer, the web app) pin an exact version, never a range
 First version meant for publication to GitHub Packages (`pnpm --filter @forge/core
 publish:packages`, which runs typecheck, lint, tests and build first). Not published yet.
 
+### Changed (wave 5 review)
+
+- **Launch metadata budget.** `LAUNCH_METADATA_BUDGET_BYTES` (148): name + symbol + metadata URI
+  share 148 UTF-8 bytes in the launchpad coin launch (durable nonce held by the creator, first
+  buy); a 32-byte name, 10-byte symbol and 106-byte URI land at exactly 1,232 bytes, one byte more
+  is `TX_TOO_LARGE`. New pure `assertSpecLaunchable(spec, metadataUri)` (metadata rules, budget,
+  first buy; `LaunchCoinError` `INVALID_INPUT` / `TX_TOO_LARGE`) and `launchMetadataBytes`.
+  `buildConfigParams(spec, kind, { metadataUri? })` and `buildCreateConfigTx({ metadataUri? })`
+  run it first (`ValidationError`, new code `LAUNCH_METADATA_TOO_LONG`), so no config is created
+  for a coin that cannot be launched. `METADATA_LIMITS.uri` (200) stays the Metaplex limit (the user
+  coin launch fits it); it is not the launchpad coin limit. The metadata checks moved to
+  `launch-metadata.ts` and are still exported from `pool.ts`.
+- **No pool creation fee on the launchpad coin config** (`LAUNCHPAD_COIN_POOL_CREATION_FEE_SOL`,
+  `poolCreationFeeSolFor`): the client only paid its own coin's fee to itself minus the protocol
+  share. `validateLaunchpadCoinConfigParams` now requires 0; the launchpad config keeps
+  `spec.poolCreationFeeSol`. The config parameters hash of a launchpad coin config changes.
+- `toOwnerTransactionSummary` fills the new optional `ownerRequiredBalanceLamports`.
+- `verifyPayment` requires `finalized` by default (pass `commitment: 'confirmed'` explicitly for
+  the old behaviour); `checkPaymentTransaction` refuses a transaction whose first signature is not
+  the signature looked up (`signature_mismatch`).
+
+### Added (wave 5 review)
+
+- `verifyLaunchCoinTransaction(tx, expected)` (`launch-check.ts`, also `@forge/core/launch-check`
+  for browsers: only depends on `@solana/web3.js`): accepts nothing but the launchpad coin launch
+  core builds, for the owner and the exact first buy, with valid creator and mint signatures
+  (`LaunchTransactionCheckError`). Used by the web client before the wallet signs and by the web
+  server before it hands the stored launch out.
+
 ### Changed (wave 4 review)
 
 - **No referral on the first buy.** `buildLaunchCoinTx` no longer adds the FORGE Meteora referral

@@ -1,4 +1,5 @@
 import {
+  LaunchTransactionCheckError,
   TransactionEncodingError,
   assertSignedCopyOf,
   deserializeTransactionBase64,
@@ -6,6 +7,7 @@ import {
   requiredSigners,
   solToLamports,
   transactionSignature,
+  verifyLaunchCoinTransaction,
 } from '@forge/core';
 import { LaunchpadSpec, type JobStatus, type OwnerTransactionSummary } from '@forge/shared';
 import type { Transaction } from '@solana/web3.js';
@@ -23,7 +25,8 @@ import type { OwnedJob, RoutesStore } from './store';
  *
  * GET  — hands that exact transaction to the owner, with a summary (coin, first buy, what the
  *        owner pays besides it, expected wallet), after checking it is complete except for the
- *        owner's signature and that the owner is its fee payer.
+ *        owner's signature, that the owner is its fee payer, and that it is exactly the launch of
+ *        this launchpad's coin (`verifyLaunchCoinTransaction` of @forge/core).
  * POST — receives the owner-signed copy and accepts it only if it is the stored transaction byte
  *        for byte with every signature valid (`assertSignedCopyOf` of @forge/core): any other
  *        transaction is refused. It is sent through the server RPC, confirmed by polling, and the
@@ -105,9 +108,12 @@ export function createOwnerTransactionService(
 
   /**
    * The stored transaction, checked: decodes, present signatures valid, the owner is the fee
-   * payer and the only missing signer.
+   * payer and the only missing signer, and it is exactly the launch of this launchpad's coin
+   * (`verifyLaunchCoinTransaction` of @forge/core): the launchpad coin config and mint of the
+   * row, the coin name and symbol and the exact first buy of the spec, SOL moved only between the
+   * owner and its own wrapped SOL account, nothing else. Otherwise it is never handed out.
    */
-  function storedTransaction(owned: OwnedJob, wallet: string): Transaction {
+  function storedTransaction(owned: OwnedJob, wallet: string, spec: LaunchpadSpec): Transaction {
     const ownerTx = owned.job.ownerTx;
     if (!ownerTx) unavailable(owned, 'missing');
     let tx: Transaction;
@@ -121,6 +127,25 @@ export function createOwnerTransactionService(
     if (signers[0]?.toBase58() !== wallet) unavailable(owned, 'fee_payer_not_owner');
     if (missing.length !== 1 || missing[0]?.toBase58() !== wallet) {
       unavailable(owned, 'unexpected_missing_signers');
+    }
+    const { launchpadCoinConfig, launchpadCoinMint } = owned.launchpad;
+    if (!launchpadCoinConfig || !launchpadCoinMint) unavailable(owned, 'launch_addresses_missing');
+    try {
+      verifyLaunchCoinTransaction(tx, {
+        owner: wallet,
+        firstBuyLamports: solToLamports(spec.launchpadCoin.firstBuySol),
+        config: launchpadCoinConfig,
+        mint: launchpadCoinMint,
+        name: spec.launchpadCoin.name,
+        symbol: spec.launchpadCoin.symbol,
+      });
+    } catch (error) {
+      unavailable(
+        owned,
+        error instanceof LaunchTransactionCheckError
+          ? `launch_check_${error.code.toLowerCase()}`
+          : errorName(error),
+      );
     }
     return tx;
   }
@@ -142,7 +167,7 @@ export function createOwnerTransactionService(
     if (launchpad.status === 'disabled') {
       throw new RouteError(403, 'LAUNCHPAD_DISABLED', 'This launchpad has been disabled.');
     }
-    const tx = storedTransaction(owned, input.wallet);
+    const tx = storedTransaction(owned, input.wallet, spec);
     const owner = requiredSigners(tx)[0]!;
     const firstBuyLamports = solToLamports(spec.launchpadCoin.firstBuySol);
     const estimate = await chain.estimateOwnerCosts(tx, owner);
@@ -221,14 +246,14 @@ export function createOwnerTransactionService(
     signedTransaction: string;
   }): Promise<{ signature: string }> {
     const owned = await requireOwnedJob(store, input.jobId, input.wallet);
-    assertLaunchJob(owned, input.wallet);
+    const spec = assertLaunchJob(owned, input.wallet);
     const { job, launchpad } = owned;
     if (!SIGNED_OR_LATER.has(job.status) && job.status !== 'awaiting_owner_signature') {
       throw new RouteError(409, 'INVALID_STATUS', 'The launch transaction is not ready yet.', {
         status: job.status,
       });
     }
-    const stored = storedTransaction(owned, input.wallet);
+    const stored = storedTransaction(owned, input.wallet, spec);
 
     // The only transaction ever accepted: the stored one, byte for byte, fully signed.
     let signed: Transaction;

@@ -6,6 +6,8 @@ export * from './validate.js';
 export * from './config.js';
 export * from './pool.js';
 export * from './tx.js';
+// Launch transaction check before the owner signs (browser-safe: only @solana/web3.js).
+export * from './launch-check.js';
 // Swap: buy / sell with the FORGE Meteora referral and the platform fee (swap.ts).
 export {
   DEFAULT_SWAP_COMPUTE_UNIT_LIMIT,

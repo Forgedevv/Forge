@@ -6,6 +6,7 @@ import { handleModifyJob } from './modify.js';
 export { AGENT_DEFAULTS, agentCommand, interpretAgentRun, runAgent } from './agent.js';
 export type { AgentConfig, AgentGateway, AgentOutcome } from './agent.js';
 export { PersistentCostGatewayStore } from './cost-store.js';
+export type { DailyCostSeed } from './cost-store.js';
 export { jobBranch, PIPELINE_DEFAULTS, StepAbortedError } from './context.js';
 export type {
   BuildSiteFn,
@@ -21,6 +22,7 @@ export { createGithubRepoSource } from './repo-snapshot.js';
 export type { RepoSnapshot, RepoSource } from './repo-snapshot.js';
 export { createSupabaseStore } from './store.js';
 export type {
+  DailyCostSource,
   JobCostStore,
   LaunchpadPatch,
   LaunchpadRecord,

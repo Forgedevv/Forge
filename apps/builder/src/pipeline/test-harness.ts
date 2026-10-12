@@ -27,6 +27,8 @@ export const TEST_PROJECT_ENV: Record<string, string> = {
   FORGE_PLATFORM_FEE_WALLET: address(12),
   FORGE_JUPITER_REFERRAL_ACCOUNT: address(13),
   NEXT_PUBLIC_FORGE_JUPITER_REFERRAL_ACCOUNT: address(13),
+  NEXT_PUBLIC_FORGE_METEORA_REFERRAL_ACCOUNT: address(11),
+  NEXT_PUBLIC_FORGE_PLATFORM_FEE_WALLET: address(12),
   NEXT_PUBLIC_FORGE_RPC_RELAY_URL: 'https://forge.test/api/rpc',
   R2_PUBLIC_URL: 'https://cdn.forge.test',
   NEXT_PUBLIC_R2_PUBLIC_URL: 'https://cdn.forge.test',

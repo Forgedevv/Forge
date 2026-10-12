@@ -15,6 +15,15 @@ import {
 } from './core-adapter';
 import { confirmByPolling, type ConfirmOptions } from './confirm';
 import { mapChainError, mapTradeError, TradeError } from './errors';
+import {
+  clearPendingTrade,
+  expiryHeightOf,
+  firstSignature,
+  getPendingTrade,
+  lookupPending,
+  sendSigned,
+  setPendingTrade,
+} from './send';
 import { fetchVerifiedQuote } from './useQuote';
 
 export type ExecutionStatus =
@@ -66,6 +75,9 @@ export const BUSY_STATUSES: readonly ExecutionStatus[] = [
  * - The transaction enforces the minimum output the user saw, not a recomputed one.
  * - A second call while one is in flight is ignored (no double submit).
  * - The transaction is simulated before the wallet is asked to sign.
+ * - The signature is taken from the signed bytes before sending. A send whose outcome is unknown is
+ *   settled by polling and re-sending the same bytes (`./send`); until it has landed, failed or
+ *   expired, no new transaction is built for this wallet.
  */
 export function useTradeExecution(confirmOptions?: ConfirmOptions) {
   const { publicKey, signTransaction } = useWallet();
@@ -93,6 +105,21 @@ export function useTradeExecution(confirmOptions?: ConfirmOptions) {
       try {
         if (!publicKey || !signTransaction) throw new TradeError('wallet_not_connected');
         const { connection, pool, side, amountIn, slippageBps, displayedQuote } = params;
+        const wallet = publicKey.toBase58();
+
+        // A previous trade of this wallet with an unknown outcome blocks any rebuild.
+        const previous = getPendingTrade(wallet);
+        if (previous) {
+          const { state } = await lookupPending(connection, previous);
+          if (state === 'pending' || state === 'landed') {
+            if (state === 'landed') clearPendingTrade(wallet);
+            const code = state === 'landed' ? 'previous_trade_landed' : 'previous_trade_pending';
+            const error = new TradeError(code, undefined, { signature: previous.signature });
+            setState({ status: 'error', signature: previous.signature, error });
+            return { ok: false, error };
+          }
+          clearPendingTrade(wallet);
+        }
 
         step('quoting');
         const fresh = await fetchVerifiedQuote({ connection, pool, side, amountIn, slippageBps });
@@ -118,15 +145,28 @@ export function useTradeExecution(confirmOptions?: ConfirmOptions) {
 
         step('signing');
         const signed = await signTransaction(tx);
+        const signedSignature = firstSignature(signed);
+        const bytes = signed.serialize();
+        const pending = {
+          signature: signedSignature,
+          expiryHeight: await expiryHeightOf(signed, connection),
+        };
 
-        step('sending');
-        signature = await connection.sendRawTransaction(signed.serialize(), {
-          skipPreflight: false,
-          maxRetries: 3,
-        });
+        setState({ status: 'sending', signature: null, error: null });
+        setPendingTrade(wallet, pending);
+        const outcome = await sendSigned(connection, bytes, pending, confirmOptions);
+        if (outcome.kind === 'rejected') {
+          // Settled: it did not and cannot execute (or failed on-chain), a new trade may be built.
+          clearPendingTrade(wallet);
+          throw outcome.error;
+        }
+        signature = signedSignature;
+        // `unknown`: the trade stays pending, the next attempt checks it before building.
+        if (outcome.kind === 'unknown') throw outcome.error;
 
         setState({ status: 'confirming', signature, error: null });
         await confirmByPolling(connection, signature, confirmOptions);
+        clearPendingTrade(wallet);
 
         setState({ status: 'success', signature, error: null });
         return { ok: true, signature };
@@ -157,8 +197,9 @@ async function prepare(tx: BuiltTransaction, connection: Connection, payer: Publ
       throw new TradeError('quote_invalid');
     }
     if (!tx.recentBlockhash) {
-      const { blockhash } = await connection.getLatestBlockhash('confirmed');
+      const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('confirmed');
       tx.recentBlockhash = blockhash;
+      tx.lastValidBlockHeight = lastValidBlockHeight;
     }
   }
 }

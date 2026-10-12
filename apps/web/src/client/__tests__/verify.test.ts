@@ -27,6 +27,8 @@ import {
   closeAccountIx,
   compile,
   createAtaIdempotentIx,
+  LAUNCH,
+  launchTx,
   memoIx,
   owner,
   partnerClaimTx,
@@ -239,6 +241,23 @@ describe('configuredCashbox', () => {
     vi.stubEnv('NEXT_PUBLIC_FORGE_CASHBOX_WALLET', 'not-an-address');
     expect(() => configuredCashbox()).toThrow(/misconfigured/);
   });
+
+  // Before: an unset pin silently disabled the recipient check, in production too.
+  it('fails closed in a production build without a cashbox, keeps dev and test unpinned', () => {
+    vi.stubEnv('NEXT_PUBLIC_FORGE_CASHBOX_WALLET', '');
+    vi.stubEnv('NODE_ENV', 'production');
+    expect(() => configuredCashbox()).toThrow(TransactionCheckError);
+    expect(() => configuredCashbox()).toThrow(/no cashbox address/);
+    vi.stubEnv('NEXT_PUBLIC_FORGE_CASHBOX_WALLET', '   ');
+    expect(() => configuredCashbox()).toThrow(/no cashbox address/);
+    vi.stubEnv('NEXT_PUBLIC_FORGE_CASHBOX_WALLET', cashbox.toBase58());
+    expect(configuredCashbox()).toBe(cashbox.toBase58());
+    for (const mode of ['development', 'test']) {
+      vi.stubEnv('NODE_ENV', mode);
+      vi.stubEnv('NEXT_PUBLIC_FORGE_CASHBOX_WALLET', '');
+      expect(configuredCashbox()).toBeNull();
+    }
+  });
 });
 
 describe('verifyPartnerClaimTransaction', () => {
@@ -326,46 +345,122 @@ describe('verifyPartnerClaimTransaction', () => {
 });
 
 describe('verifyLaunchTransaction / assertSignedByWallet', () => {
-  const creator = Keypair.generate().publicKey;
-  const mint = Keypair.generate().publicKey;
-  function launchTx(o: { payer?: typeof owner; presign?: boolean } = {}) {
-    const payer = o.payer ?? owner;
-    const ix = new TransactionInstruction({
-      programId: other(),
-      keys: [
-        { pubkey: creator, isSigner: true, isWritable: false },
-        { pubkey: mint, isSigner: true, isWritable: true },
-        { pubkey: payer, isSigner: true, isWritable: true },
-      ],
-      data: Buffer.from([1, 2, 3]),
-    });
-    const tx = compile(payer, [ix]);
-    if (o.presign !== false) {
-      tx.message.staticAccountKeys.forEach((key, i) => {
-        if (i < tx.message.header.numRequiredSignatures && !key.equals(owner)) {
-          tx.signatures[i] = new Uint8Array(64).fill(9);
-        }
-      });
-    }
-    return tx;
-  }
+  const summary = {
+    firstBuyLamports: LAUNCH.firstBuyLamports.toString(),
+    coinName: LAUNCH.name,
+    coinSymbol: LAUNCH.symbol,
+  };
+  const expected = { wallet, summary };
 
-  it('accepts a launch paid by the wallet with only its signature missing', () => {
-    verifyLaunchTransaction(launchTx(), { wallet });
+  it('accepts the launch @forge/core builds, paid by the wallet with only its signature missing', () => {
+    verifyLaunchTransaction(launchTx(), expected);
+    verifyLaunchTransaction(launchTx({ firstBuyLamports: 0n }), {
+      wallet,
+      summary: { ...summary, firstBuyLamports: '0' },
+    });
   });
 
   it('refuses another fee payer, a missing FORGE signature or a wallet already signed', () => {
     expectRefused(
-      () => verifyLaunchTransaction(launchTx({ payer: other() }), { wallet }),
+      () => verifyLaunchTransaction(launchTx({ payer: other() }), expected),
       /fee payer is not your wallet/,
     );
     expectRefused(
-      () => verifyLaunchTransaction(launchTx({ presign: false }), { wallet }),
+      () => verifyLaunchTransaction(launchTx({ presign: false }), expected),
+      /missing a FORGE signature/,
+    );
+    expectRefused(
+      () => verifyLaunchTransaction(launchTx({ presign: 'creator' }), expected),
       /missing a FORGE signature/,
     );
     const signed = launchTx();
     signed.signatures[0] = SIG_BYTES;
-    expectRefused(() => verifyLaunchTransaction(signed, { wallet }), /already signed/);
+    expectRefused(() => verifyLaunchTransaction(signed, expected), /already signed/);
+  });
+
+  // Before: only the fee payer and the signature slots were checked, so a server could get the
+  // wallet to sign any program call as long as FORGE's slots were filled.
+  it('refuses a launch that does not do what the summary says', () => {
+    expectRefused(
+      () => verifyLaunchTransaction(launchTx({ firstBuyLamports: 2n }), expected),
+      /does not match the launch you are approving: the first buy amount/,
+    );
+    expectRefused(
+      () => verifyLaunchTransaction(launchTx({ name: 'Other' }), expected),
+      /the coin name is not the expected one/,
+    );
+    expectRefused(
+      () => verifyLaunchTransaction(launchTx({ symbol: 'OTHER' }), expected),
+      /the coin symbol is not the expected one/,
+    );
+    expectRefused(
+      () =>
+        verifyLaunchTransaction(launchTx(), {
+          wallet,
+          summary: { ...summary, firstBuyLamports: 'x' },
+        }),
+      /launch summary is invalid/,
+    );
+  });
+
+  it('refuses SOL or tokens sent elsewhere and any other program', () => {
+    const thief = other();
+    expectRefused(
+      () =>
+        verifyLaunchTransaction(
+          launchTx({
+            extra: ({ payer }) => [
+              SystemProgram.transfer({ fromPubkey: payer, toPubkey: thief, lamports: 1 }),
+            ],
+          }),
+          expected,
+        ),
+      /SOL is sent elsewhere/,
+    );
+    expectRefused(
+      () =>
+        verifyLaunchTransaction(
+          launchTx({ extra: ({ payer }) => [closeAccountIx(ata(payer, WSOL), thief, payer)] }),
+          expected,
+        ),
+      /wrapped SOL is returned elsewhere/,
+    );
+    expectRefused(
+      () =>
+        verifyLaunchTransaction(
+          launchTx({ extra: ({ payer }) => [memoIx('hello', payer)] }),
+          expected,
+        ),
+      /calls an unexpected program/,
+    );
+    expectRefused(
+      () =>
+        verifyLaunchTransaction(
+          launchTx({
+            extra: ({ payer, mint }) => [
+              new TransactionInstruction({
+                programId: TOKEN_PROGRAM,
+                keys: [
+                  { pubkey: ata(payer, mint), isSigner: false, isWritable: true },
+                  { pubkey: thief, isSigner: false, isWritable: false },
+                  { pubkey: payer, isSigner: true, isWritable: false },
+                ],
+                // Approve(amount = 1)
+                data: Buffer.from([4, 1, 0, 0, 0, 0, 0, 0, 0]),
+              }),
+            ],
+          }),
+          expected,
+        ),
+      /unexpected token call/,
+    );
+  });
+
+  it('refuses a FORGE signature that does not verify', () => {
+    const tx = launchTx();
+    // Slot 1: the first FORGE signer (the mint), filled with bytes that are no signature.
+    tx.signatures[1] = new Uint8Array(64).fill(9);
+    expectRefused(() => verifyLaunchTransaction(tx, expected), /does not verify/);
   });
 
   it('detects a wallet that changed the message or did not sign', () => {

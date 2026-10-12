@@ -4,7 +4,14 @@
  * and the compare-and-set writes of the launchpad addresses.
  */
 import { PublicKey } from '@solana/web3.js';
-import { parseLaunchpadSpec } from '@forge/core';
+import {
+  LAUNCH_METADATA_BUDGET_BYTES,
+  LaunchCoinError,
+  METADATA_LIMITS,
+  assertLaunchMetadata,
+  launchMetadataBytes,
+  parseLaunchpadSpec,
+} from '@forge/core';
 import type { LaunchpadSpec } from '@forge/shared';
 import { creatorRole, type Keystore } from '../keystore.js';
 import {
@@ -48,7 +55,9 @@ export type RouteKeystore = KeystoreLike & Pick<Keystore, 'createKey'>;
 export interface SignerRoutesConfig {
   /**
    * Metadata URI of the launchpad coin, with `{slug}` or `{launchpadId}` (SIGNER_COIN_METADATA_URL).
-   * After substitution it must be a canonical https URL of at most 200 bytes (core checks it).
+   * After substitution it must be a canonical https URL that fits the launch transaction next to
+   * the longest coin name and symbol: at most `MAX_METADATA_URI_BYTES` (106) bytes with the
+   * longest slug (32) or launchpad id (36). Checked at startup (`assertMetadataTemplate`).
    */
   metadataUriTemplate: string;
   /** Priority fee of the config and nonce creations (micro-lamports per CU, default 0). */
@@ -420,6 +429,29 @@ export async function recordLaunchpadColumns(
 
 const PLACEHOLDER_RE = /\{(slug|launchpadId)\}/g;
 
+/**
+ * Longest value of each placeholder: a slug is at most 32 characters of `[a-z0-9-]`, a launchpad
+ * id is a lowercase UUID (36 characters). Both are ASCII, so characters = bytes.
+ */
+const LONGEST_PLACEHOLDER_VALUE = {
+  slug: 'a'.repeat(32),
+  launchpadId: '00000000-0000-0000-0000-000000000000',
+} as const;
+
+/**
+ * Longest metadata URI the launch transaction holds next to the longest coin name and symbol
+ * (core `LAUNCH_METADATA_BUDGET_BYTES` minus the Metaplex name and symbol limits): 106 bytes.
+ */
+export const MAX_METADATA_URI_BYTES =
+  LAUNCH_METADATA_BUDGET_BYTES - METADATA_LIMITS.name - METADATA_LIMITS.symbol;
+
+/**
+ * Startup check of SIGNER_COIN_METADATA_URL: exactly one `{slug}` or `{launchpadId}`, https, and
+ * with the longest value of that placeholder a canonical URL of at most `MAX_METADATA_URI_BYTES`.
+ * Every spec the shared schema accepts (name <= 32 bytes, symbol <= 10) then fits the launch
+ * transaction: a too long template would only fail at /v1/launch-coin/prepare, after the
+ * configs are paid for.
+ */
 export function assertMetadataTemplate(template: string): void {
   if (typeof template !== 'string' || template.length === 0) {
     throw new Error('SIGNER_COIN_METADATA_URL is required');
@@ -435,6 +467,25 @@ export function assertMetadataTemplate(template: string): void {
     throw new Error('SIGNER_COIN_METADATA_URL must be an absolute URL');
   }
   if (url.protocol !== 'https:') throw new Error('SIGNER_COIN_METADATA_URL must use https');
+
+  const longest = template.replace(PLACEHOLDER_RE, (_m, name: 'slug' | 'launchpadId') => {
+    return LONGEST_PLACEHOLDER_VALUE[name];
+  });
+  const bytes = launchMetadataBytes('', '', longest);
+  if (bytes > MAX_METADATA_URI_BYTES) {
+    throw new Error(
+      `SIGNER_COIN_METADATA_URL is too long: ${bytes} bytes with the longest ${placeholders[0]}, at most ${MAX_METADATA_URI_BYTES} (the launch transaction holds ${LAUNCH_METADATA_BUDGET_BYTES} bytes of coin name + symbol + metadata URI)`,
+    );
+  }
+  // The exact rules core applies at launch (canonical https URL), on the longest URI.
+  try {
+    assertLaunchMetadata('N', 'NN', longest);
+  } catch (error) {
+    if (!(error instanceof LaunchCoinError)) throw error;
+    throw new Error(`SIGNER_COIN_METADATA_URL is refused by the launch: ${error.message}`, {
+      cause: error,
+    });
+  }
 }
 
 /** The coin metadata URI of a launchpad (slug and id are URL-safe by construction). */

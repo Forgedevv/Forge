@@ -9,8 +9,9 @@
  *
  * Both: fee claimer = leftover receiver = the client wallet (`spec.ownerWallet`), quote SOL,
  * trading fee `spec.tradingFeeBps` (with the anti-sniper schedule when `spec.antiSniper`),
- * `enableFirstSwapWithMinFee`, pool creation fee `spec.poolCreationFeeSol`, migration to DAMM v2
- * at exactly 10 SOL, immutable token metadata, all post-graduation liquidity permanently locked.
+ * `enableFirstSwapWithMinFee`, migration to DAMM v2 at exactly 10 SOL, immutable token metadata,
+ * all post-graduation liquidity permanently locked. Pool creation fee: `spec.poolCreationFeeSol`
+ * on the launchpad config, none on the launchpad coin config (the client would pay it to itself).
  *
  * Choices not fixed by the docs (kept as named constants, see the CHANGELOG):
  * - curve: `buildCurve` with 20% of the supply on migration, 1B tokens with 6 decimals (the
@@ -54,6 +55,7 @@ import {
   SOL_QUOTE_MINT,
   solToLamports,
 } from './constants.js';
+import { LaunchCoinError, assertSpecLaunchable } from './launch-metadata.js';
 import { computeBudgetInstructions } from './tx.js';
 import {
   ValidationError,
@@ -99,6 +101,20 @@ export const FORGE_MIGRATION_SETTINGS = {
 
 /** Fee scheduler periods are counted in seconds. */
 export const FORGE_ACTIVATION_TYPE = ActivationType.Timestamp;
+
+/**
+ * Pool creation fee of the launchpad coin config: none. The only pool ever created on it is the
+ * client's own coin, paid by the client: a fee would only move the client's SOL to its own fee
+ * claimer account, minus the protocol share. 0 is "no fee" for the pinned SDK
+ * (`validatePoolCreationFee`) and was accepted on-chain on devnet (test 1). The launchpad config
+ * keeps `spec.poolCreationFeeSol` (paid to the client by every coin of its site).
+ */
+export const LAUNCHPAD_COIN_POOL_CREATION_FEE_SOL = 0;
+
+/** Pool creation fee of a config kind, in SOL. */
+export function poolCreationFeeSolFor(spec: LaunchpadSpec, kind: ConfigKind): number {
+  return kind === 'launchpadCoin' ? LAUNCHPAD_COIN_POOL_CREATION_FEE_SOL : spec.poolCreationFeeSol;
+}
 
 /** Which of the two configs. */
 export type ConfigKind = 'launchpad' | 'launchpadCoin';
@@ -198,7 +214,7 @@ export function curveParamsFor(spec: LaunchpadSpec, kind: ConfigKind): BuildCurv
       dynamicFeeEnabled: false,
       collectFeeMode: CollectFeeMode.QuoteToken,
       creatorTradingFeePercentage: creatorShare,
-      poolCreationFee: spec.poolCreationFeeSol,
+      poolCreationFee: poolCreationFeeSolFor(spec, kind),
       enableFirstSwapWithMinFee: true,
     },
     migration: {
@@ -225,17 +241,57 @@ export function curveParamsFor(spec: LaunchpadSpec, kind: ConfigKind): BuildCurv
   };
 }
 
+export interface ConfigParamsOptions {
+  /**
+   * Metadata URI the launchpad coin will be launched with, when known (the signer knows it from
+   * SIGNER_COIN_METADATA_URL): name + symbol + URI must then fit `LAUNCH_METADATA_BUDGET_BYTES`.
+   * Without it, only the name, symbol and first buy rules are checked.
+   */
+  metadataUri?: string;
+}
+
 /**
- * Builds and validates one of the two configs. Pure: same spec, same result.
+ * Refuses a spec whose launchpad coin could never be launched (`assertSpecLaunchable`), as a
+ * `ValidationError`: both configs are created before the launch, so they must not be created
+ * for a coin the launch transaction cannot hold.
+ */
+function assertCoinLaunchable(
+  spec: LaunchpadSpec,
+  kind: ConfigKind,
+  metadataUri: string | undefined,
+): void {
+  try {
+    assertSpecLaunchable(spec, metadataUri ?? null);
+  } catch (error) {
+    if (!(error instanceof LaunchCoinError)) throw error;
+    throw new ValidationError(`${kind} config`, [
+      {
+        field: 'launchpadCoin',
+        code: error.code === 'TX_TOO_LARGE' ? 'LAUNCH_METADATA_TOO_LONG' : 'SPEC_INVALID',
+        message: error.message,
+      },
+    ]);
+  }
+}
+
+/**
+ * Builds and validates one of the two configs. Pure: same spec, same result. Either kind first
+ * checks that the launchpad coin can be launched (`assertSpecLaunchable`, with
+ * `options.metadataUri` when given).
  *
  * @throws ValidationError when the spec or the resulting parameters break a bound.
  */
-export function buildConfigParams(spec: LaunchpadSpec, kind: ConfigKind): LaunchpadConfigParams {
+export function buildConfigParams(
+  spec: LaunchpadSpec,
+  kind: ConfigKind,
+  options: ConfigParamsOptions = {},
+): LaunchpadConfigParams {
   if (kind !== 'launchpad' && kind !== 'launchpadCoin') {
     throw new TypeError(`unknown config kind: ${String(kind)}`);
   }
   const parsed = parseLaunchpadSpec(spec);
   const owner = ownerKeyOf(parsed);
+  assertCoinLaunchable(parsed, kind, options.metadataUri);
 
   let curve: ConfigParameters;
   try {
@@ -418,6 +474,8 @@ export interface BuildCreateConfigTxParams {
   /** The spec the config is built from (re-validated here). */
   spec: LaunchpadSpec;
   kind: ConfigKind;
+  /** Metadata URI of the launchpad coin, when known (see `ConfigParamsOptions`). */
+  metadataUri?: string;
   /**
    * The config keypair (or its public key). Generated and stored by the caller (apps/signer),
    * never here; only its public key is read. It signs the transaction later.
@@ -454,7 +512,11 @@ export async function buildCreateConfigTx(
 ): Promise<CreateConfigTx> {
   const configAddress =
     params.config instanceof PublicKey ? params.config : params.config.publicKey;
-  const configParams = buildConfigParams(params.spec, params.kind);
+  const configParams = buildConfigParams(
+    params.spec,
+    params.kind,
+    params.metadataUri !== undefined ? { metadataUri: params.metadataUri } : {},
+  );
 
   if (
     configAddress.equals(params.payer) ||

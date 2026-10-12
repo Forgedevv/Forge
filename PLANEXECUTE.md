@@ -1,6 +1,6 @@
 # PLANEXECUTE.md — rules for all agents
 
-You are working on **FORGE**, a service where an AI agent builds Meteora launchpads for clients. Several Claude Code agents work in parallel on this repo, each in its own folder. Read this file in full, then your task sheet in `tasks/`, then the docs it cites.
+You are working on **FORGE**, a service where an AI agent builds Meteora launchpads for clients. Several contributors work in parallel on this repo, each in its own folder. Read this file in full, then your task sheet in `tasks/`, then the docs it cites.
 
 If an instruction here contradicts another document, this file wins.
 

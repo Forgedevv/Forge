@@ -1,4 +1,4 @@
-import type { Connection, PublicKey } from '@solana/web3.js';
+import type { Connection, Finality, PublicKey } from '@solana/web3.js';
 import {
   assertCluster,
   buildPaymentTx,
@@ -23,6 +23,13 @@ import { ClusterMismatchError, PaymentConfigError, RpcUnavailableError } from '.
  * addresses from an environment object, so the gateway hands it an environment holding exactly
  * that parsed address: building and verifying can never use two different cashboxes.
  */
+
+/**
+ * A payment moves the job to `paid` (and starts paid work) only once its transaction is
+ * finalized: a `confirmed` block can still be dropped by a fork. Until then the confirm route
+ * answers 202 and the client asks again with the same signature.
+ */
+export const PAYMENT_COMMITMENT: Finality = 'finalized';
 
 export interface BuiltPayment {
   /** Unsigned transaction, base64 wire format (docs/INTERFACES.md §6 encodings). */
@@ -88,7 +95,11 @@ export function createCorePaymentGateway(options: CorePaymentGatewayOptions): Pa
 
     async verify(signature, expected) {
       try {
-        return await verifyPayment(connection, signature, expected, { ...common, cluster });
+        return await verifyPayment(connection, signature, expected, {
+          ...common,
+          cluster,
+          commitment: PAYMENT_COMMITMENT,
+        });
       } catch (error) {
         throw translateCoreError(error);
       }

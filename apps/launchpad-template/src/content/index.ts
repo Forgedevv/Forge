@@ -36,9 +36,5 @@ export const content = {
     aboutEyebrow: 'THE PEOPLE BEHIND IT',
     createEyebrow: 'NEW COIN',
     createIntro: 'Name it. Add its image. Set it in motion.',
-    sleepingTitle: 'This launchpad is sleeping',
-    sleepingBody: 'Trading is paused here. You can still find the coin on Jupiter.',
-    viewOnJupiter: 'View the coin on Jupiter',
-    disabledTitle: 'This site is unavailable.',
   },
 } as const;

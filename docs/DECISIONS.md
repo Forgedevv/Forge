@@ -28,6 +28,9 @@ Kept up to date by the lead session. Agents read it, do not modify it.
 | D21 | Client sites | client Vercel projects receive only public values (RPC through the FORGE relay, uploads through FORGE presigned URLs); Git-triggered deployments are disabled, only the builder deploys |
 | D22 | First buy | at most 10 SOL (the 10 SOL migration threshold) |
 | D18 | Failure after approval | a failure at the on-chain or deployment step is neither retried nor refunded automatically: alert + manual handling (configs may have been created) |
+| D23 | Launchpad coin creation fee | the launchpad coin config has `poolCreationFee` = 0; the launchpad config keeps the client's `poolCreationFeeSol` |
+| D24 | Disabled launchpads | the builder deploys the maintenance page and also pauses the Vercel project, so neither the site nor its old previews keep serving |
+| D25 | Payment anomalies | late, mismatched, duplicate and released-launchpad payments are stored in `payment_anomalies` and refunded by hand (completes D20) |
 
 ## Open (to be decided by the team)
 

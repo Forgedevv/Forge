@@ -368,6 +368,57 @@ describe('cashbox job', () => {
     expect(t.chain.calls).toHaveLength(0);
   });
 
+  it('re-reads the kill switch once the wallet lock is held (paused while waiting: nothing done)', async () => {
+    const t = setup();
+    t.chain.setBalance(cashbox, t.floor() + SOL);
+    const lock = new Mutex();
+    let release!: () => void;
+    const holder = lock.runExclusive(() => new Promise<void>((r) => (release = r)));
+    const signSpy = vi.spyOn(keystore, 'withSigner');
+    const run = t.job({ walletLock: lock }).runOnce();
+    // The run passed the first check and now waits on the lock held by the refunds job.
+    await new Promise((r) => setImmediate(r));
+    t.flags.values.cashbox_sweep_paused = true;
+    release();
+    await holder;
+    expect(await run).toEqual({ status: 'paused', reason: 'flag' });
+    expect(signSpy).not.toHaveBeenCalled();
+    expect(t.chain.calls).toHaveLength(0);
+    expect(await t.journal.get('sweep')).toBeUndefined();
+  });
+
+  it('re-reads the kill switch right before signing (paused mid-run: nothing signed)', async () => {
+    const t = setup();
+    t.chain.setBalance(cashbox, t.floor() + SOL);
+    const build = t.core.buildSolTransferTx.bind(t.core);
+    t.core.buildSolTransferTx = (p) => {
+      // Turned on after planning, before the signature.
+      t.flags.values.cashbox_sweep_paused = true;
+      return build(p);
+    };
+    const signSpy = vi.spyOn(keystore, 'withSigner');
+    expect(await t.job().runOnce()).toEqual({ status: 'paused', reason: 'flag' });
+    expect(signSpy).not.toHaveBeenCalled();
+    expect(t.chain.calls).not.toContain('sendRawTransaction');
+    expect((await t.journal.get('sweep'))?.inFlight ?? null).toBeNull();
+    expect(t.chain.transfers).toHaveLength(0);
+  });
+
+  it('fails closed before signing when the flags become unreadable mid-run (and alerts)', async () => {
+    const t = setup();
+    t.chain.setBalance(cashbox, t.floor() + SOL);
+    const build = t.core.buildSolTransferTx.bind(t.core);
+    t.core.buildSolTransferTx = (p) => {
+      t.flags.fail = true;
+      return build(p);
+    };
+    const signSpy = vi.spyOn(keystore, 'withSigner');
+    expect(await t.job().runOnce()).toEqual({ status: 'paused', reason: 'flags_unavailable' });
+    expect(t.alerter.codes()).toContain('cashbox_paused_flags_unavailable');
+    expect(signSpy).not.toHaveBeenCalled();
+    expect(t.chain.calls).not.toContain('sendRawTransaction');
+  });
+
   it('retries transient RPC errors with backoff and stops on exhaustion', async () => {
     const t = setup();
     t.chain.setBalance(cashbox, t.floor() + SOL);

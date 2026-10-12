@@ -98,6 +98,61 @@ describe('locked zones', () => {
     }
   });
 
+  it('regression: locks the app shell, the document and the mode pages', () => {
+    // A released change there could keep a sleeping or disabled site fully working.
+    for (const p of [
+      'src/pages/_app.tsx',
+      'src/pages/_app.js',
+      'src/pages/_App.tsx',
+      'src/pages/_app/index.tsx',
+      'src/pages/_document.tsx',
+      'src/pages/_document.jsx',
+      'src/components/modes/DisabledPage.tsx',
+      'src/components/modes/SleepingPage.tsx',
+      'src/components/modes/New.tsx',
+      'src/components/Modes/DisabledPage.tsx',
+    ]) {
+      expect(rulesOf(scan([modified(p, 'a', 'b')])), p).toContain('app-shell-locked');
+      expect(rulesOf(scan([added(p, 'export {}')])), p).toContain('app-shell-locked');
+      expect(rulesOf(scan([deleted(p, 'x')])), p).toContain('app-shell-locked');
+    }
+    expect(
+      rulesOf(
+        scan([
+          renamed('src/components/modes/DisabledPage.tsx', 'src/components/Disabled.tsx', 'x'),
+        ]),
+      ),
+    ).toContain('app-shell-locked');
+    expect(
+      rulesOf(scan([renamed('src/components/Shell.tsx', 'src/pages/_app.tsx', 'x')])),
+    ).toContain('app-shell-locked');
+    // Neighbours stay free.
+    for (const p of [
+      'src/components/AppShell.tsx',
+      'src/components/modesty.tsx',
+      'src/pages/app.tsx',
+      'src/pages/_apps.tsx',
+    ]) {
+      expect(rulesOf(scan([added(p, 'export const A = 1;\n')])), p).not.toContain(
+        'app-shell-locked',
+      );
+    }
+  });
+
+  it('keeps the site mode a builder-only field of forge.config.json', () => {
+    for (const mode of ['live', 'sleeping']) {
+      const disabled = editConfig((c) => {
+        c.mode = 'disabled';
+      });
+      const next = editConfig((c) => {
+        c.mode = mode;
+      });
+      expect(rulesOf(scan([modified('forge.config.json', disabled, next)]))).toContain(
+        'forge-config-locked-field',
+      );
+    }
+  });
+
   it('allows the free zones', () => {
     expect(
       scan([

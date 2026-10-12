@@ -212,7 +212,9 @@ class FakeGithub {
           const r = this.repoOf(call.path);
           const sha = call.path.split('/').pop() ?? '';
           const c = r?.repo.commits.get(sha);
-          return c ? json({ sha, tree: { sha: c.tree } }) : notFound();
+          return c
+            ? json({ sha, tree: { sha: c.tree }, parents: c.parents.map((p) => ({ sha: p })) })
+            : notFound();
         },
       },
       {
@@ -687,6 +689,88 @@ describe('ensureRepoFromTemplate', () => {
     const gh = new FakeGithub();
     const t = await makeClient(gh).getTemplateRepo();
     expect(t).toMatchObject({ name: 'launchpad-template', isTemplate: true });
+  });
+});
+
+describe('resetJobBranch', () => {
+  async function setup() {
+    const gh = new FakeGithub();
+    const repo = gh.addRepo('lp-moonpad');
+    const client = makeClient(gh);
+    const main0 = repo.refs.get('heads/main')!;
+    // Attempt 1: a job commit on top of main0.
+    const first = await client.commitFiles({
+      repo: 'lp-moonpad',
+      branch: 'forge/job1',
+      message: 'Attempt 1',
+      files: [{ path: 'src/content/a.md', content: 'one' }],
+    });
+    // The default branch moves.
+    const moved = await client.commitFiles({
+      repo: 'lp-moonpad',
+      branch: 'main',
+      message: 'Mode commit',
+      files: [{ path: 'README.md', content: 'moved' }],
+    });
+    return { gh, repo, client, main0, first: first.commitSha, main1: moved.commitSha };
+  }
+
+  it('regression: moves a job branch left on an older default branch back to the new base', async () => {
+    const { gh, repo, client, main1 } = await setup();
+    const patches = gh.stub.find('PATCH', /\/git\/refs\//).length;
+    expect(await client.resetJobBranch('lp-moonpad', 'forge/job1', main1)).toEqual({
+      reset: true,
+    });
+    expect(repo.refs.get('heads/forge/job1')).toBe(main1);
+    const patch = gh.stub.find('PATCH', /\/git\/refs\//).slice(patches);
+    expect(patch).toHaveLength(1);
+    expect(patch[0]!.path).toBe('/repos/forge-org/lp-moonpad/git/refs/heads/forge/job1');
+    expect(patch[0]!.body).toEqual({ sha: main1, force: true });
+    // The next commit then starts from the new base.
+    const next = await client.commitFiles({
+      repo: 'lp-moonpad',
+      branch: 'forge/job1',
+      message: 'Attempt 2',
+      files: [{ path: 'src/content/a.md', content: 'two' }],
+    });
+    expect(repo.commits.get(next.commitSha)?.parents).toEqual([main1]);
+    expect(repo.refs.get('heads/main')).toBe(main1);
+  });
+
+  it('leaves a branch alone when it already starts from the base, sits on it, or is missing', async () => {
+    const { gh, client, main0, main1 } = await setup();
+    const before = gh.stub.find('PATCH', /\/git\/refs\//).length;
+    expect(await client.resetJobBranch('lp-moonpad', 'forge/job1', main0)).toEqual({
+      reset: false,
+    });
+    expect(await client.resetJobBranch('lp-moonpad', 'forge/missing', main1)).toEqual({
+      reset: false,
+    });
+    await client.resetJobBranch('lp-moonpad', 'forge/job1', main1);
+    expect(await client.resetJobBranch('lp-moonpad', 'forge/job1', main1)).toEqual({
+      reset: false,
+    });
+    expect(gh.stub.find('PATCH', /\/git\/refs\//).length).toBe(before + 1);
+  });
+
+  it('never resets the default branch or a branch that is not a job branch', async () => {
+    const { gh, client, main0 } = await setup();
+    const before = gh.stub.calls.length;
+    for (const branch of ['main', 'release', 'forge', 'forge/', 'forge/a/b', 'x/forge/job1']) {
+      await expect(
+        client.resetJobBranch('lp-moonpad', branch, main0),
+        branch,
+      ).rejects.toMatchObject({ kind: 'invalid_input' });
+    }
+    await expect(client.resetJobBranch('lp-moonpad', 'forge/job1', 'nope')).rejects.toMatchObject({
+      kind: 'invalid_input',
+    });
+    expect(gh.stub.calls.slice(before).filter((c) => c.method === 'PATCH')).toHaveLength(0);
+    // A repo whose default branch is itself named like a job branch.
+    gh.addRepo('lp-odd', { defaultBranch: 'forge/main' });
+    await expect(client.resetJobBranch('lp-odd', 'forge/main', main0)).rejects.toMatchObject({
+      kind: 'invalid_input',
+    });
   });
 });
 

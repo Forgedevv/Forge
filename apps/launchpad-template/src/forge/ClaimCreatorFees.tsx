@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useUnifiedWalletContext, useWallet } from '@jup-ag/wallet-adapter';
 import type { SiteMode } from '@forge/shared';
-import { cluster, forgeConfig, rpcRelayUrl } from './config';
+import { cluster, forgeConfig, rpcRelayEndpoint } from './config';
 import { ModeBanner } from './ModeBanner';
 import { capabilitiesFor, currentMode } from './mode-guard';
 import { formatSol } from './create/amounts';
@@ -64,7 +64,8 @@ function ClaimCreatorFeesList(props: ClaimCreatorFeesProps) {
 
   const core = props.core ?? claimsCore;
   const chain = useMemo(
-    () => props.chain ?? (rpcRelayUrl ? createRpcChainClient({ url: rpcRelayUrl }) : null),
+    () =>
+      props.chain ?? (rpcRelayEndpoint ? createRpcChainClient({ url: rpcRelayEndpoint }) : null),
     [props.chain],
   );
 
@@ -83,7 +84,9 @@ function ClaimCreatorFeesList(props: ClaimCreatorFeesProps) {
       core,
       chain,
       wallet,
-      launchpadConfigs: props.launchpadConfigs ?? (forgeConfig.onchain ? [forgeConfig.onchain.launchpadConfig] : []),
+      launchpadConfigs:
+        props.launchpadConfigs ??
+        (forgeConfig.onchain ? [forgeConfig.onchain.launchpadConfig] : []),
       signTransaction: signTransaction as SignTransaction,
       confirm: props.confirmOptions,
     };

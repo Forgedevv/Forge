@@ -1,9 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import type { FlagKey, JobStatus, JobType, LaunchpadStatus } from '@forge/shared';
 import type {
+  AnomalyWriteResult,
   ConfirmWriteResult,
   JobContext,
   NewPayment,
+  NewPaymentAnomaly,
+  OpenQuoteQuery,
   PaymentRecord,
   PaymentsStore,
 } from './store';
@@ -35,6 +38,8 @@ export class MemoryPaymentsStore implements PaymentsStore {
   readonly launchpads = new Map<string, MemoryLaunchpad>();
   readonly payments = new Map<string, PaymentRecord>();
   readonly flags = new Map<FlagKey, boolean>();
+  /** `payment_anomalies`, keyed by signature (UNIQUE in the database). */
+  readonly anomalies = new Map<string, NewPaymentAnomaly>();
   readonly events: { jobId: string; message: string }[] = [];
   /** Number of job transitions actually applied (to assert exactly-once). */
   transitions: { jobId: string; from: JobStatus; to: JobStatus }[] = [];
@@ -103,6 +108,39 @@ export class MemoryPaymentsStore implements PaymentsStore {
       if (row.jobId === jobId && row.status === 'confirmed') return { ...row };
     }
     return null;
+  }
+
+  async listConfirmedPaymentsForJob(jobId: string): Promise<PaymentRecord[]> {
+    await this.statement('listConfirmedPaymentsForJob');
+    // Map iteration follows insertion order, i.e. creation order.
+    return [...this.payments.values()]
+      .filter((row) => row.jobId === jobId && row.status === 'confirmed')
+      .map((row) => ({ ...row }));
+  }
+
+  async findOpenQuote(query: OpenQuoteQuery): Promise<PaymentRecord | null> {
+    await this.statement('findOpenQuote');
+    for (const row of this.payments.values()) {
+      if (
+        row.jobId === query.jobId &&
+        row.payerWallet === query.payerWallet &&
+        row.kind === query.kind &&
+        row.status === 'quoted' &&
+        row.txSignature === null &&
+        row.lamports > 0n &&
+        row.quoteExpiresAt > query.expiresAfter.getTime()
+      ) {
+        return { ...row };
+      }
+    }
+    return null;
+  }
+
+  async recordPaymentAnomaly(anomaly: NewPaymentAnomaly): Promise<AnomalyWriteResult> {
+    await this.statement('recordPaymentAnomaly');
+    if (this.anomalies.has(anomaly.signature)) return 'exists';
+    this.anomalies.set(anomaly.signature, { ...anomaly });
+    return 'recorded';
   }
 
   async insertQuote(payment: NewPayment): Promise<PaymentRecord> {

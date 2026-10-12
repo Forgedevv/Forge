@@ -59,6 +59,7 @@ describe('POST /v1/launch-coin/prepare', () => {
       coinSymbol: 'MOON',
       firstBuyLamports: '10000000',
       estimatedNetworkFeeLamports: '22054280',
+      ownerRequiredBalanceLamports: '34093560',
       ownerWallet: h.owner.publicKey.toBase58(),
     });
     expect(h.store.launchpads.get(h.launchpadId)!.launchpadCoinMint).toBe(body.mint);

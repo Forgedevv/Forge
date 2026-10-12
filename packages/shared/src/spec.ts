@@ -38,6 +38,20 @@ export function isValidPoolCreationFeeSol(value: number): boolean {
   return value >= poolCreationFeeSol.min && value <= poolCreationFeeSol.max;
 }
 
+/** Decimals of SOL: 1 SOL = 10^9 lamports. */
+const SOL_DECIMALS = 9;
+
+/**
+ * True when a SOL amount converts exactly to lamports: finite, with at most 9 decimals (the same
+ * rule as `solToLamports` in @forge/core, which refuses anything else at build time).
+ */
+export function hasAtMostSolDecimals(value: number): boolean {
+  if (!Number.isFinite(value)) return false;
+  return Number(value.toFixed(SOL_DECIMALS)) === value;
+}
+
+const SOL_DECIMALS_ERROR = `must have at most ${SOL_DECIMALS} decimals (1 lamport)`;
+
 /**
  * Launchpad specification produced by the design chat, consumed by the builder and the signer
  * (docs/INTERFACES.md §2). Bounds come from CLIENT_BOUNDS.
@@ -56,9 +70,12 @@ export const LaunchpadSpec = z.object({
     .min(coinCreatorSharePct.min)
     .max(coinCreatorSharePct.max)
     .default(coinCreatorSharePct.default),
-  poolCreationFeeSol: z.number().refine(isValidPoolCreationFeeSol, {
-    error: `poolCreationFeeSol must be 0 or between ${poolCreationFeeSol.min} and ${poolCreationFeeSol.max} SOL`,
-  }),
+  poolCreationFeeSol: z
+    .number()
+    .refine(isValidPoolCreationFeeSol, {
+      error: `poolCreationFeeSol must be 0 or between ${poolCreationFeeSol.min} and ${poolCreationFeeSol.max} SOL`,
+    })
+    .refine(hasAtMostSolDecimals, { error: `poolCreationFeeSol ${SOL_DECIMALS_ERROR}` }),
   antiSniper: z.boolean().default(true),
   theme: z.object({
     primaryColor: HexColor,
@@ -70,10 +87,19 @@ export const LaunchpadSpec = z.object({
     designNotes: z.string().max(2000),
   }),
   launchpadCoin: z.object({
+    /**
+     * Written on-chain as is: no surrounding spaces (the on-chain launch refuses them), at most
+     * 32 UTF-8 bytes. Name, symbol and the metadata URI also share one byte budget in the launch
+     * transaction (`LAUNCH_METADATA_BUDGET_BYTES` in @forge/core).
+     */
     name: z
       .string()
       .min(1)
+      .refine((value) => value.trim() === value, {
+        error: 'Coin name must not start or end with spaces',
+      })
       .refine((value) => utf8Bytes(value) <= 32, { error: 'Coin name must be at most 32 bytes' }),
+    /** Written on-chain as is: the pattern leaves no room for spaces. */
     symbol: z.string().regex(/^[A-Z0-9]{2,10}$/, {
       error: 'Symbol must be 2 to 10 uppercase letters or digits',
     }),
@@ -81,7 +107,11 @@ export const LaunchpadSpec = z.object({
     imageUrl: HttpUrl,
     /** Paid by the client. */
     // The 10 SOL migration threshold means a first buy above ~10 SOL cannot fit in the curve.
-    firstBuySol: z.number().min(0).max(10),
+    firstBuySol: z
+      .number()
+      .min(0)
+      .max(10)
+      .refine(hasAtMostSolDecimals, { error: `firstBuySol ${SOL_DECIMALS_ERROR}` }),
   }),
 });
 /** Parsed spec (defaults applied). */

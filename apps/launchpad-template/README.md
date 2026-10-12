@@ -19,15 +19,17 @@ Forked from the `fun-launch` scaffold of [MeteoraAg/meteora-invent](https://gith
 | `src/forge/` | LOCKED | Config loader, security headers, and everything that touches the network, the chain or money. See `src/forge/README.md`. |
 | `src/theme/` | free | CSS variables driven by `forge.config.json#theme`. |
 | `src/content/` | free | Texts driven by `forge.config.json#content`. |
-| `src/components/`, `src/pages/` | free | UI. They import from `src/forge` for anything dynamic. |
+| `src/components/`, `src/pages/` | free | UI. They import from `src/forge` for anything dynamic. `src/components/AppShell.tsx` holds the global layout and design. |
+| `src/pages/_app.tsx`, `src/pages/_document.tsx` | LOCKED | App entry: FORGE providers, the mode gate (`src/forge/ModeGate.tsx`) and the free-zone `AppShell`. |
 | `src/pages/api/` | server | `upload` only (coin preparation). It answers 503 unless the site is `live`. |
 | `scripts/` | monorepo only | `prepare-template-repo.mjs` (not part of the template repository). |
 
 ## Modes
 
-`forge.config.json#mode`: `live`, `sleeping` or `disabled`. In the last two modes `_app.tsx` renders a
-static page only (no wallet provider, no data provider, no RPC, no Jupiter script) and the API
-route answers 503.
+`forge.config.json#mode`: `live`, `sleeping` or `disabled`. The mode is read only from
+`forge.config.json` by the locked `src/forge/ModeGate.tsx` (never from `src/content`). In the last two
+modes it renders a static page from `src/forge/modes/` only (no app shell, no wallet provider, no data
+provider, no RPC, no Jupiter script) and the API route answers 503.
 
 ## Scripts
 

@@ -19,8 +19,10 @@
  *          the fee payer and only signer; only compute budget (bounded priority fee), idempotent
  *          ATA creation for the owner (wSOL or the input mint), SyncNative / CloseAccount of the
  *          owner's wSOL account back to the owner, System transfer / CreateAccount only into the
- *          owner's wSOL account, and the Jupiter program. Approve, SetAuthority, token transfers
- *          and anything else are refused;
+ *          owner's wSOL account, and exactly one Jupiter ExactIn route instruction whose decoded
+ *          arguments match the quote (input amount, no platform fee, slippage <= the cap, quoted
+ *          output >= the quote's). Approve, SetAuthority, token transfers, other Jupiter
+ *          instructions and anything else are refused;
  *       2. simulation (`checkSwapSimulation`) with the post-state of every account the owner
  *          holds: the input mint decreases by at most the quoted amount, the owner's SOL (wallet +
  *          wSOL accounts) grows by at least `otherAmountThreshold` minus the fee bound, and
@@ -116,7 +118,10 @@ export interface ConvertConfig {
   maxPriceImpactBps: number;
   /** Quotes paying out less than this many lamports are skipped as dust. */
   minOutputLamports: bigint;
-  /** Never swap more than this many input units of one mint in one run (0n: no cap). */
+  /**
+   * Never swap more than this many raw input units of one mint in one run (0n: no cap). Default
+   * `DEFAULT_CONVERT_MAX_INPUT_AMOUNT`; a larger balance is converted over several runs.
+   */
   maxInputAmount: bigint;
   /** Highest priority fee (lamports) a swap transaction may carry. */
   maxPriorityFeeLamports: bigint;
@@ -138,6 +143,14 @@ const httpsUrl = z
     }
   }, 'JUPITER_API_URL must use https');
 
+/**
+ * Default cap of one swap, in raw input units: 1 000 USDC (6 decimals), the main non-SOL
+ * currency the Jupiter integrator fee is collected in (docs/METEORA.md). It bounds what one run
+ * can lose to a bad price within the slippage and price-impact caps. Set CONVERT_MAX_INPUT_AMOUNT
+ * per deployment (mints with other decimals or prices), or 0 to remove the cap.
+ */
+export const DEFAULT_CONVERT_MAX_INPUT_AMOUNT = 1_000_000_000n;
+
 const envSchema = z.object({
   JUPITER_API_URL: httpsUrl.default(DEFAULT_JUPITER_URL),
   JUPITER_API_KEY: z.string().optional(),
@@ -152,7 +165,7 @@ const envSchema = z.object({
   CONVERT_MAX_INPUT_AMOUNT: z
     .string()
     .regex(/^\d{1,30}$/)
-    .default('0')
+    .default(DEFAULT_CONVERT_MAX_INPUT_AMOUNT.toString())
     .transform((v) => BigInt(v)),
   CONVERT_MAX_PRIORITY_FEE_LAMPORTS: z
     .string()
@@ -460,6 +473,10 @@ export interface SwapExpectation {
   inAmount: bigint;
   /** Lamports the quote guarantees (`otherAmountThreshold`). */
   minOutLamports: bigint;
+  /** Output the quote announced (`outAmount`): the route's `quoted_out_amount` may not be lower. */
+  quotedOutAmount: bigint;
+  /** Highest `slippage_bps` the route instruction may carry (CONVERT_MAX_SLIPPAGE_BPS). */
+  maxSlippageBps: number;
   /** Mints that must never be sold ($FORGE and the excluded mints). */
   forbiddenMints: readonly string[];
 }
@@ -607,6 +624,8 @@ async function convertOne(
     inputMint: balance.mint,
     inAmount: amount,
     minOutLamports: BigInt(quote.otherAmountThreshold),
+    quotedOutAmount: outAmount,
+    maxSlippageBps: config.maxSlippageBps,
     forbiddenMints: config.excludedMints,
   };
   const now = (deps.now ?? Date.now)();
@@ -790,6 +809,458 @@ function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Jupiter route instruction (decoded, never trusted)
+//
+// The static allowlist also decodes the arguments of the Jupiter instruction, because they are
+// what the program enforces when the transaction actually executes (the simulation only proves
+// the outcome at the simulated state): the minimum output is `quoted_out_amount` reduced by
+// `slippage_bps`. Only the ExactIn route instructions of the Swap API are accepted; any other
+// Jupiter instruction (exact-out routes, token-ledger routes, claims, account helpers...) is
+// refused.
+//
+// Source of the layouts: the Jupiter aggregator v6 Anchor IDL (program JUP6Lkb...TaV4).
+// - Discriminators: Anchor's sha256("global:<instruction name>")[0..8] (recomputed in the tests).
+// - Arguments, in order (Borsh):
+//     route                     route_plan: Vec<RoutePlanStep>, in_amount: u64,
+//                               quoted_out_amount: u64, slippage_bps: u16, platform_fee_bps: u8
+//     shared_accounts_route     id: u8, then the same arguments as `route`
+//     route_v2                  in_amount: u64, quoted_out_amount: u64, slippage_bps: u16,
+//                               platform_fee_bps: u16, positive_slippage_bps: u16,
+//                               route_plan: Vec<RoutePlanStepV2>
+//     shared_accounts_route_v2  id: u8, then the same arguments as `route_v2`
+//   RoutePlanStep = { swap: Swap, percent: u8, input_index: u8, output_index: u8 }.
+// - The `Swap` enum (variant order and payloads): variants 0-61 as published by Jupiter in the
+//   IDL of @jup-ag/instruction-parser 6.0.28 (variants 0-38 also in jup-ag/jupiter-cpi
+//   idl.json); variants 62-151 from the decoder generated with Codama from the latest v6 IDL
+//   (github.com/sevenlabs-hq/carbon, decoders/jupiter-swap-decoder, regenerated 2026-05-18).
+//
+// In the v1 routes the route plan comes BEFORE the amounts, and the program ignores trailing
+// bytes: the plan is decoded step by step and the amounts must end the data exactly, otherwise
+// trailing bytes could carry fake amounts. A step of a variant unknown to the table below is
+// refused (fail closed: extend the table from the IDL). In the v2 routes the amounts come first
+// and the program reads them the same way whatever follows, so the plan is not decoded.
+
+type SwapField =
+  | 'bool'
+  | 'u8'
+  | 'u32'
+  | 'u64'
+  | 'u128'
+  | 'u64x5'
+  | 'side'
+  | 'hyloSwapType'
+  | 'bytes'
+  | 'optionU8'
+  | 'remainingAccountsInfo'
+  | 'optionRemainingAccountsInfo'
+  | 'candidateSwaps'
+  | 'candidateSwapsWithBps';
+
+type SwapVariant = readonly [name: string, fields: readonly SwapField[]];
+
+/** `Swap` enum of the Jupiter v6 IDL: index = Borsh variant tag. */
+export const JUPITER_SWAP_VARIANTS: readonly SwapVariant[] = [
+  ['Saber', []],
+  ['SaberAddDecimalsDeposit', []],
+  ['SaberAddDecimalsWithdraw', []],
+  ['TokenSwap', []],
+  ['Sencha', []],
+  ['Step', []],
+  ['Cropper', []],
+  ['Raydium', []],
+  ['Crema', ['bool']],
+  ['Lifinity', []],
+  ['Mercurial', []],
+  ['Cykura', []],
+  ['Serum', ['side']],
+  ['MarinadeDeposit', []],
+  ['MarinadeUnstake', []],
+  ['Aldrin', ['side']],
+  ['AldrinV2', ['side']],
+  ['Whirlpool', ['bool']],
+  ['Invariant', ['bool']],
+  ['Meteora', []],
+  ['GooseFX', []],
+  ['DeltaFi', ['bool']],
+  ['Balansol', []],
+  ['MarcoPolo', ['bool']],
+  ['Dradex', ['side']],
+  ['LifinityV2', []],
+  ['RaydiumClmm', []],
+  ['Openbook', ['side']],
+  ['Phoenix', ['side']],
+  ['Symmetry', ['u64', 'u64']],
+  ['TokenSwapV2', []],
+  ['HeliumTreasuryManagementRedeemV0', []],
+  ['StakeDexStakeWrappedSol', []],
+  ['StakeDexSwapViaStake', ['u32']],
+  ['GooseFXV2', []],
+  ['Perps', []],
+  ['PerpsAddLiquidity', []],
+  ['PerpsRemoveLiquidity', []],
+  ['MeteoraDlmm', []],
+  ['OpenBookV2', ['side']],
+  ['RaydiumClmmV2', []],
+  ['StakeDexPrefundWithdrawStakeAndDepositStake', ['u32']],
+  ['Clone', ['u8', 'bool', 'bool']],
+  ['SanctumS', ['u8', 'u8', 'u32', 'u32']],
+  ['SanctumSAddLiquidity', ['u8', 'u32']],
+  ['SanctumSRemoveLiquidity', ['u8', 'u32']],
+  ['RaydiumCP', []],
+  ['WhirlpoolSwapV2', ['bool', 'optionRemainingAccountsInfo']],
+  ['OneIntro', []],
+  ['PumpWrappedBuy', []],
+  ['PumpWrappedSell', []],
+  ['PerpsV2', []],
+  ['PerpsV2AddLiquidity', []],
+  ['PerpsV2RemoveLiquidity', []],
+  ['MoonshotWrappedBuy', []],
+  ['MoonshotWrappedSell', []],
+  ['StabbleStableSwap', []],
+  ['StabbleWeightedSwap', []],
+  ['Obric', ['bool']],
+  ['FoxBuyFromEstimatedCost', []],
+  ['FoxClaimPartial', ['bool']],
+  ['SolFi', ['bool']],
+  ['SolayerDelegateNoInit', []],
+  ['SolayerUndelegateNoInit', []],
+  ['TokenMill', ['side']],
+  ['DaosFunBuy', []],
+  ['DaosFunSell', []],
+  ['ZeroFi', []],
+  ['StakeDexWithdrawWrappedSol', []],
+  ['VirtualsBuy', []],
+  ['VirtualsSell', []],
+  ['Perena', ['u8', 'u8']],
+  ['PumpSwapBuy', []],
+  ['PumpSwapSell', []],
+  ['Gamma', []],
+  ['MeteoraDlmmSwapV2', ['remainingAccountsInfo']],
+  ['Woofi', []],
+  ['MeteoraDammV2', []],
+  ['MeteoraDynamicBondingCurveSwap', []],
+  ['StabbleStableSwapV2', []],
+  ['StabbleWeightedSwapV2', []],
+  ['RaydiumLaunchlabBuy', ['u64']],
+  ['RaydiumLaunchlabSell', ['u64']],
+  ['BoopdotfunWrappedBuy', []],
+  ['BoopdotfunWrappedSell', []],
+  ['Plasma', ['side']],
+  ['GoonFi', ['bool', 'u8']],
+  ['HumidiFi', ['u64', 'bool']],
+  ['MeteoraDynamicBondingCurveSwapWithRemainingAccounts', []],
+  ['TesseraV', ['side']],
+  ['PumpWrappedBuyV2', []],
+  ['PumpWrappedSellV2', []],
+  ['PumpSwapBuyV2', []],
+  ['PumpSwapSellV2', []],
+  ['Heaven', ['bool']],
+  ['SolFiV2', ['bool']],
+  ['Aquifer', []],
+  ['PumpWrappedBuyV3', []],
+  ['PumpWrappedSellV3', []],
+  ['PumpSwapBuyV3', []],
+  ['PumpSwapSellV3', []],
+  ['JupiterLendDeposit', []],
+  ['JupiterLendRedeem', []],
+  ['DefiTuna', ['bool', 'optionRemainingAccountsInfo']],
+  ['AlphaQ', ['bool']],
+  ['RaydiumV2', []],
+  ['SarosDlmm', ['bool']],
+  ['Futarchy', ['side']],
+  ['MeteoraDammV2WithRemainingAccounts', []],
+  ['Obsidian', []],
+  ['WhaleStreet', ['side']],
+  ['DynamicV1', ['candidateSwaps', 'optionU8']],
+  ['PumpWrappedBuyV4', []],
+  ['PumpWrappedSellV4', []],
+  ['CarrotIssue', []],
+  ['CarrotRedeem', []],
+  ['Manifest', ['side']],
+  ['BisonFi', ['bool']],
+  ['HumidiFiV2', ['u64', 'bool']],
+  ['PerenaStar', ['bool']],
+  ['JupiterRfqV2', ['side', 'bytes']],
+  ['GoonFiV2', ['bool']],
+  ['Scorch', ['u128']],
+  ['VaultLiquidUnstake', ['u64x5', 'u64']],
+  ['XOrca', []],
+  ['Quantum', ['side']],
+  ['WhaleStreetV2', ['side', 'u64', 'u64']],
+  ['Riptide', ['bool']],
+  ['RunnerRodeo', []],
+  ['TaurusFi', ['bool']],
+  ['Omnipair', []],
+  ['MSwap', []],
+  ['Hylo', ['hyloSwapType']],
+  ['VoltrDeposit', []],
+  ['VoltrWithdraw', []],
+  ['SanctumSV2', ['u8', 'u8', 'u32', 'u32']],
+  ['LemmingsFi', ['bool']],
+  ['ScaleVmmBuy', []],
+  ['ScaleVmmSell', []],
+  ['ScaleAmmBuy', []],
+  ['ScaleAmmSell', []],
+  ['BisonFiV2', ['bool']],
+  ['Trends', []],
+  ['HumaDeposit', []],
+  ['HumaInstantWithdraw', []],
+  ['Kipseli', ['bool']],
+  ['DynamicV2', ['candidateSwapsWithBps', 'u8', 'u8']],
+  ['PumpSwapBuyV3WithCashbackClaim', []],
+  ['PumpSwapSellV3WithCashbackClaim', []],
+  ['PumpWrappedBuyV4WithCashbackClaim', []],
+  ['PumpWrappedSellV4WithCashbackClaim', []],
+  ['GoonFiV3', ['bool']],
+];
+
+/** `CandidateSwap` enum (payload of the DynamicV1 / DynamicV2 variants). */
+const JUPITER_CANDIDATE_SWAP_VARIANTS: readonly SwapVariant[] = [
+  ['HumidiFi', ['u64', 'bool']],
+  ['TesseraV', ['side']],
+  ['HumidiFiV2', ['u64', 'bool']],
+  ['RaydiumV2', []],
+  ['RaydiumClmm', []],
+  ['Whirlpool', ['bool']],
+  ['ZeroFi', []],
+  ['BisonFiV2', ['bool']],
+  ['GoonFiV2', ['bool']],
+  ['GoonFiV3', ['bool']],
+  ['WhirlpoolV2', ['bool', 'optionRemainingAccountsInfo']],
+];
+
+/** Side and HyloSwapType are fieldless enums: number of variants. */
+const SIDE_VARIANTS = 2;
+const HYLO_SWAP_TYPE_VARIANTS = 8;
+
+/** The ExactIn route instructions a Swap API transaction may use. */
+export const JUPITER_ROUTE_INSTRUCTIONS = {
+  route: { discriminator: [229, 23, 203, 151, 122, 227, 173, 42], shared: false, v2: false },
+  shared_accounts_route: {
+    discriminator: [193, 32, 155, 51, 65, 214, 156, 129],
+    shared: true,
+    v2: false,
+  },
+  route_v2: { discriminator: [187, 100, 250, 204, 49, 196, 175, 20], shared: false, v2: true },
+  shared_accounts_route_v2: {
+    discriminator: [209, 152, 83, 147, 124, 254, 216, 233],
+    shared: true,
+    v2: true,
+  },
+} as const satisfies Record<
+  string,
+  { discriminator: readonly number[]; shared: boolean; v2: boolean }
+>;
+
+/** Exact-out routes: recognized only to be refused with a precise reason (quotes are ExactIn). */
+export const JUPITER_EXACT_OUT_INSTRUCTIONS = {
+  exact_out_route: [208, 51, 239, 151, 123, 43, 237, 92],
+  shared_accounts_exact_out_route: [176, 209, 105, 168, 154, 125, 69, 62],
+  exact_out_route_v2: [157, 138, 184, 82, 21, 244, 243, 36],
+  shared_accounts_exact_out_route_v2: [53, 96, 229, 202, 216, 187, 250, 24],
+} as const satisfies Record<string, readonly number[]>;
+
+export type JupiterRouteName = keyof typeof JUPITER_ROUTE_INSTRUCTIONS;
+
+/** What the Jupiter program will enforce for a route instruction. */
+export interface JupiterRouteArgs {
+  instruction: JupiterRouteName;
+  inAmount: bigint;
+  quotedOutAmount: bigint;
+  slippageBps: number;
+  platformFeeBps: number;
+}
+
+export type JupiterRouteRefusal =
+  'jupiter_instruction_not_allowed' | 'jupiter_route_not_exact_in' | 'jupiter_route_undecodable';
+
+export type JupiterRouteDecode =
+  { ok: true; route: JupiterRouteArgs } | { ok: false; reason: JupiterRouteRefusal };
+
+class RouteDecodeError extends Error {}
+
+interface BorshReader {
+  remaining(): number;
+  skip(n: number): void;
+  u8(): number;
+  u16(): number;
+  u32(): number;
+  u64(): bigint;
+  /** A fieldless enum / bool / Option tag: refused when it is not below `count`. */
+  tag(count: number): number;
+  /** A Vec length prefix, refused when its elements cannot fit in what is left. */
+  vecLength(minElementBytes: number): number;
+}
+
+function borshReader(data: Buffer): BorshReader {
+  let offset = 0;
+  const take = (n: number): number => {
+    if (n > data.length - offset) throw new RouteDecodeError('truncated');
+    const at = offset;
+    offset += n;
+    return at;
+  };
+  const reader: BorshReader = {
+    remaining: () => data.length - offset,
+    skip: (n) => {
+      take(n);
+    },
+    u8: () => data.readUInt8(take(1)),
+    u16: () => data.readUInt16LE(take(2)),
+    u32: () => data.readUInt32LE(take(4)),
+    u64: () => data.readBigUInt64LE(take(8)),
+    tag(count) {
+      const value = reader.u8();
+      if (value >= count) throw new RouteDecodeError('invalid tag');
+      return value;
+    },
+    vecLength(minElementBytes) {
+      const length = reader.u32();
+      if (length * minElementBytes > reader.remaining()) throw new RouteDecodeError('vec length');
+      return length;
+    },
+  };
+  return reader;
+}
+
+function skipSwapField(r: BorshReader, field: SwapField): void {
+  switch (field) {
+    case 'bool':
+      r.tag(2);
+      return;
+    case 'u8':
+      r.skip(1);
+      return;
+    case 'u32':
+      r.skip(4);
+      return;
+    case 'u64':
+      r.skip(8);
+      return;
+    case 'u128':
+      r.skip(16);
+      return;
+    case 'u64x5':
+      r.skip(40);
+      return;
+    case 'side':
+      r.tag(SIDE_VARIANTS);
+      return;
+    case 'hyloSwapType':
+      r.tag(HYLO_SWAP_TYPE_VARIANTS);
+      return;
+    case 'bytes':
+      r.skip(r.vecLength(1));
+      return;
+    case 'optionU8':
+      if (r.tag(2) === 1) r.skip(1);
+      return;
+    case 'remainingAccountsInfo':
+      // Vec<RemainingAccountsSlice { accounts_type: u8, length: u8 }>
+      r.skip(2 * r.vecLength(2));
+      return;
+    case 'optionRemainingAccountsInfo':
+      if (r.tag(2) === 1) skipSwapField(r, 'remainingAccountsInfo');
+      return;
+    case 'candidateSwaps':
+      for (let i = r.vecLength(1); i > 0; i--) skipSwapVariant(r, JUPITER_CANDIDATE_SWAP_VARIANTS);
+      return;
+    case 'candidateSwapsWithBps':
+      // Vec<CandidateSwapWithBps { candidate_swap: CandidateSwap, bps: u32 }>
+      for (let i = r.vecLength(5); i > 0; i--) {
+        skipSwapVariant(r, JUPITER_CANDIDATE_SWAP_VARIANTS);
+        r.skip(4);
+      }
+      return;
+  }
+}
+
+function skipSwapVariant(r: BorshReader, variants: readonly SwapVariant[]): void {
+  // An unknown tag throws: a variant missing from the table is never guessed.
+  const [, fields] = variants[r.tag(variants.length)]!;
+  for (const field of fields) skipSwapField(r, field);
+}
+
+function startsWith(data: Buffer, discriminator: readonly number[]): boolean {
+  return discriminator.every((b, i) => data[i] === b);
+}
+
+/**
+ * Decodes a Jupiter v6 instruction. Accepts only the ExactIn routes of the Swap API (`route`,
+ * `shared_accounts_route` and their v2), refuses the exact-out routes and any other instruction.
+ */
+export function decodeJupiterRoute(data: Uint8Array): JupiterRouteDecode {
+  const buf = Buffer.from(data.buffer, data.byteOffset, data.byteLength);
+  if (buf.length < 8) return { ok: false, reason: 'jupiter_instruction_not_allowed' };
+  for (const discriminator of Object.values(JUPITER_EXACT_OUT_INSTRUCTIONS)) {
+    if (startsWith(buf, discriminator)) return { ok: false, reason: 'jupiter_route_not_exact_in' };
+  }
+  const names = Object.keys(JUPITER_ROUTE_INSTRUCTIONS) as JupiterRouteName[];
+  const instruction = names.find((name) =>
+    startsWith(buf, JUPITER_ROUTE_INSTRUCTIONS[name].discriminator),
+  );
+  if (!instruction) return { ok: false, reason: 'jupiter_instruction_not_allowed' };
+  const spec = JUPITER_ROUTE_INSTRUCTIONS[instruction];
+  try {
+    const r = borshReader(buf.subarray(8));
+    if (spec.shared) r.skip(1); // id
+    if (spec.v2) {
+      const inAmount = r.u64();
+      const quotedOutAmount = r.u64();
+      const slippageBps = r.u16();
+      const platformFeeBps = r.u16();
+      r.skip(2); // positive_slippage_bps
+      r.vecLength(1); // route_plan follows
+      return {
+        ok: true,
+        route: { instruction, inAmount, quotedOutAmount, slippageBps, platformFeeBps },
+      };
+    }
+    // RoutePlanStep: Swap (at least its tag) + percent + input_index + output_index.
+    for (let steps = r.vecLength(4); steps > 0; steps--) {
+      skipSwapVariant(r, JUPITER_SWAP_VARIANTS);
+      r.skip(3);
+    }
+    const inAmount = r.u64();
+    const quotedOutAmount = r.u64();
+    const slippageBps = r.u16();
+    const platformFeeBps = r.u8();
+    // What the program reads ends here: anything after it is refused (see above).
+    if (r.remaining() !== 0) throw new RouteDecodeError('trailing bytes');
+    return {
+      ok: true,
+      route: { instruction, inAmount, quotedOutAmount, slippageBps, platformFeeBps },
+    };
+  } catch (err) {
+    if (err instanceof RouteDecodeError) return { ok: false, reason: 'jupiter_route_undecodable' };
+    throw err;
+  }
+}
+
+export type JupiterRouteCheck =
+  | 'jupiter_route_amount_mismatch'
+  | 'jupiter_route_platform_fee'
+  | 'jupiter_route_slippage_too_high'
+  | 'jupiter_route_quoted_out_too_low';
+
+/**
+ * Pure: the decoded route against the validated quote. It must sell exactly the quoted input,
+ * take no platform fee (none is asked for), carry a slippage within the configured maximum and
+ * announce at least the quoted output, so the minimum the program enforces is at least
+ * `outAmount * (10 000 - maxSlippageBps) / 10 000`.
+ */
+export function checkJupiterRoute(
+  route: JupiterRouteArgs,
+  expected: Pick<SwapExpectation, 'inAmount' | 'quotedOutAmount' | 'maxSlippageBps'>,
+): JupiterRouteCheck | null {
+  if (route.inAmount !== expected.inAmount) return 'jupiter_route_amount_mismatch';
+  if (route.platformFeeBps !== 0) return 'jupiter_route_platform_fee';
+  if (route.slippageBps > expected.maxSlippageBps) return 'jupiter_route_slippage_too_high';
+  if (route.quotedOutAmount < expected.quotedOutAmount) return 'jupiter_route_quoted_out_too_low';
+  return null;
+}
+
+// ---------------------------------------------------------------------------------------------
 // Swap transaction checks
 
 /** Jupiter aggregator v6 program: every Jupiter swap transaction invokes it. */
@@ -816,6 +1287,10 @@ export type SwapRefusal =
   | 'system_instruction_not_allowed'
   | 'program_not_allowed'
   | 'jupiter_program_missing'
+  | 'jupiter_multiple_routes'
+  | 'expectation_invalid'
+  | JupiterRouteRefusal
+  | JupiterRouteCheck
   | 'simulation_failed'
   | 'simulation_incomplete'
   | 'state_changed_during_check'
@@ -849,11 +1324,17 @@ const refuse = (reason: SwapRefusal): SwapCheck => ({ ok: false, reason });
  * - Associated Token CreateIdempotent paid by the owner, for the owner, of wSOL or the input mint;
  * - Token SyncNative of the owner's wSOL account; CloseAccount of it, to the owner, by the owner;
  * - System Transfer / CreateAccount from the owner into the owner's wSOL account;
- * - the Jupiter program (at least once).
- * Anything else (Approve, SetAuthority, token transfers, other programs...) is refused. Returns the
- * fee bound (base fee + priority fee) used by the simulation check.
+ * - exactly one Jupiter instruction, an ExactIn route (`decodeJupiterRoute`) whose arguments match
+ *   the validated quote (`checkJupiterRoute`): input = `expected.inAmount`, no platform fee,
+ *   slippage <= `expected.maxSlippageBps`, quoted output >= `expected.quotedOutAmount`.
+ * Anything else (Approve, SetAuthority, token transfers, other programs, other Jupiter
+ * instructions...) is refused. Returns the fee bound (base fee + priority fee) used by the
+ * simulation check.
  */
-export function verifySwapTransaction(tx: VersionedTransaction, params: VerifySwapParams): SwapCheck {
+export function verifySwapTransaction(
+  tx: VersionedTransaction,
+  params: VerifySwapParams,
+): SwapCheck {
   const { expected } = params;
   const message = tx.message;
   let ownerKey: PublicKey;
@@ -869,6 +1350,16 @@ export function verifySwapTransaction(tx: VersionedTransaction, params: VerifySw
   if (message.header.numRequiredSignatures !== 1) return refuse('extra_signers');
   if (expected.inputMint === WSOL_MINT || expected.forbiddenMints.includes(expected.inputMint)) {
     return refuse('input_mint_forbidden');
+  }
+  // Without a positive quoted output and a sane slippage cap the route check would bound nothing.
+  if (
+    expected.inAmount <= 0n ||
+    expected.quotedOutAmount <= 0n ||
+    !Number.isInteger(expected.maxSlippageBps) ||
+    expected.maxSlippageBps < 0 ||
+    expected.maxSlippageBps > 10_000
+  ) {
+    return refuse('expectation_invalid');
   }
   let keys: MessageAccountKeys;
   try {
@@ -908,7 +1399,12 @@ export function verifySwapTransaction(tx: VersionedTransaction, params: VerifySw
     }
     nonBudget++;
     if (program.toBase58() === JUPITER_PROGRAM_ID) {
-      jupiter++;
+      // One route per swap: a second one would sell the input again.
+      if (++jupiter > 1) return refuse('jupiter_multiple_routes');
+      const decoded = decodeJupiterRoute(data);
+      if (!decoded.ok) return refuse(decoded.reason);
+      const mismatch = checkJupiterRoute(decoded.route, expected);
+      if (mismatch) return refuse(mismatch);
       continue;
     }
     if (program.equals(ASSOCIATED_TOKEN_PROGRAM_ID)) {
@@ -995,7 +1491,10 @@ interface TokenFields {
 
 function decodeTokenAccount(state: AccountStateLite | null): TokenFields | null {
   if (!state || state.data.length < AccountLayout.span) return null;
-  if (state.owner !== TOKEN_PROGRAM_ID.toBase58() && state.owner !== TOKEN_2022_PROGRAM_ID.toBase58()) {
+  if (
+    state.owner !== TOKEN_PROGRAM_ID.toBase58() &&
+    state.owner !== TOKEN_2022_PROGRAM_ID.toBase58()
+  ) {
     return null;
   }
   const raw = AccountLayout.decode(state.data.subarray(0, AccountLayout.span));
@@ -1071,7 +1570,16 @@ export function compareSwapStates(
     } else if (post && (post.delegate !== null || post.closeAuthority !== null)) {
       return 'token_account_changed';
     }
-    if (mint === WSOL_MINT && d.address === getAssociatedTokenAddressSync(NATIVE_MINT, new PublicKey(owner), true, TOKEN_PROGRAM_ID).toBase58()) {
+    if (
+      mint === WSOL_MINT &&
+      d.address ===
+        getAssociatedTokenAddressSync(
+          NATIVE_MINT,
+          new PublicKey(owner),
+          true,
+          TOKEN_PROGRAM_ID,
+        ).toBase58()
+    ) {
       solPre += d.pre?.lamports ?? 0n;
       solPost += d.post?.lamports ?? 0n;
       continue;
@@ -1317,7 +1825,8 @@ export function createRpcSwapSender(opts: RpcSwapSenderOptions): SwapSender {
           return { status: 'confirmed', signature };
         }
         if (s.kind === 'failed') return { status: 'failed', signature, error: s.error };
-        if (s.kind === 'expired') return { status: 'failed', signature, error: 'blockhash expired' };
+        if (s.kind === 'expired')
+          return { status: 'failed', signature, error: 'blockhash expired' };
         if (now() >= deadline) return { status: 'unknown', signature };
         await sleep(pollMs);
       }

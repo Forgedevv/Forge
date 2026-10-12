@@ -3,6 +3,7 @@ import { CLIENT_BOUNDS } from './constants.js';
 import {
   LaunchpadSpec,
   SolanaAddress,
+  hasAtMostSolDecimals,
   validateSpecDraft,
   type LaunchpadSpecDraft,
   type LaunchpadSpecInput,
@@ -93,9 +94,39 @@ describe('LaunchpadSpec', () => {
   });
 
   it('rejects a bad symbol', () => {
-    for (const symbol of ['moon', 'M', 'MOON!', 'ABCDEFGHIJK']) {
+    for (const symbol of ['moon', 'M', 'MOON!', 'ABCDEFGHIJK', ' MOON', 'MOON ', 'MO ON']) {
       expect(ok(withOverride((s) => (s.launchpadCoin.symbol = symbol)))).toBe(false);
     }
+  });
+
+  it('rejects a coin name with surrounding spaces or only spaces (refused on-chain)', () => {
+    for (const name of [' Moon', 'Moon ', '\tMoon', 'Moon\n', ' ', ' Moon', '']) {
+      expect(ok(withOverride((s) => (s.launchpadCoin.name = name)))).toBe(false);
+    }
+    expect(ok(withOverride((s) => (s.launchpadCoin.name = 'Moon Coin')))).toBe(true);
+    expect(validateSpecDraft({ launchpadCoin: { name: ' Moon' } }).errors).toHaveProperty([
+      'launchpadCoin.name',
+    ]);
+  });
+
+  it('accepts SOL amounts with at most 9 decimals only (one lamport)', () => {
+    expect(ok(withOverride((s) => (s.launchpadCoin.firstBuySol = 0.000000001)))).toBe(true);
+    expect(ok(withOverride((s) => (s.launchpadCoin.firstBuySol = 1.123456789)))).toBe(true);
+    expect(ok(withOverride((s) => (s.launchpadCoin.firstBuySol = 0.0000000001)))).toBe(false);
+    expect(ok(withOverride((s) => (s.launchpadCoin.firstBuySol = 0.1 + 0.2)))).toBe(false);
+    expect(ok(withOverride((s) => (s.launchpadCoin.firstBuySol = 1.0000000001)))).toBe(false);
+    expect(ok(withOverride((s) => (s.poolCreationFeeSol = 0.123456789)))).toBe(true);
+    expect(ok(withOverride((s) => (s.poolCreationFeeSol = 0.0010000000001)))).toBe(false);
+    expect(ok(withOverride((s) => (s.poolCreationFeeSol = 0.5000000001)))).toBe(false);
+  });
+
+  it('hasAtMostSolDecimals matches the lamport conversion rule', () => {
+    expect(hasAtMostSolDecimals(0)).toBe(true);
+    expect(hasAtMostSolDecimals(10)).toBe(true);
+    expect(hasAtMostSolDecimals(0.001)).toBe(true);
+    expect(hasAtMostSolDecimals(0.1 + 0.2)).toBe(false);
+    expect(hasAtMostSolDecimals(Number.NaN)).toBe(false);
+    expect(hasAtMostSolDecimals(Number.POSITIVE_INFINITY)).toBe(false);
   });
 
   it('rejects bad colors', () => {
