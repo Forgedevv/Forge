@@ -8,8 +8,14 @@ import {
   solToLamports,
   transactionSignature,
   verifyLaunchCoinTransaction,
+  type VerifiedLaunchCoinTransaction,
 } from '@forge/core';
-import { LaunchpadSpec, type JobStatus, type OwnerTransactionSummary } from '@forge/shared';
+import {
+  LaunchpadSpec,
+  OwnerTransactionLaunch,
+  type JobStatus,
+  type OwnerTransactionSummary,
+} from '@forge/shared';
 import type { Transaction } from '@solana/web3.js';
 import type { LaunchChain } from './chain';
 import { RouteError } from './http';
@@ -24,9 +30,10 @@ import type { OwnedJob, RoutesStore } from './store';
  * nonce), signs it as creator and mint, and the builder stores it in `jobs.owner_tx`. Here:
  *
  * GET  — hands that exact transaction to the owner, with a summary (coin, first buy, what the
- *        owner pays besides it, expected wallet), after checking it is complete except for the
- *        owner's signature, that the owner is its fee payer, and that it is exactly the launch of
- *        this launchpad's coin (`verifyLaunchCoinTransaction` of @forge/core).
+ *        owner pays besides it, expected wallet) and the launch accounts the browser pins
+ *        (`launch`), after checking it is complete except for the owner's signature, that the
+ *        owner is its fee payer, and that it is exactly the launch of this launchpad's coin
+ *        (`verifyLaunchCoinTransaction` of @forge/core).
  * POST — receives the owner-signed copy and accepts it only if it is the stored transaction byte
  *        for byte with every signature valid (`assertSignedCopyOf` of @forge/core): any other
  *        transaction is refused. It is sent through the server RPC, confirmed by polling, and the
@@ -46,6 +53,12 @@ export const OWNER_TX_CONFIRM_DEADLINE_MS = 25_000;
 export interface OwnerTransactionView {
   transaction: string;
   summary: OwnerTransactionSummary;
+  /**
+   * The accounts the browser passes to `verifyLaunchCoinTransaction` before the owner signs:
+   * config and mint from the launchpad row (the transaction was checked against them), creator
+   * wallet, durable nonce account and metadata URI as verified in the stored transaction.
+   */
+  launch: OwnerTransactionLaunch;
   /**
    * `ok`: the summary comes from a simulation of the exact transaction; `failed`: the simulation
    * failed (e.g. the wallet cannot pay), the fee is the network fee only; `unavailable`: no
@@ -112,8 +125,13 @@ export function createOwnerTransactionService(
    * (`verifyLaunchCoinTransaction` of @forge/core): the launchpad coin config and mint of the
    * row, the coin name and symbol and the exact first buy of the spec, SOL moved only between the
    * owner and its own wrapped SOL account, nothing else. Otherwise it is never handed out.
+   * Returns it with the launch accounts the browser pins (`OwnerTransactionLaunch`).
    */
-  function storedTransaction(owned: OwnedJob, wallet: string, spec: LaunchpadSpec): Transaction {
+  function storedTransaction(
+    owned: OwnedJob,
+    wallet: string,
+    spec: LaunchpadSpec,
+  ): { tx: Transaction; launch: OwnerTransactionLaunch } {
     const ownerTx = owned.job.ownerTx;
     if (!ownerTx) unavailable(owned, 'missing');
     let tx: Transaction;
@@ -130,8 +148,9 @@ export function createOwnerTransactionService(
     }
     const { launchpadCoinConfig, launchpadCoinMint } = owned.launchpad;
     if (!launchpadCoinConfig || !launchpadCoinMint) unavailable(owned, 'launch_addresses_missing');
+    let verified: VerifiedLaunchCoinTransaction;
     try {
-      verifyLaunchCoinTransaction(tx, {
+      verified = verifyLaunchCoinTransaction(tx, {
         owner: wallet,
         firstBuyLamports: solToLamports(spec.launchpadCoin.firstBuySol),
         config: launchpadCoinConfig,
@@ -147,7 +166,17 @@ export function createOwnerTransactionService(
           : errorName(error),
       );
     }
-    return tx;
+    // What the browser pins in turn. The creator wallet and the nonce account are not stored
+    // outside the signer: they are the ones the check above found consistent in the transaction.
+    const launch = OwnerTransactionLaunch.safeParse({
+      config: launchpadCoinConfig,
+      mint: launchpadCoinMint,
+      creator: verified.creator.toBase58(),
+      nonceAccount: verified.nonceAccount.toBase58(),
+      metadataUri: verified.metadataUri,
+    });
+    if (!launch.success) unavailable(owned, 'launch_details_invalid');
+    return { tx, launch: launch.data };
   }
 
   async function get(input: { wallet: string; jobId: string }): Promise<OwnerTransactionView> {
@@ -167,7 +196,7 @@ export function createOwnerTransactionService(
     if (launchpad.status === 'disabled') {
       throw new RouteError(403, 'LAUNCHPAD_DISABLED', 'This launchpad has been disabled.');
     }
-    const tx = storedTransaction(owned, input.wallet, spec);
+    const { tx, launch } = storedTransaction(owned, input.wallet, spec);
     const owner = requiredSigners(tx)[0]!;
     const firstBuyLamports = solToLamports(spec.launchpadCoin.firstBuySol);
     const estimate = await chain.estimateOwnerCosts(tx, owner);
@@ -197,6 +226,7 @@ export function createOwnerTransactionService(
         ownerWallet: input.wallet,
       },
       simulation,
+      launch,
     };
   }
 
@@ -253,7 +283,7 @@ export function createOwnerTransactionService(
         status: job.status,
       });
     }
-    const stored = storedTransaction(owned, input.wallet, spec);
+    const { tx: stored } = storedTransaction(owned, input.wallet, spec);
 
     // The only transaction ever accepted: the stored one, byte for byte, fully signed.
     let signed: Transaction;

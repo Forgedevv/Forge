@@ -199,6 +199,24 @@ export const OwnerTransactionSummary = z.object({
 });
 export type OwnerTransactionSummary = z.infer<typeof OwnerTransactionSummary>;
 
+/** Absolute https URL (the launchpad coin metadata URI). Kept exactly as sent (no normalization). */
+export const HttpsUrl = z.url({ protocol: /^https$/, error: 'Must be an https URL' });
+
+/**
+ * The accounts of the launch transaction, pinned by the browser (`verifyLaunchCoinTransaction` of
+ * @forge/core) before the owner signs: the launchpad coin config and mint (launchpad row), the
+ * FORGE creator wallet that creates the pool and holds the durable nonce, the durable nonce
+ * account, and the coin metadata URI written by the pool creation.
+ */
+export const OwnerTransactionLaunch = z.object({
+  config: SolanaAddress,
+  mint: SolanaAddress,
+  creator: SolanaAddress,
+  nonceAccount: SolanaAddress,
+  metadataUri: HttpsUrl,
+});
+export type OwnerTransactionLaunch = z.infer<typeof OwnerTransactionLaunch>;
+
 // GET /api/jobs/:id/owner-transaction — launch transaction partially signed by FORGE
 export const OwnerTransactionGetResponse = z.object({
   transaction: Base64Transaction,
@@ -206,6 +224,11 @@ export const OwnerTransactionGetResponse = z.object({
   summary: OwnerTransactionSummary,
   /** Whether the summary comes from a simulation of the exact message; when not `ok`, it is a lower bound. */
   simulation: z.enum(['ok', 'failed', 'unavailable']).optional(),
+  /**
+   * The launch accounts the transaction must use. Optional in the schema so that older readers and
+   * writers still parse; the browser client refuses to sign a launch without it (fail closed).
+   */
+  launch: OwnerTransactionLaunch.optional(),
 });
 export type OwnerTransactionGetResponse = z.infer<typeof OwnerTransactionGetResponse>;
 

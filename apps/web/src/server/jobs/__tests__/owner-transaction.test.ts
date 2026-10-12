@@ -86,6 +86,30 @@ describe('GET /api/jobs/:id/owner-transaction', () => {
     expect(body.simulation).toBe('ok');
   });
 
+  // Before: the response carried no launch accounts, so the browser could only check that the
+  // config, mint, creator and nonce account were consistent within the transaction itself.
+  it('returns the launch accounts the browser pins: row config and mint, verified creator and nonce', async () => {
+    const { launchpad, job, launch } = seed();
+    const body = (await (await get(job.id)).json()) as Record<string, unknown>;
+    expect(body.launch).toEqual({
+      config: launchpad.launchpadCoinConfig,
+      mint: launchpad.launchpadCoinMint,
+      creator: launch.creator.publicKey.toBase58(),
+      nonceAccount: launch.nonceAccount.toBase58(),
+      metadataUri: launch.metadataUri,
+    });
+  });
+
+  it('never hands out a stored launch whose metadata URI is not https', async () => {
+    const { job } = seed({}, { metadataUri: 'http://example.com/moon.json' });
+    const res = await get(job.id);
+    expect(res.status).toBe(503);
+    expect(await res.json()).toMatchObject({ code: 'OWNER_TX_UNAVAILABLE' });
+    expect(h.logger.entries.find((e) => e.event === 'owner_tx.unusable')?.fields.reason).toBe(
+      'launch_details_invalid',
+    );
+  });
+
   it('falls back to the network fee when the simulation fails', async () => {
     const { job } = seed();
     h.chain.estimate = {

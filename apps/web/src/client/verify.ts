@@ -1,5 +1,5 @@
 import { LaunchTransactionCheckError, verifyLaunchCoinTransaction } from '@forge/core/launch-check';
-import type { OwnerTransactionSummary } from '@forge/shared';
+import { OwnerTransactionLaunch, type OwnerTransactionSummary } from '@forge/shared';
 import { PublicKey, VersionedTransaction } from '@solana/web3.js';
 
 /*
@@ -410,6 +410,12 @@ export interface ExpectedLaunch {
   wallet: string;
   /** The summary of the same server response, shown to the owner: what the launch must do. */
   summary: Pick<OwnerTransactionSummary, 'firstBuyLamports' | 'coinName' | 'coinSymbol'>;
+  /**
+   * The launch accounts of the same server response (`launch`): launchpad coin config and mint,
+   * FORGE creator wallet, durable nonce account, coin metadata URI. Always required: a response
+   * without them is refused (fail closed), in every environment.
+   */
+  launch: OwnerTransactionLaunch | null | undefined;
 }
 
 /**
@@ -420,8 +426,9 @@ export interface ExpectedLaunch {
  * the wallet, SOL moved only between the wallet and its own wrapped SOL account, the creator and
  * mint signatures valid, nothing else).
  *
- * The response carries neither the config, the mint nor the creator wallet: they are checked to
- * be consistent within the transaction, not against independent values.
+ * Every account of the launch is pinned to the `launch` values of the server response: the
+ * config, the mint, the creator wallet, the durable nonce account and the metadata URI must be
+ * exactly those, not merely consistent within the transaction.
  */
 export function verifyLaunchTransaction(tx: VersionedTransaction, expected: ExpectedLaunch) {
   const decoded = decodeTransaction(tx);
@@ -437,17 +444,30 @@ export function verifyLaunchTransaction(tx: VersionedTransaction, expected: Expe
   }
   const { summary } = expected;
   if (!/^\d+$/.test(summary.firstBuyLamports)) fail('The launch summary is invalid.');
+  if (expected.launch === null || expected.launch === undefined) {
+    fail('The launch details are missing from the server response.');
+  }
+  const parsed = OwnerTransactionLaunch.safeParse(expected.launch);
+  if (!parsed.success) fail('The launch details from the server are invalid.');
+  const launch = parsed.data;
   try {
     verifyLaunchCoinTransaction(tx, {
       owner: expected.wallet,
       firstBuyLamports: BigInt(summary.firstBuyLamports),
       name: summary.coinName,
       symbol: summary.coinSymbol,
+      config: launch.config,
+      mint: launch.mint,
+      creator: launch.creator,
+      nonceAccount: launch.nonceAccount,
+      metadataUri: launch.metadataUri,
     });
   } catch (err) {
     if (err instanceof LaunchTransactionCheckError) {
       fail(`The launch transaction does not match the launch you are approving: ${err.message}.`);
     }
+    // A malformed expected value (e.g. an address that is not a canonical public key).
+    if (err instanceof TypeError) fail('The launch details from the server are invalid.');
     throw err;
   }
 }

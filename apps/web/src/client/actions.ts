@@ -338,8 +338,14 @@ export async function signOwnerTransaction(jobId: string, onPhase: OnTxPhase): P
     }
     const prepared = deserializeTransaction(res.transaction);
     // Paid by the session wallet, already signed by FORGE (only the owner's signature missing),
-    // and exactly the launch of this summary (first buy, coin), as @forge/core builds it.
-    verifyLaunchTransaction(prepared, { wallet: address, summary: res.summary });
+    // and exactly the launch of this summary (first buy, coin) on the accounts of `launch`
+    // (config, mint, creator wallet, nonce account, metadata URI), as @forge/core builds it.
+    // A response without `launch` is refused.
+    verifyLaunchTransaction(prepared, {
+      wallet: address,
+      summary: res.summary,
+      launch: res.launch,
+    });
     report('awaiting_signature');
     try {
       signed = await signTransaction(prepared);

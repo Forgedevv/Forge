@@ -182,6 +182,45 @@ describe('API schemas', () => {
     ).toBe(false);
   });
 
+  it('OwnerTransactionGetResponse carries the launch accounts the browser pins, optionally', () => {
+    const summary = {
+      coinName: 'Moon',
+      coinSymbol: 'MOON',
+      firstBuyLamports: '500000000',
+      estimatedNetworkFeeLamports: '35000000',
+      ownerWallet: WALLET,
+    };
+    const launch = {
+      config: WALLET,
+      mint: 'So11111111111111111111111111111111111111112',
+      creator: 'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL',
+      nonceAccount: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
+      metadataUri: 'https://forge.example/api/coin-meta/moonpad',
+    };
+    expect(api.OwnerTransactionGetResponse.parse({ transaction: TX, summary, launch })).toEqual({
+      transaction: TX,
+      summary,
+      launch,
+    });
+    // An older writer (no launch) still parses; the browser refuses to sign it.
+    expect(api.OwnerTransactionGetResponse.parse({ transaction: TX, summary }).launch).toBe(
+      undefined,
+    );
+    const bad = (over: Record<string, string>) =>
+      api.OwnerTransactionGetResponse.safeParse({
+        transaction: TX,
+        summary,
+        launch: { ...launch, ...over },
+      }).success;
+    expect(bad({ metadataUri: 'http://forge.example/api/coin-meta/moonpad' })).toBe(false);
+    expect(bad({ metadataUri: 'moonpad.json' })).toBe(false);
+    expect(bad({ creator: 'not-an-address' })).toBe(false);
+    expect(bad({ nonceAccount: '' })).toBe(false);
+    expect(api.OwnerTransactionLaunch.safeParse({ ...launch, mint: undefined }).success).toBe(
+      false,
+    );
+  });
+
   it('exposes the signer HMAC constants', () => {
     expect(api.SIGNER_SIGNATURE_HEADER).toBe('X-Forge-Signature');
     expect(api.SIGNER_TIMESTAMP_HEADER).toBe('X-Forge-Timestamp');

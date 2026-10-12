@@ -69,6 +69,8 @@ export interface CoinLaunchOptions {
   name?: string;
   symbol?: string;
   config?: PublicKey;
+  /** Coin metadata URI written by the pool creation. */
+  metadataUri?: string;
   /** Extra instructions appended (tampering); they are signed as well. */
   extra?: (owner: PublicKey) => TransactionInstruction[];
 }
@@ -78,6 +80,8 @@ export function coinLaunch(owner: Keypair, o: CoinLaunchOptions = {}) {
   const creator = Keypair.generate();
   const mint = Keypair.generate();
   const config = o.config ?? Keypair.generate().publicKey;
+  const nonceAccount = Keypair.generate().publicKey;
+  const metadataUri = o.metadataUri ?? 'https://example.com/moon.json';
   const firstBuy = o.firstBuyLamports ?? 500_000_000n;
   const pool = launchPoolAddress(config, mint.publicKey);
   const poolAuthority = pda(DBC, Buffer.from('pool_authority'));
@@ -104,7 +108,7 @@ export function coinLaunch(owner: Keypair, o: CoinLaunchOptions = {}) {
   });
   tx.add(
     SystemProgram.nonceAdvance({
-      noncePubkey: Keypair.generate().publicKey,
+      noncePubkey: nonceAccount,
       authorizedPubkey: creator.publicKey,
     }),
     ComputeBudgetProgram.setComputeUnitLimit({ units: 300_000 }),
@@ -133,7 +137,7 @@ export function coinLaunch(owner: Keypair, o: CoinLaunchOptions = {}) {
         Buffer.from(INIT_POOL),
         borshString(o.name ?? 'Moon'),
         borshString(o.symbol ?? 'MOON'),
-        borshString('https://example.com/moon.json'),
+        borshString(metadataUri),
       ]),
     }),
     createAta(payer, mint.publicKey),
@@ -176,5 +180,5 @@ export function coinLaunch(owner: Keypair, o: CoinLaunchOptions = {}) {
   const base64 = tx
     .serialize({ requireAllSignatures: false, verifySignatures: false })
     .toString('base64');
-  return { tx, base64, creator, mint, config };
+  return { tx, base64, creator, mint, config, nonceAccount, metadataUri };
 }

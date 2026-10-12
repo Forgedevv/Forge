@@ -28,6 +28,7 @@ import {
   compile,
   createAtaIdempotentIx,
   LAUNCH,
+  launchFixture,
   launchTx,
   memoIx,
   owner,
@@ -350,56 +351,101 @@ describe('verifyLaunchTransaction / assertSignedByWallet', () => {
     coinName: LAUNCH.name,
     coinSymbol: LAUNCH.symbol,
   };
-  const expected = { wallet, summary };
+  /** Verifies a launch against the summary and the launch accounts sent with it. */
+  const verify = (
+    fixture: ReturnType<typeof launchFixture>,
+    over: Partial<Parameters<typeof verifyLaunchTransaction>[1]> = {},
+  ) => verifyLaunchTransaction(fixture.tx, { wallet, summary, launch: fixture.launch, ...over });
 
   it('accepts the launch @forge/core builds, paid by the wallet with only its signature missing', () => {
-    verifyLaunchTransaction(launchTx(), expected);
-    verifyLaunchTransaction(launchTx({ firstBuyLamports: 0n }), {
-      wallet,
+    verify(launchFixture());
+    verify(launchFixture({ firstBuyLamports: 0n }), {
       summary: { ...summary, firstBuyLamports: '0' },
     });
   });
 
   it('refuses another fee payer, a missing FORGE signature or a wallet already signed', () => {
-    expectRefused(
-      () => verifyLaunchTransaction(launchTx({ payer: other() }), expected),
-      /fee payer is not your wallet/,
-    );
-    expectRefused(
-      () => verifyLaunchTransaction(launchTx({ presign: false }), expected),
-      /missing a FORGE signature/,
-    );
-    expectRefused(
-      () => verifyLaunchTransaction(launchTx({ presign: 'creator' }), expected),
-      /missing a FORGE signature/,
-    );
-    const signed = launchTx();
-    signed.signatures[0] = SIG_BYTES;
-    expectRefused(() => verifyLaunchTransaction(signed, expected), /already signed/);
+    expectRefused(() => verify(launchFixture({ payer: other() })), /fee payer is not your wallet/);
+    expectRefused(() => verify(launchFixture({ presign: false })), /missing a FORGE signature/);
+    expectRefused(() => verify(launchFixture({ presign: 'creator' })), /missing a FORGE signature/);
+    const signed = launchFixture();
+    signed.tx.signatures[0] = SIG_BYTES;
+    expectRefused(() => verify(signed), /already signed/);
   });
 
   // Before: only the fee payer and the signature slots were checked, so a server could get the
   // wallet to sign any program call as long as FORGE's slots were filled.
   it('refuses a launch that does not do what the summary says', () => {
     expectRefused(
-      () => verifyLaunchTransaction(launchTx({ firstBuyLamports: 2n }), expected),
+      () => verify(launchFixture({ firstBuyLamports: 2n })),
       /does not match the launch you are approving: the first buy amount/,
     );
     expectRefused(
-      () => verifyLaunchTransaction(launchTx({ name: 'Other' }), expected),
+      () => verify(launchFixture({ name: 'Other' })),
       /the coin name is not the expected one/,
     );
     expectRefused(
-      () => verifyLaunchTransaction(launchTx({ symbol: 'OTHER' }), expected),
+      () => verify(launchFixture({ symbol: 'OTHER' })),
       /the coin symbol is not the expected one/,
     );
     expectRefused(
-      () =>
-        verifyLaunchTransaction(launchTx(), {
-          wallet,
-          summary: { ...summary, firstBuyLamports: 'x' },
-        }),
+      () => verify(launchFixture(), { summary: { ...summary, firstBuyLamports: 'x' } }),
       /launch summary is invalid/,
+    );
+  });
+
+  // Before: the config, mint, creator wallet and nonce account were only checked to be consistent
+  // within the transaction, so a launch on another config, mint, creator or nonce was accepted.
+  it.each<[string, (fixture: ReturnType<typeof launchFixture>) => object, RegExp]>([
+    ['another config', (f) => ({ ...f.launch, config: other().toBase58() }), /the config is not/],
+    ['another mint', (f) => ({ ...f.launch, mint: other().toBase58() }), /the coin mint is not/],
+    [
+      'another creator wallet',
+      (f) => ({ ...f.launch, creator: other().toBase58() }),
+      /the creator wallet is not/,
+    ],
+    [
+      'another durable nonce account',
+      (f) => ({ ...f.launch, nonceAccount: other().toBase58() }),
+      /the durable nonce account is not/,
+    ],
+    [
+      'another metadata URI',
+      (f) => ({ ...f.launch, metadataUri: 'https://example.com/other.json' }),
+      /the metadata URI is not/,
+    ],
+  ])('refuses a launch on %s than the server response pins', (_label, launch, message) => {
+    const fixture = launchFixture();
+    expectRefused(
+      () => verify(fixture, { launch: launch(fixture) as typeof fixture.launch }),
+      message,
+    );
+  });
+
+  it('refuses a launch when the server sent no launch accounts, in every environment', () => {
+    const fixture = launchFixture();
+    for (const env of ['production', 'development', 'test']) {
+      vi.stubEnv('NODE_ENV', env);
+      expectRefused(() => verify(fixture, { launch: undefined }), /launch details are missing/);
+      expectRefused(() => verify(fixture, { launch: null }), /launch details are missing/);
+    }
+  });
+
+  it('refuses malformed launch accounts', () => {
+    const fixture = launchFixture();
+    const bad = (over: object) => ({ ...fixture.launch, ...over }) as typeof fixture.launch;
+    expectRefused(
+      () => verify(fixture, { launch: bad({ creator: 'not-an-address' }) }),
+      /launch details from the server are invalid/,
+    );
+    expectRefused(
+      () => verify(fixture, { launch: bad({ metadataUri: 'http://example.com/acme.json' }) }),
+      /launch details from the server are invalid/,
+    );
+    // Passes the base58 shape but is not a canonical public key.
+    expectRefused(
+      () => verify(fixture, { launch: bad({ config: '1'.repeat(44) }) }),
+      /launch details from the server are invalid/,
     );
   });
 
@@ -407,36 +453,32 @@ describe('verifyLaunchTransaction / assertSignedByWallet', () => {
     const thief = other();
     expectRefused(
       () =>
-        verifyLaunchTransaction(
-          launchTx({
+        verify(
+          launchFixture({
             extra: ({ payer }) => [
               SystemProgram.transfer({ fromPubkey: payer, toPubkey: thief, lamports: 1 }),
             ],
           }),
-          expected,
         ),
       /SOL is sent elsewhere/,
     );
     expectRefused(
       () =>
-        verifyLaunchTransaction(
-          launchTx({ extra: ({ payer }) => [closeAccountIx(ata(payer, WSOL), thief, payer)] }),
-          expected,
+        verify(
+          launchFixture({
+            extra: ({ payer }) => [closeAccountIx(ata(payer, WSOL), thief, payer)],
+          }),
         ),
       /wrapped SOL is returned elsewhere/,
     );
     expectRefused(
-      () =>
-        verifyLaunchTransaction(
-          launchTx({ extra: ({ payer }) => [memoIx('hello', payer)] }),
-          expected,
-        ),
+      () => verify(launchFixture({ extra: ({ payer }) => [memoIx('hello', payer)] })),
       /calls an unexpected program/,
     );
     expectRefused(
       () =>
-        verifyLaunchTransaction(
-          launchTx({
+        verify(
+          launchFixture({
             extra: ({ payer, mint }) => [
               new TransactionInstruction({
                 programId: TOKEN_PROGRAM,
@@ -450,17 +492,16 @@ describe('verifyLaunchTransaction / assertSignedByWallet', () => {
               }),
             ],
           }),
-          expected,
         ),
       /unexpected token call/,
     );
   });
 
   it('refuses a FORGE signature that does not verify', () => {
-    const tx = launchTx();
+    const fixture = launchFixture();
     // Slot 1: the first FORGE signer (the mint), filled with bytes that are no signature.
-    tx.signatures[1] = new Uint8Array(64).fill(9);
-    expectRefused(() => verifyLaunchTransaction(tx, expected), /does not verify/);
+    fixture.tx.signatures[1] = new Uint8Array(64).fill(9);
+    expectRefused(() => verify(fixture), /does not verify/);
   });
 
   it('detects a wallet that changed the message or did not sign', () => {

@@ -11,6 +11,7 @@ import {
   fakeSign,
   id,
   json,
+  launchFixture,
   launchTx,
   mockFetch,
   owner,
@@ -28,6 +29,14 @@ const summary = (wallet = owner.toBase58()) => ({
   ownerWallet: wallet,
 });
 
+/** The GET owner-transaction body: the prepared launch, its summary and its launch accounts. */
+const served = (fixture = launchFixture(), extra: Record<string, unknown> = {}) => ({
+  transaction: encode(fixture.tx),
+  summary: summary(),
+  launch: fixture.launch,
+  ...extra,
+});
+
 beforeEach(() => {
   resetKeptLaunches();
   signIn();
@@ -40,11 +49,12 @@ afterEach(() => {
 describe('signOwnerTransaction', () => {
   it('signs the prepared launch and submits exactly that message', async () => {
     const jobId = id();
-    const prepared = launchTx();
+    const fixture = launchFixture();
+    const prepared = fixture.tx;
     const fetchFn = mockFetch((_url, init) =>
       init?.method === 'POST'
         ? json({ signature: SIG })
-        : json({ transaction: encode(prepared), summary: summary(), simulation: 'ok' }),
+        : json(served(fixture, { simulation: 'ok' })),
     );
     const p = phases();
     const result = await signOwnerTransaction(jobId, p.on);
@@ -62,10 +72,7 @@ describe('signOwnerTransaction', () => {
     const sign = vi.fn();
     setWallet(sign);
     mockFetch(() =>
-      json({
-        transaction: encode(launchTx()),
-        summary: summary(Keypair.generate().publicKey.toBase58()),
-      }),
+      json(served(launchFixture(), { summary: summary(Keypair.generate().publicKey.toBase58()) })),
     );
     const p = phases();
     await expect(signOwnerTransaction(id(), p.on)).rejects.toMatchObject({ code: 'WRONG_WALLET' });
@@ -77,7 +84,7 @@ describe('signOwnerTransaction', () => {
     setWallet(async () => {
       throw rejection();
     });
-    const fetchFn = mockFetch(() => json({ transaction: encode(launchTx()), summary: summary() }));
+    const fetchFn = mockFetch(() => json(served()));
     const p = phases();
     await expect(signOwnerTransaction(id(), p.on)).resolves.toEqual({ phase: 'rejected' });
     expect(fetchFn).toHaveBeenCalledTimes(1);
@@ -91,24 +98,72 @@ describe('signOwnerTransaction', () => {
   });
 
   it.each([
-    ['another fee payer', () => launchTx({ payer: Keypair.generate().publicKey }), /fee payer/],
-    ['a missing FORGE signature', () => launchTx({ presign: false }), /missing a FORGE signature/],
+    [
+      'another fee payer',
+      () => launchFixture({ payer: Keypair.generate().publicKey }),
+      /fee payer/,
+    ],
+    [
+      'a missing FORGE signature',
+      () => launchFixture({ presign: false }),
+      /missing a FORGE signature/,
+    ],
     // The transaction must do what the summary in the same response says.
     [
       'a first buy other than the summary',
-      () => launchTx({ firstBuyLamports: 2n }),
+      () => launchFixture({ firstBuyLamports: 2n }),
       /first buy amount/,
     ],
-    ['another coin than the summary', () => launchTx({ name: 'Other' }), /coin name/],
+    ['another coin than the summary', () => launchFixture({ name: 'Other' }), /coin name/],
+    // ...and use exactly the accounts of the `launch` in the same response.
+    [
+      'another creator wallet than the response pins',
+      () => {
+        const f = launchFixture();
+        return { ...f, launch: { ...f.launch, creator: Keypair.generate().publicKey.toBase58() } };
+      },
+      /creator wallet is not the expected one/,
+    ],
+    [
+      'another nonce account than the response pins',
+      () => {
+        const f = launchFixture();
+        return {
+          ...f,
+          launch: { ...f.launch, nonceAccount: Keypair.generate().publicKey.toBase58() },
+        };
+      },
+      /durable nonce account is not the expected one/,
+    ],
   ])('refuses %s before the wallet is asked to sign', async (_label, build, message) => {
     const sign = vi.fn();
     setWallet(sign);
-    const fetchFn = mockFetch(() => json({ transaction: encode(build()), summary: summary() }));
+    const fetchFn = mockFetch(() => json(served(build())));
     const result = await signOwnerTransaction(id(), () => undefined);
     expect(result.phase).toBe('error');
     expect(result.error).toMatch(message);
     expect(sign).not.toHaveBeenCalled();
     expect(fetchFn).toHaveBeenCalledTimes(1);
+  });
+
+  // Before: a response without launch accounts was signed with only internal consistency checks.
+  it('refuses a response without the launch accounts, in production too', async () => {
+    vi.stubEnv('NODE_ENV', 'production');
+    try {
+      const sign = vi.fn();
+      setWallet(sign);
+      const fixture = launchFixture();
+      const fetchFn = mockFetch(() =>
+        json({ transaction: encode(fixture.tx), summary: summary(), simulation: 'ok' }),
+      );
+      const result = await signOwnerTransaction(id(), () => undefined);
+      expect(result.phase).toBe('error');
+      expect(result.error).toMatch(/launch details are missing/);
+      expect(sign).not.toHaveBeenCalled();
+      expect(fetchFn).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it('does not submit when the wallet changed the launch message', async () => {
@@ -117,7 +172,7 @@ describe('signOwnerTransaction', () => {
       changed.signatures[0] = new Uint8Array(64).fill(7);
       return changed;
     });
-    const fetchFn = mockFetch(() => json({ transaction: encode(launchTx()), summary: summary() }));
+    const fetchFn = mockFetch(() => json(served()));
     const result = await signOwnerTransaction(id(), () => undefined);
     expect(result.phase).toBe('error');
     expect(result.error).toMatch(/changed the transaction/);
@@ -128,14 +183,14 @@ describe('signOwnerTransaction', () => {
 describe('signOwnerTransaction retries with the same signed bytes', () => {
   /** GET serves the prepared launch; POST answers from `replies` in order (the last repeats). */
   function server(replies: (Response | Error)[]) {
-    const prepared = launchTx();
+    const prepared = launchFixture();
     const posts: string[] = [];
     let gets = 0;
     let i = 0;
     const fetchFn = mockFetch((_url, init) => {
       if (init?.method !== 'POST') {
         gets++;
-        return json({ transaction: encode(prepared), summary: summary(), simulation: 'ok' });
+        return json(served(prepared, { simulation: 'ok' }));
       }
       posts.push(
         (JSON.parse(init.body as string) as { signedTransaction: string }).signedTransaction,
