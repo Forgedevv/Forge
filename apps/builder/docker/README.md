@@ -11,8 +11,9 @@ treated as hostile. Runner: `apps/builder/src/sandbox/` (`createSandboxRunner`,
 | --------------------------- | ------------------------------------------------------------------------------------------------ |
 | `sandbox.Dockerfile`        | Sandbox image: Node 22 (pinned digest), pnpm, the headless agent CLI; non-root, no setuid binary |
 | `egress-proxy.Dockerfile`   | Egress proxy image: runs `src/sandbox/egress-proxy.ts` (no dependency)                           |
-| `*.Dockerfile.dockerignore` | Per-Dockerfile build contexts (only the proxy source is sent)                                    |
-| `build-images.sh`           | Builds both images and prints the pinned IDs to configure                                        |
+| `review.Dockerfile`         | Visual review image: Node 22 (pinned digest), Debian Chromium, fonts, the capture script         |
+| `*.Dockerfile.dockerignore` | Per-Dockerfile build contexts (only the proxy source or the capture script is sent)              |
+| `build-images.sh`           | Builds the three images and prints the pinned IDs to configure                                   |
 | `host-firewall.sh`          | Linux host rules (defense in depth) for the sandbox bridges                                      |
 
 ## What every sandbox container gets
@@ -24,8 +25,10 @@ hardening flag aborts the run):
 - `--user=1000:1000` (never root), `--cap-drop=ALL`, `--security-opt=no-new-privileges=true`,
   the daemon's default seccomp profile (and `docker-default` AppArmor on Ubuntu); nothing
   `unconfined`, no `--privileged`, no device, no extra capability;
-- `--read-only` root filesystem; writable: the job folder at `/workspace` (the only host
-  mount), `/tmp` and `$HOME` as size-capped `nosuid,nodev,noexec` tmpfs;
+- `--read-only` root filesystem; writable: the job folder at `/workspace`, `/tmp` and `$HOME`
+  as size-capped `nosuid,nodev,noexec` tmpfs. Host mounts: the job folder only, except for the
+  visual review capture (below): job folder read-only, plus one separate output folder at
+  `/output`, both strictly inside the jobs root;
 - `--pids-limit`, `--memory` with `--memory-swap` equal (no swap), `--cpus`,
   `nofile`/`core=0`/`fsize` ulimits, `--oom-score-adj=500` (the sandbox dies first);
 - private IPC, PID, UTS and cgroup namespaces, `--init`, no docker socket,
@@ -80,16 +83,44 @@ the install step runs no repository code (`--ignore-scripts --ignore-pnpmfile`, 
 lockfile, no registry token), and the only secret in reach is short-lived (gateway token,
 per-job budget).
 
+## Visual review capture (`BUILDER_VISUAL_REVIEW=on`)
+
+After the first agent pass of a new site has been scanned and built, the pipeline
+(`src/pipeline/review/`) runs one more container from the review image to see the site:
+
+- image `FORGE_SANDBOX_REVIEW_IMAGE` (`review.Dockerfile`), separate from the sandbox image so
+  the agent, install and build runs never get a browser; the runner refuses it with any network
+  other than `none` or with a secret;
+- `--network=none` (loopback only), no secret, the same hardening flags as every sandbox run,
+  `--pids-limit=1024`, 3 GiB, 2 CPUs, 5 minutes;
+- the pass 1 job folder mounted read-only at `/workspace`; a fresh output folder (inside the jobs
+  root, separate from the job folder) at `/output`, the only writable host path;
+- command: `node /opt/forge/review/capture.mjs --site /workspace --out /output ...`. The script
+  (plain Node ESM, no dependency) starts `next start` on `127.0.0.1:3000`, then headless Chromium
+  (`--no-sandbox`: the container is the sandbox) driven over the DevTools protocol. Every
+  external request is intercepted: the Jupiter data API gets empty lists (day-one market), the
+  rest fails; host names do not resolve. Pages `/`, `/create-pool`, `/about`, `/creator-fees`, at
+  1440x900 and 390x844 with real mobile emulation, full page up to 4000 px in 2000 px parts, plus
+  `report.json` (horizontal overflow measured per element, console errors).
+
+Everything in `/output` is untrusted: the host reads only the expected names, never through a
+link, with size caps, parses the report with zod, and rebuilds each PNG from its critical chunks
+after checking its structure and size. The second agent pass then runs as usual (gateway only,
+job token), its result goes through the same scan and build, and any failure keeps the first
+pass. The same script runs on a laptop with a local Chrome or Edge (`pnpm site-test capture`,
+apps/builder/README.md).
+
 ## Updating the pinned images
 
 1. Base image: `docker pull node:22-bookworm-slim`, then
    `docker inspect --format '{{index .RepoDigests 0}}' node:22-bookworm-slim` and replace
-   the `@sha256:...` of the `FROM` line in **both** Dockerfiles. Keep the major version in
-   line with `.nvmrc`.
+   the `@sha256:...` of the `FROM` line in **all three** Dockerfiles. Keep the major version in
+   line with `.nvmrc`. The review image takes Chromium from Debian at build time: rebuild it
+   regularly for browser security updates.
 2. Tool versions: `PNPM_VERSION` (keep it equal to the root `packageManager`) and the agent
    CLI version are build args at the top of `sandbox.Dockerfile`.
-3. Run `apps/builder/docker/build-images.sh` and set the two printed values as
-   `FORGE_SANDBOX_IMAGE` / `FORGE_SANDBOX_PROXY_IMAGE`. Local image IDs change at every
+3. Run `apps/builder/docker/build-images.sh` and set the printed values as
+   `FORGE_SANDBOX_IMAGE` / `FORGE_SANDBOX_PROXY_IMAGE` / `FORGE_SANDBOX_REVIEW_IMAGE`. Local image IDs change at every
    rebuild (builds are not bit-for-bit reproducible): to share one image across machines,
    push it to a registry and pin `name@sha256:<digest>` instead.
 4. Run the integration test (below) before switching production.
@@ -101,6 +132,7 @@ per-job budget).
 | `FORGE_SANDBOX_IMAGE`                     | yes           | Sandbox image, `sha256:<id>` or `name@sha256:<digest>`                              |
 | `FORGE_SANDBOX_PROXY_IMAGE`               | yes           | Egress proxy image, pinned the same way                                             |
 | `FORGE_SANDBOX_JOBS_ROOT`                 | yes           | Absolute folder; only folders strictly inside it are mounted                        |
+| `FORGE_SANDBOX_REVIEW_IMAGE`              | for review    | Visual review image, pinned the same way; needed by `BUILDER_VISUAL_REVIEW=on`      |
 | `FORGE_SANDBOX_GATEWAY_UPSTREAM`          | for the agent | `host:port` of the AI gateway seen from the proxy, e.g. `host.docker.internal:8787` |
 | `FORGE_SANDBOX_RUNTIME`                   | no            | `runc` (default) or `runsc` (gVisor, recommended when installed)                    |
 | `FORGE_SANDBOX_UID` / `FORGE_SANDBOX_GID` | no            | Sandbox user (default 1000:1000, never 0)                                           |
