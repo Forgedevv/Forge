@@ -11,6 +11,9 @@ import {
   MINT_SIZE,
   NATIVE_MINT,
   TOKEN_PROGRAM_ID,
+  createApproveInstruction,
+  createAssociatedTokenAccountIdempotentInstruction,
+  createCloseAccountInstruction,
   getAssociatedTokenAddressSync,
 } from '@solana/spl-token';
 import {
@@ -21,6 +24,10 @@ import {
   PublicKey,
   SystemInstruction,
   SystemProgram,
+  Transaction,
+  TransactionInstruction as TransactionInstructionClass,
+  TransactionMessage,
+  VersionedTransaction,
   type AccountInfo,
   type TransactionInstruction,
 } from '@solana/web3.js';
@@ -28,6 +35,11 @@ import BN from 'bn.js';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { OwnerTransactionSummary, type LaunchpadSpec } from '@forge/shared';
 import { MIGRATION_THRESHOLD_LAMPORTS, SOL_QUOTE_MINT, solToLamports } from './constants.js';
+import {
+  LaunchTransactionCheckError,
+  verifyLaunchCoinTransaction,
+  type ExpectedLaunchCoinTransaction,
+} from './launch-check.js';
 import {
   DEFAULT_FIRST_BUY_SLIPPAGE_BPS,
   LAUNCH_COIN_COMPUTE_UNITS,
@@ -979,6 +991,436 @@ describe('buildLaunchCoinTx — costs', () => {
     expect(BigInt(noBuy.ownerRequiredBalanceLamports!)).toBe(
       BigInt(noBuy.estimatedNetworkFeeLamports),
     );
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// verifyLaunchCoinTransaction (launch-check.ts) on what buildLaunchCoinTx builds
+// ---------------------------------------------------------------------------------------------
+
+interface SignedLaunch {
+  transaction: Transaction;
+  summary: Awaited<ReturnType<typeof buildLaunchCoinTx>>['summary'];
+  creator: Keypair;
+  mint: Keypair;
+  nonceAccount: PublicKey;
+  params: BuildLaunchCoinTxParams;
+  expected: ExpectedLaunchCoinTransaction;
+}
+
+/** The launch as the signer hands it out: built by core, signed by the creator and the mint. */
+async function signedLaunch(
+  overrides: Partial<BuildLaunchCoinTxParams> = {},
+  options: { config?: Partial<PoolConfig> } = {},
+  sign: 'both' | 'creator' | 'mint' = 'both',
+): Promise<SignedLaunch> {
+  const creator = Keypair.generate();
+  const { params, connection, mint } = await setup(overrides, options);
+  const nonceAccount = Keypair.generate().publicKey;
+  connection.accounts.set(
+    nonceAccount.toBase58(),
+    account(SystemProgram.programId, nonceAccountData(creator.publicKey, NONCE_VALUE)),
+  );
+  const full: BuildLaunchCoinTxParams = {
+    ...params,
+    creator: creator.publicKey,
+    durableNonce: { nonceAccount, authority: creator.publicKey },
+  };
+  const { transaction, summary } = await buildLaunchCoinTx(full);
+  if (sign === 'both') transaction.partialSign(creator, mint);
+  else transaction.partialSign(sign === 'creator' ? creator : mint);
+  return {
+    transaction,
+    summary,
+    creator,
+    mint,
+    nonceAccount,
+    params: full,
+    expected: {
+      owner: full.owner,
+      firstBuyLamports: full.firstBuyLamports,
+      creator: creator.publicKey,
+      mint: mint.publicKey,
+      config: full.config,
+      nonceAccount,
+      name: full.name,
+      symbol: full.symbol,
+      metadataUri: full.metadataUri,
+    },
+  };
+}
+
+function cloneIx(ix: TransactionInstruction): TransactionInstruction {
+  return new TransactionInstructionClass({
+    programId: ix.programId,
+    keys: ix.keys.map((k) => ({ ...k })),
+    data: Buffer.from(ix.data),
+  });
+}
+
+/**
+ * The same launch with its instructions changed, re-signed by the creator and the mint (and any
+ * extra signer): only its structure can betray it.
+ */
+function tampered(
+  launch: SignedLaunch,
+  mutate: (instructions: TransactionInstruction[]) => TransactionInstruction[] | void,
+  options: { feePayer?: PublicKey; extraSigners?: Keypair[] } = {},
+): Transaction {
+  const instructions = launch.transaction.instructions.map(cloneIx);
+  const changed = mutate(instructions) ?? instructions;
+  const tx = new Transaction({
+    feePayer: options.feePayer ?? launch.transaction.feePayer!,
+    recentBlockhash: launch.transaction.recentBlockhash!,
+  });
+  tx.add(...changed);
+  tx.partialSign(launch.creator, launch.mint, ...(options.extraSigners ?? []));
+  return tx;
+}
+
+function checkCode(fn: () => unknown): string | null {
+  try {
+    fn();
+    return null;
+  } catch (error) {
+    expect(error).toBeInstanceOf(LaunchTransactionCheckError);
+    return (error as LaunchTransactionCheckError).code;
+  }
+}
+
+const isDbc = (ix: TransactionInstruction) => ix.programId.equals(DYNAMIC_BONDING_CURVE_PROGRAM_ID);
+const isSwap = (ix: TransactionInstruction) => isDbc(ix) && ix.data[0] === 248;
+const isInit = (ix: TransactionInstruction) => isDbc(ix) && ix.data[0] === 140;
+
+/** Replaces account `index` of the matching instructions. */
+function withAccount(
+  launch: SignedLaunch,
+  match: (ix: TransactionInstruction) => boolean,
+  index: number,
+  pubkey: PublicKey,
+): Transaction {
+  return tampered(launch, (ixs) =>
+    ixs.map((ix) => {
+      // A random key cannot sign: keep the signer set, change only the account.
+      if (match(ix)) ix.keys[index] = { ...ix.keys[index]!, pubkey, isSigner: false };
+      return ix;
+    }),
+  );
+}
+
+describe('verifyLaunchCoinTransaction — accepts what core builds', () => {
+  it('accepts the signed launch with every expected value, and says what it does', async () => {
+    const launch = await signedLaunch();
+    const verified = verifyLaunchCoinTransaction(launch.transaction, launch.expected);
+    expect(verified.owner.equals(OWNER)).toBe(true);
+    expect(verified.creator.equals(launch.creator.publicKey)).toBe(true);
+    expect(verified.mint.equals(launch.mint.publicKey)).toBe(true);
+    expect(verified.config.equals(CONFIG)).toBe(true);
+    expect(verified.pool.equals(launch.summary.pool)).toBe(true);
+    expect(verified.nonceAccount.equals(launch.nonceAccount)).toBe(true);
+    expect(verified.nonce).toBe(NONCE_VALUE);
+    expect(verified).toMatchObject({
+      name: 'Moon',
+      symbol: 'MOON',
+      metadataUri: 'https://example.com/moon.json',
+      firstBuyLamports: solToLamports(0.01),
+      minimumTokensOut: launch.summary.minimumTokensOut,
+      ownerSigned: false,
+    });
+  });
+
+  it('accepts it knowing only the owner and the first buy, legacy, versioned or raw', async () => {
+    const launch = await signedLaunch();
+    const minimal = { owner: OWNER.toBase58(), firstBuyLamports: solToLamports(0.01) };
+    const bytes = launch.transaction.serialize({ requireAllSignatures: false });
+    expect(verifyLaunchCoinTransaction(launch.transaction, minimal).pool).toEqual(
+      launch.summary.pool,
+    );
+    expect(() =>
+      verifyLaunchCoinTransaction(VersionedTransaction.deserialize(bytes), minimal),
+    ).not.toThrow();
+    expect(() => verifyLaunchCoinTransaction(new Uint8Array(bytes), minimal)).not.toThrow();
+    // The base64 round trip of jobs.owner_tx.
+    const stored = deserializeTransactionBase64(serializeTransactionBase64(launch.transaction));
+    expect(() => verifyLaunchCoinTransaction(stored, launch.expected)).not.toThrow();
+  });
+
+  it('accepts a launch without a first buy (no swap, no SOL moved)', async () => {
+    const launch = await signedLaunch({ firstBuyLamports: 0n });
+    const verified = verifyLaunchCoinTransaction(launch.transaction, launch.expected);
+    expect(verified.firstBuyLamports).toBe(0n);
+    expect(verified.minimumTokensOut).toBe(0n);
+    // A first buy the owner expects but the transaction does not carry.
+    expect(
+      checkCode(() =>
+        verifyLaunchCoinTransaction(launch.transaction, {
+          ...launch.expected,
+          firstBuyLamports: 1n,
+        }),
+      ),
+    ).toBe('MISMATCH');
+  });
+
+  it('accepts a bounded priority fee', async () => {
+    const launch = await signedLaunch({ computeUnitPriceMicroLamports: 1000 });
+    expect(() => verifyLaunchCoinTransaction(launch.transaction, launch.expected)).not.toThrow();
+  });
+
+  it('accepts the owner-signed copy and refuses a bad owner signature', async () => {
+    const owner = Keypair.generate();
+    const launch = await signedLaunch(
+      { owner: owner.publicKey },
+      { config: { feeClaimer: owner.publicKey, leftoverReceiver: owner.publicKey } },
+    );
+    launch.transaction.partialSign(owner);
+    expect(verifyLaunchCoinTransaction(launch.transaction, launch.expected).ownerSigned).toBe(true);
+    const bytes = launch.transaction.serialize();
+    bytes[1] = bytes[1]! ^ 0xff; // the owner (fee payer) signature comes first
+    expect(checkCode(() => verifyLaunchCoinTransaction(bytes, launch.expected))).toBe(
+      'INVALID_SIGNATURE',
+    );
+  });
+});
+
+describe('verifyLaunchCoinTransaction — refusals', () => {
+  it.each([
+    ['firstBuyLamports', { firstBuyLamports: solToLamports(0.01) + 1n }],
+    ['config', { config: Keypair.generate().publicKey }],
+    ['mint', { mint: Keypair.generate().publicKey }],
+    ['creator', { creator: Keypair.generate().publicKey }],
+    ['nonceAccount', { nonceAccount: Keypair.generate().publicKey }],
+    ['name', { name: 'Mars' }],
+    ['symbol', { symbol: 'MARS' }],
+    ['metadataUri', { metadataUri: 'https://example.com/mars.json' }],
+  ] as const)('refuses another %s than expected', async (_field, change) => {
+    const launch = await signedLaunch();
+    expect(
+      checkCode(() =>
+        verifyLaunchCoinTransaction(launch.transaction, { ...launch.expected, ...change }),
+      ),
+    ).toBe('MISMATCH');
+  });
+
+  it('refuses another owner (fee payer)', async () => {
+    const launch = await signedLaunch();
+    expect(
+      checkCode(() =>
+        verifyLaunchCoinTransaction(launch.transaction, {
+          ...launch.expected,
+          owner: Keypair.generate().publicKey,
+        }),
+      ),
+    ).toBe('UNEXPECTED_SIGNERS');
+  });
+
+  it('refuses a missing creator or mint signature, and an invalid one', async () => {
+    const onlyMint = await signedLaunch({}, {}, 'mint');
+    expect(
+      checkCode(() => verifyLaunchCoinTransaction(onlyMint.transaction, onlyMint.expected)),
+    ).toBe('MISSING_SIGNATURE');
+    const onlyCreator = await signedLaunch({}, {}, 'creator');
+    expect(
+      checkCode(() => verifyLaunchCoinTransaction(onlyCreator.transaction, onlyCreator.expected)),
+    ).toBe('MISSING_SIGNATURE');
+    // The creator slot holds bytes that are not its signature of this message.
+    const launch = await signedLaunch();
+    const bytes = launch.transaction.serialize({ requireAllSignatures: false });
+    const slot = launch.transaction
+      .compileMessage()
+      .accountKeys.findIndex((k) => k.equals(launch.creator.publicKey));
+    bytes[1 + 64 * slot] = bytes[1 + 64 * slot]! ^ 0x01;
+    expect(checkCode(() => verifyLaunchCoinTransaction(bytes, launch.expected))).toBe(
+      'INVALID_SIGNATURE',
+    );
+  });
+
+  it('refuses SOL sent anywhere but the owner WSOL account, and another wrapped amount', async () => {
+    const launch = await signedLaunch();
+    const thief = Keypair.generate().publicKey;
+    const steal = tampered(launch, (ixs) => {
+      ixs.push(SystemProgram.transfer({ fromPubkey: OWNER, toPubkey: thief, lamports: 1 }));
+    });
+    expect(checkCode(() => verifyLaunchCoinTransaction(steal, launch.expected))).toBe('MISMATCH');
+    const ownerWsol = getAssociatedTokenAddressSync(NATIVE_MINT, OWNER, true);
+    const more = tampered(launch, (ixs) => {
+      ixs.push(SystemProgram.transfer({ fromPubkey: OWNER, toPubkey: ownerWsol, lamports: 1 }));
+    });
+    expect(checkCode(() => verifyLaunchCoinTransaction(more, launch.expected))).toBe('MISMATCH');
+  });
+
+  it('refuses wrapped SOL closed to someone else, and any other token call', async () => {
+    const launch = await signedLaunch();
+    const thief = Keypair.generate().publicKey;
+    const ownerWsol = getAssociatedTokenAddressSync(NATIVE_MINT, OWNER, true);
+    const closeElsewhere = tampered(launch, (ixs) =>
+      ixs.map((ix) =>
+        ix.programId.equals(TOKEN_PROGRAM_ID) && ix.data[0] === 9
+          ? createCloseAccountInstruction(ownerWsol, thief, OWNER)
+          : ix,
+      ),
+    );
+    expect(checkCode(() => verifyLaunchCoinTransaction(closeElsewhere, launch.expected))).toBe(
+      'MISMATCH',
+    );
+    const ownerCoin = getAssociatedTokenAddressSync(launch.mint.publicKey, OWNER, true);
+    const approve = tampered(launch, (ixs) => {
+      ixs.push(createApproveInstruction(ownerCoin, thief, OWNER, 1n));
+    });
+    expect(checkCode(() => verifyLaunchCoinTransaction(approve, launch.expected))).toBe(
+      'UNEXPECTED_INSTRUCTION',
+    );
+  });
+
+  it('refuses a token account created for someone else', async () => {
+    const launch = await signedLaunch();
+    const other = Keypair.generate().publicKey;
+    const tx = tampered(launch, (ixs) => {
+      ixs.push(
+        createAssociatedTokenAccountIdempotentInstruction(
+          OWNER,
+          getAssociatedTokenAddressSync(NATIVE_MINT, other, true),
+          other,
+          NATIVE_MINT,
+        ),
+      );
+    });
+    expect(checkCode(() => verifyLaunchCoinTransaction(tx, launch.expected))).toBe('MISMATCH');
+  });
+
+  it('refuses an unknown program and an extra signer', async () => {
+    const launch = await signedLaunch();
+    const memo = tampered(launch, (ixs) => {
+      ixs.push(
+        new TransactionInstructionClass({
+          programId: new PublicKey('MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr'),
+          keys: [],
+          data: Buffer.from('hello'),
+        }),
+      );
+    });
+    expect(checkCode(() => verifyLaunchCoinTransaction(memo, launch.expected))).toBe(
+      'UNEXPECTED_INSTRUCTION',
+    );
+    // A fourth signer (here in the referral slot of the first buy, the size limit allows it).
+    const extra = Keypair.generate();
+    const fourth = tampered(
+      launch,
+      (ixs) =>
+        ixs.map((ix) => {
+          if (isSwap(ix))
+            ix.keys[12] = { pubkey: extra.publicKey, isSigner: true, isWritable: true };
+          return ix;
+        }),
+      { extraSigners: [extra] },
+    );
+    expect(checkCode(() => verifyLaunchCoinTransaction(fourth, launch.expected))).toBe(
+      'UNEXPECTED_SIGNERS',
+    );
+  });
+
+  it('refuses another fee payer', async () => {
+    const launch = await signedLaunch();
+    const payer = Keypair.generate();
+    const tx = tampered(launch, () => undefined, {
+      feePayer: payer.publicKey,
+      extraSigners: [payer],
+    });
+    expect(checkCode(() => verifyLaunchCoinTransaction(tx, launch.expected))).toBe(
+      'UNEXPECTED_SIGNERS',
+    );
+  });
+
+  it('refuses a nonce advance that is not first, or by another authority', async () => {
+    const launch = await signedLaunch();
+    const swapped = tampered(launch, ([nonce, limit, ...rest]) => [limit!, nonce!, ...rest]);
+    expect(checkCode(() => verifyLaunchCoinTransaction(swapped, launch.expected))).toBe(
+      'UNEXPECTED_INSTRUCTION',
+    );
+    const otherAuthority = Keypair.generate();
+    const advance = tampered(
+      launch,
+      ([, ...rest]) => [
+        SystemProgram.nonceAdvance({
+          noncePubkey: launch.nonceAccount,
+          authorizedPubkey: otherAuthority.publicKey,
+        }),
+        ...rest,
+      ],
+      { extraSigners: [otherAuthority] },
+    );
+    expect(checkCode(() => verifyLaunchCoinTransaction(advance, launch.expected))).toBe(
+      'UNEXPECTED_SIGNERS',
+    );
+  });
+
+  it('refuses any other use of the creator signature (a second nonce advance)', async () => {
+    const launch = await signedLaunch();
+    const tx = tampered(launch, (ixs) => {
+      ixs.push(
+        SystemProgram.nonceAdvance({
+          noncePubkey: Keypair.generate().publicKey,
+          authorizedPubkey: launch.creator.publicKey,
+        }),
+      );
+    });
+    expect(checkCode(() => verifyLaunchCoinTransaction(tx, launch.expected))).toBe('MISMATCH');
+  });
+
+  it('refuses a first buy with a referral, on another pool, or delivered elsewhere', async () => {
+    const launch = await signedLaunch();
+    for (const index of [12, 2, 4, 9]) {
+      const tx = withAccount(launch, isSwap, index, Keypair.generate().publicKey);
+      expect(checkCode(() => verifyLaunchCoinTransaction(tx, launch.expected))).not.toBeNull();
+    }
+    const referral = withAccount(launch, isSwap, 12, Keypair.generate().publicKey);
+    expect(checkCode(() => verifyLaunchCoinTransaction(referral, launch.expected))).toBe(
+      'MISMATCH',
+    );
+  });
+
+  it('refuses a first buy of another amount or accepting nothing', async () => {
+    const launch = await signedLaunch();
+    const withData = (write: (data: Buffer) => void) =>
+      tampered(launch, (ixs) =>
+        ixs.map((ix) => {
+          if (isSwap(ix)) write(ix.data as Buffer);
+          return ix;
+        }),
+      );
+    const bigger = withData((d) => d.writeBigUInt64LE(solToLamports(1), 8));
+    expect(checkCode(() => verifyLaunchCoinTransaction(bigger, launch.expected))).toBe('MISMATCH');
+    const nothing = withData((d) => d.writeBigUInt64LE(0n, 16));
+    expect(checkCode(() => verifyLaunchCoinTransaction(nothing, launch.expected))).toBe('MISMATCH');
+  });
+
+  it('refuses a pool creation on another pool, metadata or rent payer', async () => {
+    const launch = await signedLaunch();
+    for (const index of [1, 5, 6, 8, 10, 14]) {
+      const tx = withAccount(launch, isInit, index, Keypair.generate().publicKey);
+      expect(checkCode(() => verifyLaunchCoinTransaction(tx, launch.expected))).toBe('MISMATCH');
+    }
+  });
+
+  it('refuses an excessive priority fee', async () => {
+    const launch = await signedLaunch({ computeUnitPriceMicroLamports: 1_000_000_000 });
+    expect(checkCode(() => verifyLaunchCoinTransaction(launch.transaction, launch.expected))).toBe(
+      'UNEXPECTED_INSTRUCTION',
+    );
+  });
+
+  it('refuses a versioned (v0) message and garbage', async () => {
+    const launch = await signedLaunch();
+    const v0 = new VersionedTransaction(
+      new TransactionMessage({
+        payerKey: OWNER,
+        recentBlockhash: NONCE_VALUE,
+        instructions: launch.transaction.instructions,
+      }).compileToV0Message(),
+    );
+    expect(checkCode(() => verifyLaunchCoinTransaction(v0, launch.expected))).toBe('MALFORMED');
+    expect(
+      checkCode(() => verifyLaunchCoinTransaction(new Uint8Array([1, 2, 3]), launch.expected)),
+    ).toBe('MALFORMED');
   });
 });
 

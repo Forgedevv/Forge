@@ -337,8 +337,9 @@ export async function signOwnerTransaction(jobId: string, onPhase: OnTxPhase): P
       throw new ClientError('WRONG_WALLET', defaultMessage('WRONG_WALLET'));
     }
     const prepared = deserializeTransaction(res.transaction);
-    // Paid by the session wallet, already signed by FORGE: only the owner's signature missing.
-    verifyLaunchTransaction(prepared, { wallet: address });
+    // Paid by the session wallet, already signed by FORGE (only the owner's signature missing),
+    // and exactly the launch of this summary (first buy, coin), as @forge/core builds it.
+    verifyLaunchTransaction(prepared, { wallet: address, summary: res.summary });
     report('awaiting_signature');
     try {
       signed = await signTransaction(prepared);

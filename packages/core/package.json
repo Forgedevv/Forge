@@ -10,6 +10,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./launch-check": {
+      "types": "./dist/launch-check.d.ts",
+      "default": "./dist/launch-check.js"
     }
   },
   "files": [

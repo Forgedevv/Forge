@@ -1,9 +1,12 @@
 import type { TxPhase } from '@forge/shared';
+import { launchPoolAddress } from '@forge/core/launch-check';
 import {
   ComputeBudgetProgram,
   Keypair,
   PublicKey,
+  SYSVAR_INSTRUCTIONS_PUBKEY,
   SystemProgram,
+  Transaction,
   TransactionInstruction,
   TransactionMessage,
   VersionedTransaction,
@@ -15,8 +18,9 @@ import { setSession } from '../session-store';
 import { setWalletBridge } from '../wallet-bridge';
 
 /*
- * Test helpers. Public keys are random; nothing is signed with a private key: the fake wallet
- * writes a constant 64-byte "signature" into the fee payer slot.
+ * Test helpers. Public keys are random. The fake wallet writes a constant 64-byte "signature"
+ * into the fee payer slot; only the launch transaction carries real signatures, by throwaway
+ * creator and mint keys generated here (as the signer prepares it).
  */
 
 export const MEMO_PROGRAM = new PublicKey('MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr');
@@ -286,24 +290,151 @@ export function partnerClaimTx(
 
 export const FORGE_SIGNATURE = new Uint8Array(64).fill(9);
 
-export function launchTx(o: { payer?: PublicKey; presign?: boolean } = {}) {
+const METAPLEX_PROGRAM = new PublicKey('metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s');
+const INIT_POOL = [140, 85, 215, 176, 102, 54, 104, 79];
+const SWAP = [248, 198, 158, 145, 225, 117, 135, 200];
+
+/** What the default launch transaction does (matches the summaries of the launch tests). */
+export const LAUNCH = { firstBuyLamports: 1n, name: 'Acme', symbol: 'ACME' } as const;
+
+const meta = (pubkey: PublicKey, isSigner = false, isWritable = false) => ({
+  pubkey,
+  isSigner,
+  isWritable,
+});
+
+function borshString(value: string): Buffer {
+  const bytes = Buffer.from(value, 'utf8');
+  const length = Buffer.alloc(4);
+  length.writeUInt32LE(bytes.length);
+  return Buffer.concat([length, bytes]);
+}
+
+function u64(value: bigint): Buffer {
+  const out = Buffer.alloc(8);
+  out.writeBigUInt64LE(value);
+  return out;
+}
+
+const dbcPda = (...seeds: Uint8Array[]) => PublicKey.findProgramAddressSync(seeds, DBC_PROGRAM)[0];
+
+export interface LaunchTxOptions {
+  /** The wallet the launch is prepared for (fee payer, rent payer, buyer). */
+  payer?: PublicKey;
+  /** Signatures pre-filled by FORGE (default both, real ed25519 signatures). */
+  presign?: boolean | 'creator' | 'mint';
+  firstBuyLamports?: bigint;
+  name?: string;
+  symbol?: string;
+  /** Extra instructions appended (to tamper with the launch); they are signed as well. */
+  extra?: (keys: {
+    payer: PublicKey;
+    creator: PublicKey;
+    mint: PublicKey;
+  }) => TransactionInstruction[];
+}
+
+/**
+ * The launch transaction the signer prepares with @forge/core (`buildLaunchCoinTx`: durable nonce
+ * held by the creator wallet, rent and first buy paid by the owner), signed by throwaway creator
+ * and mint keys: the shape `verifyLaunchCoinTransaction` accepts.
+ */
+export function launchTx(o: LaunchTxOptions = {}): VersionedTransaction {
   const payer = o.payer ?? owner;
-  const ix = new TransactionInstruction({
-    programId: DBC_PROGRAM,
-    keys: [
-      { pubkey: Keypair.generate().publicKey, isSigner: true, isWritable: false },
-      { pubkey: Keypair.generate().publicKey, isSigner: true, isWritable: true },
-      { pubkey: payer, isSigner: true, isWritable: true },
-    ],
-    data: Buffer.from([1, 2, 3]),
-  });
-  const tx = compile(payer, [ix]);
-  if (o.presign !== false) {
-    tx.message.staticAccountKeys.forEach((key, i) => {
-      if (i < tx.message.header.numRequiredSignatures && !key.equals(owner)) {
-        tx.signatures[i] = FORGE_SIGNATURE;
-      }
-    });
+  const creator = Keypair.generate();
+  const mint = Keypair.generate();
+  const config = Keypair.generate().publicKey;
+  const nonceAccount = Keypair.generate().publicKey;
+  const firstBuy = o.firstBuyLamports ?? LAUNCH.firstBuyLamports;
+  const pool = launchPoolAddress(config, mint.publicKey);
+  const poolAuthority = dbcPda(Buffer.from('pool_authority'));
+  const eventAuthority = dbcPda(Buffer.from('__event_authority'));
+  const baseVault = dbcPda(Buffer.from('token_vault'), mint.publicKey.toBuffer(), pool.toBuffer());
+  const quoteVault = dbcPda(Buffer.from('token_vault'), WSOL.toBuffer(), pool.toBuffer());
+  const metadata = PublicKey.findProgramAddressSync(
+    [Buffer.from('metadata'), METAPLEX_PROGRAM.toBuffer(), mint.publicKey.toBuffer()],
+    METAPLEX_PROGRAM,
+  )[0];
+  const payerWsol = ata(payer, WSOL);
+  const payerCoin = ata(payer, mint.publicKey);
+
+  const instructions: TransactionInstruction[] = [
+    SystemProgram.nonceAdvance({ noncePubkey: nonceAccount, authorizedPubkey: creator.publicKey }),
+    ComputeBudgetProgram.setComputeUnitLimit({ units: 300_000 }),
+    createAtaIdempotentIx(payer, payer, WSOL),
+    new TransactionInstruction({
+      programId: DBC_PROGRAM,
+      keys: [
+        meta(config),
+        meta(poolAuthority),
+        meta(creator.publicKey, true),
+        meta(mint.publicKey, true, true),
+        meta(WSOL),
+        meta(pool, false, true),
+        meta(baseVault, false, true),
+        meta(quoteVault, false, true),
+        meta(metadata, false, true),
+        meta(METAPLEX_PROGRAM),
+        meta(payer, true, true),
+        meta(TOKEN_PROGRAM),
+        meta(TOKEN_PROGRAM),
+        meta(SystemProgram.programId),
+        meta(eventAuthority),
+        meta(DBC_PROGRAM),
+      ],
+      data: Buffer.concat([
+        Buffer.from(INIT_POOL),
+        borshString(o.name ?? LAUNCH.name),
+        borshString(o.symbol ?? LAUNCH.symbol),
+        borshString('https://example.com/acme.json'),
+      ]),
+    }),
+  ];
+  if (firstBuy > 0n) {
+    instructions.push(
+      createAtaIdempotentIx(payer, payer, mint.publicKey),
+      SystemProgram.transfer({ fromPubkey: payer, toPubkey: payerWsol, lamports: firstBuy }),
+      new TransactionInstruction({
+        programId: TOKEN_PROGRAM,
+        keys: [meta(payerWsol, false, true)],
+        data: Buffer.from([17]),
+      }),
+      new TransactionInstruction({
+        programId: DBC_PROGRAM,
+        keys: [
+          meta(poolAuthority),
+          meta(config),
+          meta(pool, false, true),
+          meta(payerWsol, false, true),
+          meta(payerCoin, false, true),
+          meta(baseVault, false, true),
+          meta(quoteVault, false, true),
+          meta(mint.publicKey),
+          meta(WSOL),
+          meta(payer, true),
+          meta(TOKEN_PROGRAM),
+          meta(TOKEN_PROGRAM),
+          meta(DBC_PROGRAM),
+          meta(eventAuthority),
+          meta(DBC_PROGRAM),
+          meta(SYSVAR_INSTRUCTIONS_PUBKEY),
+        ],
+        data: Buffer.concat([Buffer.from(SWAP), u64(firstBuy), u64(1_000_000n)]),
+      }),
+      closeAccountIx(payerWsol, payer, payer),
+    );
   }
-  return tx;
+  instructions.push(
+    ...(o.extra?.({ payer, creator: creator.publicKey, mint: mint.publicKey }) ?? []),
+  );
+  const tx = new Transaction({ feePayer: payer, recentBlockhash: blockhash() }).add(
+    ...instructions,
+  );
+  const presign = o.presign ?? true;
+  if (presign === true) tx.partialSign(creator, mint);
+  else if (presign === 'creator') tx.partialSign(creator);
+  else if (presign === 'mint') tx.partialSign(mint);
+  return VersionedTransaction.deserialize(
+    tx.serialize({ requireAllSignatures: false, verifySignatures: false }),
+  );
 }
