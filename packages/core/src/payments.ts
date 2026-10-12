@@ -30,6 +30,7 @@ import { Base58Signature, Uuid } from '@forge/shared';
 import { requireAddresses, type AddressEnv } from './addresses.js';
 import { LAMPORTS_PER_SOL_BIGINT } from './constants.js';
 import { retryRpc, type RetryOptions } from './reads.js';
+import { encodeBase58 } from './tx.js';
 
 /** SPL Memo program v2 (the one wallets and explorers decode). */
 export const MEMO_PROGRAM_ID = new PublicKey('MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr');
@@ -186,6 +187,8 @@ export async function buildPaymentTx(
 
 export type PaymentRejectReason =
   | 'malformed_signature'
+  /** The transaction served is not the one of the signature looked up (its first signature differs). */
+  | 'signature_mismatch'
   | 'transaction_failed'
   | 'missing_meta'
   | 'payer_not_signer'
@@ -252,7 +255,7 @@ export interface VerifyPaymentOptions {
   env?: AddressEnv;
   /** Cluster the payment must be on; defaults to `env.SOLANA_CLUSTER`, then `devnet`. */
   cluster?: PaymentCluster;
-  /** Required commitment (default `confirmed`). */
+  /** Required commitment (default `finalized`: a payment is only final once finalized). */
   commitment?: Finality;
   retry?: RetryOptions;
 }
@@ -307,7 +310,10 @@ function assertWindow(expected: Pick<ExpectedPayment, 'notBefore' | 'expiresAt'>
 /**
  * Verifies the payment `signature` against `expected`:
  * - the RPC is on the expected cluster (otherwise throws `PaymentError('wrong_cluster')`);
- * - the transaction is visible at the required commitment (otherwise `pending`) and did not fail;
+ * - the transaction is visible at the required commitment (default `finalized`; otherwise
+ *   `pending`) and did not fail;
+ * - the transaction served is the one of `signature` (its first signature), otherwise
+ *   `signature_mismatch`;
  * - `expected.payer` signed it;
  * - it holds exactly one top-level System transfer to the cashbox, from the payer, of exactly
  *   `expected.lamports`, and the cashbox balance grew by at least that much;
@@ -326,7 +332,7 @@ export async function verifyPayment(
   assertLamports(expected.lamports);
   assertWindow(expected);
   const memo = paymentMemo(expected.jobId);
-  const commitment: Finality = options.commitment ?? 'confirmed';
+  const commitment: Finality = options.commitment ?? 'finalized';
   await assertCluster(connection, resolveCluster(options), options.retry);
 
   if (!Base58Signature.safeParse(signature).success) {
@@ -417,6 +423,18 @@ export function checkPaymentTransaction(
   check: PaymentCheck,
 ): PaymentVerification {
   const slot = tx.slot;
+  // The transaction must be the one of `signature` (its id is its first signature): a node
+  // serving another transaction for this signature cannot get that one accepted in its place.
+  const first: unknown = tx.transaction?.signatures?.[0];
+  const served = first instanceof Uint8Array ? encodeBase58(first) : first;
+  if (served !== signature) {
+    return invalid(
+      signature,
+      'signature_mismatch',
+      'The transaction served is not the one of this signature',
+      slot,
+    );
+  }
   const meta = tx.meta;
   if (!meta) return invalid(signature, 'missing_meta', 'Transaction has no status meta', slot);
   if (meta.err) return invalid(signature, 'transaction_failed', JSON.stringify(meta.err), slot);

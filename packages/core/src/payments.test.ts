@@ -233,6 +233,20 @@ describe('buildPaymentTx', () => {
 });
 
 describe('checkPaymentTransaction', () => {
+  // Before: the signature looked up was never compared with the transaction served for it.
+  it('refuses a transaction that is not the one of the signature (first signature)', () => {
+    const tx = txResponse(goodInstructions());
+    expectInvalid(checkPaymentTransaction(tx, '4'.repeat(88), check()), 'signature_mismatch');
+    const noSignature = { ...tx, transaction: { ...tx.transaction, signatures: [] } };
+    expectInvalid(checkPaymentTransaction(noSignature, SIGNATURE, check()), 'signature_mismatch');
+    // The fee payer's signature is the transaction id: a later signer's does not count.
+    const second = {
+      ...tx,
+      transaction: { ...tx.transaction, signatures: ['4'.repeat(88), SIGNATURE] },
+    };
+    expectInvalid(checkPaymentTransaction(second, SIGNATURE, check()), 'signature_mismatch');
+  });
+
   it('accepts the exact payment and reports slot, time and fee', () => {
     const result = checkPaymentTransaction(txResponse(goodInstructions()), SIGNATURE, check());
     expect(result).toEqual({
@@ -382,7 +396,7 @@ function verifyConnection(opts: {
 }) {
   const status =
     opts.status === undefined
-      ? { slot: 4242, confirmations: null, err: null, confirmationStatus: 'confirmed' as const }
+      ? { slot: 4242, confirmations: null, err: null, confirmationStatus: 'finalized' as const }
       : opts.status;
   const connection = {
     getGenesisHash: vi.fn(async () => opts.genesis ?? CLUSTER_GENESIS_HASH.devnet),
@@ -408,7 +422,7 @@ describe('verifyPayment', () => {
       searchTransactionHistory: true,
     });
     expect(mocks.getTransaction).toHaveBeenCalledWith(SIGNATURE, {
-      commitment: 'confirmed',
+      commitment: 'finalized',
       maxSupportedTransactionVersion: 0,
     });
   });
@@ -430,14 +444,38 @@ describe('verifyPayment', () => {
     expect(result.status).toBe('pending');
   });
 
-  it('is pending until finalized when finalized is required', async () => {
-    const { connection } = verifyConnection({});
-    const result = await verifyPayment(connection, SIGNATURE, expected, {
+  // Before: the default was 'confirmed', so a caller passing nothing marked a job paid on a
+  // payment that could still be rolled back.
+  it('requires finalized by default, and confirmed only when asked explicitly', async () => {
+    const confirmedOnly = {
+      status: { slot: 4242, confirmations: 3, err: null, confirmationStatus: 'confirmed' as const },
+    };
+    const byDefault = verifyConnection(confirmedOnly);
+    expect(
+      await verifyPayment(byDefault.connection, SIGNATURE, expected, { env, retry: noRetry }),
+    ).toEqual({ status: 'pending', signature: SIGNATURE, reason: 'below_commitment' });
+    expect(byDefault.mocks.getTransaction).not.toHaveBeenCalled();
+    const explicit = verifyConnection(confirmedOnly);
+    const result = await verifyPayment(explicit.connection, SIGNATURE, expected, {
       env,
-      commitment: 'finalized',
+      commitment: 'confirmed',
       retry: noRetry,
     });
-    expect(result.status).toBe('pending');
+    expect(result).toMatchObject({ status: 'confirmed', confirmationStatus: 'confirmed' });
+    expect(explicit.mocks.getTransaction).toHaveBeenCalledWith(SIGNATURE, {
+      commitment: 'confirmed',
+      maxSupportedTransactionVersion: 0,
+    });
+  });
+
+  it('refuses a transaction served for another signature', async () => {
+    const tx = txResponse(goodInstructions());
+    const other = { ...tx, transaction: { ...tx.transaction, signatures: ['4'.repeat(88)] } };
+    const { connection } = verifyConnection({ tx: other });
+    expectInvalid(
+      await verifyPayment(connection, SIGNATURE, expected, { env, retry: noRetry }),
+      'signature_mismatch',
+    );
   });
 
   it('is pending when the transaction body is not served yet', async () => {
@@ -452,7 +490,7 @@ describe('verifyPayment', () => {
         slot: 7,
         confirmations: null,
         err: { InstructionError: [0, 'Custom'] } as never,
-        confirmationStatus: 'confirmed',
+        confirmationStatus: 'finalized',
       },
     });
     const result = await verifyPayment(connection, SIGNATURE, expected, { env, retry: noRetry });
