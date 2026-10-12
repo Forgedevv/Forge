@@ -777,3 +777,161 @@ describeDb('payment_anomalies (0008)', () => {
     expect(rls.rows[0].relrowsecurity).toBe(true);
   });
 });
+
+describeDb('jobs.owner_tx_details (0009)', () => {
+  // Skipped (not failed) on a database where migration 0009 is not applied yet.
+  let present = false;
+  beforeAll(async () => {
+    const r = await admin.query(
+      `select count(*)::int as n from information_schema.columns
+       where table_schema = 'public' and table_name = 'jobs' and column_name = 'owner_tx_details'`,
+    );
+    present = r.rows[0].n === 1;
+  });
+
+  const address = (seed: string) => `${seed}${'1'.repeat(43)}`.slice(0, 44);
+  const details = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
+    config: address('Cfg'),
+    pool: address('Poo'),
+    creator: address('Crt'),
+    nonceAccount: address('Nnc'),
+    metadataUri: 'https://forge.app/api/coin-meta/moonpad',
+    ...over,
+  });
+
+  /** Runs fn as the service owner in a transaction that is always rolled back. */
+  async function inTx(fn: (c: pg.Client) => Promise<void>): Promise<void> {
+    const c = await connect();
+    try {
+      await c.query('begin');
+      await fn(c);
+    } finally {
+      await c.query('rollback').catch(() => undefined);
+      await c.end();
+    }
+  }
+
+  async function write(c: pg.Client, ownerTx: string | null, value: unknown): Promise<void> {
+    await c.query('update jobs set owner_tx = $2, owner_tx_details = $3 where id = $1', [
+      ids.jobA,
+      ownerTx,
+      value === null ? null : JSON.stringify(value),
+    ]);
+  }
+
+  async function rejects(c: pg.Client, ownerTx: string | null, value: unknown) {
+    await c.query('savepoint s');
+    await expect(write(c, ownerTx, value)).rejects.toThrow(/jobs_owner_tx_details_check/);
+    await c.query('rollback to savepoint s');
+  }
+
+  it('is nullable and stores the launch accounts with their transaction', async (ctx) => {
+    if (!present) ctx.skip();
+    const r = await admin.query(`select owner_tx_details from jobs where id = $1`, [ids.jobA]);
+    expect(r.rows[0].owner_tx_details).toBeNull();
+    await inTx(async (c) => {
+      await write(c, 'AQAB', details());
+      const row = await c.query(`select owner_tx, owner_tx_details from jobs where id = $1`, [
+        ids.jobA,
+      ]);
+      expect(row.rows[0]).toEqual({ owner_tx: 'AQAB', owner_tx_details: details() });
+      // A transaction stored without details (rows written before 0009) stays valid.
+      await write(c, 'AQAB', null);
+      // Clearing both together (rebuild of an unsigned launch transaction) is allowed.
+      await write(c, null, null);
+    });
+  });
+
+  it('refuses details without a transaction or of the wrong shape', async (ctx) => {
+    if (!present) ctx.skip();
+    await inTx(async (c) => {
+      await rejects(c, null, details());
+      await rejects(c, 'AQAB', [details()]);
+      await rejects(c, 'AQAB', 'details');
+      for (const key of ['config', 'pool', 'creator', 'nonceAccount', 'metadataUri']) {
+        const missing = details();
+        delete missing[key];
+        await rejects(c, 'AQAB', missing);
+      }
+      await rejects(c, 'AQAB', details({ creator: 'not-an-address' }));
+      await rejects(c, 'AQAB', details({ nonceAccount: 12345 }));
+      await rejects(c, 'AQAB', details({ pool: '0'.repeat(44) }));
+      await rejects(c, 'AQAB', details({ metadataUri: 'http://forge.app/api/coin-meta/moonpad' }));
+      await rejects(c, 'AQAB', details({ metadataUri: 'https://forge.app/a b' }));
+      await rejects(c, 'AQAB', details({ note: 'x'.repeat(1024) }));
+      // Once stored, owner_tx cannot be cleared alone.
+      await write(c, 'AQAB', details());
+      await c.query('savepoint s');
+      await expect(
+        c.query('update jobs set owner_tx = null where id = $1', [ids.jobA]),
+      ).rejects.toThrow(/jobs_owner_tx_details_check/);
+      await c.query('rollback to savepoint s');
+    });
+  });
+
+  it('has exactly the privileges of owner_tx: clients read, only the service role writes', async (ctx) => {
+    if (!present) ctx.skip();
+    const r = await admin.query(
+      `select role, privilege,
+         has_column_privilege(role, 'public.jobs', 'owner_tx', privilege) as owner_tx,
+         has_column_privilege(role, 'public.jobs', 'owner_tx_details', privilege) as details
+       from unnest(array['anon', 'authenticated', 'service_role']) as role,
+            unnest(array['SELECT', 'INSERT', 'UPDATE']) as privilege`,
+    );
+    for (const row of r.rows) {
+      expect(row.details, `${row.role} ${row.privilege}`).toBe(row.owner_tx);
+    }
+    const allowed = (role: string, privilege: string) =>
+      r.rows.find((x) => x.role === role && x.privilege === privilege)?.details;
+    expect(allowed('anon', 'SELECT')).toBe(false);
+    expect(allowed('authenticated', 'SELECT')).toBe(true);
+    expect(allowed('authenticated', 'INSERT')).toBe(false);
+    expect(allowed('authenticated', 'UPDATE')).toBe(false);
+    expect(allowed('service_role', 'UPDATE')).toBe(true);
+  });
+
+  it('is visible to the owner only and never writable by clients', async (ctx) => {
+    if (!present) ctx.skip();
+    await admin.query('update jobs set owner_tx = $2, owner_tx_details = $3 where id = $1', [
+      ids.jobB,
+      'AQAB',
+      JSON.stringify(details()),
+    ]);
+    try {
+      await as('authenticated', B, async (c) => {
+        const rows = await c.query('select owner_tx_details from jobs where id = $1', [ids.jobB]);
+        expect(rows.rows).toEqual([{ owner_tx_details: details() }]);
+      });
+      await as('authenticated', A, async (c) => {
+        const rows = await c.query('select owner_tx_details from jobs where id = $1', [ids.jobB]);
+        expect(rows.rows).toEqual([]);
+        await expect(
+          c.query(`update jobs set owner_tx_details = '{}' where id = $1`, [ids.jobA]),
+        ).rejects.toThrow(/permission denied/);
+      });
+      await as('anon', null, async (c) => {
+        await expect(c.query('select owner_tx_details from jobs')).rejects.toThrow(
+          /permission denied/,
+        );
+      });
+      // The service role writes it (the builder's completion of the on-chain step).
+      const c = await connect();
+      try {
+        await c.query('begin');
+        await c.query('set local role service_role');
+        const updated = await c.query(
+          'update jobs set owner_tx = $2, owner_tx_details = $3 where id = $1 returning id',
+          [ids.jobA, 'AQAB', JSON.stringify(details())],
+        );
+        expect(updated.rowCount).toBe(1);
+      } finally {
+        await c.query('rollback').catch(() => undefined);
+        await c.end();
+      }
+    } finally {
+      await admin.query('update jobs set owner_tx = null, owner_tx_details = null where id = $1', [
+        ids.jobB,
+      ]);
+    }
+  });
+});

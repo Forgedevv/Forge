@@ -31,6 +31,7 @@ export class FakeJobsDb implements JobsDb {
       request: null,
       preview_url: null,
       owner_tx: null,
+      owner_tx_details: null,
       error: null,
       api_cost_usd: 0,
       locked_by: null,
