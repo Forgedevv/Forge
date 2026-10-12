@@ -1,6 +1,13 @@
 /**
  * Detection of Solana addresses (base58, 32 to 44 characters) and of their
  * common encodings (base64, hex, byte arrays).
+ *
+ * Best effort only: encoded payloads are flagged when they decode to exactly 32 or 64 bytes (a
+ * raw public or secret key) or to printable text holding a base58 run. An address padded with a
+ * few extra bytes, split across computed values or encoded another way can get through. This is
+ * one layer: the client site never holds FORGE's signing keys, fee and referral accounts come from
+ * the locked src/forge code and the environment, and the transaction checks in @forge/core do not
+ * depend on it.
  */
 
 const ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
