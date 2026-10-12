@@ -55,6 +55,9 @@ The scan is strict about names, so also avoid these common traps in free-zone co
 - Do not name a variable, prop or object key after a wallet or signing API (`solana`, `phantom`,
   `signIn`, `signMessage`, `sendTransaction`, `Keypair`...). Plain copy text such as "Built on
   Solana" inside a string is fine.
+- No long runs of letters, digits, `-` or `_` without spaces anywhere, comments included: a
+  separator such as `/* ---------- */` or a long made-up identifier reads as an encoded key. Keep
+  comment separators to a few characters (`/* Hero */`).
 - Do not write the strings `"script"`, `"iframe"` or `"embed"` as values. Do not render `<form>`,
   `<link>`, `<base>` or `<object>` elements (`next/link`'s `<Link>` is fine); `<meta>` only as
   `<meta name="description" content={...} />` inside `<Head>`.
