@@ -10,7 +10,7 @@ Keep all keys in a password manager. Never paste them into a conversation with a
 - [ ] Create the private `forge` monorepo and put all the `.md` files from this pack in it.
 - [ ] Create an empty `launchpad-template` template repo (it will be filled from `apps/launchpad-template`), check "Template repository".
 - [ ] Create a **GitHub App** in the organization: `Contents: read & write` permission, installed on the organization. Note the App ID and generate a private key (for the builder).
-- [ ] Create a token to publish `@forge/core` on GitHub Packages (private registry).
+- [ ] Create the npm organization `forgedevv` and a granular token to publish `@forgedevv/core` and `@forgedevv/shared` (D26).
 
 ## 2. Hosting
 

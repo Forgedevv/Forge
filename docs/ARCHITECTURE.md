@@ -47,7 +47,7 @@ Shared types and zod schemas: `LaunchpadSpec`, job statuses, API payloads, busin
 - Meteora SDK wrappers: config creation, pool creation with first buy, swap with referral and platform fee, claims, reading the pools of a config.
 - Validation of on-chain parameters (bounds in `METEORA.md`).
 - FORGE addresses read from the environment (`addresses.ts`).
-- Published on GitHub Packages (private registry) at a pinned version. Client sites install it from this registry; the builder agent can neither modify it nor change its version.
+- Published publicly on npm as `@forgedevv/core` (with `@forgedevv/shared`) at a pinned version (D26). Client repos depend on it through an exact alias, `"@forge/core": "npm:@forgedevv/core@x.y.z"`, with no registry token; the builder agent can neither modify it nor change its version.
 
 ### `apps/web` — FORGE site (Vercel)
 - Login by wallet signature.
@@ -95,7 +95,7 @@ Shared types and zod schemas: `LaunchpadSpec`, job statuses, API payloads, busin
 | Supabase | database + realtime | $0 in dev, $25/month at public launch |
 | Helius | devnet + mainnet RPC | $0 in dev, $49/month at public launch |
 | Cloudflare R2 | coin images and metadata | free tier |
-| GitHub (organization) | monorepo, template repo, client repos, private registry | free |
+| GitHub (organization) | monorepo, template repo, client repos | free |
 | Jupiter | plugin, data API, referral program | free key at first |
 | Domains | FORGE + a domain separate from client sites | ~$30/year |
 

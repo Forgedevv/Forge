@@ -42,7 +42,7 @@ packages/core/src/
 - [ ] `payments.ts`: `buildPaymentTx(payer, lamports)` to the cashbox with a `jobId` memo; `verifyPayment(signature, { payer, lamports, jobId })`.
 - [ ] `gating.ts`: `getForgeBalance(wallet)`.
 - [ ] Unit tests (vitest) without network for validate and transaction building; devnet integration tests for pool, swap, claims, payments.
-- [ ] Publishing: `pnpm --filter @forge/core publish` script to GitHub Packages, semantic versioning. **The version used by the template is pinned exactly** (no `^`).
+- [ ] Publishing: `node scripts/publish-core.mjs` to npm as `@forgedevv/core`, semantic versioning. **The version used by the template is pinned exactly** (no `^`).
 
 ## Interfaces you depend on
 

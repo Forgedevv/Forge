@@ -7,7 +7,7 @@ Every protection below is **mandatory** in the MVP. Agents that touch one of the
 **Threat**: a client asks the agent to add a token approval request, replace our fee addresses, or inject an external script. The site becomes a phishing site hosted by us.
 
 **Protections** (agent 4, with agent 2 for the template structure):
-- `@forge/core` installed from the private registry at a pinned version. The scan rejects any change to `package.json` on this dependency, any `patch-package`, any file in `node_modules`.
+- `@forge/core` and `@forge/shared` installed from npm (`@forgedevv/core`, `@forgedevv/shared`) at an exact pinned version. The scan rejects any change to `package.json` on these dependencies (including overrides), any `patch-package`, any file in `node_modules`.
 - The template clearly separates `src/forge/` (untouchable, wired to `@forge/core`) from the rest (design, pages, content).
 - **Blocking scan before every push**:
   - no modification under `src/forge/` (which holds the mode gate and the mode pages), `src/pages/_app.*`, `src/pages/_document.*`, `src/components/modes/**`, `forge.config.json#onchain` and `#mode`, `next.config.*` (security headers), `package.json#dependencies['@forge/core']`;
@@ -29,7 +29,7 @@ Every protection below is **mandatory** in the MVP. Agents that touch one of the
 
 ## 4. Sandbox network egress
 
-**Protections** (agent 4): Docker network with an egress allowlist: AI gateway, `github.com`, `registry.npmjs.org`, `npm.pkg.github.com`. Everything else is denied. No host folder mounted outside the job's working folder.
+**Protections** (agent 4): Docker network with an egress allowlist: AI gateway, `github.com`, `registry.npmjs.org`. Everything else is denied. No host folder mounted outside the job's working folder.
 
 ## 5. Theft of a creator wallet key
 

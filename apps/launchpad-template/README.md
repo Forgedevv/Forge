@@ -97,8 +97,6 @@ runs git, never pushes, never tags and never publishes. Pushing the output is a 
 node scripts/prepare-template-repo.mjs --out ../template-out \
   --pin @forge/core=0.1.0 --pin @forge/shared=0.1.0
 
-# only if @forge/core is served by a private registry:
-#   --registry https://npm.pkg.github.com --scope @forgedevv
 # preview without writing anything:
 #   --dry-run
 ```

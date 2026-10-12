@@ -37,7 +37,7 @@ apps/launchpad-template/
 - [ ] Theme: all visuals go through `src/theme` (CSS variables from `forge.config.json#theme`). The builder agent must be able to change the look without touching `src/forge`.
 - [ ] `next.config`: security headers from `src/forge/security-headers.ts` (CSP with an allowlist: Jupiter, R2, our RPC relay, Vercel).
 - [ ] Modes: expose `SiteConfig` (`docs/frontend/CONTRACT.md`) from `forge.config.json`; if `mode` is `sleeping` or `disabled`, serve the static pages B6 / B7 designed by agent 6, with no RPC or Jupiter calls at all.
-- [ ] `@forge/core` as an **exactly pinned** dependency, installed from the private registry.
+- [ ] `@forge/core` as an **exactly pinned** dependency, installed from npm through the `npm:@forgedevv/core@x.y.z` alias.
 - [ ] Complete `.env.example`.
 - [ ] `pnpm template:publish` script that pushes the content to the `launchpad-template` GitHub template repo.
 

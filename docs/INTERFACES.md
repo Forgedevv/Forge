@@ -341,7 +341,7 @@ The signer never takes an address or an amount from the request: it re-reads eve
 | `JUPITER_API_KEY` | ✓ | | | ✓ |
 | `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET`, `R2_PUBLIC_URL` | ✓ (presigned uploads) | | | |
 | `CLIENTS_DOMAIN` | ✓ (coin metadata, previews) | | ✓ | |
-| `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY(_PATH)`, `GITHUB_ORG`, `GITHUB_PACKAGES_TOKEN` | | | ✓ | |
+| `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY(_PATH)`, `GITHUB_ORG` | | | ✓ | |
 | `VERCEL_TOKEN`, `VERCEL_TEAM_ID` | | | ✓ | |
 | `SIGNER_URL`, `SIGNER_HMAC_SECRET` | | | ✓ | ✓ |
 | `SIGNER_KEYSTORE_PASSPHRASE`, `SIGNER_KEYSTORE_DIR`, `SIGNER_JOURNAL_DIR`, `SIGNER_ALLOWED_IPS`, `SIGNER_MAX_LAUNCHPADS_PER_DAY` | | | | ✓ |

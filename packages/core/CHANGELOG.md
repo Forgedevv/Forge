@@ -5,8 +5,10 @@ launchpad template, the signer, the web app) pin an exact version, never a range
 
 ## 0.1.0 — unreleased
 
-First version meant for publication to GitHub Packages (`pnpm --filter @forge/core
-publish:packages`, which runs typecheck, lint, tests and build first). Not published yet.
+First version meant for publication on npm as `@forgedevv/core` (with `@forgedevv/shared`), through
+`node scripts/publish-core.mjs --publish`. Not published yet.
+
+- `checkPaymentTransaction` / `verifyPayment`: `transferLamports` on `amount_mismatch` when the transfer amount differs.
 
 ### Changed (wave 5 review)
 
