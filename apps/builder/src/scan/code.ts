@@ -259,7 +259,11 @@ const BLOCKED_PACKAGES = new Set([
   'request',
   'needle',
 ]);
-const BLOCKED_PREFIXES = ['next/dist/', 'react-dom/server'];
+/**
+ * Internal modules, server rendering, and `react-dom/client` (a second React root mounted from a
+ * module side effect would render outside the app shell, past the site mode gate).
+ */
+const BLOCKED_PREFIXES = ['next/dist/', 'react-dom/server', 'react-dom/client'];
 const BLOCKED_SCOPES = [
   '@solana/',
   '@meteora-ag/',
