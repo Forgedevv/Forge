@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -14,6 +14,7 @@ import {
   PublicKey,
   SystemProgram,
   Transaction,
+  TransactionInstruction,
   VersionedTransaction,
 } from '@solana/web3.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -43,11 +44,18 @@ import {
   type BuybackDeps,
   type BuybackQuoteSource,
   type BuybackSwapPreparer,
+  type BuyExpectation,
   type ForgeTokenReader,
   type Rng,
   type SpendingLimitWithdrawer,
 } from './buyback.js';
-import { WSOL_MINT, type AccountDelta, type JupiterQuote, type SwapConnection } from './convert.js';
+import {
+  JUPITER_PROGRAM_ID,
+  WSOL_MINT,
+  type AccountDelta,
+  type JupiterQuote,
+  type SwapConnection,
+} from './convert.js';
 import {
   Mutex,
   base58Encode,
@@ -386,6 +394,115 @@ describe('compareBuybackStates', () => {
 });
 
 describe('createRpcBuybackSwapPreparer', () => {
+  /** Hand-built Jupiter v6 `route` data: one Whirlpool step, then the amounts (IDL layout). */
+  function routeData(inAmount: bigint, quotedOutAmount: bigint, slippageBps: number): Buffer {
+    const out = Buffer.alloc(8 + 4 + 2 + 3 + 8 + 8 + 2 + 1);
+    let o = 0;
+    createHash('sha256').update('global:route').digest().copy(out, o, 0, 8);
+    o += 8;
+    o = out.writeUInt32LE(1, o); // route_plan: 1 step
+    out[o++] = 17; // Swap::Whirlpool
+    out[o++] = 1; // a_to_b
+    out[o++] = 100; // percent
+    out[o++] = 0; // input_index
+    out[o++] = 1; // output_index
+    o = out.writeBigUInt64LE(inAmount, o);
+    o = out.writeBigUInt64LE(quotedOutAmount, o);
+    o = out.writeUInt16LE(slippageBps, o);
+    out[o] = 0; // platform_fee_bps
+    return out;
+  }
+
+  function preparerFor(owner: Keypair) {
+    const withSigner = vi.fn();
+    const keystore = {
+      withSigner,
+      getPublicKey: vi.fn(),
+      findRef: vi.fn(),
+    } as unknown as KeystoreLike;
+    const simulateTransaction = vi.fn();
+    const preparer = createRpcBuybackSwapPreparer({
+      connection: {
+        simulateTransaction,
+        getAddressLookupTable: vi.fn(),
+        getTokenAccountsByOwner: vi.fn(async () => {
+          throw new Error('stop after the static checks');
+        }),
+      } as unknown as SwapConnection,
+      keystore,
+      maxPriorityFeeLamports: 100_000n,
+    });
+    const prepare = (data: Buffer, expected: BuyExpectation) => {
+      const message = MessageV0.compile({
+        payerKey: owner.publicKey,
+        instructions: [
+          new TransactionInstruction({
+            programId: new PublicKey(JUPITER_PROGRAM_ID),
+            keys: [{ pubkey: owner.publicKey, isSigner: true, isWritable: true }],
+            data,
+          }),
+        ],
+        recentBlockhash: PublicKey.default.toBase58(),
+      });
+      return preparer.prepare({
+        owner: owner.publicKey,
+        ownerRef: 'ks_00000000000000000000000000000000',
+        swapTransaction: Buffer.from(new VersionedTransaction(message).serialize()).toString(
+          'base64',
+        ),
+        expected,
+      });
+    };
+    return { prepare, withSigner, simulateTransaction };
+  }
+
+  const buy: BuyExpectation = {
+    forgeMint: FORGE.toBase58(),
+    inLamports: 100_000_000n,
+    minOutAmount: 995_000n,
+    quotedOutAmount: 1_000_000n,
+    maxSlippageBps: 50,
+  };
+
+  it('refuses a Jupiter route above the buyback slippage cap before anything is signed', async () => {
+    const owner = Keypair.generate();
+    const p = preparerFor(owner);
+    expect(await p.prepare(routeData(100_000_000n, 1_000_000n, 51), buy)).toEqual({
+      status: 'refused',
+      reason: 'jupiter_route_slippage_too_high',
+    });
+    // The hard 1% ceiling applies even if a caller asks for more.
+    expect(
+      await p.prepare(routeData(100_000_000n, 1_000_000n, 101), { ...buy, maxSlippageBps: 500 }),
+    ).toEqual({ status: 'refused', reason: 'jupiter_route_slippage_too_high' });
+    expect(p.withSigner).not.toHaveBeenCalled();
+    expect(p.simulateTransaction).not.toHaveBeenCalled();
+  });
+
+  it('refuses a Jupiter route quoting less $FORGE or selling another amount than the quote', async () => {
+    const owner = Keypair.generate();
+    const p = preparerFor(owner);
+    expect(await p.prepare(routeData(100_000_000n, 999_999n, 50), buy)).toEqual({
+      status: 'refused',
+      reason: 'jupiter_route_quoted_out_too_low',
+    });
+    expect(await p.prepare(routeData(200_000_000n, 1_000_000n, 50), buy)).toEqual({
+      status: 'refused',
+      reason: 'jupiter_route_amount_mismatch',
+    });
+    expect(p.withSigner).not.toHaveBeenCalled();
+  });
+
+  it('lets a matching Jupiter route through to the simulation', async () => {
+    const owner = Keypair.generate();
+    const p = preparerFor(owner);
+    // The static checks pass; the (stubbed) simulation step is reached and fails loudly.
+    await expect(p.prepare(routeData(100_000_000n, 1_000_000n, 50), buy)).rejects.toThrow(
+      /static checks/,
+    );
+    expect(p.withSigner).not.toHaveBeenCalled();
+  });
+
   it('refuses a transaction outside the allowlist before anything is signed', async () => {
     const owner = Keypair.generate();
     const message = MessageV0.compile({
@@ -419,7 +536,13 @@ describe('createRpcBuybackSwapPreparer', () => {
       owner: owner.publicKey,
       ownerRef: 'ks_00000000000000000000000000000000',
       swapTransaction: Buffer.from(tx.serialize()).toString('base64'),
-      expected: { forgeMint: FORGE.toBase58(), inLamports: 1n, minOutAmount: 1n },
+      expected: {
+        forgeMint: FORGE.toBase58(),
+        inLamports: 1n,
+        minOutAmount: 1n,
+        quotedOutAmount: 1n,
+        maxSlippageBps: 50,
+      },
     });
     expect(res).toEqual({ status: 'refused', reason: 'system_instruction_not_allowed' });
     expect(withSigner).not.toHaveBeenCalled();
@@ -909,6 +1032,25 @@ describe('buyback job, live flow', () => {
     expect(r3.outcome?.result).toBe('idle');
     expect(h.swapPreparer.prepare).toHaveBeenCalledTimes(1);
     expect(h.withdraw).toHaveBeenCalledTimes(1);
+  });
+
+  it('binds the swap transaction check to the validated quote and the slippage cap', async () => {
+    const h = liveHarness();
+    await h.make().runOnce();
+    const p = await plan(h.journal);
+    h.clock.t = p.slots[0]!.at;
+    await h.make().runOnce();
+    expect(h.swapPreparer.prepare).toHaveBeenCalledWith(
+      expect.objectContaining({
+        expected: {
+          forgeMint: FORGE.toBase58(),
+          inLamports: BigInt(p.slots[0]!.lamports),
+          minOutAmount: 995_000n,
+          quotedOutAmount: 1_000_000n,
+          maxSlippageBps: 50,
+        },
+      }),
+    );
   });
 
   it('never repeats an interrupted withdrawal (crash after the request was journaled)', async () => {

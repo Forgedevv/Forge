@@ -1,4 +1,5 @@
 /// <reference types="node" />
+import { createHash } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import {
   Keypair,
@@ -10,12 +11,18 @@ import {
 } from '@solana/web3.js';
 import type { Alerter } from '../alerts.js';
 import {
+  DEFAULT_CONVERT_MAX_INPUT_AMOUNT,
+  JUPITER_EXACT_OUT_INSTRUCTIONS,
   JUPITER_PROGRAM_ID,
+  JUPITER_ROUTE_INSTRUCTIONS,
+  JUPITER_SWAP_VARIANTS,
   WSOL_MINT,
+  checkJupiterRoute,
   createJupiterClient,
   createMemoryLedger,
   createRpcBalanceSource,
   createRpcSwapSender,
+  decodeJupiterRoute,
   ledgerKey,
   ledgerOf,
   parseConvertConfig,
@@ -30,7 +37,9 @@ import {
   type ConvertDeps,
   type JupiterClient,
   type JupiterQuote,
+  type JupiterRouteName,
   type SendResult,
+  type SwapExpectation,
   type SwapSender,
   type TokenBalance,
 } from './convert.js';
@@ -39,12 +48,97 @@ const OWNER = Keypair.generate().publicKey.toBase58();
 const MINT_A = Keypair.generate().publicKey.toBase58();
 const MINT_B = Keypair.generate().publicKey.toBase58();
 const NOW = Date.UTC(2026, 9, 9, 12, 0, 0);
-const EXPECTATION = {
+const EXPECTATION: SwapExpectation = {
   inputMint: MINT_A,
   inAmount: 1000n,
   minOutLamports: 1n,
+  quotedOutAmount: 500n,
+  maxSlippageBps: 100,
   forbiddenMints: [],
 };
+
+// ---------------------------------------------------------------------------------------------
+// Hand-built Jupiter v6 instruction data (Borsh, layouts of the published IDL)
+
+const anchorDiscriminator = (name: string) =>
+  createHash('sha256').update(`global:${name}`).digest().subarray(0, 8);
+const u8 = (v: number) => Buffer.from([v]);
+const u16 = (v: number) => {
+  const b = Buffer.alloc(2);
+  b.writeUInt16LE(v);
+  return b;
+};
+const u32 = (v: number) => {
+  const b = Buffer.alloc(4);
+  b.writeUInt32LE(v);
+  return b;
+};
+const u64 = (v: bigint) => {
+  const b = Buffer.alloc(8);
+  b.writeBigUInt64LE(v);
+  return b;
+};
+/** Borsh tag of a `Swap` variant, by name. */
+const swapTag = (name: string) => {
+  const index = JUPITER_SWAP_VARIANTS.findIndex(([n]) => n === name);
+  if (index < 0) throw new Error(`no Swap variant ${name}`);
+  return index;
+};
+/** A `Swap` value: tag then payload. */
+const swap = (name: string, ...payload: Buffer[]) => Buffer.concat([u8(swapTag(name)), ...payload]);
+/** v1 RoutePlanStep: swap, percent, input_index, output_index. */
+const step = (s: Buffer, percent = 100) => Buffer.concat([s, u8(percent), u8(0), u8(1)]);
+/** v2 RoutePlanStepV2: swap, bps (u16), input_index, output_index. */
+const stepV2 = (s: Buffer, bps = 10_000) => Buffer.concat([s, u16(bps), u8(0), u8(1)]);
+const plan = (...steps: Buffer[]) => Buffer.concat([u32(steps.length), ...steps]);
+
+interface RouteArgs {
+  inAmount: bigint;
+  quotedOutAmount: bigint;
+  slippageBps: number;
+  platformFeeBps?: number;
+}
+
+const GOOD_ARGS: RouteArgs = { inAmount: 1000n, quotedOutAmount: 500n, slippageBps: 50 };
+const WHIRLPOOL_PLAN = plan(step(swap('Whirlpool', u8(1))));
+const WHIRLPOOL_PLAN_V2 = plan(stepV2(swap('Whirlpool', u8(1))));
+
+function routeData(
+  name: JupiterRouteName,
+  args: RouteArgs = GOOD_ARGS,
+  routePlan?: Buffer,
+): Buffer {
+  const id = name.startsWith('shared_accounts') ? [u8(7)] : [];
+  const fee = args.platformFeeBps ?? 0;
+  if (name.endsWith('_v2')) {
+    return Buffer.concat([
+      anchorDiscriminator(name),
+      ...id,
+      u64(args.inAmount),
+      u64(args.quotedOutAmount),
+      u16(args.slippageBps),
+      u16(fee),
+      u16(0), // positive_slippage_bps
+      routePlan ?? WHIRLPOOL_PLAN_V2,
+    ]);
+  }
+  return Buffer.concat([
+    anchorDiscriminator(name),
+    ...id,
+    routePlan ?? WHIRLPOOL_PLAN,
+    u64(args.inAmount),
+    u64(args.quotedOutAmount),
+    u16(args.slippageBps),
+    u8(fee),
+  ]);
+}
+
+const ROUTE_NAMES: JupiterRouteName[] = [
+  'route',
+  'shared_accounts_route',
+  'route_v2',
+  'shared_accounts_route_v2',
+];
 
 const config: ConvertConfig = parseConvertConfig({});
 
@@ -93,6 +187,14 @@ describe('parseConvertConfig', () => {
     expect(config.jupiterUrl).toBe('https://api.jup.ag/swap/v1');
     expect(config.apiKey).toBeUndefined();
     expect(config.minRequestIntervalMs).toBeGreaterThanOrEqual(1000);
+  });
+
+  it('caps one swap by default (1 000 USDC in raw units), still configurable', () => {
+    expect(DEFAULT_CONVERT_MAX_INPUT_AMOUNT).toBe(1_000_000_000n);
+    expect(config.maxInputAmount).toBe(DEFAULT_CONVERT_MAX_INPUT_AMOUNT);
+    expect(parseConvertConfig({ CONVERT_MAX_INPUT_AMOUNT: '5000' }).maxInputAmount).toBe(5000n);
+    expect(parseConvertConfig({ CONVERT_MAX_INPUT_AMOUNT: '0' }).maxInputAmount).toBe(0n);
+    expect(() => parseConvertConfig({ CONVERT_MAX_INPUT_AMOUNT: '-1' })).toThrow();
   });
 
   it('reads the API key and excludes the FORGE mint', () => {
@@ -357,7 +459,14 @@ describe('runConvertOnce: live', () => {
       owner: OWNER,
       swapTransaction: 'dHg=',
       lastValidBlockHeight: 100,
-      expected: expect.objectContaining({ inputMint: MINT_A, inAmount: 1000n }),
+      // The route instruction is bound to the validated quote and the configured slippage cap.
+      expected: expect.objectContaining({
+        inputMint: MINT_A,
+        inAmount: 1000n,
+        minOutLamports: 497_500_000n,
+        quotedOutAmount: 500_000_000n,
+        maxSlippageBps: 100,
+      }),
     });
     expect((await ledgerOf(deps).get(ledgerKey(OWNER, MINT_A, runWindowKey(NOW))))?.status).toBe(
       'confirmed',
@@ -468,6 +577,16 @@ describe('runConvertOnce: live', () => {
     expect(h.quote).toHaveBeenCalledWith({ inputMint: MINT_A, amount: 1000n, slippageBps: 50 });
   });
 
+  it('caps the input amount by default', async () => {
+    const h = makeHarness([{ owner: OWNER, mint: MINT_A, amount: 5n * 1_000_000_000n }]);
+    await runConvertOnce(h.deps);
+    expect(h.quote).toHaveBeenCalledWith({
+      inputMint: MINT_A,
+      amount: DEFAULT_CONVERT_MAX_INPUT_AMOUNT,
+      slippageBps: 50,
+    });
+  });
+
   it('isolates a failing balance from the others', async () => {
     const h = makeHarness(
       [
@@ -546,53 +665,310 @@ describe('startConvert', () => {
 // ---------------------------------------------------------------------------------------------
 // Transaction checks and adapters
 
+/** One instruction of `programId` per entry of `datas` (default: one valid `route`). */
 function buildTx(
   feePayer: Keypair,
   programId: string,
   extraSigner?: Keypair,
+  datas: Buffer[] = [routeData('route')],
 ): VersionedTransaction {
   const keys = [{ pubkey: feePayer.publicKey, isSigner: true, isWritable: true }];
   if (extraSigner) keys.push({ pubkey: extraSigner.publicKey, isSigner: true, isWritable: false });
-  const ix = new TransactionInstruction({
-    programId: new PublicKey(programId),
-    keys,
-    data: Buffer.alloc(0),
-  });
+  const instructions = datas.map(
+    (data) => new TransactionInstruction({ programId: new PublicKey(programId), keys, data }),
+  );
   const message = MessageV0.compile({
     payerKey: feePayer.publicKey,
-    instructions: [ix],
+    instructions,
     recentBlockhash: PublicKey.default.toBase58(),
   });
   return new VersionedTransaction(message);
 }
 
+describe('decodeJupiterRoute', () => {
+  it('uses the Anchor discriminators of the IDL instruction names', () => {
+    for (const [name, spec] of Object.entries(JUPITER_ROUTE_INSTRUCTIONS)) {
+      expect(Buffer.from(spec.discriminator)).toEqual(anchorDiscriminator(name));
+    }
+    for (const [name, discriminator] of Object.entries(JUPITER_EXACT_OUT_INSTRUCTIONS)) {
+      expect(Buffer.from(discriminator)).toEqual(anchorDiscriminator(name));
+    }
+  });
+
+  it('keeps the Swap variants in the order of the published IDL', () => {
+    expect(JUPITER_SWAP_VARIANTS).toHaveLength(152);
+    expect(JUPITER_SWAP_VARIANTS[0]).toEqual(['Saber', []]);
+    expect(JUPITER_SWAP_VARIANTS[8]).toEqual(['Crema', ['bool']]);
+    expect(JUPITER_SWAP_VARIANTS[12]).toEqual(['Serum', ['side']]);
+    expect(JUPITER_SWAP_VARIANTS[17]).toEqual(['Whirlpool', ['bool']]);
+    expect(JUPITER_SWAP_VARIANTS[29]).toEqual(['Symmetry', ['u64', 'u64']]);
+    expect(JUPITER_SWAP_VARIANTS[33]).toEqual(['StakeDexSwapViaStake', ['u32']]);
+    expect(JUPITER_SWAP_VARIANTS[38]).toEqual(['MeteoraDlmm', []]);
+    expect(JUPITER_SWAP_VARIANTS[43]).toEqual(['SanctumS', ['u8', 'u8', 'u32', 'u32']]);
+    expect(JUPITER_SWAP_VARIANTS[47]).toEqual([
+      'WhirlpoolSwapV2',
+      ['bool', 'optionRemainingAccountsInfo'],
+    ]);
+    expect(JUPITER_SWAP_VARIANTS[61]).toEqual(['SolFi', ['bool']]);
+  });
+
+  it.each(ROUTE_NAMES)('decodes %s', (name) => {
+    expect(
+      decodeJupiterRoute(
+        routeData(name, {
+          inAmount: 12n,
+          quotedOutAmount: 34n,
+          slippageBps: 56,
+          platformFeeBps: 7,
+        }),
+      ),
+    ).toEqual({
+      ok: true,
+      route: {
+        instruction: name,
+        inAmount: 12n,
+        quotedOutAmount: 34n,
+        slippageBps: 56,
+        platformFeeBps: 7,
+      },
+    });
+  });
+
+  it('walks a v1 route plan through variants with payloads to reach the amounts', () => {
+    const remainingAccounts = Buffer.concat([u32(2), u8(0), u8(2), u8(6), u8(1)]);
+    const routePlan = plan(
+      step(swap('Symmetry', u64(1n), u64(2n)), 20),
+      step(swap('WhirlpoolSwapV2', u8(1), u8(1), remainingAccounts), 20),
+      step(swap('WhirlpoolSwapV2', u8(0), u8(0)), 10),
+      step(swap('MeteoraDlmmSwapV2', remainingAccounts), 10),
+      step(swap('JupiterRfqV2', u8(1), u32(3), Buffer.from([9, 9, 9])), 10),
+      step(swap('VaultLiquidUnstake', Buffer.alloc(40, 1), u64(5n)), 10),
+      step(swap('Scorch', Buffer.alloc(16, 2)), 5),
+      step(swap('Hylo', u8(7)), 5),
+      // DynamicV1 { candidate_swaps: [HumidiFi { swap_id, is_base_to_quote }, Whirlpool], best_position: Some(1) }
+      step(swap('DynamicV1', u32(2), u8(0), u64(9n), u8(1), u8(5), u8(0), u8(1), u8(1)), 5),
+      // DynamicV2 { candidate_swaps: [WhirlpoolV2 { a_to_b, None } with bps], 3, 4 }
+      step(swap('DynamicV2', u32(1), u8(10), u8(1), u8(0), u32(10_000), u8(3), u8(4)), 5),
+    );
+    expect(decodeJupiterRoute(routeData('route', GOOD_ARGS, routePlan))).toEqual({
+      ok: true,
+      route: { instruction: 'route', ...GOOD_ARGS, platformFeeBps: 0 },
+    });
+  });
+
+  it('reads the v2 amounts without depending on the route plan', () => {
+    // Unknown variant in the plan: the program reads the amounts first anyway.
+    const decoded = decodeJupiterRoute(routeData('route_v2', GOOD_ARGS, plan(Buffer.from([255]))));
+    expect(decoded).toMatchObject({ ok: true, route: { inAmount: 1000n, slippageBps: 50 } });
+  });
+
+  it('refuses trailing bytes after a v1 route (they could carry fake amounts)', () => {
+    // What the program reads: 100% slippage, nothing quoted. Then appended "good" amounts that a
+    // decoder reading from the end would take.
+    const spoof = Buffer.concat([
+      routeData('route', { inAmount: 1000n, quotedOutAmount: 1n, slippageBps: 10_000 }),
+      u64(1000n),
+      u64(500n),
+      u16(50),
+      u8(0),
+    ]);
+    expect(decodeJupiterRoute(spoof)).toEqual({ ok: false, reason: 'jupiter_route_undecodable' });
+  });
+
+  it.each([
+    ['an unknown Swap variant', plan(step(Buffer.from([JUPITER_SWAP_VARIANTS.length])))],
+    ['an invalid bool', plan(step(swap('Whirlpool', u8(2))))],
+    ['an invalid Side', plan(step(swap('Serum', u8(2))))],
+    ['an invalid Option tag', plan(step(swap('WhirlpoolSwapV2', u8(1), u8(2))))],
+    ['a plan length larger than the data', Buffer.concat([u32(1_000_000), u8(0)])],
+  ])('refuses a v1 route with %s', (_label, routePlan) => {
+    expect(decodeJupiterRoute(routeData('route', GOOD_ARGS, routePlan))).toEqual({
+      ok: false,
+      reason: 'jupiter_route_undecodable',
+    });
+  });
+
+  it('refuses truncated data', () => {
+    for (const name of ROUTE_NAMES) {
+      const data = routeData(name);
+      // v1: everything is read; v2: the amounts and the route plan length prefix.
+      const end = name.endsWith('_v2') ? data.length - WHIRLPOOL_PLAN_V2.length + 4 : data.length;
+      for (const cut of [9, end - 1]) {
+        expect(decodeJupiterRoute(data.subarray(0, cut))).toEqual({
+          ok: false,
+          reason: 'jupiter_route_undecodable',
+        });
+      }
+    }
+  });
+
+  it('refuses the exact-out routes', () => {
+    for (const name of Object.keys(JUPITER_EXACT_OUT_INSTRUCTIONS)) {
+      expect(
+        decodeJupiterRoute(Buffer.concat([anchorDiscriminator(name), Buffer.alloc(40)])),
+      ).toEqual({ ok: false, reason: 'jupiter_route_not_exact_in' });
+    }
+  });
+
+  it.each([
+    'route_with_token_ledger',
+    'shared_accounts_route_with_token_ledger',
+    'set_token_ledger',
+    'create_token_account',
+    'close_token',
+    'claim',
+    'claim_token',
+  ])('refuses any other Jupiter instruction: %s', (name) => {
+    expect(
+      decodeJupiterRoute(Buffer.concat([anchorDiscriminator(name), Buffer.alloc(40)])),
+    ).toEqual({ ok: false, reason: 'jupiter_instruction_not_allowed' });
+  });
+
+  it('refuses data shorter than a discriminator', () => {
+    expect(decodeJupiterRoute(Buffer.alloc(0))).toEqual({
+      ok: false,
+      reason: 'jupiter_instruction_not_allowed',
+    });
+    expect(decodeJupiterRoute(anchorDiscriminator('route').subarray(0, 7))).toEqual({
+      ok: false,
+      reason: 'jupiter_instruction_not_allowed',
+    });
+  });
+});
+
+describe('checkJupiterRoute', () => {
+  const route = { instruction: 'route' as const, ...GOOD_ARGS, platformFeeBps: 0 };
+  it('accepts the quoted input, no fee, a slippage at the cap and at least the quoted output', () => {
+    expect(checkJupiterRoute(route, EXPECTATION)).toBeNull();
+    expect(
+      checkJupiterRoute({ ...route, slippageBps: 100, quotedOutAmount: 501n }, EXPECTATION),
+    ).toBeNull();
+  });
+
+  it.each([
+    ['jupiter_route_amount_mismatch', { inAmount: 999n }],
+    ['jupiter_route_amount_mismatch', { inAmount: 1001n }],
+    ['jupiter_route_platform_fee', { platformFeeBps: 1 }],
+    ['jupiter_route_slippage_too_high', { slippageBps: 101 }],
+    ['jupiter_route_quoted_out_too_low', { quotedOutAmount: 499n }],
+  ])('refuses: %s', (reason, over) => {
+    expect(checkJupiterRoute({ ...route, ...over }, EXPECTATION)).toBe(reason);
+  });
+});
+
 describe('verifySwapTransaction', () => {
   const owner = Keypair.generate();
+  const params = (expected: SwapExpectation = EXPECTATION) => ({
+    owner: owner.publicKey.toBase58(),
+    lookupTables: [],
+    expected,
+    maxPriorityFeeLamports: 1_000_000n,
+  });
+  const verifyRoute = (...datas: Buffer[]) =>
+    verifySwapTransaction(buildTx(owner, JUPITER_PROGRAM_ID, undefined, datas), params());
+
   it('accepts a Jupiter transaction paid and signed by the owner only', () => {
+    expect(verifySwapTransaction(buildTx(owner, JUPITER_PROGRAM_ID), params())).toEqual({
+      ok: true,
+      feeBoundLamports: 5000n,
+    });
+  });
+
+  it.each(ROUTE_NAMES)('accepts a %s instruction that matches the quote', (name) => {
+    expect(verifyRoute(routeData(name))).toEqual({ ok: true, feeBoundLamports: 5000n });
+  });
+
+  it.each(ROUTE_NAMES)('refuses a %s instruction above the slippage cap', (name) => {
+    expect(verifyRoute(routeData(name, { ...GOOD_ARGS, slippageBps: 101 }))).toEqual({
+      ok: false,
+      reason: 'jupiter_route_slippage_too_high',
+    });
+    // 100% slippage: the on-chain minimum would be zero.
+    expect(verifyRoute(routeData(name, { ...GOOD_ARGS, slippageBps: 10_000 }))).toEqual({
+      ok: false,
+      reason: 'jupiter_route_slippage_too_high',
+    });
+  });
+
+  it.each(ROUTE_NAMES)('refuses a %s instruction quoting less than the quote', (name) => {
+    expect(verifyRoute(routeData(name, { ...GOOD_ARGS, quotedOutAmount: 499n }))).toEqual({
+      ok: false,
+      reason: 'jupiter_route_quoted_out_too_low',
+    });
+  });
+
+  it('refuses a route selling another amount or taking a platform fee', () => {
+    expect(verifyRoute(routeData('route', { ...GOOD_ARGS, inAmount: 2000n }))).toEqual({
+      ok: false,
+      reason: 'jupiter_route_amount_mismatch',
+    });
+    expect(verifyRoute(routeData('route_v2', { ...GOOD_ARGS, platformFeeBps: 30 }))).toEqual({
+      ok: false,
+      reason: 'jupiter_route_platform_fee',
+    });
+  });
+
+  it('refuses any other Jupiter instruction, including empty data', () => {
+    expect(verifyRoute(Buffer.alloc(0))).toEqual({
+      ok: false,
+      reason: 'jupiter_instruction_not_allowed',
+    });
     expect(
-      verifySwapTransaction(buildTx(owner, JUPITER_PROGRAM_ID), {
-        owner: owner.publicKey.toBase58(), lookupTables: [], expected: EXPECTATION, maxPriorityFeeLamports: 1_000_000n,
-      }),
-    ).toEqual({ ok: true, feeBoundLamports: 5000n });
+      verifyRoute(
+        Buffer.concat([anchorDiscriminator('route_with_token_ledger'), Buffer.alloc(32)]),
+      ),
+    ).toEqual({ ok: false, reason: 'jupiter_instruction_not_allowed' });
+    expect(
+      verifyRoute(Buffer.concat([anchorDiscriminator('exact_out_route'), Buffer.alloc(32)])),
+    ).toEqual({ ok: false, reason: 'jupiter_route_not_exact_in' });
+  });
+
+  it('refuses a second route instruction', () => {
+    expect(verifyRoute(routeData('route'), routeData('route_v2'))).toEqual({
+      ok: false,
+      reason: 'jupiter_multiple_routes',
+    });
+  });
+
+  it('refuses an expectation that would bound nothing', () => {
+    const tx = buildTx(owner, JUPITER_PROGRAM_ID);
+    for (const over of [
+      { quotedOutAmount: 0n },
+      { maxSlippageBps: 10_001 },
+      { maxSlippageBps: 1.5 },
+    ]) {
+      expect(verifySwapTransaction(tx, params({ ...EXPECTATION, ...over }))).toEqual({
+        ok: false,
+        reason: 'expectation_invalid',
+      });
+    }
   });
 
   it('rejects another fee payer, extra signers and a missing Jupiter program', () => {
     const other = Keypair.generate();
     expect(
       verifySwapTransaction(buildTx(other, JUPITER_PROGRAM_ID), {
-        owner: owner.publicKey.toBase58(), lookupTables: [], expected: EXPECTATION, maxPriorityFeeLamports: 1_000_000n,
+        owner: owner.publicKey.toBase58(),
+        lookupTables: [],
+        expected: EXPECTATION,
+        maxPriorityFeeLamports: 1_000_000n,
       }),
     ).toEqual({ ok: false, reason: 'fee_payer_mismatch' });
     expect(
       verifySwapTransaction(buildTx(owner, JUPITER_PROGRAM_ID, other), {
-        owner: owner.publicKey.toBase58(), lookupTables: [], expected: EXPECTATION, maxPriorityFeeLamports: 1_000_000n,
+        owner: owner.publicKey.toBase58(),
+        lookupTables: [],
+        expected: EXPECTATION,
+        maxPriorityFeeLamports: 1_000_000n,
       }),
     ).toEqual({ ok: false, reason: 'extra_signers' });
     expect(
-      verifySwapTransaction(
-        buildTx(owner, SystemProgram.programId.toBase58()),
-        { owner: owner.publicKey.toBase58(), lookupTables: [], expected: EXPECTATION, maxPriorityFeeLamports: 1_000_000n },
-      ),
+      verifySwapTransaction(buildTx(owner, SystemProgram.programId.toBase58()), {
+        owner: owner.publicKey.toBase58(),
+        lookupTables: [],
+        expected: EXPECTATION,
+        maxPriorityFeeLamports: 1_000_000n,
+      }),
     ).toEqual({ ok: false, reason: 'system_instruction_not_allowed' });
   });
 });
@@ -619,7 +995,10 @@ describe('createRpcSwapSender', () => {
     };
     const connection = {
       sendRawTransaction: vi.fn(async () => 'SIGNATURE'),
-      getSignatureStatuses: vi.fn(async () => ({ context: { slot: 10 }, value: [statuses.shift() ?? null] })),
+      getSignatureStatuses: vi.fn(async () => ({
+        context: { slot: 10 },
+        value: [statuses.shift() ?? null],
+      })),
       getBlockHeight: vi.fn(async () => extra.blockHeight ?? 0),
       getSlot: vi.fn(async () => 10),
       getTransaction: vi.fn(async () => null),
@@ -627,20 +1006,28 @@ describe('createRpcSwapSender', () => {
       getTokenAccountsByOwner: vi.fn(async () => ({ context: { slot: 10 }, value: [] })),
       getMultipleAccountsInfoAndContext: vi.fn(async (keys: PublicKey[]) => ({
         context: { slot: 10 },
-        value: keys.map((key) => key.equals(ownerKey) ? ownerAccount : null),
+        value: keys.map((key) => (key.equals(ownerKey) ? ownerAccount : null)),
       })),
-      simulateTransaction: vi.fn(async (_tx: VersionedTransaction, config: { accounts: { addresses: string[] } }) => ({
-        context: { slot: 10 },
-        value: {
-          err: null,
-          accounts: config.accounts.addresses.map((address) => address === ownerKey.toBase58()
-            ? { owner: SystemProgram.programId.toBase58(), lamports: ownerAccount.lamports, data: ['', 'base64'] }
-            : null),
-          logs: [],
-          unitsConsumed: 1,
-          returnData: null,
-        },
-      })),
+      simulateTransaction: vi.fn(
+        async (_tx: VersionedTransaction, config: { accounts: { addresses: string[] } }) => ({
+          context: { slot: 10 },
+          value: {
+            err: null,
+            accounts: config.accounts.addresses.map((address) =>
+              address === ownerKey.toBase58()
+                ? {
+                    owner: SystemProgram.programId.toBase58(),
+                    lamports: ownerAccount.lamports,
+                    data: ['', 'base64'],
+                  }
+                : null,
+            ),
+            logs: [],
+            unitsConsumed: 1,
+            returnData: null,
+          },
+        }),
+      ),
     };
     const s = createRpcSwapSender({
       connection: connection as never,
@@ -661,7 +1048,11 @@ describe('createRpcSwapSender', () => {
       { err: null, confirmationStatus: 'processed' },
       { err: null, confirmationStatus: 'confirmed' },
     ]);
-    const r = await s.send({ owner: owner.publicKey.toBase58(), swapTransaction: base64, expected: EXPECTATION });
+    const r = await s.send({
+      owner: owner.publicKey.toBase58(),
+      swapTransaction: base64,
+      expected: EXPECTATION,
+    });
     expect(r).toMatchObject({ status: 'confirmed' });
     expect(sign).toHaveBeenCalledTimes(1);
     expect(connection.sendRawTransaction).toHaveBeenCalledTimes(1);
@@ -671,13 +1062,21 @@ describe('createRpcSwapSender', () => {
     const { s } = sender([
       { err: { InstructionError: [0, 'Custom'] }, confirmationStatus: 'confirmed' },
     ]);
-    const r = await s.send({ owner: owner.publicKey.toBase58(), swapTransaction: base64, expected: EXPECTATION });
+    const r = await s.send({
+      owner: owner.publicKey.toBase58(),
+      swapTransaction: base64,
+      expected: EXPECTATION,
+    });
     expect(r.status).toBe('failed');
   });
 
   it('reports unknown after the deadline', async () => {
     const { s } = sender([]);
-    const r = await s.send({ owner: owner.publicKey.toBase58(), swapTransaction: base64, expected: EXPECTATION });
+    const r = await s.send({
+      owner: owner.publicKey.toBase58(),
+      swapTransaction: base64,
+      expected: EXPECTATION,
+    });
     expect(r).toMatchObject({ status: 'unknown' });
   });
 
@@ -694,8 +1093,13 @@ describe('createRpcSwapSender', () => {
 
   it('refuses to sign a transaction that fails verification', async () => {
     const { s, sign, connection } = sender([]);
-    expect(await s.send({ owner: Keypair.generate().publicKey.toBase58(), swapTransaction: base64, expected: EXPECTATION }))
-      .toEqual({ status: 'refused', reason: 'fee_payer_mismatch' });
+    expect(
+      await s.send({
+        owner: Keypair.generate().publicKey.toBase58(),
+        swapTransaction: base64,
+        expected: EXPECTATION,
+      }),
+    ).toEqual({ status: 'refused', reason: 'fee_payer_mismatch' });
     expect(sign).not.toHaveBeenCalled();
     expect(connection.sendRawTransaction).not.toHaveBeenCalled();
   });
