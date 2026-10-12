@@ -122,24 +122,23 @@ function isUnseen(verification: PaymentVerification): boolean {
   return verification.status === 'pending' && verification.reason === 'not_found';
 }
 
-/** `Transfer of <n> lamports, expected <m>`: the detail of the core's amount_mismatch result. */
-const TRANSFER_DETAIL_RE = /^Transfer of (\d{1,20}) lamports\b/;
-
 /**
  * Lamports a verified transaction moved from the payer to the cashbox:
  * - `undefined` when there is nothing to record (not landed, failed, not signed by the payer, no
- *   single transfer from the payer to the cashbox, or not decided yet);
+ *   single transfer from the payer to the cashbox, a transfer of 0, or not decided yet);
  * - `null` when money moved (the core reports amount_mismatch only after those checks) but the
- *   amount is not readable from the result.
+ *   core gives no transferred amount (the transfer carries the quoted amount but the cashbox
+ *   balance did not grow by it): the amount is checked by hand.
+ *
+ * The amount is the core's structured `transferLamports`, never read from its `detail` text.
  */
 export function receivedLamports(verification: PaymentVerification): bigint | null | undefined {
   if (verification.status === 'confirmed') return verification.lamports;
   if (verification.status !== 'invalid' || verification.reason !== 'amount_mismatch') {
     return undefined;
   }
-  const match = TRANSFER_DETAIL_RE.exec(verification.detail);
-  if (!match) return null;
-  const lamports = BigInt(match[1]!);
+  const lamports = verification.transferLamports;
+  if (lamports === undefined) return null;
   return lamports > 0n ? lamports : undefined;
 }
 

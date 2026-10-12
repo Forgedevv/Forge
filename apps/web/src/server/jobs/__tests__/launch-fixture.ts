@@ -69,6 +69,8 @@ export interface CoinLaunchOptions {
   name?: string;
   symbol?: string;
   config?: PublicKey;
+  /** Coin metadata URI written by the pool creation. */
+  metadataUri?: string;
   /** Extra instructions appended (tampering); they are signed as well. */
   extra?: (owner: PublicKey) => TransactionInstruction[];
 }
@@ -78,6 +80,8 @@ export function coinLaunch(owner: Keypair, o: CoinLaunchOptions = {}) {
   const creator = Keypair.generate();
   const mint = Keypair.generate();
   const config = o.config ?? Keypair.generate().publicKey;
+  const nonceAccount = Keypair.generate().publicKey;
+  const metadataUri = o.metadataUri ?? 'https://example.com/moon.json';
   const firstBuy = o.firstBuyLamports ?? 500_000_000n;
   const pool = launchPoolAddress(config, mint.publicKey);
   const poolAuthority = pda(DBC, Buffer.from('pool_authority'));
@@ -98,44 +102,7 @@ export function coinLaunch(owner: Keypair, o: CoinLaunchOptions = {}) {
   const wsol = ata(payer, WSOL);
   const coin = ata(payer, mint.publicKey);
 
-  const tx = new Transaction({
-    feePayer: payer,
-    recentBlockhash: Keypair.generate().publicKey.toBase58(),
-  });
-  tx.add(
-    SystemProgram.nonceAdvance({
-      noncePubkey: Keypair.generate().publicKey,
-      authorizedPubkey: creator.publicKey,
-    }),
-    ComputeBudgetProgram.setComputeUnitLimit({ units: 300_000 }),
-    createAta(payer, WSOL),
-    new TransactionInstruction({
-      programId: DBC,
-      keys: [
-        meta(config),
-        meta(poolAuthority),
-        meta(creator.publicKey, true),
-        meta(mint.publicKey, true, true),
-        meta(WSOL),
-        meta(pool, false, true),
-        meta(baseVault, false, true),
-        meta(quoteVault, false, true),
-        meta(metadata, false, true),
-        meta(METAPLEX),
-        meta(payer, true, true),
-        meta(TOKEN),
-        meta(TOKEN),
-        meta(SystemProgram.programId),
-        meta(eventAuthority),
-        meta(DBC),
-      ],
-      data: Buffer.concat([
-        Buffer.from(INIT_POOL),
-        borshString(o.name ?? 'Moon'),
-        borshString(o.symbol ?? 'MOON'),
-        borshString('https://example.com/moon.json'),
-      ]),
-    }),
+  const firstBuyInstructions = () => [
     createAta(payer, mint.publicKey),
     SystemProgram.transfer({ fromPubkey: payer, toPubkey: wsol, lamports: firstBuy }),
     new TransactionInstruction({
@@ -170,11 +137,52 @@ export function coinLaunch(owner: Keypair, o: CoinLaunchOptions = {}) {
       keys: [meta(wsol, false, true), meta(payer, false, true), meta(payer, true)],
       data: Buffer.from([9]),
     }),
+  ];
+  const tx = new Transaction({
+    feePayer: payer,
+    recentBlockhash: Keypair.generate().publicKey.toBase58(),
+  });
+  tx.add(
+    SystemProgram.nonceAdvance({
+      noncePubkey: nonceAccount,
+      authorizedPubkey: creator.publicKey,
+    }),
+    ComputeBudgetProgram.setComputeUnitLimit({ units: 300_000 }),
+    createAta(payer, WSOL),
+    new TransactionInstruction({
+      programId: DBC,
+      keys: [
+        meta(config),
+        meta(poolAuthority),
+        meta(creator.publicKey, true),
+        meta(mint.publicKey, true, true),
+        meta(WSOL),
+        meta(pool, false, true),
+        meta(baseVault, false, true),
+        meta(quoteVault, false, true),
+        meta(metadata, false, true),
+        meta(METAPLEX),
+        meta(payer, true, true),
+        meta(TOKEN),
+        meta(TOKEN),
+        meta(SystemProgram.programId),
+        meta(eventAuthority),
+        meta(DBC),
+      ],
+      data: Buffer.concat([
+        Buffer.from(INIT_POOL),
+        borshString(o.name ?? 'Moon'),
+        borshString(o.symbol ?? 'MOON'),
+        borshString(metadataUri),
+      ]),
+    }),
+    // The first buy (none when it is 0).
+    ...(firstBuy > 0n ? firstBuyInstructions() : []),
     ...(o.extra?.(payer) ?? []),
   );
   tx.partialSign(creator, mint);
   const base64 = tx
     .serialize({ requireAllSignatures: false, verifySignatures: false })
     .toString('base64');
-  return { tx, base64, creator, mint, config };
+  return { tx, base64, creator, mint, config, nonceAccount, metadataUri };
 }

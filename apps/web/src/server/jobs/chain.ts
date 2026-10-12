@@ -63,10 +63,20 @@ export type SendOutcome =
 
 export type ConfirmOutcome = 'confirmed' | 'failed' | 'timeout';
 
+/** Size of an SPL Token account (the owner's temporary WSOL account), in bytes. */
+export const TOKEN_ACCOUNT_SIZE = 165;
+
 export interface LaunchChain {
   /** @throws ClusterMismatchError, RpcUnavailableError */
   assertCluster(): Promise<void>;
   estimateOwnerCosts(transaction: Transaction, owner: PublicKey): Promise<OwnerCostEstimate>;
+  /**
+   * Rent-exempt minimum of an SPL Token account, read from the cluster
+   * (`getMinimumBalanceForRentExemption(165)`, never hardcoded): what the owner holds for the
+   * temporary WSOL account of the first buy while the launch runs.
+   * @throws RpcUnavailableError
+   */
+  getTokenAccountRentLamports(): Promise<bigint>;
   getSignatureState(signature: string): Promise<SignatureState>;
   send(transaction: Transaction): Promise<SendOutcome>;
   confirm(signature: string, deadlineMs: number): Promise<ConfirmOutcome>;
@@ -150,6 +160,14 @@ export function createConnectionLaunchChain(options: ConnectionLaunchChainOption
         ownerDebitLamports: BigInt(before) - BigInt(after),
         simulationFailed: false,
       };
+    },
+
+    async getTokenAccountRentLamports() {
+      const rent = await rpc(
+        () => connection.getMinimumBalanceForRentExemption(TOKEN_ACCOUNT_SIZE, 'confirmed'),
+        retry,
+      );
+      return BigInt(rent);
     },
 
     async getSignatureState(signature) {

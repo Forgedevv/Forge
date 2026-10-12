@@ -216,9 +216,17 @@ export type PaymentVerification =
       status: 'invalid';
       signature: string;
       reason: PaymentRejectReason;
-      /** Human-readable detail (addresses and amounts only). */
+      /** Human-readable detail (addresses and amounts only). Not meant to be parsed. */
       detail: string;
       slot: number | null;
+      /**
+       * Only with `amount_mismatch` when the payer's single transfer to the cashbox carries
+       * another amount than expected: that amount, in lamports (what reached the cashbox, to
+       * refund). Absent for every other reason, and for the `amount_mismatch` where the transfer
+       * carries the expected amount but the cashbox balance did not grow by it (what reached the
+       * cashbox is then unclear).
+       */
+      transferLamports?: bigint;
     }
   | {
       status: 'confirmed';
@@ -381,8 +389,16 @@ function invalid(
   reason: PaymentRejectReason,
   detail: string,
   slot: number | null,
+  transferLamports?: bigint,
 ): PaymentVerification {
-  return { status: 'invalid', signature, reason, detail, slot };
+  return {
+    status: 'invalid',
+    signature,
+    reason,
+    detail,
+    slot,
+    ...(transferLamports === undefined ? {} : { transferLamports }),
+  };
 }
 
 export interface PaymentCheck {
@@ -497,6 +513,7 @@ export function checkPaymentTransaction(
       'amount_mismatch',
       `Transfer of ${transfer.lamports} lamports, expected ${check.lamports}`,
       slot,
+      transfer.lamports,
     );
   }
   let cashboxIndex = -1;

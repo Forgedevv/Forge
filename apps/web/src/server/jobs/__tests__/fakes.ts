@@ -289,6 +289,8 @@ export class FakeLaunchChain implements LaunchChain {
     ownerDebitLamports: 520_000_000n,
     simulationFailed: false,
   };
+  /** Token account rent reported by the cluster, or the error its read throws. */
+  tokenAccountRent: bigint | Error = 2_039_280n;
   /** State reported by getSignatureState (per call, last value repeats). */
   states: SignatureState[] = ['unknown'];
   sendOutcome: SendOutcome = { status: 'sent' };
@@ -303,6 +305,12 @@ export class FakeLaunchChain implements LaunchChain {
   async estimateOwnerCosts(): Promise<OwnerCostEstimate> {
     this.calls.push('estimate');
     return this.estimate;
+  }
+
+  async getTokenAccountRentLamports(): Promise<bigint> {
+    this.calls.push('rent');
+    if (this.tokenAccountRent instanceof Error) throw this.tokenAccountRent;
+    return this.tokenAccountRent;
   }
 
   async getSignatureState(): Promise<SignatureState> {

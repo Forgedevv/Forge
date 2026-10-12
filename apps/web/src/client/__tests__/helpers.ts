@@ -1,4 +1,4 @@
-import type { TxPhase } from '@forge/shared';
+import type { OwnerTransactionLaunch, TxPhase } from '@forge/shared';
 import { launchPoolAddress } from '@forge/core/launch-check';
 import {
   ComputeBudgetProgram,
@@ -295,7 +295,12 @@ const INIT_POOL = [140, 85, 215, 176, 102, 54, 104, 79];
 const SWAP = [248, 198, 158, 145, 225, 117, 135, 200];
 
 /** What the default launch transaction does (matches the summaries of the launch tests). */
-export const LAUNCH = { firstBuyLamports: 1n, name: 'Acme', symbol: 'ACME' } as const;
+export const LAUNCH = {
+  firstBuyLamports: 1n,
+  name: 'Acme',
+  symbol: 'ACME',
+  metadataUri: 'https://example.com/acme.json',
+} as const;
 
 const meta = (pubkey: PublicKey, isSigner = false, isWritable = false) => ({
   pubkey,
@@ -326,6 +331,7 @@ export interface LaunchTxOptions {
   firstBuyLamports?: bigint;
   name?: string;
   symbol?: string;
+  metadataUri?: string;
   /** Extra instructions appended (to tamper with the launch); they are signed as well. */
   extra?: (keys: {
     payer: PublicKey;
@@ -340,6 +346,14 @@ export interface LaunchTxOptions {
  * and mint keys: the shape `verifyLaunchCoinTransaction` accepts.
  */
 export function launchTx(o: LaunchTxOptions = {}): VersionedTransaction {
+  return launchFixture(o).tx;
+}
+
+/** `launchTx` with the launch accounts the server sends along (`OwnerTransactionLaunch`). */
+export function launchFixture(o: LaunchTxOptions = {}): {
+  tx: VersionedTransaction;
+  launch: OwnerTransactionLaunch;
+} {
   const payer = o.payer ?? owner;
   const creator = Keypair.generate();
   const mint = Keypair.generate();
@@ -386,7 +400,7 @@ export function launchTx(o: LaunchTxOptions = {}): VersionedTransaction {
         Buffer.from(INIT_POOL),
         borshString(o.name ?? LAUNCH.name),
         borshString(o.symbol ?? LAUNCH.symbol),
-        borshString('https://example.com/acme.json'),
+        borshString(o.metadataUri ?? LAUNCH.metadataUri),
       ]),
     }),
   ];
@@ -434,7 +448,16 @@ export function launchTx(o: LaunchTxOptions = {}): VersionedTransaction {
   if (presign === true) tx.partialSign(creator, mint);
   else if (presign === 'creator') tx.partialSign(creator);
   else if (presign === 'mint') tx.partialSign(mint);
-  return VersionedTransaction.deserialize(
-    tx.serialize({ requireAllSignatures: false, verifySignatures: false }),
-  );
+  return {
+    tx: VersionedTransaction.deserialize(
+      tx.serialize({ requireAllSignatures: false, verifySignatures: false }),
+    ),
+    launch: {
+      config: config.toBase58(),
+      mint: mint.publicKey.toBase58(),
+      creator: creator.publicKey.toBase58(),
+      nonceAccount: nonceAccount.toBase58(),
+      metadataUri: o.metadataUri ?? LAUNCH.metadataUri,
+    },
+  };
 }
