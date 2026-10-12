@@ -12,7 +12,7 @@ You are the session that starts before the others and assembles at the end.
 - [ ] `packages/shared`: translate `docs/INTERFACES.md` into code (constants §1, `LaunchpadSpec` §2, `forge.config.json` §3, statuses §4, route types §6 and §7, browser client types from `docs/frontend/CONTRACT.md` in `web-client.ts`). zod validation tests.
 - [ ] Root scripts: `pnpm typecheck`, `pnpm test`, `pnpm build` (Turborepo).
 - [ ] Empty `docs/CHANGE_REQUESTS.md` with an entry template.
-- [ ] Commit on `main`, then create the worktrees (see `KICKOFF.md`).
+- [ ] Commit on `main`, then create the worktrees.
 
 ## During the build
 

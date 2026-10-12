@@ -35,7 +35,6 @@ Keep all keys in a password manager. Never paste them into a conversation with a
 ## 4. AI
 
 - [ ] Anthropic Console: API key dedicated to the product (not your subscription), **monthly spending limit** set.
-- [ ] Your Claude subscription is used only to run the dev agents.
 
 ## 5. Alerts
 

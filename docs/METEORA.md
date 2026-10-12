@@ -53,6 +53,7 @@ Our own (stricter) bounds are in `INTERFACES.md`, section 1.
 - `creatorTradingFeePercentage` = 25 (FORGE is the creator).
 - `creatorLiquidityPercentage` / `creatorPermanentLockedLiquidityPercentage`: a share of the post-graduation liquidity is assigned to the creator, **permanently locked**, so that FORGE keeps earning fees after graduation. The exact split is to be validated in test 2.
 - `enableFirstSwapWithMinFee` = `true` (Hugo's first buy).
+- `poolCreationFee` = 0: the client would otherwise pay its own creation fee on its own coin and lose the protocol share of it (SDK 1.5.13 accepts 0 as "no fee").
 
 ## The Meteora referral
 

@@ -20,11 +20,14 @@ Sent by `apps/signer` and `apps/builder` via `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CH
 | Flag | Effect |
 |---|---|
 | `signups_paused` | `apps/web` refuses new creations (existing clients continue) |
-| `deploys_paused` | the builder stops picking up jobs |
+| `deploys_paused` | the builder stops picking up jobs and stops production changes |
 | `buyback_paused` | the buyback bot stops |
-| `launchpads.status = 'disabled'` | the launchpad site shows a maintenance page |
+| `claims_paused` | the signer stops claiming the creator share to the multisig |
+| `cashbox_sweep_paused` | the signer stops moving the cashbox surplus to the multisig |
+| `refunds_paused` | the signer stops automatic refunds (they wait, nothing is lost) |
+| `launchpads.status = 'disabled'` | the builder deploys the maintenance page **and pauses the Vercel project**, so the site and its old previews stop serving |
 
-Each service rereads the flags at least every minute.
+Each service rereads the flags at least every minute, and the money jobs reread their flag again right before signing.
 
 ## Automatic tasks
 
@@ -32,10 +35,22 @@ Each service rereads the flags at least every minute.
 |---|---|---|
 | Claim the creator share of each pool to the multisig | every 24 h | signer |
 | Transfer the cashbox surplus to the multisig | every 24 h | signer |
-| $FORGE buyback | several small buys per day, random times | signer |
-| Convert to SOL the Jupiter fees received in other currencies | every 24 h | signer |
+| Automatic refunds (2 failed builds) | continuous | signer |
+| $FORGE buyback | several small buys per day, random times (simulation only until the withdrawer is wired) | signer |
+| Convert to SOL the Jupiter fees received in other currencies | every 24 h (mainnet, `FORGE_CONVERT_LIVE=true`) | signer |
+| Check that disabled launchpads are cut (paused on Vercel) | every 15 min | builder |
 | Put launchpads with no trade for 30 days into sleep mode | every 24 h | builder |
+| Sweep abandoned uploads in R2 `pending/` | every 15 min: an external scheduler sends `POST /api/internal/uploads/sweep` with `Authorization: Bearer $FORGE_INTERNAL_CRON_SECRET` (Vercel Cron sends GET, so it cannot call this route directly) | web |
 | Replay the devnet tests (referral, creator share) | weekly | CI or VPS 1 |
+
+Also set an R2 lifecycle rule that deletes objects under `pending/` after 1 day, as a backstop for the sweep.
+
+## Manual handling
+
+- **Payment anomalies** (late payment, wrong amount, launchpad released, duplicate payment) are recorded in the `payment_anomalies` table, never refunded automatically (D20). Check unresolved rows daily, refund from the cashbox by hand, then set `resolved_at` and a `note`.
+- **Failure after approval** (on-chain or deployment step, D18): the job stays `failed` with an alert. Configs may already exist on-chain; check them before any retry or refund.
+- **Revoke a prepared launch** (wrong spec, leaked transaction, client starting over): on the signer machine, `pnpm --filter @forge/signer exec tsx src/index.ts --revoke-launch <jobId>`. The creator wallet advances the launchpad's durable nonce, so the transaction already handed out can never land; the next prepare builds a new one. It works even when `deploys_paused` is set.
+- **Signer daily cap**: `SIGNER_MAX_LAUNCHPADS_PER_DAY` limits how many launchpads the signer prepares per day; raising it needs a restart.
 
 ## Sleep mode
 

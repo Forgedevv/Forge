@@ -6,9 +6,8 @@ The client (example: Hugo) describes their launchpad and pays ~$33 in SOL; the a
 
 ## Where to start
 
-1. **[KICKOFF.md](./KICKOFF.md)**: the exact order to start development and the prompts to paste into each Claude Code agent.
-2. **[PLANEXECUTE.md](./PLANEXECUTE.md)**: the rules every agent must follow. Each agent reads it first.
-3. **[tasks/00-SETUP.md](./tasks/00-SETUP.md)**: what Ali does by hand before launching the agents (accounts, keys, wallets).
+1. **[PLANEXECUTE.md](./PLANEXECUTE.md)**: the rules every agent must follow. Each agent reads it first.
+2. **[tasks/00-SETUP.md](./tasks/00-SETUP.md)**: what Ali does by hand before launching the agents (accounts, keys, wallets).
 
 ## Documentation
 
@@ -41,7 +40,7 @@ The client (example: Hugo) describes their launchpad and pays ~$33 in SOL; the a
 
 ```
 forge/
-├── PLANEXECUTE.md  KICKOFF.md  README.md
+├── PLANEXECUTE.md  README.md
 ├── docs/                      # specifications (read-only for agents)
 ├── tasks/                     # one task sheet per agent
 ├── packages/
