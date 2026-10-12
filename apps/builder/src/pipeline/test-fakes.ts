@@ -396,6 +396,21 @@ export class FakeGithub extends Recorder implements PipelineGithub, RepoSource {
     return this.around('getBranchHead', () => this.repos.get(repo)?.branches.get(branch) ?? null);
   }
 
+  resetJobBranch(repo: string, branch: string, baseSha: string): Promise<{ reset: boolean }> {
+    return this.around('resetJobBranch', () => {
+      const r = this.repo(repo);
+      if (!branch.startsWith('forge/') || branch === r.info.defaultBranch) {
+        throw new ServiceError('github', 'invalid_input', 'only a job branch can be reset');
+      }
+      const head = r.branches.get(branch);
+      if (head === undefined || head === baseSha) return { reset: false };
+      const parents = this.commits.get(head)?.parents ?? [];
+      if (parents.length === 1 && parents[0] === baseSha) return { reset: false };
+      r.branches.set(branch, baseSha);
+      return { reset: true };
+    });
+  }
+
   commitFiles(input: CommitFilesInput): Promise<CommitFilesResult> {
     return this.around('commitFiles', () => {
       const r = this.repo(input.repo);

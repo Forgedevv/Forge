@@ -391,6 +391,17 @@ export async function runBuildStep(
       'the default branch moved during the build; the build will start again',
     );
   }
+  // A retried build: the job branch may still sit on the default branch head of an earlier
+  // attempt. The release needs the branch to start from the commit this attempt worked on, so the
+  // job branch (never the default branch) is put back on it before the commit.
+  guard(signal);
+  const realigned = await deps.github.resetJobBranch(repo.name, branch, snapshot.commitSha);
+  if (realigned.reset) {
+    log.info(
+      jobFields(job, { base: snapshot.commitSha }),
+      'job branch reset to the default branch',
+    );
+  }
   guard(signal);
   const commit = await deps.github.commitFiles({
     repo: repo.name,
