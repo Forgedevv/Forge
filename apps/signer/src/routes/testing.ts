@@ -607,7 +607,8 @@ export class FakeRouteChain implements SolanaRpc, RouteCore, RoutePaymentVerifie
         networkFeeLamports: 15_000n,
         networkFeeSource: 'estimate',
         ownerTotalLamports: (firstBuy ? params.firstBuyLamports + 2_039_280n : 0n) + 20_015_000n,
-        ownerRequiredBalanceLamports: 0n,
+        ownerRequiredBalanceLamports:
+          (firstBuy ? params.firstBuyLamports + 2n * 2_039_280n : 0n) + 20_015_000n,
         creatorTotalLamports: 0n,
       },
       durableNonce: { nonceAccount: params.nonceAccount, authority: creator, nonce },
