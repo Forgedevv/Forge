@@ -6,6 +6,9 @@ import { cn } from '@/lib/utils';
 import { MobileExploreTabs } from './MobileExploreTabs';
 import { useExplore } from '@/contexts/ExploreProvider';
 import { useBreakpoint } from '@/lib/device';
+import { useExploreGemsTokenList } from '@/hooks/useExploreGemsTokenList';
+import { isMarketEmpty } from './market-state';
+import { MarketEmpty } from './MarketEmpty';
 
 type ExploreGridProps = {
   className?: string;
@@ -23,12 +26,23 @@ const ExploreGrid = ({ className }: ExploreGridProps) => {
     };
   }, [subscribeRecentTokenList, unsubscribeRecentTokenList]);
 
+  const { data, status } = useExploreGemsTokenList();
+
   const isMobile = breakpoint === 'md' || breakpoint === 'sm' || breakpoint === 'xs';
+
+  // Day one: no coin in any list yet. One compact panel instead of three empty columns.
+  if (isMarketEmpty(status, data)) {
+    return (
+      <div className={cn('launchpad-market-grid launchpad-market-grid-empty', className)}>
+        <MarketEmpty />
+      </div>
+    );
+  }
 
   return (
     <div
       className={cn(
-        'grid grid-cols-1 border-neutral-850 max-lg:grid-rows-[auto_1fr] lg:grid-cols-3 lg:border xl:overflow-hidden lg:rounded-xl',
+        'launchpad-market-grid grid grid-cols-1 border-neutral-850 lg:grid-cols-3 lg:border lg:rounded-xl',
         className,
       )}
     >

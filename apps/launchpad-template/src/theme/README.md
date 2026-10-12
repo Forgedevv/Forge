@@ -44,7 +44,13 @@ transitions.
 
 Dark/light: `theme.darkMode` sets the default; visitors can still toggle it.
 
-The homepage is an editorial identity banner above three market columns. `MintSculpture` is local
+The homepage is composed of optional sections (`src/components/home/`): the identity banner, a
+value strip, the market, how it works, the launchpad coin, questions and a closing call to action.
+While no coin exists, the market shows one compact panel (`Explore/MarketEmpty`) instead of three
+empty columns. On mobile the market tabs stay in the card flow (not sticky). Shared buttons use
+`launchpad-button`, `launchpad-button-primary` and `launchpad-button-ghost`. The header and footer
+draw the mark of `src/components/Logo.tsx`; the app shell frames the locked creator fee page
+(`[data-forge-page="creator-fees"]`) with the same header and footer. `MintSculpture` is local
 SVG artwork with two engraved medallions; its finish follows the variables above, and it holds a
 static pose when reduced motion is requested. It uses no remote asset or animation service.
 The token page keeps the existing chart and trading components intact; the theme controls its

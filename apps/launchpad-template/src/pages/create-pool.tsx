@@ -20,7 +20,25 @@ export default function CreatePoolPage() {
             <h1>{content.strings.createCoin}</h1>
             <p>{content.strings.createIntro}</p>
           </header>
-          <div className="launchpad-create-panel"><CreateCoin /></div>
+          <div className="launchpad-create-layout">
+            <div className="launchpad-create-panel">
+              <CreateCoin />
+            </div>
+            <aside
+              className="launchpad-create-notes"
+              aria-labelledby="launchpad-create-notes-title"
+            >
+              <h2 id="launchpad-create-notes-title">{content.create.notesTitle}</h2>
+              <ol>
+                {content.create.notes.map((note) => (
+                  <li key={note.title}>
+                    <span className="launchpad-create-note-title">{note.title}</span>
+                    <span>{note.body}</span>
+                  </li>
+                ))}
+              </ol>
+            </aside>
+          </div>
         </main>
       </div>
     </>

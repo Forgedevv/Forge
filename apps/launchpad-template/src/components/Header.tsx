@@ -6,6 +6,7 @@ import { ThemeToggle } from './ThemeToggle';
 import { useMemo } from 'react';
 import { shortenAddress } from '@/lib/utils';
 import { content } from '@/content';
+import { Logo } from './Logo';
 
 export const Header = () => {
   const { setShowModal } = useUnifiedWalletContext();
@@ -25,8 +26,9 @@ export const Header = () => {
           href="/"
           className="flex min-w-0 items-center gap-2 rounded-lg focus-visible:outline-none"
         >
-          <span className="launchpad-brand-mark flex h-8 w-8 shrink-0 items-center justify-center">
-            <span className="iconify h-5 w-5 ph--rocket-launch-bold" />
+          {/* Logo slot: replace the drawing in `Logo.tsx` with the launchpad's own mark. */}
+          <span className="launchpad-brand-mark flex h-9 w-9 shrink-0 items-center justify-center">
+            <Logo className="h-full w-full" />
           </span>
           <span className="min-w-0">
             <span className="block truncate whitespace-nowrap text-base font-bold tracking-tight md:text-lg">
@@ -39,7 +41,10 @@ export const Header = () => {
         </Link>
 
         {/* Navigation and Actions */}
-        <div className="flex items-center gap-1.5 md:gap-3">
+        <nav
+          className="flex items-center gap-1.5 md:gap-3"
+          aria-label={content.strings.mainNavLabel}
+        >
           <Link
             href="/"
             className="launchpad-nav-link hidden px-3 py-2 text-sm font-medium md:inline-flex"
@@ -75,7 +80,7 @@ export const Header = () => {
             </Button>
           )}
           <ThemeToggle />
-        </div>
+        </nav>
       </div>
     </header>
   );
