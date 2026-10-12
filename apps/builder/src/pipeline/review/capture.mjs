@@ -712,7 +712,19 @@ export async function capture(options) {
           shots.push({ ...emptyEntry(page, viewport), error: 'skipped: capture deadline reached' });
           continue;
         }
-        shots.push(await capturePage(cdp, origin, page, viewport, outDir));
+        // A page that hangs only costs its own entry: the report is always written in time.
+        const budget = Math.min(120_000, deadline - 10_000 - Date.now());
+        let timer;
+        const timedOut = new Promise((resolve) => {
+          timer = setTimeout(
+            () => resolve({ ...emptyEntry(page, viewport), error: 'timed out' }),
+            budget,
+          );
+        });
+        shots.push(
+          await Promise.race([capturePage(cdp, origin, page, viewport, outDir), timedOut]),
+        );
+        clearTimeout(timer);
       }
     }
   } finally {
@@ -747,7 +759,7 @@ async function main() {
   const hardStop = setTimeout(() => {
     process.stderr.write('capture: deadline exceeded\n');
     process.exit(3);
-  }, options.deadlineMs + 30_000);
+  }, options.deadlineMs + 15_000);
   hardStop.unref();
   try {
     const report = await capture(options);

@@ -190,7 +190,8 @@ export async function runVisualReview(input: VisualReviewInput): Promise<ReviewO
       image: 'review',
       workspaceReadOnly: true,
       outputDir: outDir,
-      command: captureCommand(Math.max(10_000, captureTimeoutMs - 20_000)),
+      // The script writes its report before this deadline, well before the container's.
+      command: captureCommand(Math.max(10_000, captureTimeoutMs - 45_000)),
       env: { NODE_ENV: 'production', NEXT_TELEMETRY_DISABLED: '1' },
       network: 'none',
       timeoutMs: captureTimeoutMs,
