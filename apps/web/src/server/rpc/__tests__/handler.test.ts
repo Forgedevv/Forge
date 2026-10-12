@@ -8,11 +8,13 @@ import type { DirectorySnapshot, LaunchpadDirectory } from '../origins';
 import { secretFragments } from '../redact';
 import { deriveRelayToken, RELAY_TOKEN_HEADER } from '../server-token';
 import { createUpstream, GENESIS_HASH, type FetchLike } from '../upstream';
+import { CREATOR_POOLS_WEIGHT, DBC_PROGRAM_ID } from '../methods';
 import {
   call,
   DEVNET_GENESIS,
   FAKE_KEY,
   PK,
+  PK2,
   SIG,
   smallTransactionBase64,
   UPSTREAM_URL,
@@ -22,6 +24,18 @@ const CLIENT = 'https://moonpad.forge-sites.app';
 const FORGE = 'https://forge.example';
 const SECRET = Buffer.from('s'.repeat(48));
 const TX = smallTransactionBase64();
+/** The SDK getPoolsByCreator query (VirtualPool discriminator, creator at offset 104). */
+const CREATOR_POOLS_PARAMS = [
+  DBC_PROGRAM_ID,
+  {
+    encoding: 'base64',
+    commitment: 'confirmed',
+    filters: [
+      { memcmp: { offset: 0, bytes: 'cmrfVvtHrjd', encoding: 'base58' } },
+      { memcmp: { offset: 104, bytes: PK2, encoding: 'base58' } },
+    ],
+  },
+];
 
 type UpstreamBody = { jsonrpc: string; id: number; method: string; params?: unknown };
 type Responder = (
@@ -347,6 +361,31 @@ describe('request bounds', () => {
 });
 
 describe('forwarding', () => {
+  it('forwards the creator pool query of the claim widget, as sent', async () => {
+    const relay = makeRelay();
+    const { res, json } = await send(relay, call('getProgramAccounts', CREATOR_POOLS_PARAMS, 4));
+    expect(res.status).toBe(200);
+    expect(json).toEqual({ jsonrpc: '2.0', id: 4, result: 'getProgramAccounts:0' });
+    expect(relay.upstreamPayloads).toEqual([
+      { jsonrpc: '2.0', id: 0, method: 'getProgramAccounts', params: CREATOR_POOLS_PARAMS },
+    ]);
+  });
+
+  it('refuses any other program scan without calling upstream', async () => {
+    const relay = makeRelay();
+    const config = CREATOR_POOLS_PARAMS[1] as { filters: unknown[] };
+    const byConfig = [
+      DBC_PROGRAM_ID,
+      { ...config, filters: [config.filters[0], { memcmp: { offset: 72, bytes: PK2 } }] },
+    ];
+    for (const params of [[PK], byConfig, [DBC_PROGRAM_ID, { encoding: 'base64' }]]) {
+      const { res, json } = await send(relay, call('getProgramAccounts', params, 5));
+      expect(res.status).toBe(200);
+      expect(json).toMatchObject({ id: 5, error: { code: -32601 } });
+    }
+    expect(relay.upstreamPayloads).toHaveLength(0);
+  });
+
   it('refuses disallowed methods without calling upstream', async () => {
     const relay = makeRelay();
     const { res, json } = await send(relay, call('getProgramAccounts', [PK], 9));
@@ -559,6 +598,12 @@ describe('upstream failures and the provider key', () => {
     expect(tooLarge.json).toMatchObject({
       error: { message: 'RPC response too large (use dataSlice)' },
     });
+    // The creator pool query keeps the same response cap.
+    const scan = await send(large, call('getProgramAccounts', CREATOR_POOLS_PARAMS));
+    expect(scan.res.status).toBe(502);
+    expect(scan.json).toMatchObject({
+      error: { message: 'RPC response too large (use dataSlice)' },
+    });
   });
 
   it('maps a timeout to 504', async () => {
@@ -630,6 +675,16 @@ describe('rate limits', () => {
     expect(alerts).toHaveLength(1);
     expect(alerts[0]?.fields).toMatchObject({ bucket: 'origin', tier: 'browser', origin: CLIENT });
     expect(relay.logger.events()).not.toContain('rate_limited');
+  });
+
+  it('charges a creator pool query its high weight', async () => {
+    const perRequest = 1 + CREATOR_POOLS_WEIGHT;
+    const relay = makeRelay({ limits: { ip: rule(2 * perRequest) } });
+    const scan = () => send(relay, call('getProgramAccounts', CREATOR_POOLS_PARAMS));
+    expect((await scan()).res.status).toBe(200);
+    expect((await scan()).res.status).toBe(200);
+    expect((await scan()).res.status).toBe(429);
+    expect(relay.upstreamPayloads).toHaveLength(2);
   });
 
   it('is stricter for sendTransaction than for reads', async () => {

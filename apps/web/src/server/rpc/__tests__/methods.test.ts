@@ -8,10 +8,20 @@ import {
   TransactionMessage,
   VersionedTransaction,
 } from '@solana/web3.js';
+import {
+  DBC_POOL_CREATOR_OFFSET as CORE_CREATOR_OFFSET,
+  LAUNCH_CHECK_DBC_PROGRAM_ID,
+  listCoinsOfCreator,
+} from '@forge/core';
 import { describe, expect, it } from 'vitest';
 import { checkCall } from '../jsonrpc';
 import {
   ALLOWED_METHODS,
+  CREATOR_POOLS_WEIGHT,
+  DBC_POOL_CREATOR_OFFSET,
+  DBC_POOL_DISCRIMINATORS,
+  DBC_PROGRAM_ID,
+  decodeBase58,
   MAX_MULTIPLE_ACCOUNTS,
   MAX_SIGNATURE_STATUSES,
   METHODS,
@@ -63,6 +73,7 @@ describe('method allowlist', () => {
         'sendTransaction',
         'getFeeForMessage',
         'getEpochInfo',
+        'getProgramAccounts',
       ].sort(),
     );
     for (const spec of Object.values(METHODS)) expect(spec.usedBy.length).toBeGreaterThan(10);
@@ -199,6 +210,152 @@ describe('param validation', () => {
   });
 });
 
+/** base58 of a short byte string (bs58 encoding, leading zero bytes as '1'). */
+function encodeBase58(bytes: readonly number[]): string {
+  const alphabet = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+  let n = BigInt(0);
+  for (const byte of bytes) n = n * BigInt(256) + BigInt(byte);
+  let out = '';
+  while (n > BigInt(0)) {
+    out = alphabet[Number(n % BigInt(58))] + out;
+    n /= BigInt(58);
+  }
+  for (const byte of bytes) {
+    if (byte !== 0) break;
+    out = '1' + out;
+  }
+  return out;
+}
+
+describe('getProgramAccounts: creator pools on the DBC program only', () => {
+  const VIRTUAL_POOL = encodeBase58(DBC_POOL_DISCRIMINATORS[0]!);
+  const TRANSFER_HOOK_POOL = encodeBase58(DBC_POOL_DISCRIMINATORS[1]!);
+  /** PoolConfig account discriminator: a DBC account that is not a pool. */
+  const POOL_CONFIG = encodeBase58([26, 108, 14, 123, 116, 230, 129, 43]);
+  const CREATOR = PK2;
+  const disc = (bytes = VIRTUAL_POOL) => ({ memcmp: { offset: 0, bytes, encoding: 'base58' } });
+  const creatorAt = (offset: unknown = DBC_POOL_CREATOR_OFFSET, bytes = CREATOR) => ({
+    memcmp: { offset, bytes, encoding: 'base58' },
+  });
+  const query = (config: Record<string, unknown>, program = DBC_PROGRAM_ID) => [program, config];
+  const sdkConfig = (filters: unknown[] = [disc(), creatorAt()]) => ({
+    encoding: 'base64',
+    commitment: 'confirmed',
+    filters,
+  });
+
+  it('uses the DBC program id and pool layout of @forge/core', () => {
+    expect(DBC_PROGRAM_ID).toBe(LAUNCH_CHECK_DBC_PROGRAM_ID.toBase58());
+    expect(DBC_POOL_CREATOR_OFFSET).toBe(CORE_CREATOR_OFFSET);
+  });
+
+  it('accepts the getPoolsByCreator query for both pool account variants', () => {
+    expectValid('getProgramAccounts', query(sdkConfig()));
+    expectValid('getProgramAccounts', query(sdkConfig([disc(TRANSFER_HOOK_POOL), creatorAt()])));
+    // Without a connection commitment, and without the memcmp encoding (base58 is the default).
+    expectValid(
+      'getProgramAccounts',
+      query({ encoding: 'base64', filters: [disc(), creatorAt()] }),
+    );
+    expectValid('getProgramAccounts', [
+      DBC_PROGRAM_ID,
+      {
+        encoding: 'base64',
+        filters: [
+          { memcmp: { offset: 0, bytes: VIRTUAL_POOL } },
+          { memcmp: { offset: 104, bytes: CREATOR } },
+        ],
+      },
+    ]);
+  });
+
+  it.each<[string, unknown]>([
+    ['another program', query(sdkConfig(), PK)],
+    ['the token program', query(sdkConfig(), 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA')],
+    ['no config', [DBC_PROGRAM_ID]],
+    ['null config', [DBC_PROGRAM_ID, null]],
+    ['too many params', [DBC_PROGRAM_ID, sdkConfig(), {}]],
+    ['no filters', query({ encoding: 'base64' })],
+    ['empty filters', query(sdkConfig([]))],
+    ['missing discriminator filter', query(sdkConfig([creatorAt()]))],
+    ['missing creator filter', query(sdkConfig([disc()]))],
+    ['two creator filters', query(sdkConfig([disc(), creatorAt(), creatorAt()]))],
+    ['two creator filters, no discriminator', query(sdkConfig([creatorAt(), creatorAt()]))],
+    ['the config at offset 72', query(sdkConfig([disc(), creatorAt(72)]))],
+    ['the base mint at offset 136', query(sdkConfig([disc(), creatorAt(136)]))],
+    ['an offset as a string', query(sdkConfig([disc(), creatorAt('104')]))],
+    ['dataSize only', query(sdkConfig([{ dataSize: 424 }]))],
+    ['an extra dataSize filter', query(sdkConfig([disc(), creatorAt(), { dataSize: 424 }]))],
+    ['an extra memcmp filter', query(sdkConfig([disc(), creatorAt(), disc()]))],
+    ['filters in another order', query(sdkConfig([creatorAt(), disc()]))],
+    ['a config account discriminator', query(sdkConfig([disc(POOL_CONFIG), creatorAt()]))],
+    [
+      'a creator of 31 bytes',
+      query(sdkConfig([disc(), creatorAt(104, encodeBase58(Array(31).fill(7)))])),
+    ],
+    [
+      'a creator of 33 bytes',
+      query(sdkConfig([disc(), creatorAt(104, encodeBase58(Array(33).fill(7)))])),
+    ],
+    ['a creator that is not base58', query(sdkConfig([disc(), creatorAt(104, '0OIl'.repeat(10))]))],
+    [
+      'base64 memcmp bytes',
+      query(
+        sdkConfig([
+          disc(),
+          {
+            memcmp: {
+              offset: 104,
+              bytes: Buffer.alloc(32, 7).toString('base64'),
+              encoding: 'base64',
+            },
+          },
+        ]),
+      ),
+    ],
+    [
+      'an extra memcmp key',
+      query(sdkConfig([disc(), { memcmp: { offset: 104, bytes: CREATOR, length: 32 } }])),
+    ],
+    ['jsonParsed', query({ ...sdkConfig(), encoding: 'jsonParsed' })],
+    ['base64+zstd', query({ ...sdkConfig(), encoding: 'base64+zstd' })],
+    ['base58 data', query({ ...sdkConfig(), encoding: 'base58' })],
+    ['no data encoding', query({ commitment: 'confirmed', filters: [disc(), creatorAt()] })],
+    ['a dataSlice', query({ ...sdkConfig(), dataSlice: { offset: 0, length: 0 } })],
+    ['withContext', query({ ...sdkConfig(), withContext: true })],
+    ['minContextSlot', query({ ...sdkConfig(), minContextSlot: 1 })],
+    ['changedSinceSlot', query({ ...sdkConfig(), changedSinceSlot: 1 })],
+    ['a deprecated commitment', query({ ...sdkConfig(), commitment: 'recent' })],
+    ['object params', { 0: DBC_PROGRAM_ID, 1: sdkConfig() }],
+  ])('refuses %s with the method-not-allowed error', (_label, params) => {
+    const result = check('getProgramAccounts', params);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toEqual({
+        code: -32601,
+        message: 'Method not allowed by the FORGE relay',
+      });
+    }
+  });
+
+  it('weighs a creator pool query far above an account read', () => {
+    const weight = METHODS.getProgramAccounts!.weight(query(sdkConfig()));
+    expect(weight).toBe(CREATOR_POOLS_WEIGHT);
+    expect(weight).toBeGreaterThanOrEqual(10 * METHODS.getAccountInfo!.weight([PK]));
+    expect(weight).toBeGreaterThan(METHODS.sendTransaction!.weight([TX, { encoding: 'base64' }]));
+    expect(METHODS.getProgramAccounts!.isSend).toBeUndefined();
+  });
+
+  it('decodes base58 like web3.js', () => {
+    expect(decodeBase58(CREATOR)).toEqual(new PublicKey(CREATOR).toBytes());
+    expect(decodeBase58('11111111111111111111111111111111')).toEqual(new Uint8Array(32));
+    expect(decodeBase58(VIRTUAL_POOL)).toEqual(Uint8Array.from(DBC_POOL_DISCRIMINATORS[0]!));
+    expect(decodeBase58('')).toBeNull();
+    expect(decodeBase58('0')).toBeNull();
+    expect(decodeBase58('1'.repeat(65))).toBeNull();
+  });
+});
+
 describe('compatibility with @solana/web3.js', () => {
   /** Captures the JSON-RPC bodies a real Connection sends, answering with minimal stubs. */
   function capturingConnection() {
@@ -211,14 +368,16 @@ describe('compatibility with @solana/web3.js', () => {
       };
       bodies.push({ method: body.method, params: body.params });
       const answer =
-        body.method === 'getLatestBlockhash'
-          ? {
-              result: {
-                context: { slot: 1 },
-                value: { blockhash: DEVNET_GENESIS, lastValidBlockHeight: 100 },
-              },
-            }
-          : { error: { code: -1, message: 'stub' } };
+        body.method === 'getProgramAccounts'
+          ? { result: [] }
+          : body.method === 'getLatestBlockhash'
+            ? {
+                result: {
+                  context: { slot: 1 },
+                  value: { blockhash: DEVNET_GENESIS, lastValidBlockHeight: 100 },
+                },
+              }
+            : { error: { code: -1, message: 'stub' } };
       return new Response(JSON.stringify({ jsonrpc: '2.0', id: body.id, ...answer }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
@@ -311,6 +470,21 @@ describe('compatibility with @solana/web3.js', () => {
       .simulateTransaction(legacy, undefined, [payer.publicKey])
       .catch(() => undefined);
     expect(bodies.filter((b) => b.method === 'simulateTransaction')).toHaveLength(3);
+    for (const body of bodies) {
+      expect(check(body.method, body.params).ok, JSON.stringify(body.params)).toBe(true);
+    }
+  });
+
+  it('accepts the program scans of core listCoinsOfCreator (SDK getPoolsByCreator)', async () => {
+    const { connection, bodies } = capturingConnection();
+    await expect(
+      listCoinsOfCreator(connection, new PublicKey(PK2), [Keypair.generate().publicKey], {
+        retry: { attempts: 1 },
+      }),
+    ).resolves.toEqual([]);
+    const scans = bodies.filter((b) => b.method === 'getProgramAccounts');
+    // One query per pool account variant (plain and transfer-hook pools).
+    expect(scans).toHaveLength(2);
     for (const body of bodies) {
       expect(check(body.method, body.params).ok, JSON.stringify(body.params)).toBe(true);
     }

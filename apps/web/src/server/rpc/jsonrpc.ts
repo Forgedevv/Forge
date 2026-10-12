@@ -98,6 +98,8 @@ export function checkCall(raw: unknown, index: number): CheckedCall {
   const spec = METHODS[method];
   const reason = spec ? spec.validate(obj.params) : 'unknown method';
   if (reason !== null) {
+    // A method allowed in one narrow shape is refused like any other method outside of it.
+    if (spec?.narrow) return invalid(RPC_ERRORS.methodNotAllowed);
     return invalid({ ...RPC_ERRORS.invalidParams, data: { reason } });
   }
   const params = Array.isArray(obj.params) ? (obj.params as unknown[]) : [];
