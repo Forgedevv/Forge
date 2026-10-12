@@ -16,17 +16,19 @@
  * one match and nothing is written.
  *
  * What the output differs in:
- * - every `workspace:*` dependency is replaced by the exact version given with `--pin name=x.y.z`;
+ * - every `workspace:*` dependency becomes an npm alias of its public package, pinned to the exact
+ *   version given with `--pin name=x.y.z`: `"@forge/core": "npm:@forgedevv/core@x.y.z"` (decision
+ *   D26), so the site keeps importing `@forge/core` and installs from the public npm registry;
  * - `tsconfig.json` no longer extends the monorepo base (its options are inlined);
  * - tests, test tooling, the monorepo lint config, mocks, caches and this `scripts/` folder are left out;
  * - `typescript` is added (the monorepo root provides it, a standalone repository does not);
  * - `vercel.json` disables Git deployments, so a push to the template repository never deploys it;
- * - `.npmrc` is written only when a private registry is chosen (`--registry` and `--scope`), with the
- *   scope line only: never a token.
+ * - no `.npmrc` at all: no registry setting, no scope line and no token reach the template
+ *   repository (a tracked `.npmrc` is always left out).
  *
  * Usage:
  *   node scripts/prepare-template-repo.mjs --out <dir> --pin @forge/core=0.1.0 --pin @forge/shared=0.1.0
- *     [--registry https://npm.pkg.github.com --scope @forgedevv] [--typescript 6.0.3] [--dry-run]
+ *     [--typescript 6.0.3] [--dry-run]
  */
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
@@ -65,8 +67,8 @@ const EXCLUDED_PATTERNS = [/\.tsbuildinfo$/, /\.(test|spec)\.[cm]?[jt]sx?$/];
 const KEPT_ENV_FILE = '.env.example';
 
 /**
- * Denylist that always applies, at any depth, even to a file tracked by git by mistake. The only
- * `.npmrc` the output may hold is the generated one.
+ * Denylist that always applies, at any depth, even to a file tracked by git by mistake. The output
+ * never holds an `.npmrc`.
  */
 const DENIED_DIRECTORIES = new Set(['.claude', '.state']);
 const DENIED_FILE_PATTERNS = [
@@ -138,6 +140,25 @@ export class PrepareError extends Error {
     super(message);
     this.name = 'PrepareError';
   }
+}
+
+/**
+ * Workspace packages and their public npm names (decision D26): the template repository installs
+ * them from registry.npmjs.org through an exact npm alias, never from a private registry.
+ */
+export const NPM_PACKAGES = Object.freeze({
+  '@forge/core': '@forgedevv/core',
+  '@forge/shared': '@forgedevv/shared',
+});
+
+/** Dependency spec of a workspace package in the template repository: `npm:<name>@<exact>`. */
+export function npmAlias(name, version) {
+  const target = NPM_PACKAGES[name];
+  if (!target) throw new PrepareError(`${name} is not published on npm: it cannot be pinned.`);
+  if (typeof version !== 'string' || !EXACT_VERSION.test(version)) {
+    throw new PrepareError(`The version of ${name} must be exact (x.y.z), got ${version}.`);
+  }
+  return `npm:${target}@${version}`;
 }
 
 /** True when a path (relative to the app, `/` separated) is part of the template repository. */
@@ -260,7 +281,37 @@ export function parsePins(values) {
   return pins;
 }
 
-/** Replaces `workspace:*` dependencies by the exact pinned versions. */
+const DEPENDENCY_SECTIONS = [
+  'dependencies',
+  'devDependencies',
+  'optionalDependencies',
+  'peerDependencies',
+];
+
+/**
+ * Throws unless every dependency installs from the public registry: no `workspace:`, `file:`,
+ * `link:` or `portal:` spec, and each FORGE package is exactly `npm:<public name>@<exact version>`.
+ */
+export function assertPublicDependencies(pkg) {
+  for (const section of DEPENDENCY_SECTIONS) {
+    for (const [name, range] of Object.entries(pkg[section] ?? {})) {
+      if (typeof range !== 'string' || /^(?:workspace|file|link|portal):/.test(range)) {
+        throw new PrepareError(`${section}.${name} does not install from npm: ${range}.`);
+      }
+      if (Object.hasOwn(NPM_PACKAGES, name)) {
+        const version = range.slice(`npm:${NPM_PACKAGES[name]}@`.length);
+        if (range !== npmAlias(name, version)) {
+          throw new PrepareError(
+            `${section}.${name} must be npm:${NPM_PACKAGES[name]}@<exact version>, got ${range}.`,
+          );
+        }
+      }
+    }
+  }
+  return pkg;
+}
+
+/** Replaces `workspace:*` dependencies by exact npm aliases of their public packages. */
 export function pinWorkspaceDependencies(pkg, pins) {
   const next = structuredClone(pkg);
   const used = new Set();
@@ -274,7 +325,7 @@ export function pinWorkspaceDependencies(pkg, pins) {
       if (!version) {
         missing.push(name);
       } else {
-        deps[name] = version;
+        deps[name] = npmAlias(name, version);
         used.add(name);
       }
     }
@@ -302,7 +353,8 @@ export function buildPackageJson(pkg, { pins, typescriptVersion }) {
   const sorted = Object.fromEntries(
     Object.entries(devDependencies).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
   );
-  return { pkg: { ...pinned, scripts, devDependencies: sorted }, unused };
+  const out = { ...pinned, scripts, devDependencies: sorted };
+  return { pkg: assertPublicDependencies(out), unused };
 }
 
 /** `tsconfig.json` without `extends`: the base options are merged under the app options. */
@@ -317,26 +369,9 @@ export function inlineTsconfig(appTsconfig, readBase) {
   };
 }
 
-/** `.npmrc` content: the scope line only, and only for a private registry. */
-export function buildNpmrc({ registry, scope }) {
-  if (!registry && !scope) return null;
-  if (!registry || !scope) {
-    throw new PrepareError('--registry and --scope must be given together.');
-  }
-  let url;
-  try {
-    url = new URL(registry);
-  } catch {
-    throw new PrepareError('--registry must be a URL.');
-  }
-  if (url.protocol !== 'https:' || url.username || url.password) {
-    throw new PrepareError('--registry must be an https URL without credentials.');
-  }
-  if (!/^@[a-z0-9][a-z0-9._-]*$/.test(scope)) {
-    throw new PrepareError('--scope must look like @owner.');
-  }
-  return `${scope}:registry=${url.toString().replace(/\/$/, '')}\n`;
-}
+/** `--registry` / `--scope` (GitHub Packages) were removed with decision D26. */
+const REGISTRY_REMOVED =
+  '--registry and --scope are no longer supported: @forge/core and @forge/shared install from the public npm registry through npm aliases (no .npmrc, no token).';
 
 /** Tracked paths that pass the filters, sorted. Contents are read separately (git index). */
 function selectFiles(tracked) {
@@ -365,8 +400,6 @@ export function prepareTemplateRepo(options) {
   const {
     out,
     pins = {},
-    registry,
-    scope,
     typescriptVersion,
     dryRun = false,
     sourceDir = SOURCE_DIR,
@@ -375,6 +408,9 @@ export function prepareTemplateRepo(options) {
     // a tracked link could point at a secret outside the folder.
     readFiles = readIndexFiles,
   } = options;
+  if (options.registry !== undefined || options.scope !== undefined) {
+    throw new PrepareError(REGISTRY_REMOVED);
+  }
   if (!out) throw new PrepareError('--out <dir> is required.');
   const outDir = resolve(out);
   if (isInside(sourceDir, outDir) || isInside(outDir, sourceDir)) {
@@ -394,12 +430,10 @@ export function prepareTemplateRepo(options) {
       ? JSON.parse(readFileSync(rootPackagePath, 'utf8')).devDependencies?.typescript
       : undefined);
   const { pkg, unused } = buildPackageJson(sourcePackage, { pins, typescriptVersion: version });
-  const npmrc = buildNpmrc({ registry, scope });
 
   const generated = new Map();
   generated.set('package.json', stringify(pkg));
   generated.set('vercel.json', stringify(VERCEL_JSON));
-  if (npmrc) generated.set('.npmrc', npmrc);
   if (own.has('tsconfig.json')) {
     const tsconfig = inlineTsconfig(JSON.parse(own.get('tsconfig.json').toString('utf8')), (base) =>
       JSON.parse(readFileSync(resolve(sourceDir, base), 'utf8')),
@@ -413,6 +447,9 @@ export function prepareTemplateRepo(options) {
     selected.filter((rel) => read.has(rel)).map((rel) => [rel, read.get(rel)]),
   );
   const files = [...new Set([...contents.keys(), ...generated.keys()])].sort();
+  if (files.some((rel) => rel.split('/').pop().toLowerCase() === '.npmrc')) {
+    throw new PrepareError('An .npmrc would reach the template repository: nothing was written.');
+  }
 
   // Every output file is checked before anything is written.
   const findings = [];
@@ -441,7 +478,7 @@ export function prepareTemplateRepo(options) {
   return { outDir, dryRun, files, generated: Object.fromEntries(generated), unusedPins: unused };
 }
 
-function parseArgs(argv) {
+export function parseArgs(argv) {
   const options = { pins: [], dryRun: false };
   const valueOf = (i, flag) => {
     const value = argv[i + 1];
@@ -460,12 +497,8 @@ function parseArgs(argv) {
     } else if (arg === '--pin') {
       options.pins.push(valueOf(i, arg));
       i += 1;
-    } else if (arg === '--registry') {
-      options.registry = valueOf(i, arg);
-      i += 1;
-    } else if (arg === '--scope') {
-      options.scope = valueOf(i, arg);
-      i += 1;
+    } else if (arg === '--registry' || arg === '--scope') {
+      throw new PrepareError(REGISTRY_REMOVED);
     } else if (arg === '--typescript') {
       options.typescriptVersion = valueOf(i, arg);
       i += 1;

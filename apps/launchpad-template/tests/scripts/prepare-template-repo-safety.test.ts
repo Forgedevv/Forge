@@ -131,13 +131,13 @@ describe('prepare-template-repo: tracked files only, denylist always applies', (
     expect(readFileSync(join(f.out, 'src', 'index.ts'), 'utf8')).toContain('SYSTEM_PROGRAM_ID');
   });
 
-  it('writes the generated .npmrc only, never a tracked one', () => {
+  it('never writes an .npmrc, even a tracked one, and pins @forge/core as an npm alias', () => {
     const f = fixture();
-    run(f, { registry: 'https://npm.pkg.github.com', scope: '@forgedevv' });
-    expect(readFileSync(join(f.out, '.npmrc'), 'utf8')).toBe(
-      '@forgedevv:registry=https://npm.pkg.github.com\n',
-    );
+    run(f);
+    expect(existsSync(join(f.out, '.npmrc'))).toBe(false);
     expect(existsSync(join(f.out, 'src', 'nested', '.npmrc'))).toBe(false);
+    const pkg = JSON.parse(readFileSync(join(f.out, 'package.json'), 'utf8'));
+    expect(pkg.dependencies).toEqual({ '@forge/core': 'npm:@forgedevv/core@1.2.3' });
   });
 
   it('skips tracked files missing on disk and paths escaping the folder', () => {
