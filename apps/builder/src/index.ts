@@ -16,7 +16,10 @@ import {
   PersistentCostGatewayStore,
   PIPELINE_DEFAULTS,
   removeStaleWorkdirs,
+  visualReviewFromEnv,
+  type AgentGateway,
   type PipelineDeps,
+  type VisualReviewConfig,
 } from './pipeline/index.js';
 import { buildSite, createSandboxRunner, loadSandboxConfig } from './sandbox/index.js';
 import type { SpawnFn } from './sandbox/docker.js';
@@ -36,8 +39,8 @@ import { createWorkerLogger, runWorker } from './worker/run.js';
  *
  * Start-up checks, in order, before any job is picked up: environment (zod, names only in
  * errors), FORGE addresses (`requireAddresses` of @forge/core), public variables of client
- * projects, sandbox configuration, removal of sandbox containers and job folders left by a crash,
- * then the gateway listens and the worker starts polling.
+ * projects, sandbox configuration, visual review setting, removal of sandbox containers and job
+ * folders left by a crash, then the gateway listens and the worker starts polling.
  */
 
 const intFromEnv = (def: number, min: number, max: number) =>
@@ -144,6 +147,56 @@ export function checkStartupConfig(env: Record<string, string | undefined>): {
   return { config, projectEnv: picked.vars };
 }
 
+/**
+ * Visual review of new sites (second agent pass on screenshots of the built site), read from
+ * `BUILDER_VISUAL_REVIEW` (`off` default, `on`) and the review image of the sandbox
+ * (`FORGE_SANDBOX_REVIEW_IMAGE`). On without an image: disabled, and said at startup. Read apart
+ * from `BuilderEnvSchema`, like the sandbox variables.
+ */
+export function visualReviewSetup(
+  env: Record<string, string | undefined>,
+  reviewImage: string | null,
+  logger: Pick<WorkerLogger, 'info' | 'warn'>,
+): VisualReviewConfig | undefined {
+  const setting = visualReviewFromEnv(env, reviewImage);
+  if (setting.enabled) {
+    const c = setting.config;
+    logger.info(
+      {
+        captureTimeoutMs: c.captureTimeoutMs,
+        agentTimeoutMs: c.agentTimeoutMs,
+        maxBudgetUsd: c.maxBudgetUsd,
+      },
+      'visual review enabled for new sites',
+    );
+    return c;
+  }
+  if (setting.reason === 'no_image') {
+    logger.warn(
+      {},
+      'BUILDER_VISUAL_REVIEW is on but FORGE_SANDBOX_REVIEW_IMAGE is not set: visual review disabled',
+    );
+  } else {
+    logger.info({}, 'visual review off');
+  }
+  return undefined;
+}
+
+/**
+ * The gateway as the pipeline sees it, with the job cost from the gateway's own accounting (what
+ * the visual review budgets from).
+ */
+export function pipelineGateway(
+  gateway: Pick<Gateway, 'issueToken' | 'revokeToken'>,
+  costs: { getJobCost(jobId: string): Promise<number> },
+): AgentGateway {
+  return {
+    issueToken: (jobId, options) => gateway.issueToken(jobId, options),
+    revokeToken: (token) => gateway.revokeToken(token),
+    jobCostUsd: (jobId) => costs.getJobCost(jobId),
+  };
+}
+
 export interface BuilderProcess {
   worker: Worker;
   gateway: Gateway;
@@ -179,6 +232,7 @@ export async function startBuilder(opts: StartBuilderOptions = {}): Promise<Buil
       'FORGE_SANDBOX_GATEWAY_UPSTREAM is required: the agent reaches the gateway through it',
     );
   }
+  const review = visualReviewSetup(env, sandboxConfig.reviewImage, logger);
   const runner = createSandboxRunner(sandboxConfig, {
     logger,
     ...(opts.spawn ? { spawn: opts.spawn } : {}),
@@ -250,7 +304,7 @@ export async function startBuilder(opts: StartBuilderOptions = {}): Promise<Buil
     repoSource: createGithubRepoSource({ org: githubOptions.org, github }),
     runner,
     buildSite,
-    gateway,
+    gateway: pipelineGateway(gateway, costStore),
     scan: scanDiff,
     signer: createSignerClient({
       baseUrl: config.SIGNER_URL,
@@ -285,6 +339,7 @@ export async function startBuilder(opts: StartBuilderOptions = {}): Promise<Buil
       sandboxGid: sandboxConfig.gid,
       deploymentTimeoutMs: PIPELINE_DEFAULTS.deploymentTimeoutMs,
       promotionTimeoutMs: PIPELINE_DEFAULTS.promotionTimeoutMs,
+      ...(review ? { review } : {}),
     },
   };
 

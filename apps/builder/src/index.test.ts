@@ -9,8 +9,11 @@ import {
   BUILDER_ENV_NAMES,
   checkStartupConfig,
   loadBuilderEnv,
+  pipelineGateway,
   startBuilder,
+  visualReviewSetup,
 } from './index.js';
+import { REVIEW_DEFAULTS } from './pipeline/index.js';
 import { address, silentLogger } from './pipeline/test-fakes.js';
 import { fakeDocker } from './sandbox/test-helpers.js';
 
@@ -187,6 +190,63 @@ describe('.env.example', () => {
       const [name, value] = [line.slice(0, line.indexOf('=')), line.slice(line.indexOf('=') + 1)];
       if (/KEY|SECRET|TOKEN|PRIVATE/.test(name)) expect(value, name).toBe('');
     }
+  });
+});
+
+describe('visual review setting', () => {
+  const IMAGE = `sha256:${'c'.repeat(64)}`;
+  const recorder = () => {
+    const lines: Array<{ level: string; msg: string | undefined }> = [];
+    return {
+      lines,
+      logger: {
+        info: (_: object, msg?: string) => lines.push({ level: 'info', msg }),
+        warn: (_: object, msg?: string) => lines.push({ level: 'warn', msg }),
+      },
+    };
+  };
+
+  it('is off unless asked for, and needs the review image', () => {
+    const off = recorder();
+    expect(visualReviewSetup({}, IMAGE, off.logger)).toBeUndefined();
+    expect(off.lines).toEqual([{ level: 'info', msg: 'visual review off' }]);
+
+    const on = recorder();
+    expect(visualReviewSetup({ BUILDER_VISUAL_REVIEW: 'on' }, IMAGE, on.logger)).toEqual(
+      REVIEW_DEFAULTS,
+    );
+    expect(on.lines[0]).toEqual({ level: 'info', msg: 'visual review enabled for new sites' });
+
+    const missing = recorder();
+    expect(
+      visualReviewSetup({ BUILDER_VISUAL_REVIEW: 'on' }, null, missing.logger),
+    ).toBeUndefined();
+    expect(missing.lines[0]!.level).toBe('warn');
+    expect(missing.lines[0]!.msg).toMatch(/FORGE_SANDBOX_REVIEW_IMAGE is not set/);
+
+    expect(() => visualReviewSetup({ BUILDER_VISUAL_REVIEW: 'yes' }, IMAGE, off.logger)).toThrow(
+      /BUILDER_VISUAL_REVIEW/,
+    );
+  });
+
+  it('gives the pipeline the job cost from the gateway accounting', async () => {
+    const calls: string[] = [];
+    const gateway = pipelineGateway(
+      {
+        issueToken: async (jobId) => {
+          calls.push(`issue ${jobId}`);
+          return 'forge_gw_x';
+        },
+        revokeToken: async (token) => {
+          calls.push(`revoke ${token}`);
+        },
+      },
+      { getJobCost: async (jobId) => (jobId === 'job-1' ? 2.5 : 0) },
+    );
+    expect(await gateway.issueToken('job-1', { budgetUsd: 3 })).toBe('forge_gw_x');
+    await gateway.revokeToken('forge_gw_x');
+    expect(await gateway.jobCostUsd!('job-1')).toBe(2.5);
+    expect(calls).toEqual(['issue job-1', 'revoke forge_gw_x']);
   });
 });
 
