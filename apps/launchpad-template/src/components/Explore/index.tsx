@@ -2,53 +2,55 @@ import ExploreGrid from './ExploreGrid';
 import { DataStreamProvider } from '@/forge/data/DataStreamProvider';
 import { ExploreMsgHandler } from './ExploreMsgHandler';
 import { ExploreProvider } from '@/contexts/ExploreProvider';
-import { PropsWithChildren } from 'react';
-import Link from 'next/link';
+import { PropsWithChildren, ReactNode } from 'react';
 import { content } from '@/content';
-import { MintSculpture } from '../MintSculpture';
+import { cn } from '@/lib/utils';
 
-const Explore = () => {
+type ExploreProps = {
+  className?: string;
+  /** Optional replacement for the default market heading. */
+  heading?: ReactNode;
+};
+
+/**
+ * The market (FREE ZONE layout around the FORGE data stream): live coin lists of this launchpad.
+ * On day one, when no coin exists yet, the grid shows one compact panel (`MarketEmpty`). The home
+ * page composes it with the other sections; keep the `markets` id (links point to `/#markets`).
+ */
+const Explore = ({ className, heading }: ExploreProps) => {
   return (
-    <ExploreContext>
+    <ExploreContext className={className} heading={heading}>
       <ExploreGrid className="flex-1" />
     </ExploreContext>
   );
 };
 
-const ExploreContext = ({ children }: PropsWithChildren) => {
+const ExploreContext = ({ children, className, heading }: PropsWithChildren<ExploreProps>) => {
   return (
-    <div className="launchpad-home flex flex-1 flex-col">
+    <>
       <ExploreMsgHandler />
-
       <ExploreProvider>
         <DataStreamProvider>
-          <section className="launchpad-hero" aria-labelledby="launchpad-home-title">
-            <div className="launchpad-hero-copy">
-              <p className="launchpad-eyebrow">{content.strings.homeEyebrow}</p>
-              <h1 id="launchpad-home-title">{content.name}<span className="launchpad-title-period">.</span></h1>
-              <p className="launchpad-hero-tagline">{content.tagline}</p>
-              <div className="launchpad-hero-actions">
-                <Link href="/create-pool" className="launchpad-hero-create">
-                  {content.strings.createCoin}<span aria-hidden="true">↗</span>
-                </Link>
-                <Link href="#markets" className="launchpad-hero-link">
-                  {content.strings.homeAction}<span aria-hidden="true">↓</span>
-                </Link>
-              </div>
-            </div>
-            <MintSculpture monogram={content.name.slice(0, 1)} />
-          </section>
-          <section className="launchpad-market" id="markets" aria-labelledby="launchpad-market-title">
-            <header className="launchpad-market-heading">
-              <p className="launchpad-eyebrow">{content.strings.marketEyebrow}</p>
-              <h2 id="launchpad-market-title">{content.strings.marketTitle}</h2>
-              <span className="launchpad-market-network"><i aria-hidden="true" />{content.strings.network}</span>
-            </header>
+          <section
+            className={cn('launchpad-market', className)}
+            id="markets"
+            aria-labelledby="launchpad-market-title"
+          >
+            {heading ?? (
+              <header className="launchpad-market-heading">
+                <p className="launchpad-eyebrow">{content.strings.marketEyebrow}</p>
+                <h2 id="launchpad-market-title">{content.strings.marketTitle}</h2>
+                <span className="launchpad-market-network">
+                  <i aria-hidden="true" />
+                  {content.strings.network}
+                </span>
+              </header>
+            )}
             {children}
           </section>
         </DataStreamProvider>
       </ExploreProvider>
-    </div>
+    </>
   );
 };
 
