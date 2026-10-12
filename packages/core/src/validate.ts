@@ -96,6 +96,8 @@ export type ViolationCode =
   | 'TOKEN_DECIMAL_INVALID'
   | 'ACTIVATION_TYPE_INVALID'
   | 'FIRST_SWAP_MIN_FEE_REQUIRED'
+  /** Coin name + symbol + metadata URI exceed the launch transaction budget. */
+  | 'LAUNCH_METADATA_TOO_LONG'
   | 'SPEC_INVALID'
   | 'SDK_REJECTED';
 
@@ -334,6 +336,8 @@ function collectPoolCreationFeeBounds(lamports: bigint, c: Collector, field: str
 interface ExpectedConfig {
   /** Expected `creatorTradingFeePercentage`. */
   creatorTradingFeePercentage: number;
+  /** Expected `poolCreationFee` in lamports; null = `spec.poolCreationFeeSol`. */
+  poolCreationFeeLamports: bigint | null;
   /** The coin config must give the creator (FORGE) permanently locked liquidity. */
   requireCreatorLockedLiquidity: boolean;
 }
@@ -349,14 +353,16 @@ export function validateLaunchpadConfigParams(
 ): ValidationResult {
   return validateConfig(config, spec, {
     creatorTradingFeePercentage: spec?.coinCreatorSharePct,
+    poolCreationFeeLamports: null,
     requireCreatorLockedLiquidity: false,
   });
 }
 
 /**
  * Validates the launchpad coin config (e.g. $MOON): same rules as the launchpad config, except
- * the creator share is FORGE's (`FEES.forgeCreatorSharePct`) and part of the post-graduation
- * liquidity must be permanently locked for the creator.
+ * the creator share is FORGE's (`FEES.forgeCreatorSharePct`), part of the post-graduation
+ * liquidity must be permanently locked for the creator, and there is no pool creation fee (the
+ * client would pay its own coin's fee to itself, minus the protocol share).
  */
 export function validateLaunchpadCoinConfigParams(
   config: ConfigCandidate,
@@ -364,6 +370,7 @@ export function validateLaunchpadCoinConfigParams(
 ): ValidationResult {
   return validateConfig(config, spec, {
     creatorTradingFeePercentage: FEES.forgeCreatorSharePct,
+    poolCreationFeeLamports: 0n,
     requireCreatorLockedLiquidity: true,
   });
 }
@@ -384,7 +391,7 @@ function validateConfig(
   collectTradingFee(config, spec, c);
   collectModes(config, c);
   collectMigration(config, c);
-  collectPoolCreationFee(config, spec, c);
+  collectPoolCreationFee(config, spec, expected, c);
   collectCreatorTradingFee(config, expected, c);
   collectLiquidity(config, expected, c);
 
@@ -705,7 +712,12 @@ function collectMigration(config: ConfigCandidate, c: Collector): void {
   }
 }
 
-function collectPoolCreationFee(config: ConfigCandidate, spec: LaunchpadSpec, c: Collector): void {
+function collectPoolCreationFee(
+  config: ConfigCandidate,
+  spec: LaunchpadSpec,
+  expectedConfig: ExpectedConfig,
+  c: Collector,
+): void {
   const field = 'poolCreationFee';
   const lamports = toBigInt(config.poolCreationFee);
   if (lamports === null || lamports < 0n) {
@@ -719,6 +731,16 @@ function collectPoolCreationFee(config: ConfigCandidate, spec: LaunchpadSpec, c:
     !c.violations.some((v) => v.code === 'POOL_CREATION_FEE_OUT_OF_SDK_BOUNDS' && v.field === field)
   ) {
     c.add(field, 'POOL_CREATION_FEE_OUT_OF_SDK_BOUNDS', `poolCreationFee: ${sdkReason}`);
+  }
+  if (expectedConfig.poolCreationFeeLamports !== null) {
+    if (lamports !== expectedConfig.poolCreationFeeLamports) {
+      c.add(
+        field,
+        'POOL_CREATION_FEE_MISMATCH',
+        `poolCreationFee must be ${expectedConfig.poolCreationFeeLamports} lamports on this config`,
+      );
+    }
+    return;
   }
   const expected = spec ? specPoolCreationFeeLamports(spec) : null;
   if (expected === null || lamports !== expected) {

@@ -93,6 +93,13 @@ describe('signOwnerTransaction', () => {
   it.each([
     ['another fee payer', () => launchTx({ payer: Keypair.generate().publicKey }), /fee payer/],
     ['a missing FORGE signature', () => launchTx({ presign: false }), /missing a FORGE signature/],
+    // The transaction must do what the summary in the same response says.
+    [
+      'a first buy other than the summary',
+      () => launchTx({ firstBuyLamports: 2n }),
+      /first buy amount/,
+    ],
+    ['another coin than the summary', () => launchTx({ name: 'Other' }), /coin name/],
   ])('refuses %s before the wallet is asked to sign', async (_label, build, message) => {
     const sign = vi.fn();
     setWallet(sign);

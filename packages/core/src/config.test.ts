@@ -181,9 +181,14 @@ describe.each(builders)('%s config: spec field mapping', (_kind, build) => {
     [0.001, 1_000_000n],
     [0.05, 50_000_000n],
     [1, 1_000_000_000n],
-  ])('maps poolCreationFeeSol %d to %s lamports', (sol, lamports) => {
-    expect(numerator(build(makeSpec({ poolCreationFeeSol: sol })).poolCreationFee)).toBe(lamports);
-  });
+  ])(
+    'maps poolCreationFeeSol %d to %s lamports (none on the launchpad coin config)',
+    (sol, lamports) => {
+      expect(numerator(build(makeSpec({ poolCreationFeeSol: sol })).poolCreationFee)).toBe(
+        _kind === 'launchpadCoin' ? 0n : lamports,
+      );
+    },
+  );
 
   it('migrates to DAMM v2 at exactly 10 SOL, immutable metadata, first swap at minimum fee', () => {
     const params = build(makeSpec());
@@ -261,10 +266,11 @@ describe.each(builders)('%s config: bounds', (_kind, build) => {
   );
 
   it('rejects a pool creation fee with more precision than a lamport', () => {
-    // Passes the zod bound (between 0.001 and 1) but is not a whole number of lamports.
-    expect(
-      violationCodes(() => build(makeSpec({ poolCreationFeeSol: 0.0010000000001 }))),
-    ).toContain('POOL_CREATION_FEE_OUT_OF_CLIENT_BOUNDS');
+    // Within the bound (between 0.001 and 1) but not a whole number of lamports: the shared
+    // schema refuses it (at most 9 decimals), before core's own lamport check.
+    expect(violationCodes(() => build(makeSpec({ poolCreationFeeSol: 0.0010000000001 })))).toEqual([
+      'SPEC_INVALID',
+    ]);
   });
 
   it('rejects an owner wallet that is not a public key', () => {
@@ -382,6 +388,50 @@ describe('buildConfigParams', () => {
       validateLaunchpadCoinConfigParams(buildConfigParams(spec, 'launchpadCoin'), spec),
     ).toEqual({ ok: true, violations: [] });
   });
+
+  // The launchpad coin is launched after both configs exist: a coin the launch transaction
+  // cannot hold must be refused before any config is built.
+  describe('refuses a launchpad coin that cannot be launched, for both kinds', () => {
+    const longest = makeSpec({
+      launchpadCoin: { ...makeSpec().launchpadCoin, name: 'N'.repeat(32), symbol: 'S'.repeat(10) },
+    });
+    const uri = (bytes: number) => `https://example.com/${'a'.repeat(bytes - 25)}.json`;
+
+    it.each(['launchpad', 'launchpadCoin'] as const)(
+      '%s: name + symbol + URI over budget',
+      (kind) => {
+        expect(() => buildConfigParams(longest, kind, { metadataUri: uri(106) })).not.toThrow();
+        expect(
+          violationCodes(() => buildConfigParams(longest, kind, { metadataUri: uri(107) })),
+        ).toEqual(['LAUNCH_METADATA_TOO_LONG']);
+        // Without the URI, the name and symbol alone always fit.
+        expect(() => buildConfigParams(longest, kind)).not.toThrow();
+      },
+    );
+
+    it.each(['launchpad', 'launchpadCoin'] as const)('%s: a URI the launch refuses', (kind) => {
+      for (const metadataUri of ['http://example.com/a.json', 'https://EXAMPLE.com/a.json']) {
+        expect(violationCodes(() => buildConfigParams(makeSpec(), kind, { metadataUri }))).toEqual([
+          'SPEC_INVALID',
+        ]);
+      }
+    });
+
+    it('buildCreateConfigTx refuses it before any network call', async () => {
+      const connection = mockConnection();
+      await expect(
+        buildCreateConfigTx({
+          connection: connection as unknown as Connection,
+          spec: longest,
+          kind: 'launchpad',
+          metadataUri: uri(107),
+          config: Keypair.generate().publicKey,
+          payer: Keypair.generate().publicKey,
+        }),
+      ).rejects.toThrow(ValidationError);
+      expect(connection.calls).toEqual([]);
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------------------------
@@ -478,7 +528,8 @@ describe('buildCreateConfigTx', () => {
         kind === 'launchpadCoin' ? FEES.forgeCreatorSharePct : 10,
       );
       expect(numerator(sent.migrationQuoteThreshold)).toBe(MIGRATION_THRESHOLD_LAMPORTS);
-      expect(numerator(sent.poolCreationFee)).toBe(50_000_000n);
+      // The client's fee on its site's coins; none on its own coin (it would pay itself).
+      expect(numerator(sent.poolCreationFee)).toBe(kind === 'launchpadCoin' ? 0n : 50_000_000n);
       expect(sent.enableFirstSwapWithMinFee).toBe(true);
       expect(toJson(result.params)).toBe(toJson(buildConfigParams(spec, kind)));
     },

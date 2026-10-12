@@ -1,3 +1,5 @@
+import { LaunchTransactionCheckError, verifyLaunchCoinTransaction } from '@forge/core/launch-check';
+import type { OwnerTransactionSummary } from '@forge/shared';
 import { PublicKey, VersionedTransaction } from '@solana/web3.js';
 
 /*
@@ -7,7 +9,7 @@ import { PublicKey, VersionedTransaction } from '@solana/web3.js';
  * sign something else: another fee payer, another amount, another receiver, another program.
  *
  * The ids below are public protocol constants (identical on devnet and mainnet), not FORGE
- * addresses. FORGE's cashbox comes from NEXT_PUBLIC_FORGE_CASHBOX_WALLET when it is set.
+ * addresses. FORGE's cashbox comes from NEXT_PUBLIC_FORGE_CASHBOX_WALLET (required in production).
  */
 
 export const SYSTEM_PROGRAM_ID = '11111111111111111111111111111111';
@@ -196,7 +198,7 @@ export interface ExpectedPayment {
   /** Exact quoted amount. */
   lamports: bigint;
   jobId: string;
-  /** FORGE's cashbox when known (NEXT_PUBLIC_FORGE_CASHBOX_WALLET); otherwise not pinned. */
+  /** FORGE's cashbox (NEXT_PUBLIC_FORGE_CASHBOX_WALLET); null = not pinned (never in production). */
   cashbox: string | null;
 }
 
@@ -257,10 +259,19 @@ export function verifyPaymentTransaction(tx: VersionedTransaction, expected: Exp
   if (memos !== 1) fail('The payment must contain exactly one memo.');
 }
 
-/** NEXT_PUBLIC_FORGE_CASHBOX_WALLET: null when unset; refuses payments when it is invalid. */
+/**
+ * NEXT_PUBLIC_FORGE_CASHBOX_WALLET: refuses payments when it is invalid, and when it is unset in a
+ * production build (fail closed: without it the recipient of a payment is not pinned). Null
+ * (recipient not pinned) only outside production, for development and tests.
+ */
 export function configuredCashbox(): string | null {
   const raw = process.env.NEXT_PUBLIC_FORGE_CASHBOX_WALLET;
-  if (!raw || raw.trim() === '') return null;
+  if (!raw || raw.trim() === '') {
+    if (process.env.NODE_ENV === 'production') {
+      fail('Payments are misconfigured on this site (no cashbox address).');
+    }
+    return null;
+  }
   const parsed = parseAddress(raw);
   if (!parsed) fail('Payments are misconfigured on this site (invalid cashbox address).');
   return parsed;
@@ -394,11 +405,25 @@ export function verifyPartnerClaimTransaction(
 // Launch
 // ---------------------------------------------------------------------------------------------
 
+export interface ExpectedLaunch {
+  /** The signed-in wallet: fee payer, rent payer, buyer and receiver of the first buy. */
+  wallet: string;
+  /** The summary of the same server response, shown to the owner: what the launch must do. */
+  summary: Pick<OwnerTransactionSummary, 'firstBuyLamports' | 'coinName' | 'coinSymbol'>;
+}
+
 /**
  * The launch transaction prepared by FORGE: paid by the wallet, already signed by everyone else
- * (FORGE creator wallet, coin mint), only the wallet's signature missing.
+ * (FORGE creator wallet, coin mint), only the wallet's signature missing, and exactly the launch
+ * @forge/core builds (`verifyLaunchCoinTransaction`: durable nonce advance by the creator, the
+ * pool creation of this coin, a first buy of exactly the summary's amount paid by and delivered to
+ * the wallet, SOL moved only between the wallet and its own wrapped SOL account, the creator and
+ * mint signatures valid, nothing else).
+ *
+ * The response carries neither the config, the mint nor the creator wallet: they are checked to
+ * be consistent within the transaction, not against independent values.
  */
-export function verifyLaunchTransaction(tx: VersionedTransaction, expected: { wallet: string }) {
+export function verifyLaunchTransaction(tx: VersionedTransaction, expected: ExpectedLaunch) {
   const decoded = decodeTransaction(tx);
   if (decoded.feePayer !== expected.wallet) {
     fail('The launch transaction fee payer is not your wallet.');
@@ -409,6 +434,21 @@ export function verifyLaunchTransaction(tx: VersionedTransaction, expected: { wa
     } else if (!decoded.signed.has(signer)) {
       fail('The launch transaction is missing a FORGE signature.');
     }
+  }
+  const { summary } = expected;
+  if (!/^\d+$/.test(summary.firstBuyLamports)) fail('The launch summary is invalid.');
+  try {
+    verifyLaunchCoinTransaction(tx, {
+      owner: expected.wallet,
+      firstBuyLamports: BigInt(summary.firstBuyLamports),
+      name: summary.coinName,
+      symbol: summary.coinSymbol,
+    });
+  } catch (err) {
+    if (err instanceof LaunchTransactionCheckError) {
+      fail(`The launch transaction does not match the launch you are approving: ${err.message}.`);
+    }
+    throw err;
   }
 }
 

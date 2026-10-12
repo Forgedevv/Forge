@@ -283,10 +283,42 @@ describe('validateLaunchpadConfigParams: valid configs', () => {
   });
 
   it('accepts the coin config with FORGE creator share and locked creator liquidity', () => {
-    const config = makeConfig({ creatorTradingFeePercentage: FEES.forgeCreatorSharePct });
+    const config = makeConfig({
+      creatorTradingFeePercentage: FEES.forgeCreatorSharePct,
+      poolCreationFeeSol: 0,
+    });
     expect(
       validateLaunchpadCoinConfigParams(config, makeSpec({ coinCreatorSharePct: 10 })).violations,
     ).toEqual([]);
+  });
+
+  it('requires no pool creation fee on the coin config, whatever the spec fee', () => {
+    const forge = { creatorTradingFeePercentage: FEES.forgeCreatorSharePct };
+    for (const sol of [0, 0.001, 0.05, 1]) {
+      const spec = makeSpec({ poolCreationFeeSol: sol });
+      expect(
+        validateLaunchpadCoinConfigParams(makeConfig({ ...forge, poolCreationFeeSol: 0 }), spec)
+          .violations,
+      ).toEqual([]);
+    }
+    // The spec fee on the coin config: the client would pay its own coin's fee to itself.
+    expect(
+      codes(
+        validateLaunchpadCoinConfigParams(
+          makeConfig({ ...forge, poolCreationFeeSol: 0.05 }),
+          makeSpec({ poolCreationFeeSol: 0.05 }),
+        ),
+      ),
+    ).toEqual(['POOL_CREATION_FEE_MISMATCH']);
+    // The launchpad config keeps the spec fee.
+    expect(
+      codes(
+        validateLaunchpadConfigParams(
+          makeConfig({ poolCreationFeeSol: 0 }),
+          makeSpec({ poolCreationFeeSol: 0.05 }),
+        ),
+      ),
+    ).toEqual(['POOL_CREATION_FEE_MISMATCH']);
   });
 });
 
@@ -605,6 +637,7 @@ describe('validateLaunchpadConfigParams: creator share, liquidity, accounts, tok
       creatorLocked: 0,
       partnerLocked: 100,
       creatorTradingFeePercentage: 10,
+      poolCreationFeeSol: 0,
     });
     expect(codes(validateLaunchpadCoinConfigParams(config, makeSpec()))).toEqual([
       'CREATOR_TRADING_FEE_MISMATCH',

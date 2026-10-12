@@ -7,6 +7,7 @@ import { createJobsHandlers, type JobsHandlers } from '../handlers';
 import { createOwnerTransactionService } from '../owner-transaction';
 import { createJobsService } from '../service';
 import { ctx, harness, launchTransaction, ownerSign, request, spec } from './fakes';
+import { coinLaunch, type CoinLaunchOptions } from './launch-fixture';
 
 const ownerKey = Keypair.generate();
 const owner = ownerKey.publicKey.toBase58();
@@ -29,9 +30,17 @@ beforeEach(() => {
   });
 });
 
-function seed(overrides: Parameters<typeof h.store.addJob>[1] = {}) {
-  const launch = launchTransaction(ownerKey);
-  const launchpad = h.store.addLaunchpad(owner, { status: 'draft' });
+/** A job waiting for the owner's signature of the launch core builds for its launchpad. */
+function seed(
+  overrides: Parameters<typeof h.store.addJob>[1] = {},
+  options: CoinLaunchOptions = {},
+) {
+  const launch = coinLaunch(ownerKey, options);
+  const launchpad = h.store.addLaunchpad(owner, {
+    status: 'draft',
+    launchpadCoinConfig: launch.config.toBase58(),
+    launchpadCoinMint: launch.mint.publicKey.toBase58(),
+  });
   const job = h.store.addJob(launchpad.id, {
     status: 'awaiting_owner_signature',
     ownerTx: launch.base64,
@@ -146,6 +155,42 @@ describe('GET /api/jobs/:id/owner-transaction', () => {
     const res = await get(job.id);
     expect(res.status).toBe(403);
     expect(await res.json()).toMatchObject({ code: 'WRONG_WALLET' });
+  });
+
+  // Before: only the fee payer and the missing signer were checked, so any transaction paid by the
+  // owner and pre-signed by two keys was handed out for signature.
+  it.each<
+    [string, CoinLaunchOptions, ((lp: { launchpadCoinMint: string | null }) => object) | null]
+  >([
+    ['a first buy other than the spec', { firstBuyLamports: 1n }, null],
+    ['another coin name', { name: 'Mars' }, null],
+    [
+      'SOL sent to someone else',
+      {
+        extra: (payer) => [
+          SystemProgram.transfer({
+            fromPubkey: payer,
+            toPubkey: Keypair.generate().publicKey,
+            lamports: 1,
+          }),
+        ],
+      },
+      null,
+    ],
+    ['another mint than the launchpad row', {}, () => ({ launchpadCoinMint: other })],
+    ['no coin config or mint on the row yet', {}, () => ({ launchpadCoinConfig: null })],
+  ])('never hands out a stored launch with %s', async (_label, options, rowChange) => {
+    const { launchpad, job, launch } = seed({}, options);
+    if (rowChange) h.store.launchpads.set(launchpad.id, { ...launchpad, ...rowChange(launchpad) });
+    const res = await get(job.id);
+    expect(res.status).toBe(503);
+    expect(await res.json()).toMatchObject({ code: 'OWNER_TX_UNAVAILABLE' });
+    expect(h.logger.entries.find((e) => e.event === 'owner_tx.unusable')?.fields.reason).toMatch(
+      /^launch_(check_mismatch|addresses_missing)$/,
+    );
+    // Nor accepted signed: nothing is sent.
+    expect((await post(job.id, ownerSign(launch.base64, ownerKey))).status).toBe(503);
+    expect(h.chain.calls).not.toContain('send');
   });
 });
 
