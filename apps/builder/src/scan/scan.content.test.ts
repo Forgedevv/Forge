@@ -37,6 +37,25 @@ describe('Solana addresses (diff-aware)', () => {
     ).toContain('solana-address');
   });
 
+  it('allows comment separators made of one repeated character', () => {
+    // 43 dashes decode (base64url) to exactly 32 bytes: a separator, not an address.
+    const dashes = '-'.repeat(43);
+    const css = `/* About ${dashes} */\n.a { color: red; }\n/* ${'_'.repeat(86)} */\n`;
+    expect(rulesOf(scan([added('src/theme/x.css', css)]))).not.toContain('solana-address-encoded');
+    expect(scanComponent(`// ${'='.repeat(40)}\nexport const A = 1;`)).not.toContain(
+      'solana-address-encoded',
+    );
+  });
+
+  it('still blocks an encoded address whose characters are not all the same', () => {
+    const b64 = Buffer.from(ADDR_BYTES).toString('base64');
+    expect(scanComponent(`export const K = '${b64}';`)).toContain('solana-address-encoded');
+    const almost = `${'-'.repeat(42)}A`;
+    expect(rulesOf(scan([added('src/theme/x.css', `/* ${almost} */`)]))).toContain(
+      'solana-address-encoded',
+    );
+  });
+
   it('ignores an address already present in the baseline file', () => {
     const before = `export const MINT = '${ADDR}';\nexport const A = 1;\n`;
     const after = `export const A = 2;\nexport const MINT = '${ADDR}';\n`;
@@ -498,6 +517,18 @@ describe('other file types', () => {
         ),
       ]),
     ).toEqual({ ok: true });
+  });
+
+  it('blocks the legacy CSS behavior property but allows scroll-behavior', () => {
+    expect(
+      rulesOf(scan([added('src/theme/x.css', '.a { behavior: url(#default#x); }')])),
+    ).toContain('html-active-content');
+    expect(rulesOf(scan([added('src/theme/x.css', '.a{BEHAVIOR :url(x.htc)}')]))).toContain(
+      'html-active-content',
+    );
+    expect(scan([added('src/theme/x.css', 'html { scroll-behavior: smooth; }')])).toEqual({
+      ok: true,
+    });
   });
 
   it('blocks active HTML in Markdown', () => {

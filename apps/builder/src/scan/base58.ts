@@ -152,6 +152,9 @@ export function findEncodedAddresses(text: string): EncodedHit[] {
     const index = m.index ?? 0;
     // Plain words and camelCase identifiers are not encoded data.
     if (CAMEL_WORDS_RE.test(token)) continue;
+    // One character repeated (a `/* ------ */` comment separator) decodes to a fixed byte pattern
+    // that nobody can choose, so it cannot carry an address.
+    if (/^(.)\1+=*$/.test(token)) continue;
     if (/^[0-9a-fA-F]+$/.test(token)) {
       if (token.length === 64 || token.length === 128) {
         hits.push({

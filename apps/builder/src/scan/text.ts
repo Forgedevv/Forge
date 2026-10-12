@@ -357,7 +357,7 @@ export function cssFindings(text: string, config: ResolvedConfig): Finding[] {
     if (!v.ok)
       out.push({ rule: v.rule, key: `css:url:${u.value}`, line, reason: `CSS URL: ${v.reason}` });
   }
-  for (const m of t.matchAll(/expression\s*\(|behavior\s*:|-moz-binding\s*:/gi)) {
+  for (const m of t.matchAll(/expression\s*\(|(?<![\w-])behavior\s*:|-moz-binding\s*:/gi)) {
     out.push({
       rule: 'html-active-content',
       key: `css:active:${m[0]}`,
