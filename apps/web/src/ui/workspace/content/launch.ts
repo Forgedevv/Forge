@@ -8,6 +8,7 @@ export const launchCopy = {
   network: 'Fees and account deposits',
   networkHint: 'Network fee, account rents, metadata and pool creation fees.',
   total: 'Total from your wallet',
+  balanceNeeded: 'Balance needed in your wallet',
   simulationFailed: 'This launch could not be simulated.',
   simulationFailedBody:
     'A simulation of this exact transaction failed, so it may fail on-chain. The fees and deposits shown are a minimum.',

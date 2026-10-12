@@ -89,6 +89,21 @@ describe('SupabaseRoutesStore owner filters', () => {
     ]);
   });
 
+  // Before: owner_tx_details was never read, so the owner-transaction routes had no stored
+  // launch accounts to pin.
+  it('reads the launch accounts stored with the owner transaction, raw (validated by the route)', async () => {
+    const details = { creator: 'c', anything: 1 };
+    const { store, calls } = fakeDb([
+      { data: { ...JOB, owner_tx_details: details, launchpads: LP } },
+      { data: { ...JOB, launchpads: LP } },
+    ]);
+    expect((await store.getOwnedJob('j1', W))?.job.ownerTxDetails).toEqual(details);
+    // A row written before the column existed.
+    expect((await store.getOwnedJob('j1', W))?.job.ownerTxDetails).toBeNull();
+    const select = calls[0]!.ops.find(([op]) => op === 'select')![1][0] as string;
+    expect(select.split(/,\s*|\(/)).toContain('owner_tx_details');
+  });
+
   it('drops a row whose launchpad belongs to someone else (defense in depth)', async () => {
     const { store } = fakeDb([{ data: { ...JOB, launchpads: { ...LP, owner_wallet: 'other' } } }]);
     expect(await store.getOwnedJob('j1', W)).toBeNull();

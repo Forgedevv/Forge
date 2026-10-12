@@ -184,5 +184,13 @@ export function coinLaunch(owner: Keypair, o: CoinLaunchOptions = {}) {
   const base64 = tx
     .serialize({ requireAllSignatures: false, verifySignatures: false })
     .toString('base64');
-  return { tx, base64, creator, mint, config, nonceAccount, metadataUri };
+  // The signer's report of the launch accounts, as the builder stores it in jobs.owner_tx_details.
+  const details = {
+    config: config.toBase58(),
+    pool: pool.toBase58(),
+    creator: creator.publicKey.toBase58(),
+    nonceAccount: nonceAccount.toBase58(),
+    metadataUri,
+  };
+  return { tx, base64, creator, mint, config, nonceAccount, metadataUri, pool, details };
 }

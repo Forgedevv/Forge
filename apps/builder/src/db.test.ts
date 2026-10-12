@@ -98,6 +98,31 @@ describe('createSupabaseJobsDb', () => {
     });
   });
 
+  it('writes the launch transaction and its accounts in the same conditional update', async () => {
+    const { db, call } = setup(() => json([jobRow({ status: 'awaiting_owner_signature' })]));
+    const details = {
+      config: 'So11111111111111111111111111111111111111112',
+      pool: 'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL',
+      creator: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
+      nonceAccount: '9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin',
+      metadataUri: 'https://forge.test/api/coin-meta/moonpad',
+    };
+    await db.completeStep('job-1', 'w1', 'onchain_setup', 'awaiting_owner_signature', {
+      owner_tx: 'AQAB',
+      owner_tx_details: details,
+    });
+    expect(call().url).toBe(
+      `${URL_BASE}/rest/v1/jobs?id=eq.job-1&locked_by=eq.w1&status=eq.onchain_setup`,
+    );
+    expect(call().body).toEqual({
+      owner_tx: 'AQAB',
+      owner_tx_details: details,
+      status: 'awaiting_owner_signature',
+      locked_by: null,
+      locked_at: null,
+    });
+  });
+
   it('returns null when the conditional update matched nothing (lock lost)', async () => {
     const { db } = setup(() => json([]));
     expect(await db.completeStep('j', 'w1', 'building', 'preview_ready', {})).toBeNull();

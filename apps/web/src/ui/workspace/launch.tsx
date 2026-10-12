@@ -24,6 +24,19 @@ import { Muse } from '../muse';
 /** The launch transaction is confirmed once the job reached one of these statuses. */
 const SIGNED_STATUSES: ReadonlySet<JobStatus> = new Set(['owner_signed', 'deploying', 'live']);
 
+/** One unit of the 4 decimals `formatSol` shows by default (0.0001 SOL). */
+const DISPLAY_STEP_LAMPORTS = 100_000n;
+
+/**
+ * The balance the wallet must hold, rounded up to the displayed precision: rounding it to the
+ * nearest value could show less than the launch needs.
+ */
+function balanceNeededForDisplay(lamports: string): string {
+  if (!/^\d+$/.test(lamports)) return lamports;
+  const steps = (BigInt(lamports) + DISPLAY_STEP_LAMPORTS - 1n) / DISPLAY_STEP_LAMPORTS;
+  return (steps * DISPLAY_STEP_LAMPORTS).toString();
+}
+
 export function LaunchScreen({
   jobId,
   initialPhase = 'idle',
@@ -143,6 +156,14 @@ export function LaunchScreen({
                   ).toString()}
                 />
               </div>
+              {summary.ownerRequiredBalanceLamports !== undefined && (
+                <div>
+                  <p>{copy.balanceNeeded}</p>
+                  <Amount
+                    lamports={balanceNeededForDisplay(summary.ownerRequiredBalanceLamports)}
+                  />
+                </div>
+              )}
             </div>
             <p className="fw-caption">{copy.networkHint}</p>
             {!simulated && (

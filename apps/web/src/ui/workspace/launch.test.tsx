@@ -1,6 +1,7 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createMockController } from '../mocks/client';
+import { ownerSummary } from '../mocks/fixtures';
 import { LaunchScreen } from './launch';
 import { WorkspaceProvider } from './provider';
 import { launchCopy as copy } from './content/launch';
@@ -25,8 +26,9 @@ async function advance(ms: number) {
   });
 }
 
-function mount(scenario: string) {
+function mount(scenario: string, prepare?: (c: ReturnType<typeof createMockController>) => void) {
   const controller = createMockController(scenario);
+  prepare?.(controller);
   const sign = vi.spyOn(controller.client, 'signOwnerTransaction');
   render(
     <WorkspaceProvider controller={controller}>
@@ -46,6 +48,32 @@ describe('launch review', () => {
     expect(screen.queryByText('Estimated network fee')).not.toBeInTheDocument();
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Sign and launch/ })).toBeEnabled();
+  });
+
+  it('shows no required balance when the server did not compute it', async () => {
+    mount('launch:ready');
+    await advance(500);
+    expect(screen.getByText(copy.total)).toBeInTheDocument();
+    expect(screen.queryByText(copy.balanceNeeded)).not.toBeInTheDocument();
+  });
+
+  // Before: the balance the wallet must hold (first buy, fees and the temporary WSOL deposit) was
+  // in the summary but never shown, so a wallet holding just the total could fail the launch.
+  it('shows the balance needed in the wallet, rounded up to the displayed precision', async () => {
+    mount('launch:ready', (controller) => {
+      vi.spyOn(controller.client, 'getOwnerTransactionSummary').mockResolvedValue({
+        ...ownerSummary,
+        firstBuyLamports: '500000000',
+        estimatedNetworkFeeLamports: '20015000',
+        // 0.52204 SOL: shown 0.5221, never rounded down to 0.522.
+        ownerRequiredBalanceLamports: '522040000',
+        simulation: 'ok',
+      });
+    });
+    await advance(500);
+    const label = screen.getByText(copy.balanceNeeded);
+    expect(label.parentElement).toHaveTextContent(`${copy.balanceNeeded}0.5221 SOL`);
+    expect(screen.queryByText('0.522 SOL')).not.toBeInTheDocument();
   });
 
   it.each([

@@ -151,6 +151,7 @@ export class MemoryRoutesStore implements RoutesStore {
       request: null,
       previewUrl: null,
       ownerTx: null,
+      ownerTxDetails: null,
       error: null,
       createdAt: at,
       updatedAt: at,

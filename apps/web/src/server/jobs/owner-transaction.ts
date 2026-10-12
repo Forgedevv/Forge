@@ -11,6 +11,7 @@ import {
   type VerifiedLaunchCoinTransaction,
 } from '@forge/core';
 import {
+  JobOwnerTxDetails,
   LaunchpadSpec,
   OwnerTransactionLaunch,
   type JobStatus,
@@ -27,13 +28,18 @@ import type { OwnedJob, RoutesStore } from './store';
  * The client's launch signature (docs/INTERFACES.md §4 and §6; devnet test 3).
  *
  * The signer prepares the launch transaction (pool creation + the client's first buy, durable
- * nonce), signs it as creator and mint, and the builder stores it in `jobs.owner_tx`. Here:
+ * nonce), signs it as creator and mint, and the builder stores it in `jobs.owner_tx`, with the
+ * launch accounts the signer reported (creator wallet, durable nonce account, metadata URI, coin
+ * config, pool) in `jobs.owner_tx_details`. Here:
  *
  * GET  — hands that exact transaction to the owner, with a summary (coin, first buy, what the
  *        owner pays besides it, expected wallet) and the launch accounts the browser pins
  *        (`launch`), after checking it is complete except for the owner's signature, that the
  *        owner is its fee payer, and that it is exactly the launch of this launchpad's coin
- *        (`verifyLaunchCoinTransaction` of @forge/core).
+ *        (`verifyLaunchCoinTransaction` of @forge/core) with the stored launch accounts (config
+ *        and mint of the launchpad row, the others from `owner_tx_details`), never accounts read
+ *        back from the transaction. A row written before `owner_tx_details` existed falls back to
+ *        the accounts found consistent in the transaction (`owner_tx.details_missing`).
  * POST — receives the owner-signed copy and accepts it only if it is the stored transaction byte
  *        for byte with every signature valid (`assertSignedCopyOf` of @forge/core): any other
  *        transaction is refused. It is sent through the server RPC, confirmed by polling, and the
@@ -54,9 +60,9 @@ export interface OwnerTransactionView {
   transaction: string;
   summary: OwnerTransactionSummary;
   /**
-   * The accounts the browser passes to `verifyLaunchCoinTransaction` before the owner signs:
-   * config and mint from the launchpad row (the transaction was checked against them), creator
-   * wallet, durable nonce account and metadata URI as verified in the stored transaction.
+   * The accounts the browser passes to `verifyLaunchCoinTransaction` before the owner signs, all
+   * of which the stored transaction was checked against: config and mint from the launchpad row,
+   * creator wallet, durable nonce account and metadata URI from `jobs.owner_tx_details`.
    */
   launch: OwnerTransactionLaunch;
   /**
@@ -120,12 +126,28 @@ export function createOwnerTransactionService(
   }
 
   /**
+   * The launch accounts stored with the transaction (`jobs.owner_tx_details`), validated. Null on
+   * a row written before they were stored: logged once per request, the caller falls back.
+   */
+  function storedDetails(owned: OwnedJob): JobOwnerTxDetails | null {
+    const raw = owned.job.ownerTxDetails;
+    if (raw === null || raw === undefined) {
+      logger.log('warn', 'owner_tx.details_missing', { jobId: owned.job.id });
+      return null;
+    }
+    const details = JobOwnerTxDetails.safeParse(raw);
+    if (!details.success) unavailable(owned, 'launch_details_invalid');
+    return details.data;
+  }
+
+  /**
    * The stored transaction, checked: decodes, present signatures valid, the owner is the fee
    * payer and the only missing signer, and it is exactly the launch of this launchpad's coin
    * (`verifyLaunchCoinTransaction` of @forge/core): the launchpad coin config and mint of the
-   * row, the coin name and symbol and the exact first buy of the spec, SOL moved only between the
-   * owner and its own wrapped SOL account, nothing else. Otherwise it is never handed out.
-   * Returns it with the launch accounts the browser pins (`OwnerTransactionLaunch`).
+   * row, the creator wallet, durable nonce account and metadata URI stored with it, the pool of
+   * that config and mint, the coin name and symbol and the exact first buy of the spec, SOL moved
+   * only between the owner and its own wrapped SOL account, nothing else. Otherwise it is never
+   * handed out. Returns it with the launch accounts the browser pins (`OwnerTransactionLaunch`).
    */
   function storedTransaction(
     owned: OwnedJob,
@@ -148,6 +170,10 @@ export function createOwnerTransactionService(
     }
     const { launchpadCoinConfig, launchpadCoinMint } = owned.launchpad;
     if (!launchpadCoinConfig || !launchpadCoinMint) unavailable(owned, 'launch_addresses_missing');
+    const details = storedDetails(owned);
+    if (details !== null && details.config !== launchpadCoinConfig) {
+      unavailable(owned, 'launch_details_mismatch');
+    }
     let verified: VerifiedLaunchCoinTransaction;
     try {
       verified = verifyLaunchCoinTransaction(tx, {
@@ -157,6 +183,13 @@ export function createOwnerTransactionService(
         mint: launchpadCoinMint,
         name: spec.launchpadCoin.name,
         symbol: spec.launchpadCoin.symbol,
+        ...(details === null
+          ? {}
+          : {
+              creator: details.creator,
+              nonceAccount: details.nonceAccount,
+              metadataUri: details.metadataUri,
+            }),
       });
     } catch (error) {
       unavailable(
@@ -166,14 +199,18 @@ export function createOwnerTransactionService(
           : errorName(error),
       );
     }
-    // What the browser pins in turn. The creator wallet and the nonce account are not stored
-    // outside the signer: they are the ones the check above found consistent in the transaction.
+    // The pool is derived from the config and the mint: it must be the one the signer reported.
+    if (details !== null && verified.pool.toBase58() !== details.pool) {
+      unavailable(owned, 'launch_details_mismatch');
+    }
+    // What the browser pins in turn: the stored accounts. Only a row written before they were
+    // stored falls back to those the check above found consistent in the transaction.
     const launch = OwnerTransactionLaunch.safeParse({
       config: launchpadCoinConfig,
       mint: launchpadCoinMint,
-      creator: verified.creator.toBase58(),
-      nonceAccount: verified.nonceAccount.toBase58(),
-      metadataUri: verified.metadataUri,
+      creator: details?.creator ?? verified.creator.toBase58(),
+      nonceAccount: details?.nonceAccount ?? verified.nonceAccount.toBase58(),
+      metadataUri: details?.metadataUri ?? verified.metadataUri,
     });
     if (!launch.success) unavailable(owned, 'launch_details_invalid');
     return { tx, launch: launch.data };

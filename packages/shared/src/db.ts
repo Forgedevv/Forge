@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { FailedStage, JobStatus, JobType } from './jobs.js';
-import type { LaunchpadSpec } from './spec.js';
+import { SolanaAddress, type LaunchpadSpec } from './spec.js';
 
 /**
  * Row types of the Supabase tables (docs/INTERFACES.md §5). Column names are kept in snake_case.
@@ -64,6 +64,26 @@ export interface LaunchpadRow {
   created_at: Timestamptz | null;
 }
 
+/**
+ * `jobs.owner_tx_details` (jsonb): the public accounts of the launch transaction stored in
+ * `jobs.owner_tx`, as the signer reported them (`details` of `POST /v1/launch-coin/prepare`). The
+ * builder writes it in the same update as `owner_tx`; apps/web pins these accounts when it checks
+ * the stored transaction (`verifyLaunchCoinTransaction` of @forge/core) and hands them to the
+ * browser (`OwnerTransactionLaunch`), instead of reading them back from the transaction.
+ * `config` is the launchpad coin config. Null on rows written before migration 0009.
+ */
+export const JobOwnerTxDetails = z.object({
+  config: SolanaAddress,
+  pool: SolanaAddress,
+  /** FORGE creator wallet of the launchpad: pool creator and durable nonce authority. */
+  creator: SolanaAddress,
+  /** Durable nonce account of the launch transaction. */
+  nonceAccount: SolanaAddress,
+  /** Coin metadata URI written by the pool creation (https, kept exactly as sent). */
+  metadataUri: z.url({ protocol: /^https$/, error: 'Must be an https URL' }),
+});
+export type JobOwnerTxDetails = z.infer<typeof JobOwnerTxDetails>;
+
 export interface JobRow {
   id: string;
   launchpad_id: string;
@@ -78,6 +98,8 @@ export interface JobRow {
   preview_url: string | null;
   /** Partially signed launch transaction (base64) with a durable nonce. */
   owner_tx: string | null;
+  /** Launch accounts of `owner_tx` (jsonb, validate with `JobOwnerTxDetails` when reading). */
+  owner_tx_details: JobOwnerTxDetails | null;
   error: string | null;
   api_cost_usd: DbNumeric | null;
   /** Id of the worker holding the job. */

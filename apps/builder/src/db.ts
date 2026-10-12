@@ -5,6 +5,7 @@ import {
   JobStatus,
   JobType,
   type ActiveJobStatus,
+  type JobOwnerTxDetails,
   type JobRow,
 } from '@forge/shared';
 import { z } from 'zod';
@@ -19,10 +20,12 @@ import { z } from 'zod';
  * No SDK dependency: plain `fetch` against `/rest/v1`.
  */
 
-/** Fields the worker patches when a step succeeds. */
+/** Fields the worker patches when a step succeeds (one conditional update with the status). */
 export interface JobPatch {
   preview_url?: string;
   owner_tx?: string;
+  /** Launch accounts of `owner_tx`, always written together with it. */
+  owner_tx_details?: JobOwnerTxDetails;
 }
 
 /** The database operations of the worker. Implemented over PostgREST here, faked in tests. */

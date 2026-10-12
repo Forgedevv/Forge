@@ -126,9 +126,10 @@ const LaunchPrepareRequired = SignerLaunchPrepareResponse.pick({
 
 /**
  * `/v1/launch-coin/prepare` answer. The transaction and the mint are required and validated; the
- * informational `summary` and `details` (shown by the web, not used by the builder) are kept when
- * they match the shared schema and dropped one by one when they do not, so a newer signer adding
- * or reshaping them never breaks a launch. Unknown keys are dropped.
+ * optional `summary` and `details` are kept when they match the shared schema and dropped one by
+ * one when they do not. Unknown keys are dropped. The on-chain step then requires `details` (the
+ * launch accounts stored in `jobs.owner_tx_details`, pipeline/onchain.ts): a launch whose details
+ * are missing or reshaped is not stored.
  */
 export function parseLaunchPrepareResponse(json: unknown): SignerLaunchPrepareResponse {
   const full = SignerLaunchPrepareResponse.safeParse(json);

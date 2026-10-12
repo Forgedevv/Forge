@@ -10,6 +10,15 @@ import {
 } from './worker.js';
 import { FakeJobsDb } from './worker/fake-db.js';
 
+/** Launch accounts stored with the launch transaction `AQAB`. */
+const DETAILS = {
+  config: 'So11111111111111111111111111111111111111112',
+  pool: 'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL',
+  creator: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
+  nonceAccount: '9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin',
+  metadataUri: 'https://forge.test/api/coin-meta/moonpad',
+};
+
 const silent = () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() });
 const instantSleep = async () => {
   await Promise.resolve();
@@ -25,7 +34,8 @@ const okHandler = () =>
     if (job.status === 'building') {
       return { patch: { preview_url: 'https://preview.example.com/x' } };
     }
-    if (job.status === 'onchain_setup') return { patch: { owner_tx: 'AQAB' } };
+    if (job.status === 'onchain_setup')
+      return { patch: { owner_tx: 'AQAB', owner_tx_details: DETAILS } };
     return {};
   });
 
@@ -79,6 +89,7 @@ describe('job pickup', () => {
     expect(db.get('create')).toMatchObject({
       status: 'awaiting_owner_signature',
       owner_tx: 'AQAB',
+      owner_tx_details: DETAILS,
       locked_by: null,
     });
     expect(db.get('modify')).toMatchObject({ status: 'live', locked_by: null });
@@ -253,6 +264,46 @@ describe('failures and attempts', () => {
     expect(db.get('o')).toMatchObject({ status: 'failed', failed_stage: 'onchain' });
   });
 
+  // Before: an on-chain step could store owner_tx alone, leaving apps/web nothing but the
+  // transaction itself to read the launch accounts it pins from.
+  it('never stores owner_tx without valid owner_tx_details, and stores both in one update', async () => {
+    const db = new FakeJobsDb();
+    db.addJob({ id: 'none', status: 'approved', created_at: '2026-01-01T00:00:01.000Z' });
+    db.addJob({ id: 'bad', status: 'approved', created_at: '2026-01-01T00:00:02.000Z' });
+    db.addJob({ id: 'good', status: 'approved', created_at: '2026-01-01T00:00:03.000Z' });
+    const handler = handlerOf(async (job) => {
+      if (job.id === 'none') return { patch: { owner_tx: 'AQAB' } };
+      if (job.id === 'bad') {
+        return {
+          patch: {
+            owner_tx: 'AQAB',
+            owner_tx_details: { ...DETAILS, metadataUri: 'http://x.test' },
+          },
+        };
+      }
+      return { patch: { owner_tx: 'AQAB', owner_tx_details: { ...DETAILS, extra: 'dropped' } } };
+    });
+    const complete = vi.spyOn(db, 'completeStep');
+    const { worker } = makeWorker(db, handler, { concurrency: 3 });
+    await worker.tick();
+    await worker.idle();
+    for (const id of ['none', 'bad']) {
+      expect(db.get(id)).toMatchObject({
+        status: 'failed',
+        failed_stage: 'onchain',
+        owner_tx: null,
+        owner_tx_details: null,
+      });
+    }
+    expect(db.get('good')).toMatchObject({
+      status: 'awaiting_owner_signature',
+      owner_tx: 'AQAB',
+      owner_tx_details: DETAILS,
+    });
+    expect(complete).toHaveBeenCalledTimes(1);
+    expect(complete.mock.calls[0]![4]).toEqual({ owner_tx: 'AQAB', owner_tx_details: DETAILS });
+  });
+
   it('redacts secrets from the stored error', async () => {
     const db = new FakeJobsDb();
     db.addJob({ id: 'j1' });
@@ -424,7 +475,8 @@ describe('aborted handlers that keep running', () => {
     const gate = new Promise<void>((r) => (release = r));
     const handler = handlerOf(async (job) => {
       await gate;
-      if (job.status === 'onchain_setup') return { patch: { owner_tx: 'AQAB' } };
+      if (job.status === 'onchain_setup')
+        return { patch: { owner_tx: 'AQAB', owner_tx_details: DETAILS } };
       return { patch: { preview_url: 'https://p.example.com' } };
     });
     return { handler, release: () => release() };
