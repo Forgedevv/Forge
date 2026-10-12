@@ -107,6 +107,19 @@ describe('simple actions', () => {
     await expect(getOwnerTransactionSummary(id())).resolves.toMatchObject({
       simulation: 'unavailable',
     });
+    // The balance the wallet must hold reaches the launch screen as the server computed it.
+    mockFetch(() =>
+      json({
+        transaction: txB64(),
+        summary: { ...summary, ownerRequiredBalanceLamports: '102044280' },
+        simulation: 'ok',
+      }),
+    );
+    await expect(getOwnerTransactionSummary(id())).resolves.toEqual({
+      ...summary,
+      ownerRequiredBalanceLamports: '102044280',
+      simulation: 'ok',
+    });
   });
 
   it('reactivateLaunchpad posts to the reactivate route', async () => {

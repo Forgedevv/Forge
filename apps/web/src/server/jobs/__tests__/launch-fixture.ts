@@ -102,6 +102,42 @@ export function coinLaunch(owner: Keypair, o: CoinLaunchOptions = {}) {
   const wsol = ata(payer, WSOL);
   const coin = ata(payer, mint.publicKey);
 
+  const firstBuyInstructions = () => [
+    createAta(payer, mint.publicKey),
+    SystemProgram.transfer({ fromPubkey: payer, toPubkey: wsol, lamports: firstBuy }),
+    new TransactionInstruction({
+      programId: TOKEN,
+      keys: [meta(wsol, false, true)],
+      data: Buffer.from([17]),
+    }),
+    new TransactionInstruction({
+      programId: DBC,
+      keys: [
+        meta(poolAuthority),
+        meta(config),
+        meta(pool, false, true),
+        meta(wsol, false, true),
+        meta(coin, false, true),
+        meta(baseVault, false, true),
+        meta(quoteVault, false, true),
+        meta(mint.publicKey),
+        meta(WSOL),
+        meta(payer, true),
+        meta(TOKEN),
+        meta(TOKEN),
+        meta(DBC),
+        meta(eventAuthority),
+        meta(DBC),
+        meta(SYSVAR_INSTRUCTIONS_PUBKEY),
+      ],
+      data: Buffer.concat([Buffer.from(SWAP), u64(firstBuy), u64(1_000_000n)]),
+    }),
+    new TransactionInstruction({
+      programId: TOKEN,
+      keys: [meta(wsol, false, true), meta(payer, false, true), meta(payer, true)],
+      data: Buffer.from([9]),
+    }),
+  ];
   const tx = new Transaction({
     feePayer: payer,
     recentBlockhash: Keypair.generate().publicKey.toBase58(),
@@ -140,40 +176,8 @@ export function coinLaunch(owner: Keypair, o: CoinLaunchOptions = {}) {
         borshString(metadataUri),
       ]),
     }),
-    createAta(payer, mint.publicKey),
-    SystemProgram.transfer({ fromPubkey: payer, toPubkey: wsol, lamports: firstBuy }),
-    new TransactionInstruction({
-      programId: TOKEN,
-      keys: [meta(wsol, false, true)],
-      data: Buffer.from([17]),
-    }),
-    new TransactionInstruction({
-      programId: DBC,
-      keys: [
-        meta(poolAuthority),
-        meta(config),
-        meta(pool, false, true),
-        meta(wsol, false, true),
-        meta(coin, false, true),
-        meta(baseVault, false, true),
-        meta(quoteVault, false, true),
-        meta(mint.publicKey),
-        meta(WSOL),
-        meta(payer, true),
-        meta(TOKEN),
-        meta(TOKEN),
-        meta(DBC),
-        meta(eventAuthority),
-        meta(DBC),
-        meta(SYSVAR_INSTRUCTIONS_PUBKEY),
-      ],
-      data: Buffer.concat([Buffer.from(SWAP), u64(firstBuy), u64(1_000_000n)]),
-    }),
-    new TransactionInstruction({
-      programId: TOKEN,
-      keys: [meta(wsol, false, true), meta(payer, false, true), meta(payer, true)],
-      data: Buffer.from([9]),
-    }),
+    // The first buy (none when it is 0).
+    ...(firstBuy > 0n ? firstBuyInstructions() : []),
     ...(o.extra?.(payer) ?? []),
   );
   tx.partialSign(creator, mint);

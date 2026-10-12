@@ -76,14 +76,61 @@ describe('GET /api/jobs/:id/owner-transaction', () => {
     const body = (await res.json()) as Record<string, unknown>;
     expect(body.transaction).toBe(launch.base64);
     // 0.5 SOL first buy; simulated debit 0.52 SOL; network fee added on top (upper bound).
+    // Required balance: 0.5 SOL + 0.020015 SOL + the temporary WSOL account rent (2,039,280).
     expect(body.summary).toEqual({
       coinName: 'Moon',
       coinSymbol: 'MOON',
       firstBuyLamports: '500000000',
       estimatedNetworkFeeLamports: '20015000',
       ownerWallet: owner,
+      ownerRequiredBalanceLamports: '522054280',
     });
     expect(body.simulation).toBe('ok');
+  });
+
+  // Before: the summary never carried the balance the wallet must hold (the WSOL rent included).
+  it('fills the required balance with the token account rent read from the cluster', async () => {
+    const { job } = seed();
+    h.chain.tokenAccountRent = 3_000_000n;
+    const body = (await (await get(job.id)).json()) as {
+      summary: { estimatedNetworkFeeLamports: string; ownerRequiredBalanceLamports?: string };
+    };
+    expect(body.summary.ownerRequiredBalanceLamports).toBe(
+      (500_000_000n + BigInt(body.summary.estimatedNetworkFeeLamports) + 3_000_000n).toString(),
+    );
+    expect(h.chain.calls).toContain('rent');
+  });
+
+  it('adds no WSOL rent without a first buy', async () => {
+    const { launchpad, job } = seed({}, { firstBuyLamports: 0n });
+    h.store.launchpads.set(launchpad.id, {
+      ...launchpad,
+      spec: spec(owner, {
+        launchpadCoin: { ...spec(owner).launchpadCoin, firstBuySol: 0 },
+      }),
+    });
+    h.chain.estimate = {
+      networkFeeLamports: 15_000n,
+      ownerDebitLamports: 20_000_000n,
+      simulationFailed: false,
+    };
+    const body = (await (await get(job.id)).json()) as {
+      summary: { estimatedNetworkFeeLamports: string; ownerRequiredBalanceLamports?: string };
+    };
+    expect(body.summary.estimatedNetworkFeeLamports).toBe('20015000');
+    expect(body.summary.ownerRequiredBalanceLamports).toBe('20015000');
+    expect(h.chain.calls).not.toContain('rent');
+  });
+
+  it('omits the required balance when the rent cannot be read', async () => {
+    const { job } = seed();
+    h.chain.tokenAccountRent = new RpcUnavailableError();
+    const res = await get(job.id);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { summary: Record<string, unknown> };
+    expect(body.summary).not.toHaveProperty('ownerRequiredBalanceLamports');
+    expect(body.summary.estimatedNetworkFeeLamports).toBe('20015000');
+    expect(h.logger.events()).toContain('owner_tx.rent_unavailable');
   });
 
   // Before: the response carried no launch accounts, so the browser could only check that the

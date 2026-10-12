@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   ClusterMismatchError,
   RpcUnavailableError,
+  TOKEN_ACCOUNT_SIZE,
   classifySendError,
   createConnectionLaunchChain,
 } from '../chain';
@@ -143,6 +144,30 @@ describe('createConnectionLaunchChain', () => {
       ownerDebitLamports: null,
       simulationFailed: true,
     });
+  });
+
+  // Before: the chain exposed no rent, so the summary could not state the balance to hold.
+  it('reads the token account rent from the cluster, for a 165-byte account', async () => {
+    const { connection, calls } = fakeConnection({
+      getMinimumBalanceForRentExemption: async () => 2_039_281,
+    });
+    const chain = createConnectionLaunchChain({ connection, cluster: 'devnet', retry: noRetry });
+    expect(await chain.getTokenAccountRentLamports()).toBe(2_039_281n);
+    const read = calls.find((c) => c.method === 'getMinimumBalanceForRentExemption')!;
+    expect(read.args[0]).toBe(TOKEN_ACCOUNT_SIZE);
+    expect(TOKEN_ACCOUNT_SIZE).toBe(165);
+
+    const down = fakeConnection({
+      getMinimumBalanceForRentExemption: async () => {
+        throw new Error('fetch failed https://rpc.example/?api-key=secret');
+      },
+    });
+    const failing = createConnectionLaunchChain({
+      connection: down.connection,
+      cluster: 'devnet',
+      retry: noRetry,
+    });
+    await expect(failing.getTokenAccountRentLamports()).rejects.toBeInstanceOf(RpcUnavailableError);
   });
 
   it('reads signature states with the transaction history', async () => {

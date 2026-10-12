@@ -17,7 +17,7 @@ import {
   type OwnerTransactionSummary,
 } from '@forge/shared';
 import type { Transaction } from '@solana/web3.js';
-import type { LaunchChain } from './chain';
+import { RpcUnavailableError, type LaunchChain } from './chain';
 import { RouteError } from './http';
 import { errorName, type RoutesLogger } from './log';
 import { addJobEventSafe, requireOwnedJob } from './service';
@@ -179,6 +179,25 @@ export function createOwnerTransactionService(
     return { tx, launch: launch.data };
   }
 
+  /**
+   * Rent of the owner's temporary WSOL account: held only with a first buy (the account is
+   * created and closed by the launch). Null when the cluster cannot be read: the summary then
+   * omits the required balance rather than understating it.
+   */
+  async function temporaryWsolRent(
+    jobId: string,
+    firstBuyLamports: bigint,
+  ): Promise<bigint | null> {
+    if (firstBuyLamports === 0n) return 0n;
+    try {
+      return await chain.getTokenAccountRentLamports();
+    } catch (error) {
+      if (!(error instanceof RpcUnavailableError)) throw error;
+      logger.log('warn', 'owner_tx.rent_unavailable', { jobId });
+      return null;
+    }
+  }
+
   async function get(input: { wallet: string; jobId: string }): Promise<OwnerTransactionView> {
     const owned = await requireOwnedJob(store, input.jobId, input.wallet);
     const spec = assertLaunchJob(owned, input.wallet);
@@ -199,7 +218,10 @@ export function createOwnerTransactionService(
     const { tx, launch } = storedTransaction(owned, input.wallet, spec);
     const owner = requiredSigners(tx)[0]!;
     const firstBuyLamports = solToLamports(spec.launchpadCoin.firstBuySol);
-    const estimate = await chain.estimateOwnerCosts(tx, owner);
+    const [estimate, temporaryLamports] = await Promise.all([
+      chain.estimateOwnerCosts(tx, owner),
+      temporaryWsolRent(job.id, firstBuyLamports),
+    ]);
     // Everything the owner pays besides the first buy (network fee, rents, Metaplex fee, pool
     // creation fee), as `toOwnerTransactionSummary` of @forge/core defines it. Upper bound: the
     // network fee is added even though the simulated balance may already include it.
@@ -216,6 +238,11 @@ export function createOwnerTransactionService(
     if (simulation !== 'ok') {
       logger.log('warn', 'owner_tx.simulation', { jobId: job.id, simulation });
     }
+    // What the wallet must hold to sign, as `toOwnerTransactionSummary` of @forge/core defines it:
+    // first buy + everything else the owner pays + the temporary WSOL account rent (refunded
+    // within the transaction, but held while it runs).
+    const required =
+      temporaryLamports === null ? null : firstBuyLamports + others + temporaryLamports;
     return {
       transaction: job.ownerTx!,
       summary: {
@@ -224,6 +251,7 @@ export function createOwnerTransactionService(
         firstBuyLamports: firstBuyLamports.toString(),
         estimatedNetworkFeeLamports: others.toString(),
         ownerWallet: input.wallet,
+        ...(required === null ? {} : { ownerRequiredBalanceLamports: required.toString() }),
       },
       simulation,
       launch,
