@@ -295,11 +295,7 @@ async function codeAndCheck(
         return deps.runner.run(options);
       },
     };
-    const built = await deps.buildSite(guardedRunner, workdir, {
-      jobId: job.id,
-      signal,
-      ...(deps.config.packagesToken ? { packagesToken: deps.config.packagesToken } : {}),
-    });
+    const built = await deps.buildSite(guardedRunner, workdir, { jobId: job.id, signal });
     guard(signal);
     if (!built.ok) throw new SiteBuildError(built.failedStep, logTail(built.logs));
     return scanned;

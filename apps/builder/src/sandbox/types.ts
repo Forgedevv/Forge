@@ -30,8 +30,6 @@ export const SandboxRunOptionsSchema = z.strictObject({
     .strictObject({
       /** Per-job AI gateway token (ANTHROPIC_AUTH_TOKEN). Needs the `gateway` preset. */
       gatewayToken: z.string().optional(),
-      /** Read-only GitHub Packages token (NODE_AUTH_TOKEN). Needs `github-packages`. */
-      packagesToken: z.string().optional(),
     })
     .default({}),
   timeoutMs: z.number().int().min(SANDBOX_LIMITS.minTimeoutMs).max(SANDBOX_LIMITS.maxTimeoutMs),

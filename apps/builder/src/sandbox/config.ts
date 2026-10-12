@@ -66,15 +66,13 @@ export const SANDBOX_LIMITS = {
  * fixed TCP forward to the AI gateway (see SandboxConfig.gateway).
  *
  * `@forge/core` and `@forge/shared` install from the public npm registry (`npm:@forgedevv/...`
- * aliases, decision D26), so `npm` is the only registry. The `github-packages` preset is kept as
- * a name only, with no host and no operator override: asking for it opens nothing.
+ * aliases, decision D26), so `npm` is the only registry preset, and no registry token exists.
  */
 export const DEFAULT_EGRESS_HOSTS: Readonly<Record<HostPreset, readonly string[]>> = {
   npm: ['registry.npmjs.org'],
-  'github-packages': [],
 };
 
-export const EGRESS_PRESETS = ['npm', 'github-packages', 'gateway'] as const;
+export const EGRESS_PRESETS = ['npm', 'gateway'] as const;
 export type EgressPreset = (typeof EGRESS_PRESETS)[number];
 export type HostPreset = Exclude<EgressPreset, 'gateway'>;
 
@@ -104,7 +102,7 @@ export interface SandboxConfig {
   runtime?: SandboxRuntime;
   /** AI gateway upstream for the `gateway` preset. Absent: the preset is refused. */
   gateway?: GatewayUpstream | null;
-  /** Overrides the hosts of the `npm` preset (operator only); `github-packages` must stay empty. */
+  /** Overrides the hosts of the `npm` preset (operator only). */
   egressHosts?: Partial<Record<HostPreset, readonly string[]>>;
   /** Shared egress bridge name. */
   egressNetwork?: string;
@@ -144,11 +142,6 @@ export const SandboxConfigSchema = z.strictObject({
   egressHosts: z
     .strictObject({
       npm: z.array(z.string().regex(HOST_RE)).max(16).optional(),
-      // Accepted empty only (a resolved config is fed back in): GitHub Packages stays closed.
-      'github-packages': z
-        .array(z.string())
-        .max(0, 'GitHub Packages is not a registry of FORGE anymore')
-        .optional(),
     })
     .optional(),
   egressNetwork: z.string().regex(DOCKER_NAME_RE).optional(),
@@ -189,10 +182,7 @@ export function resolveSandboxConfig(input: SandboxConfig): ResolvedSandboxConfi
     gid: c.gid ?? SANDBOX_DEFAULTS.gid,
     runtime: c.runtime,
     gateway: c.gateway ?? null,
-    egressHosts: {
-      npm: c.egressHosts?.npm ?? DEFAULT_EGRESS_HOSTS.npm,
-      'github-packages': [],
-    },
+    egressHosts: { npm: c.egressHosts?.npm ?? DEFAULT_EGRESS_HOSTS.npm },
     egressNetwork: c.egressNetwork ?? SANDBOX_DEFAULTS.egressNetwork,
     hostEnv: input.hostEnv ?? process.env,
     extraHostSecrets: c.extraHostSecrets ?? [],

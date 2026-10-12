@@ -1,15 +1,15 @@
 /**
- * What may enter a sandbox container. Only two secrets ever do: the job's short-lived
- * AI gateway token and a read-only packages token. The Anthropic key, the Supabase
- * service key, the GitHub App key, the Vercel token and every other host secret are
- * refused, by name and by value.
+ * What may enter a sandbox container. Only one secret ever does: the job's short-lived
+ * AI gateway token. There is no registry token (`@forge/core` and `@forge/shared` are public
+ * npm aliases, decision D26). The Anthropic key, the Supabase service key, the GitHub App
+ * key, the Vercel token, any registry token and every other host secret are refused, by
+ * name and by value.
  */
 import { SandboxError } from './errors.js';
 
-/** Env var names the sandbox receives its two secrets under. */
+/** Env var name the sandbox receives its only secret under. */
 export const SECRET_ENV = {
   gatewayToken: 'ANTHROPIC_AUTH_TOKEN',
-  packagesToken: 'NODE_AUTH_TOKEN',
 } as const;
 
 /** Host variables that must never reach a container, whatever their value looks like. */
@@ -27,6 +27,10 @@ export const NEVER_IN_SANDBOX = [
   'JUPITER_API_KEY',
   'SESSION_SECRET',
   'RPC_URL',
+  // Registry tokens: no install needs one (decision D26), so none may reach a container.
+  'GITHUB_PACKAGES_TOKEN',
+  'NODE_AUTH_TOKEN',
+  'NPM_TOKEN',
 ] as const;
 
 /** A name that looks like a credential. Such values only enter through `secrets`. */
@@ -71,11 +75,6 @@ const MAX_ENV_COUNT = 64;
 
 /** Format of the tokens issued by apps/builder/src/gateway (`forge_gw_` + base64url). */
 const GATEWAY_TOKEN_RE = /^forge_gw_[A-Za-z0-9_-]{20,200}$/;
-/**
- * GitHub Packages needs a personal access token with `read:packages` only. GitHub App
- * installation tokens (`ghs_`), OAuth and user-to-server tokens are refused.
- */
-const PACKAGES_TOKEN_RE = /^(?:ghp_[A-Za-z0-9]{30,60}|github_pat_[A-Za-z0-9_]{40,120})$/;
 
 /** Secret formats that must never appear in a value given to a container. */
 const FORBIDDEN_VALUE_PATTERNS: ReadonlyArray<readonly [RegExp, string]> = [
@@ -84,6 +83,8 @@ const FORBIDDEN_VALUE_PATTERNS: ReadonlyArray<readonly [RegExp, string]> = [
   [/\bsb_secret_[A-Za-z0-9_-]{8,}/, 'a Supabase secret key'],
   [/\bghs_[A-Za-z0-9]{20,}/, 'a GitHub App installation token'],
   [/\bgh[our]_[A-Za-z0-9]{20,}/, 'a GitHub OAuth/user token'],
+  [/\bghp_[A-Za-z0-9]{20,}|\bgithub_pat_[A-Za-z0-9_]{20,}/, 'a GitHub personal access token'],
+  [/\bnpm_[A-Za-z0-9]{36}\b/, 'an npm token'],
 ];
 
 const JWT_RE = /\beyJ[A-Za-z0-9_-]{5,}\.([A-Za-z0-9_-]{5,})\.[A-Za-z0-9_-]{5,}/g;
@@ -103,7 +104,6 @@ function containsServiceRoleJwt(value: string): boolean {
 
 export interface SandboxSecrets {
   gatewayToken?: string | undefined;
-  packagesToken?: string | undefined;
 }
 
 /** Validates the non-secret environment of a run. */
@@ -132,7 +132,7 @@ export function assertSafeEnv(env: Record<string, string>): void {
   }
 }
 
-/** Validates the two secrets and checks they match the network they need. */
+/** Validates the secret and checks it matches the network it needs. */
 export function assertSafeSecrets(
   secrets: SandboxSecrets,
   network: 'none' | 'allowlist',
@@ -144,20 +144,6 @@ export function assertSafeSecrets(
     }
     if (network !== 'allowlist' || !allow.includes('gateway')) {
       throw new SandboxError('unsafe_option', 'gatewayToken requires the "gateway" egress preset');
-    }
-  }
-  if (secrets.packagesToken !== undefined) {
-    if (!PACKAGES_TOKEN_RE.test(secrets.packagesToken)) {
-      throw new SandboxError(
-        'unsafe_option',
-        'packagesToken must be a read-only packages personal access token',
-      );
-    }
-    if (network !== 'allowlist' || !allow.includes('github-packages')) {
-      throw new SandboxError(
-        'unsafe_option',
-        'packagesToken requires the "github-packages" egress preset',
-      );
     }
   }
 }
@@ -190,16 +176,14 @@ export function assertNoHostSecrets(input: {
   secrets: SandboxSecrets;
   hostSecrets: { never: readonly string[]; sensitive: readonly string[] };
 }): void {
-  const provided = [input.secrets.gatewayToken, input.secrets.packagesToken].filter(
-    (v): v is string => typeof v === 'string',
-  );
+  const provided = [input.secrets.gatewayToken].filter((v): v is string => typeof v === 'string');
   const values: Array<[string, string]> = [
     ...Object.entries(input.env).map(([k, v]): [string, string] => [`env ${k}`, v]),
     ...input.command.map((v, i): [string, string] => [`command[${i}]`, v]),
     ...provided.map((v, i): [string, string] => [`secret #${i + 1}`, v]),
   ];
-  // A designated secret may also live in the host env under a sensitive name (e.g. the
-  // packages token): that alone is fine. The NEVER_IN_SANDBOX values are never exempt.
+  // The designated secret may also live in the host env under a sensitive name: that alone
+  // is fine. The NEVER_IN_SANDBOX values are never exempt.
   const sensitive = input.hostSecrets.sensitive.filter((s) => !provided.includes(s));
   for (const [where, value] of values) {
     for (const secret of input.hostSecrets.never) {

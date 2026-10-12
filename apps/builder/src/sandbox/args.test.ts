@@ -118,12 +118,16 @@ describe('buildSandboxCreateArgs', () => {
   });
 
   it('passes secrets by name only', () => {
+    const args = buildSandboxCreateArgs(plan({ secretEnvNames: ['ANTHROPIC_AUTH_TOKEN'] }));
+    expect(args).toContain('--env=ANTHROPIC_AUTH_TOKEN');
+    expect(() => assertHardenedSandboxArgs(args)).not.toThrow();
+  });
+
+  it('refuses a registry token passed by name: no install needs one (decision D26)', () => {
     const args = buildSandboxCreateArgs(
       plan({ secretEnvNames: ['ANTHROPIC_AUTH_TOKEN', 'NODE_AUTH_TOKEN'] }),
     );
-    expect(args).toContain('--env=ANTHROPIC_AUTH_TOKEN');
-    expect(args).toContain('--env=NODE_AUTH_TOKEN');
-    expect(() => assertHardenedSandboxArgs(args)).not.toThrow();
+    expectUnsafe(() => assertHardenedSandboxArgs(args));
   });
 
   it('refuses unpinned images, unsafe paths and names', () => {
