@@ -6,10 +6,13 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   GIT_READ_COMMANDS,
   PrepareError,
+  NPM_PACKAGES,
   VERCEL_JSON,
-  buildNpmrc,
+  assertPublicDependencies,
   inlineTsconfig,
   isIncluded,
+  npmAlias,
+  parseArgs,
   parsePins,
   pinWorkspaceDependencies,
   prepareTemplateRepo,
@@ -71,12 +74,14 @@ describe('prepare-template-repo: dry run', () => {
 });
 
 describe('prepare-template-repo: written output', () => {
-  it('writes a standalone package.json with exact versions', () => {
+  it('writes a standalone package.json with exact npm aliases of the public packages', () => {
     const out = freshOut();
     prepareTemplateRepo({ out, pins: PINS });
     const pkg = readJson(join(out, 'package.json'));
-    expect(pkg.dependencies['@forge/core']).toBe('1.2.3');
-    expect(pkg.dependencies['@forge/shared']).toBe('1.2.4');
+    // The site keeps importing @forge/core and @forge/shared; npm installs @forgedevv/*.
+    expect(pkg.dependencies['@forge/core']).toBe('npm:@forgedevv/core@1.2.3');
+    expect(pkg.dependencies['@forge/shared']).toBe('npm:@forgedevv/shared@1.2.4');
+    expect(pkg.dependencies['@forgedevv/core']).toBeUndefined();
     expect(JSON.stringify(pkg)).not.toContain('workspace:');
     expect(pkg.dependencies['@aws-sdk/client-s3']).toBeUndefined();
     expect(pkg.devDependencies.typescript).toMatch(/^\d+\.\d+\.\d+/);
@@ -102,24 +107,29 @@ describe('prepare-template-repo: written output', () => {
     expect(tsconfig.compilerOptions.moduleResolution).toBe('Bundler');
   });
 
-  it('writes no .npmrc without a private registry', () => {
+  it('writes no .npmrc: no registry, scope or token reaches the template repository', () => {
     const out = freshOut();
     const result = prepareTemplateRepo({ out, pins: PINS });
     expect(existsSync(join(out, '.npmrc'))).toBe(false);
-    expect(result.files).not.toContain('.npmrc');
+    expect(result.files.some((f: string) => f.endsWith('.npmrc'))).toBe(false);
+    for (const content of Object.values(result.generated) as string[]) {
+      expect(content).not.toMatch(/npm\.pkg\.github\.com|_authToken|registry=/);
+    }
   });
 
-  it('writes only the scope line for a private registry', () => {
+  it('refuses the removed private registry options', () => {
     const out = freshOut();
-    prepareTemplateRepo({
-      out,
-      pins: PINS,
-      registry: 'https://npm.pkg.github.com',
-      scope: '@forgedevv',
-    });
-    expect(readFileSync(join(out, '.npmrc'), 'utf8')).toBe(
-      '@forgedevv:registry=https://npm.pkg.github.com\n',
+    expect(() =>
+      prepareTemplateRepo({ out, pins: PINS, registry: 'https://npm.pkg.github.com' }),
+    ).toThrow(/no longer supported/);
+    expect(() => prepareTemplateRepo({ out, pins: PINS, scope: '@forgedevv' })).toThrow(
+      /no longer supported/,
     );
+    expect(() => parseArgs(['--out', out, '--registry', 'https://npm.pkg.github.com'])).toThrow(
+      /no longer supported/,
+    );
+    expect(() => parseArgs(['--out', out, '--scope', '@forgedevv'])).toThrow(/no longer supported/);
+    expect(existsSync(out)).toBe(false);
   });
 
   it('refuses a non-empty output folder', () => {
@@ -147,14 +157,48 @@ describe('prepare-template-repo: helpers', () => {
     }
   });
 
-  it('rejects a registry without a scope, with credentials or over http', () => {
-    expect(buildNpmrc({})).toBeNull();
-    expect(() => buildNpmrc({ registry: 'https://npm.pkg.github.com' })).toThrow(PrepareError);
-    expect(() => buildNpmrc({ registry: 'http://npm.example', scope: '@a' })).toThrow(PrepareError);
-    expect(() => buildNpmrc({ registry: 'https://user:pw@npm.example', scope: '@a' })).toThrow(
-      PrepareError,
+  it('maps the FORGE packages to their public npm names (D26)', async () => {
+    expect(NPM_PACKAGES).toEqual({
+      '@forge/core': '@forgedevv/core',
+      '@forge/shared': '@forgedevv/shared',
+    });
+    // The names the release script publishes under are the names the template installs.
+    // @ts-expect-error plain ES module without type declarations
+    const { PUBLISH_NAMES } = await import('../../../../scripts/publish-core.mjs');
+    expect(PUBLISH_NAMES).toEqual(NPM_PACKAGES);
+    expect(npmAlias('@forge/core', '0.1.0')).toBe('npm:@forgedevv/core@0.1.0');
+    expect(() => npmAlias('@forge/web', '0.1.0')).toThrow(/not published/);
+    expect(() => npmAlias('@forge/core', '^0.1.0')).toThrow(/exact/);
+    const pinned = pinWorkspaceDependencies(
+      { dependencies: { '@forge/core': 'workspace:*' }, devDependencies: { x: '1.0.0' } },
+      { '@forge/core': '2.0.0' },
     );
-    expect(() => buildNpmrc({ registry: 'https://npm.example', scope: 'a' })).toThrow(PrepareError);
+    expect(pinned.pkg.dependencies['@forge/core']).toBe('npm:@forgedevv/core@2.0.0');
+    expect(() =>
+      pinWorkspaceDependencies(
+        { dependencies: { '@forge/web': 'workspace:*' } },
+        { '@forge/web': '1.0.0' },
+      ),
+    ).toThrow(/not published/);
+  });
+
+  it('only lets public npm specs through', () => {
+    const ok = { dependencies: { '@forge/core': 'npm:@forgedevv/core@1.0.0', next: '15.5.27' } };
+    expect(assertPublicDependencies(ok)).toBe(ok);
+    for (const dependencies of [
+      { '@forge/core': '1.0.0' },
+      { '@forge/core': 'npm:@forgedevv/core@^1.0.0' },
+      { '@forge/core': 'npm:@evil/core@1.0.0' },
+      { '@forge/shared': 'npm:@forgedevv/core@1.0.0' },
+      { '@forge/core': 'workspace:*' },
+      { other: 'file:../core' },
+      { other: 'link:../core' },
+    ]) {
+      expect(
+        () => assertPublicDependencies({ dependencies }),
+        JSON.stringify(dependencies),
+      ).toThrow(PrepareError);
+    }
   });
 
   it('merges the tsconfig base under the app options', () => {

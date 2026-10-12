@@ -101,7 +101,9 @@ export function subdomainFor(slug: string, clientsDomain: string): string {
  * - the public R2 URL and the pool config key read by server routes.
  *
  * Never: `RPC_URL` (raw provider key), R2 write credentials, `JUPITER_API_KEY`,
- * `GITHUB_PACKAGES_TOKEN`, `RPC_RELAY_TOKEN_SECRET`, or any other credential. RPC traffic goes
+ * a registry token (`GITHUB_PACKAGES_TOKEN`, `NODE_AUTH_TOKEN`, `NPM_TOKEN`: client projects install
+ * `@forge/core` from the public npm registry with no token), `RPC_RELAY_TOKEN_SECRET`, or any other
+ * credential. RPC traffic goes
  * through the FORGE relay and uploads must go through a FORGE-side presigned-URL endpoint.
  *
  * One exception, the only server-only secret a client project holds: `FORGE_RPC_RELAY_TOKEN`
@@ -148,6 +150,8 @@ export const PROJECT_ENV_FORBIDDEN: ReadonlySet<string> = new Set<string>([
   'R2_BUCKET',
   'GITHUB_PACKAGES_TOKEN',
   'NODE_AUTH_TOKEN',
+  // The operator's npm publish token (scripts/publish-core.mjs).
+  'NPM_TOKEN',
   RELAY_TOKEN_SECRET_ENV,
 ]);
 

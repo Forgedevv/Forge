@@ -105,6 +105,7 @@ describe('names, domain and env selection', () => {
       'R2_BUCKET',
       'GITHUB_PACKAGES_TOKEN',
       'NODE_AUTH_TOKEN',
+      'NPM_TOKEN',
       'RPC_RELAY_TOKEN_SECRET',
     ]) {
       expect(PROJECT_ENV_ALLOWLIST.has(key)).toBe(false);
