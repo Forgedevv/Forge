@@ -5,8 +5,9 @@
  *
  * - non-root, read-only root fs, all capabilities dropped, no-new-privileges, the
  *   daemon's default seccomp (and AppArmor) profile, pids/memory/cpu/file-size limits,
- *   no swap, tmpfs /tmp and $HOME (noexec), no docker socket, one host mount only:
- *   the job folder at /workspace;
+ *   no swap, tmpfs /tmp and $HOME (noexec), no docker socket, host mounts limited to
+ *   the job folder at /workspace (optionally read-only) and, for a run that produces
+ *   files, one separate output folder at /output;
  * - network `none`, or `allowlist` through a per-run egress proxy (network.ts);
  * - wall-clock timeout enforced twice: by the host (docker kill) and inside the
  *   container (`timeout` wrapper), so a crashed worker cannot leave it running;
@@ -101,6 +102,26 @@ export async function resolveWorkdir(workdir: string, jobsRoot: string): Promise
   return real;
 }
 
+/**
+ * Resolves the output folder like the workdir (real directory strictly inside the jobs root), and
+ * checks it is a separate folder: not the workdir, not inside it, not around it.
+ */
+export async function resolveOutputDir(
+  outputDir: string,
+  hostWorkdir: string,
+  jobsRoot: string,
+): Promise<string> {
+  const real = await resolveWorkdir(outputDir, jobsRoot);
+  const inside = (parent: string, child: string): boolean => {
+    const rel = path.relative(parent, child);
+    return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+  };
+  if (inside(hostWorkdir, real) || inside(real, hostWorkdir)) {
+    throw new SandboxError('unsafe_option', 'the output folder must be separate from the workdir');
+  }
+  return real;
+}
+
 /** Parses and validates run options; throws `invalid_options` / `unsafe_option`. */
 export function parseRunOptions(options: Omit<SandboxRunOptions, 'signal'>): ParsedRunOptions {
   const parsed = SandboxRunOptionsSchema.safeParse(options);
@@ -120,6 +141,10 @@ export function parseRunOptions(options: Omit<SandboxRunOptions, 'signal'>): Par
   }
   if (new Set(allow).size !== allow.length) {
     throw new SandboxError('invalid_options', 'duplicate egress preset');
+  }
+  // The review image runs the site and a browser on it: loopback only, never a secret.
+  if (o.image === 'review' && (o.network !== 'none' || o.secrets.gatewayToken !== undefined)) {
+    throw new SandboxError('unsafe_option', 'the review image runs with no network and no secret');
   }
   assertSafeEnv(o.env);
   assertSafeSecrets(o.secrets, o.network, allow);
@@ -240,7 +265,13 @@ export function createSandboxRunner(input: SandboxConfig, deps: SandboxDeps = {}
     const o = parseRunOptions(rest);
     const allow = o.allow ?? [];
     assertNoHostSecrets({ env: o.env, command: o.command, secrets: o.secrets, hostSecrets });
+    const image = o.image === 'review' ? config.reviewImage : config.image;
+    if (!image) throw new SandboxError('invalid_options', 'no review image is configured');
     const hostWorkdir = await resolveWorkdir(o.workdir, config.jobsRoot);
+    const hostOutputDir =
+      o.outputDir !== undefined
+        ? await resolveOutputDir(o.outputDir, hostWorkdir, config.jobsRoot)
+        : undefined;
     const redact: Redactor = createRedactor([
       ...hostSecrets.never,
       ...hostSecrets.sensitive,
@@ -283,7 +314,7 @@ export function createSandboxRunner(input: SandboxConfig, deps: SandboxDeps = {}
       const plan: SandboxPlan = {
         name,
         labels,
-        image: config.image,
+        image,
         uid: config.uid,
         gid: config.gid,
         runtime: config.runtime,
@@ -292,6 +323,8 @@ export function createSandboxRunner(input: SandboxConfig, deps: SandboxDeps = {}
         pidsLimit: o.pidsLimit ?? SANDBOX_DEFAULTS.pidsLimit,
         network: egress ? { mode: 'allowlist', networkName: egress.networkName } : { mode: 'none' },
         hostWorkdir,
+        workspaceReadOnly: o.workspaceReadOnly === true,
+        hostOutputDir,
         workingDir: o.workingDir
           ? path.posix.join(SANDBOX_DEFAULTS.workspaceDir, o.workingDir)
           : SANDBOX_DEFAULTS.workspaceDir,
@@ -314,7 +347,10 @@ export function createSandboxRunner(input: SandboxConfig, deps: SandboxDeps = {}
         );
       }
       created = true;
-      log.info({ container: name, jobId: o.jobId, network: o.network, allow }, 'sandbox started');
+      log.info(
+        { container: name, jobId: o.jobId, image: o.image ?? 'sandbox', network: o.network, allow },
+        'sandbox started',
+      );
 
       const { cliCode, killedReason: hostKill } = await attach(name, o, out, err, signal);
       const state = await inspectState(docker, name);

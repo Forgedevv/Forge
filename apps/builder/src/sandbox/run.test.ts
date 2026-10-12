@@ -441,6 +441,110 @@ describe('runInSandbox option checks (no docker call)', () => {
   });
 });
 
+describe('review image, read-only workdir and output folder', () => {
+  const REVIEW_IMAGE = `ghcr.io/forgedevv/review@sha256:${'c'.repeat(64)}`;
+  let outputDir: string;
+  beforeAll(async () => {
+    outputDir = path.join(jobsRoot, 'job-1-out');
+    await mkdir(outputDir, { recursive: true });
+  });
+
+  function reviewSetup(scenario: FakeScenario = {}, reviewImage: string | null = REVIEW_IMAGE) {
+    const docker = fakeDocker(scenario);
+    const runner = createSandboxRunner(
+      { image: IMAGE, proxyImage: PROXY_IMAGE, reviewImage, jobsRoot, hostEnv: HOST_ENV },
+      {
+        spawn: docker.spawn,
+        randomSuffix: () => 'abcd1234',
+        sleep: async () => undefined,
+        timings: { killGraceMs: 50, proxyPollMs: 1 },
+      },
+    );
+    return { docker, runner };
+  }
+
+  const capture = (overrides: Partial<SandboxRunOptions> = {}): SandboxRunOptions =>
+    options({
+      image: 'review',
+      workspaceReadOnly: true,
+      outputDir,
+      command: ['node', '/opt/forge/review/capture.mjs', '--out', '/output'],
+      ...overrides,
+    });
+
+  it('runs the review image with no network, the workdir read-only and /output writable', async () => {
+    const { docker, runner } = reviewSetup({ stdout: 'done' });
+    const result = await runner.run(capture());
+    expect(result.ok).toBe(true);
+    const create = docker.find('create')[0]!.args;
+    expect(create).toContain(REVIEW_IMAGE);
+    expect(create).not.toContain(IMAGE);
+    expect(create).toContain('--network=none');
+    expect(create).toContain(`--mount=type=bind,source=${workdir},target=/workspace,readonly`);
+    expect(create).toContain(`--mount=type=bind,source=${outputDir},target=/output`);
+    expect(create.some((a) => a.startsWith('--env=ANTHROPIC'))).toBe(false);
+    expect(docker.find('network')).toHaveLength(0);
+  });
+
+  it('keeps the sandbox image for every other run', async () => {
+    const { docker, runner } = reviewSetup();
+    await runner.run(options());
+    expect(docker.find('create')[0]!.args).toContain(IMAGE);
+  });
+
+  it('refuses the review image with network or a secret', async () => {
+    const { docker, runner } = reviewSetup();
+    await expectError(
+      runner.run(capture({ network: 'allowlist', allow: ['npm'] })),
+      'unsafe_option',
+    );
+    await expectError(
+      runner.run(
+        capture({
+          network: 'allowlist',
+          allow: ['gateway'],
+          secrets: { gatewayToken: GATEWAY_TOKEN },
+        }),
+      ),
+      'unsafe_option',
+    );
+    expect(docker.calls).toHaveLength(0);
+  });
+
+  it('refuses the review image when none is configured', async () => {
+    const { docker, runner } = reviewSetup({}, null);
+    await expectError(runner.run(capture()), 'invalid_options');
+    expect(docker.calls).toHaveLength(0);
+  });
+
+  it('refuses an output folder that is not a separate folder inside the jobs root', async () => {
+    const { docker, runner } = reviewSetup();
+    const nested = path.join(workdir, 'out');
+    await mkdir(nested, { recursive: true });
+    for (const bad of [workdir, nested, jobsRoot, outside, path.join(jobsRoot, 'missing-out')]) {
+      await expect(runner.run(capture({ outputDir: bad }))).rejects.toBeInstanceOf(SandboxError);
+    }
+    // The workdir inside the output folder is refused too.
+    await expectError(
+      runner.run(capture({ workdir: nested, outputDir: workdir })),
+      'unsafe_option',
+    );
+    expect(docker.calls).toHaveLength(0);
+  });
+
+  it('refuses a symlinked output folder', async () => {
+    const link = path.join(jobsRoot, 'link-out');
+    try {
+      await symlink(outside, link, process.platform === 'win32' ? 'junction' : 'dir');
+    } catch {
+      return; // symlinks not permitted on this machine
+    }
+    const { docker, runner } = reviewSetup();
+    await expectError(runner.run(capture({ outputDir: link })), 'unsafe_option');
+    expect(docker.calls).toHaveLength(0);
+  });
+});
+
 describe('cleanupStale', () => {
   it('removes only expired sandbox containers and networks', async () => {
     const nowSec = Math.floor(Date.now() / 1000);

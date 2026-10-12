@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { EGRESS_PRESETS, SANDBOX_LIMITS } from './config.js';
+import { EGRESS_PRESETS, SANDBOX_IMAGES, SANDBOX_LIMITS } from './config.js';
 import type { EgressReport } from './network.js';
 
 /** Job IDs are UUIDs; any short slug is accepted for names and labels. */
@@ -13,6 +13,18 @@ export const SandboxRunOptionsSchema = z.strictObject({
   workdir: z.string().min(1).max(4096),
   /** Working directory relative to /workspace (default: /workspace itself). */
   workingDir: z.string().regex(RELATIVE_PATH_RE).optional(),
+  /**
+   * Image of the run, among the operator's (default `sandbox`). `review` (headless browser) only
+   * runs with network `none` and no secret.
+   */
+  image: z.enum(SANDBOX_IMAGES).optional(),
+  /** Mounts the job folder read-only. */
+  workspaceReadOnly: z.boolean().optional(),
+  /**
+   * Host folder mounted read-write at /output: strictly inside the jobs root, a real directory,
+   * and neither the workdir, inside it, nor around it. What it holds afterwards is untrusted.
+   */
+  outputDir: z.string().min(1).max(4096).optional(),
   /** argv of the command, executed without a shell. */
   command: z
     .array(

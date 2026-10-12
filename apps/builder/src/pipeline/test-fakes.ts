@@ -856,6 +856,7 @@ export class FakeRunner extends Recorder implements SandboxRunner {
     this.config = {
       image: `sha256:${'a'.repeat(64)}`,
       proxyImage: `sha256:${'b'.repeat(64)}`,
+      reviewImage: `sha256:${'c'.repeat(64)}`,
       jobsRoot,
       dockerBinary: 'docker',
       uid: 1000,

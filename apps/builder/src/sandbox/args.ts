@@ -43,6 +43,10 @@ export interface SandboxPlan {
   network: { mode: 'none' } | { mode: 'allowlist'; networkName: string };
   /** Host folder mounted at /workspace (already validated and resolved). */
   hostWorkdir: string;
+  /** Mounts /workspace read-only. */
+  workspaceReadOnly?: boolean | undefined;
+  /** Host folder mounted read-write at /output (already validated and resolved). */
+  hostOutputDir?: string | undefined;
   /** Absolute container path of the working directory (inside /workspace). */
   workingDir: string;
   tmpSizeMb: number;
@@ -81,6 +85,9 @@ export function buildSandboxCreateArgs(plan: SandboxPlan): string[] {
   }
   if (UNSAFE_HOST_PATH_RE.test(plan.hostWorkdir)) {
     throw new SandboxError('unsafe_option', 'workdir path contains unsupported characters');
+  }
+  if (plan.hostOutputDir !== undefined && UNSAFE_HOST_PATH_RE.test(plan.hostOutputDir)) {
+    throw new SandboxError('unsafe_option', 'output path contains unsupported characters');
   }
   if (
     !CONTAINER_PATH_RE.test(plan.workingDir) ||
@@ -122,7 +129,10 @@ export function buildSandboxCreateArgs(plan: SandboxPlan): string[] {
     `--network=${network}`,
     `--tmpfs=/tmp:rw,nosuid,nodev,noexec,size=${mb(plan.tmpSizeMb)},mode=1777`,
     `--tmpfs=${home}:rw,nosuid,nodev,noexec,size=${mb(plan.homeSizeMb)},uid=${plan.uid},gid=${plan.gid},mode=0700`,
-    `--mount=type=bind,source=${plan.hostWorkdir},target=${SANDBOX_DEFAULTS.workspaceDir}`,
+    `--mount=type=bind,source=${plan.hostWorkdir},target=${SANDBOX_DEFAULTS.workspaceDir}${plan.workspaceReadOnly ? ',readonly' : ''}`,
+    ...(plan.hostOutputDir !== undefined
+      ? [`--mount=type=bind,source=${plan.hostOutputDir},target=${SANDBOX_DEFAULTS.outputDir}`]
+      : []),
     `--workdir=${plan.workingDir}`,
     '--log-driver=none',
     '--stop-timeout=5',
@@ -196,7 +206,6 @@ const SANDBOX_SINGLE_FLAGS = [
   '--memory-swap',
   '--cpus',
   '--network',
-  '--mount',
   '--workdir',
   '--entrypoint',
   '--runtime',
@@ -323,17 +332,29 @@ export function assertHardenedSandboxArgs(args: readonly string[]): void {
     fail('network must be none or a per-run sandbox network');
   }
 
+  // Mounts: the job workdir at /workspace (exactly one, optionally read-only), and at most one
+  // output folder at /output. Nothing else, no other mount option.
   const mounts = flags.filter((f) => flagName(f) === '--mount').map(flagValue);
-  if (mounts.length !== 1) fail('exactly one mount (the job workdir) is required');
-  const mount = mounts[0]!;
-  const parts = mount.split(',');
-  if (
-    parts.length !== 3 ||
-    parts[0] !== 'type=bind' ||
-    !parts[1]!.startsWith('source=') ||
-    parts[2] !== `target=${SANDBOX_DEFAULTS.workspaceDir}`
-  ) {
-    fail('the only mount must be the job workdir bound at /workspace');
+  const targets = mounts.map((mount) => {
+    const parts = mount.split(',');
+    const target = parts[2]?.slice('target='.length);
+    if (
+      (parts.length !== 3 && !(parts.length === 4 && parts[3] === 'readonly')) ||
+      parts[0] !== 'type=bind' ||
+      !parts[1]!.startsWith('source=') ||
+      parts[1]!.length <= 'source='.length ||
+      !parts[2]!.startsWith('target=') ||
+      (target !== SANDBOX_DEFAULTS.workspaceDir && target !== SANDBOX_DEFAULTS.outputDir)
+    ) {
+      fail('mounts must be the job workdir at /workspace and an optional output folder at /output');
+    }
+    return target;
+  });
+  if (targets.filter((t) => t === SANDBOX_DEFAULTS.workspaceDir).length !== 1) {
+    fail('exactly one mount of the job workdir at /workspace is required');
+  }
+  if (targets.filter((t) => t === SANDBOX_DEFAULTS.outputDir).length > 1) {
+    fail('at most one output folder may be mounted');
   }
   const tmpfs = flags.filter((f) => flagName(f) === '--tmpfs').map(flagValue);
   for (const t of tmpfs) checkTmpfs(t, ['/tmp', SANDBOX_DEFAULTS.homeDir]);
