@@ -241,6 +241,23 @@ describe('configuredCashbox', () => {
     vi.stubEnv('NEXT_PUBLIC_FORGE_CASHBOX_WALLET', 'not-an-address');
     expect(() => configuredCashbox()).toThrow(/misconfigured/);
   });
+
+  // Before: an unset pin silently disabled the recipient check, in production too.
+  it('fails closed in a production build without a cashbox, keeps dev and test unpinned', () => {
+    vi.stubEnv('NEXT_PUBLIC_FORGE_CASHBOX_WALLET', '');
+    vi.stubEnv('NODE_ENV', 'production');
+    expect(() => configuredCashbox()).toThrow(TransactionCheckError);
+    expect(() => configuredCashbox()).toThrow(/no cashbox address/);
+    vi.stubEnv('NEXT_PUBLIC_FORGE_CASHBOX_WALLET', '   ');
+    expect(() => configuredCashbox()).toThrow(/no cashbox address/);
+    vi.stubEnv('NEXT_PUBLIC_FORGE_CASHBOX_WALLET', cashbox.toBase58());
+    expect(configuredCashbox()).toBe(cashbox.toBase58());
+    for (const mode of ['development', 'test']) {
+      vi.stubEnv('NODE_ENV', mode);
+      vi.stubEnv('NEXT_PUBLIC_FORGE_CASHBOX_WALLET', '');
+      expect(configuredCashbox()).toBeNull();
+    }
+  });
 });
 
 describe('verifyPartnerClaimTransaction', () => {

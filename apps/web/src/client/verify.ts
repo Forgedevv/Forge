@@ -9,7 +9,7 @@ import { PublicKey, VersionedTransaction } from '@solana/web3.js';
  * sign something else: another fee payer, another amount, another receiver, another program.
  *
  * The ids below are public protocol constants (identical on devnet and mainnet), not FORGE
- * addresses. FORGE's cashbox comes from NEXT_PUBLIC_FORGE_CASHBOX_WALLET when it is set.
+ * addresses. FORGE's cashbox comes from NEXT_PUBLIC_FORGE_CASHBOX_WALLET (required in production).
  */
 
 export const SYSTEM_PROGRAM_ID = '11111111111111111111111111111111';
@@ -198,7 +198,7 @@ export interface ExpectedPayment {
   /** Exact quoted amount. */
   lamports: bigint;
   jobId: string;
-  /** FORGE's cashbox when known (NEXT_PUBLIC_FORGE_CASHBOX_WALLET); otherwise not pinned. */
+  /** FORGE's cashbox (NEXT_PUBLIC_FORGE_CASHBOX_WALLET); null = not pinned (never in production). */
   cashbox: string | null;
 }
 
@@ -259,10 +259,19 @@ export function verifyPaymentTransaction(tx: VersionedTransaction, expected: Exp
   if (memos !== 1) fail('The payment must contain exactly one memo.');
 }
 
-/** NEXT_PUBLIC_FORGE_CASHBOX_WALLET: null when unset; refuses payments when it is invalid. */
+/**
+ * NEXT_PUBLIC_FORGE_CASHBOX_WALLET: refuses payments when it is invalid, and when it is unset in a
+ * production build (fail closed: without it the recipient of a payment is not pinned). Null
+ * (recipient not pinned) only outside production, for development and tests.
+ */
 export function configuredCashbox(): string | null {
   const raw = process.env.NEXT_PUBLIC_FORGE_CASHBOX_WALLET;
-  if (!raw || raw.trim() === '') return null;
+  if (!raw || raw.trim() === '') {
+    if (process.env.NODE_ENV === 'production') {
+      fail('Payments are misconfigured on this site (no cashbox address).');
+    }
+    return null;
+  }
   const parsed = parseAddress(raw);
   if (!parsed) fail('Payments are misconfigured on this site (invalid cashbox address).');
   return parsed;
