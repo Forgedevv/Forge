@@ -154,28 +154,78 @@ export function checkForgeConfig(
   return out;
 }
 
-const FORGE_CORE = /forge\/core/i;
+/**
+ * FORGE packages, under the name the site imports (`@forge/core`, `@forge/shared`) and under their
+ * public npm name (`@forgedevv/core`, `@forgedevv/shared`, decision D26: client repos depend on
+ * them through exact `npm:` aliases). Matched anywhere in a key or a value, with or without the
+ * scope `@` and with an URL-encoded slash, so aliases, overrides, patches and lockfile keys of
+ * either name are all caught.
+ */
+const FORGE_PACKAGE_RE = /forge(?:devv)?(?:\/|%2f)(?:core|shared)/i;
 
-/** Every JSON leaf whose path or value mentions @forge/core. */
-function forgeCoreEntries(value: unknown, path: string[] = []): string[] {
+const FORGE_PACKAGES_LABEL = '@forge/core, @forge/shared (npm: @forgedevv/core, @forgedevv/shared)';
+
+/**
+ * package.json sections that replace, redirect or patch installed packages. Any change there is
+ * refused, whatever package it names: a FORGE package runs its own dependencies (the Meteora SDK,
+ * @solana/web3.js...), so overriding or patching one of them changes FORGE code too.
+ */
+const RESOLUTION_SECTIONS: readonly (readonly string[])[] = [
+  ['overrides'],
+  ['resolutions'],
+  ['patchedDependencies'],
+  ['pnpm', 'overrides'],
+  ['pnpm', 'patchedDependencies'],
+  ['pnpm', 'packageExtensions'],
+];
+
+/** Every JSON leaf whose path or value names a FORGE package, as `path=value`. */
+function forgeEntries(value: unknown, path: string[] = []): string[] {
   const here = path.join('>');
   if (typeof value !== 'object' || value === null) {
     const s = JSON.stringify(value);
-    return FORGE_CORE.test(here) || FORGE_CORE.test(String(value)) ? [`${here}=${s}`] : [];
+    return FORGE_PACKAGE_RE.test(here) || FORGE_PACKAGE_RE.test(String(value))
+      ? [`${here}=${s}`]
+      : [];
   }
   const entries = Array.isArray(value)
     ? value.map((v, i) => [String(i), v] as const)
     : Object.entries(value as Record<string, unknown>);
-  const out = entries.flatMap(([k, v]) => forgeCoreEntries(v, [...path, k]));
-  if (entries.length === 0 && FORGE_CORE.test(here)) out.push(`${here}={}`);
+  const out = entries.flatMap(([k, v]) => forgeEntries(v, [...path, k]));
+  if (entries.length === 0 && FORGE_PACKAGE_RE.test(here)) out.push(`${here}={}`);
   return out;
 }
 
-function multisetDiff(a: string[], b: string[]): boolean {
-  if (a.length !== b.length) return true;
-  const sa = [...a].sort();
-  const sb = [...b].sort();
-  return sa.some((x, i) => x !== sb[i]);
+/** Items of `b` that are not in `a` (multiset). */
+function multisetExtra(a: readonly string[], b: readonly string[]): string[] {
+  const pool = new Map<string, number>();
+  for (const x of a) pool.set(x, (pool.get(x) ?? 0) + 1);
+  const extra: string[] = [];
+  for (const x of b) {
+    const n = pool.get(x) ?? 0;
+    if (n > 0) pool.set(x, n - 1);
+    else extra.push(x);
+  }
+  return extra;
+}
+
+function multisetDiff(a: readonly string[], b: readonly string[]): boolean {
+  return a.length !== b.length || multisetExtra(a, b).length > 0;
+}
+
+function sectionAt(value: unknown, keys: readonly string[]): unknown {
+  let v = value;
+  for (const k of keys) {
+    if (!isPlainObject(v) || !Object.hasOwn(v, k)) return undefined;
+    v = v[k];
+  }
+  return v;
+}
+
+/** Line of the first FORGE package name in `text`, if any. */
+function lineOfForgePackage(text: string): number | null {
+  const m = FORGE_PACKAGE_RE.exec(text);
+  return m ? lineAt(text, m.index) : null;
 }
 
 export function checkPackageJson(
@@ -190,7 +240,7 @@ export function checkPackageJson(
       rule: 'forge-core-dependency',
       file,
       line: null,
-      reason: `package.json ${status} (the @forge/core dependency would be lost)`,
+      reason: `package.json ${status} (the FORGE package dependencies would be lost)`,
     });
     return out;
   }
@@ -205,14 +255,24 @@ export function checkPackageJson(
     return out;
   }
   const parsedOld = oldText === null ? null : parseStrictJson(file, oldText);
-  const oldEntries = parsedOld?.ok ? forgeCoreEntries(parsedOld.value) : [];
-  const newEntries = forgeCoreEntries(parsedNew.value);
-  if (multisetDiff(oldEntries, newEntries)) {
+  const oldValue = parsedOld?.ok ? parsedOld.value : undefined;
+  const newValue = parsedNew.value;
+  if (multisetDiff(forgeEntries(oldValue), forgeEntries(newValue))) {
     out.push({
       rule: 'forge-core-dependency',
       file,
-      line: lineOfKey(newText, '@forge/core'),
-      reason: 'change to the @forge/core dependency (version, presence, alias or override)',
+      line: lineOfForgePackage(newText),
+      reason: `change to a FORGE package dependency (${FORGE_PACKAGES_LABEL}): spec, version, alias, presence, override, resolution or patch`,
+    });
+  }
+  for (const keys of RESOLUTION_SECTIONS) {
+    if (deepEqual(sectionAt(oldValue, keys), sectionAt(newValue, keys))) continue;
+    const name = keys.join('.');
+    out.push({
+      rule: 'forge-core-dependency',
+      file,
+      line: lineOfKey(newText, keys[keys.length - 1] ?? name),
+      reason: `"${name}" changed: overrides, resolutions and patches can replace a FORGE package or one of its dependencies`,
     });
   }
   const mentions = (t: string | null): number =>
@@ -228,22 +288,87 @@ export function checkPackageJson(
   return out;
 }
 
-/** Indentation blocks (YAML-like lockfiles) starting at a line that mentions @forge/core. */
-function forgeCoreBlocks(text: string): string[] {
-  const lines = text.split(/\r?\n/);
-  const blocks: string[] = [];
-  for (let i = 0; i < lines.length; i++) {
+/**
+ * Text lockfile sections that apply overrides, patches, package extensions or a pnpmfile to the
+ * whole tree (pnpm-lock.yaml, bun.lock): any change there is a change to what FORGE packages run.
+ */
+const LOCK_SECTION_RE =
+  /^["']?(?:overrides|resolutions|patchedDependencies|packageExtensionsChecksum|pnpmfileChecksum)["']?\s*:/;
+
+/**
+ * Decodes the escapes a YAML or JSON string may use to spell a package name without its plain
+ * characters (`\x40`, `@`, `\U00000040`, `\/`), and URL-encoded characters (`%2f`).
+ */
+export function decodeLockEscapes(s: string): string {
+  return s.replace(
+    /\\x([0-9a-fA-F]{2})|\\u([0-9a-fA-F]{4})|\\U([0-9a-fA-F]{8})|%([0-9a-fA-F]{2})|\\(\/)/g,
+    (m: string, x?: string, u?: string, U?: string, pct?: string, slash?: string) => {
+      if (slash) return '/';
+      const cp = parseInt(x ?? u ?? U ?? pct ?? '', 16);
+      return Number.isInteger(cp) && cp <= 0x10ffff ? String.fromCodePoint(cp) : m;
+    },
+  );
+}
+
+/**
+ * YAML syntax a generated lockfile never uses, but that could hide or re-parent an entry from a
+ * line-based reading: backslash escapes and escaped line breaks, explicit keys and values
+ * (`? key` / `: value`), anchors, aliases, tags, merge keys, block scalars, document markers and
+ * directives. Counted per occurrence; a lockfile change adding any of them is refused.
+ */
+const HIDDEN_YAML_RE =
+  /\\|^[ \t]*[?:](?:[ \t]|$)|(?:^|[\s,[{])[&*!][^\s,\]}]|<<[ \t]*:|:[ \t]*[|>][-+0-9]*[ \t]*(?:#.*)?$|^(?:---|\.\.\.)(?:[ \t]|$)|^%/gm;
+
+function hiddenSyntaxCount(text: string): number {
+  return (text.match(HIDDEN_YAML_RE) ?? []).length;
+}
+
+interface LockBlock {
+  /** Parent keys, then the block lines with their indentation. */
+  key: string;
+  /** 1-based line where the block starts. */
+  line: number;
+}
+
+/**
+ * Indentation blocks of a text lockfile (YAML-like, yarn, bun.lock) that start at a line naming a
+ * FORGE package (after decoding escapes) or opening an override/patch section. Each block keeps
+ * its parent keys and its exact indentation, so moving, re-indenting or editing it is a change.
+ * Only outermost blocks are kept (a nested one is part of its outer block).
+ */
+function lockBlocks(text: string): LockBlock[] {
+  const lines = text.split(/\r\n|\r|\n/);
+  const indentOf = (l: string): number => l.length - l.trimStart().length;
+  const blocks: LockBlock[] = [];
+  const parents: { indent: number; text: string }[] = [];
+  let i = 0;
+  while (i < lines.length) {
     const line = lines[i] ?? '';
-    if (!FORGE_CORE.test(line)) continue;
-    const indent = line.length - line.trimStart().length;
-    const block = [line.trim()];
-    for (let j = i + 1; j < lines.length; j++) {
+    if (line.trim() === '') {
+      i += 1;
+      continue;
+    }
+    const indent = indentOf(line);
+    while (parents.length > 0 && (parents[parents.length - 1]?.indent ?? 0) >= indent) {
+      parents.pop();
+    }
+    const trimmed = line.trim();
+    const watched = FORGE_PACKAGE_RE.test(decodeLockEscapes(line)) || LOCK_SECTION_RE.test(trimmed);
+    if (!watched) {
+      parents.push({ indent, text: trimmed });
+      i += 1;
+      continue;
+    }
+    const body = [line.trimEnd()];
+    let j = i + 1;
+    for (; j < lines.length; j++) {
       const next = lines[j] ?? '';
       if (next.trim() === '') continue;
-      if (next.length - next.trimStart().length <= indent) break;
-      block.push(next.trim());
+      if (indentOf(next) <= indent) break;
+      body.push(next.trimEnd());
     }
-    blocks.push(block.join('\n'));
+    blocks.push({ key: [...parents.map((p) => p.text), '', ...body].join('\n'), line: i + 1 });
+    i = j;
   }
   return blocks;
 }
@@ -263,14 +388,22 @@ export function checkLockfile(
     rule: 'lockfile-forge-core',
     file,
     line: null,
-    reason: 'lockfile change touching @forge/core',
+    reason: `lockfile change touching a FORGE package (${FORGE_PACKAGES_LABEL}), an override or a patch`,
   };
   if (base === 'bun.lockb' || oldText === null || newText === null) {
-    if (oldText === null && newText !== null && !FORGE_CORE.test(newText)) return [];
+    if (
+      base !== 'bun.lockb' &&
+      oldText === null &&
+      newText !== null &&
+      !FORGE_PACKAGE_RE.test(decodeLockEscapes(newText))
+    ) {
+      return [];
+    }
     return [
       {
         ...violation,
-        reason: 'lockfile added, deleted or binary: @forge/core resolution cannot be verified',
+        reason:
+          'lockfile added, deleted or binary: the FORGE package resolution cannot be verified',
       },
     ];
   }
@@ -278,9 +411,27 @@ export function checkLockfile(
     const a = parseStrictJson(file, oldText);
     const b = parseStrictJson(file, newText);
     if (!b.ok) return [{ ...violation, reason: `lockfile: ${b.reason}` }];
-    return multisetDiff(a.ok ? forgeCoreEntries(a.value) : [], forgeCoreEntries(b.value))
-      ? [violation]
-      : [];
+    const oldEntries = a.ok ? forgeEntries(a.value) : [];
+    const newEntries = forgeEntries(b.value);
+    if (!multisetDiff(oldEntries, newEntries)) return [];
+    return [{ ...violation, line: lineOfForgePackage(newText) }];
   }
-  return multisetDiff(forgeCoreBlocks(oldText), forgeCoreBlocks(newText)) ? [violation] : [];
+  const out: Violation[] = [];
+  const oldBlocks = lockBlocks(oldText);
+  const newBlocks = lockBlocks(newText);
+  const oldKeys = oldBlocks.map((b) => b.key);
+  const newKeys = newBlocks.map((b) => b.key);
+  if (multisetDiff(oldKeys, newKeys)) {
+    const added = new Set(multisetExtra(oldKeys, newKeys));
+    const first = newBlocks.find((b) => added.has(b.key));
+    out.push({ ...violation, line: first?.line ?? null });
+  }
+  if (hiddenSyntaxCount(newText) > hiddenSyntaxCount(oldText)) {
+    out.push({
+      ...violation,
+      reason:
+        'lockfile change adds YAML escapes, explicit keys, anchors, tags or block scalars that can hide a FORGE package entry',
+    });
+  }
+  return out;
 }
