@@ -142,6 +142,21 @@ describe('builder environment', () => {
   });
 });
 
+describe('registry token (decision D26: @forge/core is public on npm)', () => {
+  it('regression: the builder reads no GitHub Packages token and passes none to the pipeline', async () => {
+    expect(BUILDER_ENV_NAMES).not.toContain('GITHUB_PACKAGES_TOKEN');
+    const config = loadBuilderEnv(
+      baseEnv({ GITHUB_PACKAGES_TOKEN: `ghp_${'a'.repeat(36)}`, NPM_TOKEN: 'npm-token-value' }),
+    ) as Record<string, unknown>;
+    expect(config.GITHUB_PACKAGES_TOKEN).toBeUndefined();
+    expect(config.NPM_TOKEN).toBeUndefined();
+    const source = await readFile(new URL('./index.ts', import.meta.url), 'utf8');
+    expect(source).not.toMatch(/packagesToken|GITHUB_PACKAGES_TOKEN|NPM_TOKEN|NODE_AUTH_TOKEN/);
+    const example = await readFile(new URL('../.env.example', import.meta.url), 'utf8');
+    expect(example).not.toMatch(/^(?:GITHUB_PACKAGES_TOKEN|NPM_TOKEN|NODE_AUTH_TOKEN)=/m);
+  });
+});
+
 describe('.env.example', () => {
   it('documents every variable of the builder, with no value for secrets', async () => {
     const text = await readFile(new URL('../.env.example', import.meta.url), 'utf8');

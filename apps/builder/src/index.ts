@@ -80,8 +80,6 @@ const BuilderEnvSchema = z.object({
   SIGNER_TIMEOUT_MS: intFromEnv(120_000, 5_000, 600_000),
   /** `<slug>.<CLIENTS_DOMAIN>` for every client site. */
   CLIENTS_DOMAIN: z.string().min(4),
-  /** Read-only GitHub Packages token for `@forge/core` during the local install (optional). */
-  GITHUB_PACKAGES_TOKEN: z.string().min(1).optional(),
   BUILDER_SLEEP_ENABLED: boolFromEnv(true),
   BUILDER_SLEEP_INTERVAL_HOURS: intFromEnv(24, 1, 24 * 7),
   /** Disabled launchpads: their sites are cut at startup, every sleep cycle and this often. */
@@ -282,7 +280,7 @@ export async function startBuilder(opts: StartBuilderOptions = {}): Promise<Buil
         cpus: config.BUILDER_AGENT_CPUS,
         budgetUsd: AGENT_DEFAULTS.budgetUsd,
       },
-      ...(config.GITHUB_PACKAGES_TOKEN ? { packagesToken: config.GITHUB_PACKAGES_TOKEN } : {}),
+      // No registry token: @forge/core installs from the public npm registry (decision D26).
       sandboxUid: sandboxConfig.uid,
       sandboxGid: sandboxConfig.gid,
       deploymentTimeoutMs: PIPELINE_DEFAULTS.deploymentTimeoutMs,

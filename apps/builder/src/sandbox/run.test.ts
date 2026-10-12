@@ -243,11 +243,8 @@ describe('runInSandbox (network allowlist)', () => {
     const [proxyCreate, sandboxCreate] = docker.find('create');
     const configFlag = proxyCreate!.args.find((a) => a.startsWith('--env=FORGE_EGRESS_CONFIG='))!;
     const proxyConfig = JSON.parse(configFlag.slice('--env=FORGE_EGRESS_CONFIG='.length));
-    expect(proxyConfig.allowHosts).toEqual([
-      'registry.npmjs.org',
-      'npm.pkg.github.com',
-      'pkg-npm.githubusercontent.com',
-    ]);
+    // `github-packages` opens no host anymore (decision D26: the public npm registry only).
+    expect(proxyConfig.allowHosts).toEqual(['registry.npmjs.org']);
     expect(proxyConfig.allowPorts).toEqual([443]);
     expect(proxyConfig.gateway).toEqual({
       listenPort: 8788,

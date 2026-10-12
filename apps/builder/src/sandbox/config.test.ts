@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { loadSandboxConfig, PINNED_IMAGE_RE, resolveSandboxConfig } from './config.js';
+import {
+  DEFAULT_EGRESS_HOSTS,
+  loadSandboxConfig,
+  PINNED_IMAGE_RE,
+  resolveSandboxConfig,
+} from './config.js';
 import { buildProxyConfig, parseProxyLog, sandboxProxyEnv } from './network.js';
 import { SandboxError } from './errors.js';
 
@@ -51,6 +56,30 @@ describe('loadSandboxConfig', () => {
       runtime: undefined,
     });
     expect(c.egressHosts.npm).toEqual(['registry.npmjs.org']);
+  });
+
+  it('regression: the public npm registry is the only registry, GitHub Packages is closed', () => {
+    const c = loadSandboxConfig(env);
+    expect(DEFAULT_EGRESS_HOSTS.npm).toEqual(['registry.npmjs.org']);
+    expect(DEFAULT_EGRESS_HOSTS['github-packages']).toEqual([]);
+    expect(c.egressHosts['github-packages']).toEqual([]);
+    const proxy = buildProxyConfig(['npm', 'github-packages'], c);
+    expect(proxy.allowHosts).toEqual(['registry.npmjs.org']);
+    for (const host of ['npm.pkg.github.com', 'pkg-npm.githubusercontent.com']) {
+      expect(proxy.allowHosts).not.toContain(host);
+    }
+    expect(buildProxyConfig(['github-packages'], c).allowHosts).toEqual([]);
+    // An operator override cannot reopen it.
+    expect(() =>
+      resolveSandboxConfig({
+        image: ID,
+        proxyImage: ID,
+        jobsRoot: ROOT,
+        egressHosts: { 'github-packages': ['npm.pkg.github.com'] },
+      }),
+    ).toThrow(/egressHosts\.github-packages/);
+    // A resolved configuration can be resolved again.
+    expect(resolveSandboxConfig(c).egressHosts).toEqual(c.egressHosts);
   });
 
   it('parses the optional variables', () => {
