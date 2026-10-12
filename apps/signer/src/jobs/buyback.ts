@@ -22,7 +22,8 @@
  *   4. Orders. Each run executes at most one due slot. A slot later than `maxLatenessMs` is
  *      `missed`. Simulation: quote (if $FORGE and a quote source exist) and log the would-be order.
  *      Live: quote (ExactIn SOL -> FORGE_MINT, slippage <= 100 bps), swap transaction from Jupiter,
- *      static allowlist (`verifySwapTransaction` from convert.ts), simulation with the post-state
+ *      static allowlist (`verifySwapTransaction` from convert.ts, Jupiter route arguments
+ *      decoded and bound to the quote and the slippage cap), simulation with the post-state
  *      of every account the bot holds (`compareBuybackStates`), kill switch re-read, sign, journal
  *      (signature + bytes), `onBeforeSend`, send, settle by polling. One attempt per slot: a slot
  *      that may have reached the network is never retried.
@@ -594,6 +595,10 @@ export interface BuyExpectation {
   inLamports: bigint;
   /** Raw $FORGE the quote guarantees (`otherAmountThreshold`). */
   minOutAmount: bigint;
+  /** Raw $FORGE the quote announced (`outAmount`): the route's `quoted_out_amount` may not be lower. */
+  quotedOutAmount: bigint;
+  /** Highest `slippage_bps` the route instruction may carry (BUYBACK_SLIPPAGE_BPS, <= 100). */
+  maxSlippageBps: number;
 }
 
 export type PreparedSwap =
@@ -826,7 +831,7 @@ export function buyCreatableAccounts(owner: PublicKey, forgeMint: PublicKey): st
  */
 export function compareBuybackStates(
   owner: string,
-  expected: BuyExpectation,
+  expected: Pick<BuyExpectation, 'forgeMint' | 'inLamports' | 'minOutAmount'>,
   feeBoundLamports: bigint,
   deltas: readonly AccountDelta[],
 ): BuyRefusal | null {
@@ -936,7 +941,11 @@ async function readAccounts(
 export async function checkBuybackSimulation(
   connection: SwapConnection,
   tx: VersionedTransaction,
-  input: { owner: PublicKey; expected: BuyExpectation; feeBoundLamports: bigint },
+  input: {
+    owner: PublicKey;
+    expected: Pick<BuyExpectation, 'forgeMint' | 'inLamports' | 'minOutAmount'>;
+    feeBoundLamports: bigint;
+  },
 ): Promise<BuyRefusal | null> {
   const watched = new Map<string, PublicKey>();
   const add = (k: PublicKey) => watched.set(k.toBase58(), k);
@@ -999,7 +1008,9 @@ export interface RpcBuybackSwapPreparerOptions {
  * allowlist (`verifySwapTransaction`): it checks the token side of the swap by mint without regard
  * to the direction, so it is called with `inputMint` = the $FORGE mint (owner = only signer and
  * fee payer, ATA creation only for wSOL / $FORGE, wSOL wrap/unwrap only on the owner's account,
- * Jupiter program required, bounded priority fee, no Approve / SetAuthority / token transfer).
+ * bounded priority fee, no Approve / SetAuthority / token transfer) and exactly one Jupiter ExactIn
+ * route whose decoded arguments match the buy quote: input = the lamports sold, no platform fee,
+ * slippage <= the buyback cap, quoted output >= the quote's `outAmount`.
  */
 export function createRpcBuybackSwapPreparer(
   opts: RpcBuybackSwapPreparerOptions,
@@ -1021,6 +1032,9 @@ export function createRpcBuybackSwapPreparer(
           inputMint: expected.forgeMint,
           inAmount: expected.inLamports,
           minOutLamports: 0n,
+          // The route instruction is checked against the buy quote ($FORGE units).
+          quotedOutAmount: expected.quotedOutAmount,
+          maxSlippageBps: Math.min(expected.maxSlippageBps, MAX_BUYBACK_SLIPPAGE_BPS),
           forbiddenMints: [],
         },
         maxPriorityFeeLamports: opts.maxPriorityFeeLamports,
@@ -1815,6 +1829,8 @@ export function createBuybackJob(deps: BuybackDeps): BuybackJob {
       forgeMint,
       inLamports: lamports,
       minOutAmount: BigInt(quote.otherAmountThreshold),
+      quotedOutAmount: BigInt(quote.outAmount),
+      maxSlippageBps: Math.min(config.slippageBps, MAX_BUYBACK_SLIPPAGE_BPS),
     };
     let swap: JupiterSwap;
     try {
