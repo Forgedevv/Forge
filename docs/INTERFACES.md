@@ -66,15 +66,19 @@ export const LaunchpadSpec = z.object({
     designNotes: z.string().max(2000),         // free-form instructions for the builder agent
   }),
   launchpadCoin: z.object({
-    name: z.string().min(1).max(32),
+    name: z.string().min(1).max(32),           // at most 32 UTF-8 bytes, no leading or trailing spaces
     symbol: z.string().regex(/^[A-Z0-9]{2,10}$/),
     description: z.string().max(500),
     imageUrl: z.string().url(),
-    firstBuySol: z.number().min(0).max(100),   // paid by the client
+    firstBuySol: z.number().min(0).max(10),    // paid by the client (D22)
   }),
 });
 export type LaunchpadSpec = z.infer<typeof LaunchpadSpec>;
 ```
+
+This block is a summary; `packages/shared/src/spec.ts` is the reference. Extra rules enforced there:
+- `firstBuySol` and `poolCreationFeeSol` have at most 9 decimals (1 lamport).
+- The launchpad coin's name, symbol and metadata URI share a budget of **148 UTF-8 bytes** (`LAUNCH_METADATA_BUDGET_BYTES` in core): beyond that the launch transaction no longer fits in 1,232 bytes. The signer checks `SIGNER_COIN_METADATA_URL` against it at startup (with the longest slug) and checks the real values before creating any config.
 
 ## 3. `forge.config.json` — read by each client site
 
@@ -278,7 +282,7 @@ Crashed job: a job left in an active status with `locked_at` older than `OPS.job
 | `POST /api/payments/quote` | `{ jobId, kind }` | `{ paymentId, kind, lamports, usdAmount, expiresAt, transaction }` | unsigned payment transaction, dollar price converted at the current rate. `lamports = "0"` and `transaction = null` if an included modification remains (the job goes straight to `paid`) |
 | `POST /api/payments/confirm` | `{ paymentId, signature }` | `{ status }` | `status` = the **payment** status. Verifies on-chain: exact quoted amount, one memo `forge:job:<jobId>` signed by the payer, recipient = cashbox, signer = session wallet **= `launchpads.owner_wallet`**, quote not expired, signature never used. Moves the job to `paid` |
 | `POST /api/jobs/:id/approve` | session | `{ status }` | the client approves the preview → `approved` |
-| `GET /api/jobs/:id/owner-transaction` | session | `{ transaction, summary }` | launch transaction partially signed by FORGE, to be signed by the client; `summary` = `OwnerTransactionSummary` (coin, first buy, estimated network fee, expected owner wallet) shown before signing |
+| `GET /api/jobs/:id/owner-transaction` | session | `{ transaction, summary }` | launch transaction partially signed by FORGE, to be signed by the client; `summary` = `OwnerTransactionSummary` (coin, first buy, estimated network fee, expected owner wallet, optional `ownerRequiredBalanceLamports` = everything the wallet must hold, including the temporary WSOL rent) shown before signing. The server and the client both check the transaction with core `verifyLaunchCoinTransaction` before it is signed |
 | `POST /api/jobs/:id/owner-transaction` | `{ signedTransaction }` | `{ signature }` | sent on-chain, then `owner_signed` once the transaction is confirmed |
 | `GET /api/launchpads/:id/claim-transaction` | session | `{ transaction }` | claim of the client's partner fees |
 | `POST /api/rpc` | JSON-RPC request | response | Helius relay, method allowlist, per-IP rate limit |
