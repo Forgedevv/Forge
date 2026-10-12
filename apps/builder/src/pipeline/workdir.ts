@@ -208,6 +208,11 @@ async function readRegularFile(file: string, expectedSize: number): Promise<Buff
 export async function readWorkdirTree(
   dir: string,
   limits: Partial<WorkdirLimits> = {},
+  /**
+   * Entries left out (path relative to `dir`). Never used by the pipeline: only the local site
+   * test tool skips what it creates itself (linked node_modules, next dev output).
+   */
+  skip?: (relPath: string) => boolean,
 ): Promise<TreeEntry[]> {
   const max = { ...WORKDIR_LIMITS, ...limits };
   const rootStat = await lstat(dir);
@@ -223,6 +228,7 @@ export async function readWorkdirTree(
     entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
     for (const entry of entries) {
       const childRel = rel ? `${rel}/${entry.name}` : entry.name;
+      if (skip?.(childRel)) continue;
       const childAbs = path.join(abs, entry.name);
       const st = await lstat(childAbs);
       if (st.isSymbolicLink()) {

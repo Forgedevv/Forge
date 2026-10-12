@@ -2,6 +2,7 @@ import type { JobRow } from '@forge/shared';
 import type { RepoFile, RepoInfo } from '../github.js';
 import type { SandboxRunner } from '../sandbox/index.js';
 import { resolveConfig, hostMatches } from '../scan/config.js';
+import type { ScanOptions } from '../scan/index.js';
 import type { JobContext, JobOutcome } from '../worker.js';
 import {
   builderSystemPrompt,
@@ -120,11 +121,11 @@ export function prepareBaseline(
 }
 
 /** Image URLs worth showing to the agent: only those the scan lets the site load. */
-function allowedImageUrls(
-  deps: PipelineDeps,
+export function allowedImageUrls(
+  scanOptions: ScanOptions | undefined,
   urls: { logoUrl?: string | undefined; coinImageUrl?: string | undefined },
 ): { logoUrl?: string; coinImageUrl?: string } {
-  const hosts = resolveConfig(deps.config.scanOptions).allowedHosts;
+  const hosts = resolveConfig(scanOptions).allowedHosts;
   const ok = (u: string | undefined): u is string => {
     if (!u) return false;
     try {
@@ -180,7 +181,7 @@ async function codeAndCheck(
     let taskPrompt: string;
     if (kind === 'create') {
       taskPrompt = createTaskPrompt(lp.spec, {
-        imageUrls: allowedImageUrls(deps, {
+        imageUrls: allowedImageUrls(deps.config.scanOptions, {
           logoUrl: lp.spec.theme.logoUrl,
           coinImageUrl: lp.spec.launchpadCoin.imageUrl,
         }),
