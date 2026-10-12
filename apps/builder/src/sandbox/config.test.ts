@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_EGRESS_HOSTS,
+  EGRESS_PRESETS,
   loadSandboxConfig,
   PINNED_IMAGE_RE,
   resolveSandboxConfig,
@@ -58,26 +59,27 @@ describe('loadSandboxConfig', () => {
     expect(c.egressHosts.npm).toEqual(['registry.npmjs.org']);
   });
 
-  it('regression: the public npm registry is the only registry, GitHub Packages is closed', () => {
+  it('regression: the public npm registry is the only registry preset, no GitHub Packages', () => {
     const c = loadSandboxConfig(env);
-    expect(DEFAULT_EGRESS_HOSTS.npm).toEqual(['registry.npmjs.org']);
-    expect(DEFAULT_EGRESS_HOSTS['github-packages']).toEqual([]);
-    expect(c.egressHosts['github-packages']).toEqual([]);
-    const proxy = buildProxyConfig(['npm', 'github-packages'], c);
+    expect(EGRESS_PRESETS).toEqual(['npm', 'gateway']);
+    expect(DEFAULT_EGRESS_HOSTS).toEqual({ npm: ['registry.npmjs.org'] });
+    expect(c.egressHosts).toEqual({ npm: ['registry.npmjs.org'] });
+    const proxy = buildProxyConfig(['npm'], c);
     expect(proxy.allowHosts).toEqual(['registry.npmjs.org']);
     for (const host of ['npm.pkg.github.com', 'pkg-npm.githubusercontent.com']) {
       expect(proxy.allowHosts).not.toContain(host);
     }
-    expect(buildProxyConfig(['github-packages'], c).allowHosts).toEqual([]);
-    // An operator override cannot reopen it.
-    expect(() =>
-      resolveSandboxConfig({
-        image: ID,
-        proxyImage: ID,
-        jobsRoot: ROOT,
-        egressHosts: { 'github-packages': ['npm.pkg.github.com'] },
-      }),
-    ).toThrow(/egressHosts\.github-packages/);
+    // The removed preset cannot be configured back, not even empty.
+    for (const hosts of [['npm.pkg.github.com'], []]) {
+      expect(() =>
+        resolveSandboxConfig({
+          image: ID,
+          proxyImage: ID,
+          jobsRoot: ROOT,
+          egressHosts: { 'github-packages': hosts } as never,
+        }),
+      ).toThrow(/egressHosts/);
+    }
     // A resolved configuration can be resolved again.
     expect(resolveSandboxConfig(c).egressHosts).toEqual(c.egressHosts);
   });

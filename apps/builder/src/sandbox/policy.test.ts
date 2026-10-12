@@ -5,10 +5,12 @@ import {
   assertSafeEnv,
   assertSafeSecrets,
   collectHostSecrets,
+  NEVER_IN_SANDBOX,
+  SECRET_ENV,
 } from './policy.js';
 
 const GATEWAY_TOKEN = `forge_gw_${'A'.repeat(43)}`;
-const PACKAGES_TOKEN = `ghp_${'b'.repeat(36)}`;
+const GITHUB_PAT = `ghp_${'b'.repeat(36)}`;
 
 function expectUnsafe(fn: () => unknown, message?: RegExp): void {
   try {
@@ -65,18 +67,11 @@ describe('assertSafeEnv', () => {
 });
 
 describe('assertSafeSecrets', () => {
-  it('accepts the two designated secrets with their presets', () => {
+  it('accepts the gateway token with its preset, the only secret of a sandbox', () => {
     expect(() =>
       assertSafeSecrets({ gatewayToken: GATEWAY_TOKEN }, 'allowlist', ['gateway']),
     ).not.toThrow();
-    expect(() =>
-      assertSafeSecrets({ packagesToken: PACKAGES_TOKEN }, 'allowlist', ['npm', 'github-packages']),
-    ).not.toThrow();
-    expect(() =>
-      assertSafeSecrets({ packagesToken: `github_pat_${'c'.repeat(82)}` }, 'allowlist', [
-        'github-packages',
-      ]),
-    ).not.toThrow();
+    expect(SECRET_ENV).toEqual({ gatewayToken: 'ANTHROPIC_AUTH_TOKEN' });
   });
 
   it('refuses secrets of the wrong kind or without their network', () => {
@@ -87,17 +82,7 @@ describe('assertSafeSecrets', () => {
     );
     expectUnsafe(() => assertSafeSecrets({ gatewayToken: GATEWAY_TOKEN }, 'none', []));
     expectUnsafe(() => assertSafeSecrets({ gatewayToken: GATEWAY_TOKEN }, 'allowlist', ['npm']));
-    expectUnsafe(() =>
-      assertSafeSecrets({ packagesToken: `ghs_${'d'.repeat(36)}` }, 'allowlist', [
-        'github-packages',
-      ]),
-    );
-    expectUnsafe(() =>
-      assertSafeSecrets({ packagesToken: 'vercel-token-123456789012' }, 'allowlist', [
-        'github-packages',
-      ]),
-    );
-    expectUnsafe(() => assertSafeSecrets({ packagesToken: PACKAGES_TOKEN }, 'allowlist', ['npm']));
+    expectUnsafe(() => assertSafeSecrets({ gatewayToken: GITHUB_PAT }, 'allowlist', ['gateway']));
   });
 });
 
@@ -108,7 +93,7 @@ describe('assertNoHostSecrets', () => {
     VERCEL_TOKEN: 'vercelTokenValue1234567',
     GITHUB_APP_PRIVATE_KEY:
       '-----BEGIN RSA PRIVATE KEY-----\nMIIabc\n-----END RSA PRIVATE KEY-----',
-    FORGE_PACKAGES_TOKEN: PACKAGES_TOKEN,
+    FORGE_PACKAGES_TOKEN: GITHUB_PAT,
     SOME_OTHER_SECRET: 'other-secret-value-1',
     PATH: '/usr/bin',
     SHORT_KEY: 'abc',
@@ -119,17 +104,39 @@ describe('assertNoHostSecrets', () => {
     expect(hostSecrets.never).toContain(hostEnv.ANTHROPIC_API_KEY);
     expect(hostSecrets.never).toContain(hostEnv.VERCEL_TOKEN);
     expect(hostSecrets.sensitive).toContain(hostEnv.SOME_OTHER_SECRET);
-    expect(hostSecrets.sensitive).toContain(PACKAGES_TOKEN);
+    expect(hostSecrets.sensitive).toContain(GITHUB_PAT);
     expect([...hostSecrets.never, ...hostSecrets.sensitive]).not.toContain('/usr/bin');
     expect([...hostSecrets.never, ...hostSecrets.sensitive]).not.toContain('abc');
   });
 
   const base = { env: {}, command: ['pnpm', 'build'], secrets: {}, hostSecrets };
 
-  it('lets the designated packages token through even if it lives in the host env', () => {
+  it('lets the gateway token through even if it lives in the host env', () => {
+    const withGateway = collectHostSecrets({ ...hostEnv, BUILDER_GATEWAY_TOKEN: GATEWAY_TOKEN });
+    expect(withGateway.sensitive).toContain(GATEWAY_TOKEN);
     expect(() =>
-      assertNoHostSecrets({ ...base, secrets: { packagesToken: PACKAGES_TOKEN } }),
+      assertNoHostSecrets({
+        ...base,
+        hostSecrets: withGateway,
+        secrets: { gatewayToken: GATEWAY_TOKEN },
+      }),
     ).not.toThrow();
+  });
+
+  it('refuses registry tokens: by name in the host env, and by format anywhere', () => {
+    const registry = {
+      GITHUB_PACKAGES_TOKEN: `ghp_${'g'.repeat(36)}`,
+      NODE_AUTH_TOKEN: 'node-auth-token-value',
+      NPM_TOKEN: 'npm-token-value-0000',
+    };
+    for (const name of Object.keys(registry)) expect(NEVER_IN_SANDBOX).toContain(name);
+    const secrets = collectHostSecrets(registry);
+    expect(secrets.never).toEqual(expect.arrayContaining(Object.values(registry)));
+    for (const value of Object.values(registry)) {
+      expectUnsafe(() => assertNoHostSecrets({ ...base, hostSecrets: secrets, env: { X: value } }));
+    }
+    // The GitHub token living in the host env no longer gets an exemption.
+    expectUnsafe(() => assertNoHostSecrets({ ...base, env: { X: GITHUB_PAT } }));
   });
 
   it('refuses host secret values anywhere', () => {
@@ -144,13 +151,13 @@ describe('assertNoHostSecrets', () => {
     expectUnsafe(() =>
       assertNoHostSecrets({ ...base, command: ['echo', hostEnv.SOME_OTHER_SECRET] }),
     );
-    // A NEVER_IN_SANDBOX value cannot be smuggled in as a designated secret.
-    const sneaky = collectHostSecrets({ VERCEL_TOKEN: PACKAGES_TOKEN });
+    // A NEVER_IN_SANDBOX value cannot be smuggled in as the designated secret.
+    const sneaky = collectHostSecrets({ VERCEL_TOKEN: GATEWAY_TOKEN });
     expectUnsafe(() =>
       assertNoHostSecrets({
         ...base,
         hostSecrets: sneaky,
-        secrets: { packagesToken: PACKAGES_TOKEN },
+        secrets: { gatewayToken: GATEWAY_TOKEN },
       }),
     );
   });
@@ -163,6 +170,9 @@ describe('assertNoHostSecrets', () => {
       'sb_secret_abcdefghijkl',
       `ghs_${'e'.repeat(36)}`,
       `gho_${'e'.repeat(36)}`,
+      `ghp_${'e'.repeat(36)}`,
+      `github_pat_${'e'.repeat(82)}`,
+      `npm_${'e'.repeat(36)}`,
       jwt({ role: 'service_role', iss: 'supabase' }),
     ]) {
       expectUnsafe(() =>

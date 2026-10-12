@@ -862,7 +862,7 @@ export class FakeRunner extends Recorder implements SandboxRunner {
       gid: 1000,
       runtime: undefined,
       gateway: { host: 'host.docker.internal', port: 8787 },
-      egressHosts: { npm: ['registry.npmjs.org'], 'github-packages': ['npm.pkg.github.com'] },
+      egressHosts: { npm: ['registry.npmjs.org'] },
       egressNetwork: 'forge-egress-out',
       hostEnv: {},
       extraHostSecrets: [],

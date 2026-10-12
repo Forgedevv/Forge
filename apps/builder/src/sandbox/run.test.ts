@@ -11,7 +11,7 @@ import type { SandboxRunOptions } from './types.js';
 const IMAGE = `sha256:${'a'.repeat(64)}`;
 const PROXY_IMAGE = `ghcr.io/forgedevv/egress@sha256:${'b'.repeat(64)}`;
 const GATEWAY_TOKEN = `forge_gw_${'T'.repeat(43)}`;
-const PACKAGES_TOKEN = `ghp_${'p'.repeat(36)}`;
+const GITHUB_PAT = `ghp_${'p'.repeat(36)}`;
 const HOST_ENV = {
   PATH: '/usr/local/bin:/usr/bin',
   HOME: '/home/builder',
@@ -215,8 +215,8 @@ describe('runInSandbox (network allowlist)', () => {
     const result = await runner.run(
       options({
         network: 'allowlist',
-        allow: ['npm', 'github-packages', 'gateway'],
-        secrets: { gatewayToken: GATEWAY_TOKEN, packagesToken: PACKAGES_TOKEN },
+        allow: ['npm', 'gateway'],
+        secrets: { gatewayToken: GATEWAY_TOKEN },
       }),
     );
     expect(result.ok).toBe(true);
@@ -243,7 +243,7 @@ describe('runInSandbox (network allowlist)', () => {
     const [proxyCreate, sandboxCreate] = docker.find('create');
     const configFlag = proxyCreate!.args.find((a) => a.startsWith('--env=FORGE_EGRESS_CONFIG='))!;
     const proxyConfig = JSON.parse(configFlag.slice('--env=FORGE_EGRESS_CONFIG='.length));
-    // `github-packages` opens no host anymore (decision D26: the public npm registry only).
+    // The public npm registry is the only registry (decision D26).
     expect(proxyConfig.allowHosts).toEqual(['registry.npmjs.org']);
     expect(proxyConfig.allowPorts).toEqual([443]);
     expect(proxyConfig.gateway).toEqual({
@@ -269,13 +269,13 @@ describe('runInSandbox (network allowlist)', () => {
     expect(s).toContain('--env=ANTHROPIC_BASE_URL=http://forge-egress:8788');
     // Secrets: names on the command line, values only in the CLI process env.
     expect(s).toContain('--env=ANTHROPIC_AUTH_TOKEN');
-    expect(s).toContain('--env=NODE_AUTH_TOKEN');
+    // No registry token exists anymore: nothing maps to NODE_AUTH_TOKEN.
+    expect(s.filter((a) => a.startsWith('--env=NODE_AUTH_TOKEN'))).toEqual([]);
     for (const call of docker.calls) {
       expect(call.args.join(' ')).not.toContain(GATEWAY_TOKEN);
-      expect(call.args.join(' ')).not.toContain(PACKAGES_TOKEN);
     }
     expect(sandboxCreate!.env.ANTHROPIC_AUTH_TOKEN).toBe(GATEWAY_TOKEN);
-    expect(sandboxCreate!.env.NODE_AUTH_TOKEN).toBe(PACKAGES_TOKEN);
+    expect(sandboxCreate!.env.NODE_AUTH_TOKEN).toBeUndefined();
     expect(proxyCreate!.env.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
     expect(docker.calls.filter((c) => c.env.ANTHROPIC_AUTH_TOKEN)).toHaveLength(1);
 
@@ -376,6 +376,22 @@ describe('runInSandbox option checks (no docker call)', () => {
       'unsafe_option',
     ],
     ['unknown secret', { secrets: { anthropicKey: 'x' } as never }, 'invalid_options'],
+    [
+      'the removed packages token secret',
+      { network: 'allowlist', allow: ['npm'], secrets: { packagesToken: GITHUB_PAT } as never },
+      'invalid_options',
+    ],
+    [
+      'the removed github-packages preset',
+      { network: 'allowlist', allow: ['npm', 'github-packages'] as never },
+      'invalid_options',
+    ],
+    ['a GitHub token in an env value', { env: { NOTE: GITHUB_PAT } }, 'unsafe_option'],
+    [
+      'an npm token in the command',
+      { command: ['echo', `npm_${'n'.repeat(36)}`] },
+      'unsafe_option',
+    ],
     ['too much memory', { memoryMb: 1_000_000 }, 'invalid_options'],
     ['too many cpus', { cpus: 64 }, 'invalid_options'],
     ['timeout too long', { timeoutMs: 10 * 60 * 60 * 1000 }, 'invalid_options'],

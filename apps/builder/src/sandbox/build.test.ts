@@ -7,8 +7,6 @@ import { resolveSandboxConfig } from './config.js';
 import type { SandboxRunner } from './run.js';
 import type { SandboxRunOptions, SandboxRunResult } from './types.js';
 
-const PACKAGES_TOKEN = `ghp_${'p'.repeat(36)}`;
-
 let root: string;
 
 beforeAll(async () => {
@@ -94,7 +92,7 @@ describe('buildCommands', () => {
 });
 
 describe('buildSite', () => {
-  it('installs with registry egress only, then builds with no network and no secret', async () => {
+  it('installs with npm registry egress only and no secret, then builds with no network', async () => {
     const dir = await project('site-ok', {
       'package.json': '{}',
       'pnpm-lock.yaml': 'lockfileVersion: 9.0',
@@ -103,7 +101,7 @@ describe('buildSite', () => {
       if (i === 1) await mkdir(path.join(dir, '.next'), { recursive: true });
       return result({ stdout: i === 0 ? 'installed' : 'built' });
     });
-    const res = await buildSite(runner, dir, { jobId: 'job-1', packagesToken: PACKAGES_TOKEN });
+    const res = await buildSite(runner, dir, { jobId: 'job-1' });
     expect(res.ok).toBe(true);
     expect(res.failedStep).toBeNull();
     expect(res.packageManager).toBe('pnpm');
@@ -116,9 +114,9 @@ describe('buildSite', () => {
       jobId: 'job-1',
       workdir: dir,
       network: 'allowlist',
-      allow: ['npm', 'github-packages'],
-      secrets: { packagesToken: PACKAGES_TOKEN },
+      allow: ['npm'],
     });
+    expect(install!.secrets).toBeUndefined();
     expect(install!.command).toEqual(buildCommands('pnpm').install);
     expect(build).toMatchObject({ network: 'none', command: ['pnpm', 'run', 'build'] });
     expect(build!.secrets).toBeUndefined();
@@ -126,7 +124,7 @@ describe('buildSite', () => {
     expect(build!.env?.NODE_OPTIONS).toMatch(/^--max-old-space-size=\d+$/);
   });
 
-  it('does not request GitHub Packages without a packages token', async () => {
+  it('installs an npm project from the npm registry only, with no secret', async () => {
     const dir = await project('site-npm', {
       'package.json': '{}',
       'package-lock.json': '{}',

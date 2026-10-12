@@ -58,8 +58,6 @@ export interface PipelineConfig {
   /** Options of the blocking scan (RPC relay host, R2 public host...). */
   scanOptions: ScanOptions;
   agent: AgentConfig;
-  /** Read-only packages token for `@forge/core`, used by the local install only. */
-  packagesToken?: string;
   /** Owner of job folders when the builder runs as root (the sandbox writes as this uid). */
   sandboxUid?: number;
   sandboxGid?: number;

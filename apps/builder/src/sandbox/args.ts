@@ -358,7 +358,7 @@ export function assertHardenedSandboxArgs(args: readonly string[]): void {
     if (!m) fail('invalid --env');
     const [, name, eq] = m;
     if (eq === '') {
-      // Bare name: the value comes from the CLI process env. Only the two secrets.
+      // Bare name: the value comes from the CLI process env. Only the designated secrets.
       if (!secretNames.has(name!)) fail(`bare --env=${name} is not allowed`);
     } else if (secretNames.has(name!) || SENSITIVE_NAME_RE.test(name!)) {
       fail(`--env=${name} must not carry a credential on the command line`);

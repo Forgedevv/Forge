@@ -3,7 +3,8 @@
  *
  * Two runs, least privilege each:
  * 1. install: frozen lockfile, lifecycle scripts and pnpmfile disabled (no code from the
- *    repo runs), network limited to the package registries, read-only packages token;
+ *    repo runs), network limited to the public npm registry, no secret (`@forge/core` and
+ *    `@forge/shared` are public npm aliases, decision D26);
  * 2. build: no network at all and no secret. This is where the agent's code runs.
  */
 import { lstat, realpath } from 'node:fs/promises';
@@ -29,8 +30,6 @@ export interface BuildSiteOptions {
   projectDir?: string;
   /** Build output relative to the project folder (default: `.next`). */
   outputDir?: string;
-  /** Read-only GitHub Packages token, for `@forge/core`. */
-  packagesToken?: string;
   install?: BuildStepLimits;
   build?: BuildStepLimits;
   /** Max chars of the combined `logs`. */
@@ -174,8 +173,7 @@ export async function buildSite(
     cpus: options.install?.cpus ?? BUILD_DEFAULTS.install.cpus,
     homeSizeMb: options.install?.homeSizeMb ?? BUILD_DEFAULTS.install.homeSizeMb,
     network: 'allowlist',
-    allow: options.packagesToken ? ['npm', 'github-packages'] : ['npm'],
-    ...(options.packagesToken ? { secrets: { packagesToken: options.packagesToken } } : {}),
+    allow: ['npm'],
   };
   const installRun = await runner.run(install);
   steps.install = installRun;

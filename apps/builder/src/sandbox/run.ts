@@ -245,7 +245,6 @@ export function createSandboxRunner(input: SandboxConfig, deps: SandboxDeps = {}
       ...hostSecrets.never,
       ...hostSecrets.sensitive,
       o.secrets.gatewayToken,
-      o.secrets.packagesToken,
     ]);
 
     const runId = makeRunId(o.jobId, randomSuffix());
@@ -263,7 +262,6 @@ export function createSandboxRunner(input: SandboxConfig, deps: SandboxDeps = {}
 
     const secretEnv: Record<string, string> = {};
     if (o.secrets.gatewayToken) secretEnv[SECRET_ENV.gatewayToken] = o.secrets.gatewayToken;
-    if (o.secrets.packagesToken) secretEnv[SECRET_ENV.packagesToken] = o.secrets.packagesToken;
 
     const out = new OutputCollector(o.maxOutputBytes ?? SANDBOX_DEFAULTS.maxOutputBytes);
     const err = new OutputCollector(o.maxOutputBytes ?? SANDBOX_DEFAULTS.maxOutputBytes);

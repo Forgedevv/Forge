@@ -7,13 +7,13 @@ treated as hostile. Runner: `apps/builder/src/sandbox/` (`createSandboxRunner`,
 
 ## Files
 
-| File | Purpose |
-|---|---|
-| `sandbox.Dockerfile` | Sandbox image: Node 22 (pinned digest), pnpm, the headless agent CLI; non-root, no setuid binary |
-| `egress-proxy.Dockerfile` | Egress proxy image: runs `src/sandbox/egress-proxy.ts` (no dependency) |
-| `*.Dockerfile.dockerignore` | Per-Dockerfile build contexts (only the proxy source is sent) |
-| `build-images.sh` | Builds both images and prints the pinned IDs to configure |
-| `host-firewall.sh` | Linux host rules (defense in depth) for the sandbox bridges |
+| File                        | Purpose                                                                                          |
+| --------------------------- | ------------------------------------------------------------------------------------------------ |
+| `sandbox.Dockerfile`        | Sandbox image: Node 22 (pinned digest), pnpm, the headless agent CLI; non-root, no setuid binary |
+| `egress-proxy.Dockerfile`   | Egress proxy image: runs `src/sandbox/egress-proxy.ts` (no dependency)                           |
+| `*.Dockerfile.dockerignore` | Per-Dockerfile build contexts (only the proxy source is sent)                                    |
+| `build-images.sh`           | Builds both images and prints the pinned IDs to configure                                        |
+| `host-firewall.sh`          | Linux host rules (defense in depth) for the sandbox bridges                                      |
 
 ## What every sandbox container gets
 
@@ -36,13 +36,14 @@ hardening flag aborts the run):
   output above 64 MiB kills the container; `cleanupStale()` removes leftovers by label;
 - `--pull=never` and a content-addressed image only.
 
-Secrets: only the job's AI gateway token (`ANTHROPIC_AUTH_TOKEN`) and a read-only
-packages token (`NODE_AUTH_TOKEN`) can enter, each only with the egress preset that uses
-it. Their values are never on a command line: the docker CLI gets them in its own
-environment, which is built from scratch (host secrets are not inherited). The
-Anthropic key, Supabase service key, GitHub App key, Vercel token and every host
-variable with a credential-like name are refused by name and by value, and redacted
-from all output.
+Secrets: only the job's AI gateway token (`ANTHROPIC_AUTH_TOKEN`) can enter, and only
+with the `gateway` egress preset. There is no registry token: `@forge/core` and
+`@forge/shared` install from the public npm registry through exact `npm:@forgedevv/...`
+aliases (decision D26). The token's value is never on a command line: the docker CLI gets
+it in its own environment, which is built from scratch (host secrets are not inherited).
+The Anthropic key, Supabase service key, GitHub App key, Vercel token, registry tokens
+(`GITHUB_PACKAGES_TOKEN`, `NODE_AUTH_TOKEN`, `NPM_TOKEN`) and every host variable with a
+credential-like name are refused by name and by value, and redacted from all output.
 
 ## Network
 
@@ -57,9 +58,9 @@ sandbox ──(per-run --internal bridge "fsbx*", no host IP)──► egress pr
   host (`inhibit_ipv4`). The sandbox has no default route and its DNS only resolves the
   proxy alias (`forge-egress`), so it cannot reach the host, another job, the metadata
   service, or use DNS to exfiltrate. Its only peer is the per-run proxy container:
-  - `CONNECT host:443` only, for the hosts of the requested presets
-    (`npm`: `registry.npmjs.org`; `github-packages`: `npm.pkg.github.com`,
-    `pkg-npm.githubusercontent.com`); IP literals, other ports and plain HTTP refused;
+  - `CONNECT host:443` only, for the hosts of the requested presets (`npm`:
+    `registry.npmjs.org`, the only registry); IP literals, other ports and plain HTTP
+    refused;
   - the proxy resolves the host itself, refuses private, loopback, link-local
     (169.254.169.254), CGNAT, multicast and reserved addresses, and connects to the
     vetted IP;
@@ -76,8 +77,8 @@ after the scan, never from the sandbox.
 Residual risk: data can still be sent to an allow-listed host (e.g. publishing to the
 npm registry with an attacker's token). This is why the build step runs with no network,
 the install step runs no repository code (`--ignore-scripts --ignore-pnpmfile`, frozen
-lockfile), and the only secrets in reach are short-lived (gateway token, per-job budget)
-or read-only (packages token).
+lockfile, no registry token), and the only secret in reach is short-lived (gateway token,
+per-job budget).
 
 ## Updating the pinned images
 
@@ -95,15 +96,15 @@ or read-only (packages token).
 
 ## Configuration (environment of the builder)
 
-| Variable | Required | Meaning |
-|---|---|---|
-| `FORGE_SANDBOX_IMAGE` | yes | Sandbox image, `sha256:<id>` or `name@sha256:<digest>` |
-| `FORGE_SANDBOX_PROXY_IMAGE` | yes | Egress proxy image, pinned the same way |
-| `FORGE_SANDBOX_JOBS_ROOT` | yes | Absolute folder; only folders strictly inside it are mounted |
-| `FORGE_SANDBOX_GATEWAY_UPSTREAM` | for the agent | `host:port` of the AI gateway seen from the proxy, e.g. `host.docker.internal:8787` |
-| `FORGE_SANDBOX_RUNTIME` | no | `runc` (default) or `runsc` (gVisor, recommended when installed) |
-| `FORGE_SANDBOX_UID` / `FORGE_SANDBOX_GID` | no | Sandbox user (default 1000:1000, never 0) |
-| `FORGE_DOCKER_BIN` | no | docker CLI path |
+| Variable                                  | Required      | Meaning                                                                             |
+| ----------------------------------------- | ------------- | ----------------------------------------------------------------------------------- |
+| `FORGE_SANDBOX_IMAGE`                     | yes           | Sandbox image, `sha256:<id>` or `name@sha256:<digest>`                              |
+| `FORGE_SANDBOX_PROXY_IMAGE`               | yes           | Egress proxy image, pinned the same way                                             |
+| `FORGE_SANDBOX_JOBS_ROOT`                 | yes           | Absolute folder; only folders strictly inside it are mounted                        |
+| `FORGE_SANDBOX_GATEWAY_UPSTREAM`          | for the agent | `host:port` of the AI gateway seen from the proxy, e.g. `host.docker.internal:8787` |
+| `FORGE_SANDBOX_RUNTIME`                   | no            | `runc` (default) or `runsc` (gVisor, recommended when installed)                    |
+| `FORGE_SANDBOX_UID` / `FORGE_SANDBOX_GID` | no            | Sandbox user (default 1000:1000, never 0)                                           |
+| `FORGE_DOCKER_BIN`                        | no            | docker CLI path                                                                     |
 
 ## Linux VPS (production)
 
