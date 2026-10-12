@@ -634,7 +634,21 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
         if (key === 'res') for (const n of bindingNames(node.name)) responseAliases.add(n);
         for (const n of bindingNames(node.name)) record(n, 'other');
       } else if (ts.isParameter(node)) {
-        for (const n of bindingNames(node.name)) record(n, 'other');
+        // `fetch(url).then((res) => res.json())`: the parameter is the fetch result.
+        const fn = node.parent;
+        const call = fn ? parentOf(fn).parent : undefined;
+        const fromFetch =
+          ts.isIdentifier(node.name) &&
+          (ts.isArrowFunction(fn) || ts.isFunctionExpression(fn)) &&
+          fn.parameters[0] === node &&
+          call !== undefined &&
+          ts.isCallExpression(call) &&
+          call.arguments[0] !== undefined &&
+          unwrap(call.arguments[0]) === fn &&
+          ts.isPropertyAccessExpression(unwrap(call.expression)) &&
+          ts.idText((unwrap(call.expression) as ts.PropertyAccessExpression).name) === 'then' &&
+          isFetchCall((unwrap(call.expression) as ts.PropertyAccessExpression).expression);
+        for (const n of bindingNames(node.name)) record(n, fromFetch ? 'fetch' : 'other');
       } else if (
         (ts.isFunctionDeclaration(node) || ts.isClassDeclaration(node)) &&
         node.name !== undefined

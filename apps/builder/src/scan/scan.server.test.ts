@@ -79,6 +79,7 @@ describe('server-side output in free-zone pages', () => {
     'response socket write': `export const f = (res: any) => res.socket.write('HTTP/1.1 200 OK');`,
     'end method taken off the response': `export const f = (res: any) => { const end = res.end; end.call(res, 'x'); };`,
     'writeHead on any receiver': `export const f = (o: any) => o.writeHead(200);`,
+    'a then callback on something else than fetch': `export const f = (p: any) => p.then((res: any) => res.end('x'));`,
   };
   for (const [name, src] of Object.entries(blocked)) {
     it(`blocks: ${name}`, () => {
@@ -97,6 +98,7 @@ describe('server-side output in free-zone pages', () => {
     'getStaticProps (build time, no response object)': `export const getStaticProps = async () => ({ props: { n: 1 }, revalidate: 60 });`,
     'json of a same-origin fetch result': `export async function load() { const res = await fetch('/api/x'); return res.json(); }`,
     'response of a same-origin fetch': `export async function load() { const response = await fetch('/api/x'); return response.status === 200 ? response.json() : null; }`,
+    'json of a fetch result in a then callback': `export const load = () => fetch('/api/x').then((res) => res.json());`,
     'a write method on another object': `export const f = (log: { write(s: string): void }) => log.write('x');`,
     'a variable named res from another call': `export const f = async (api: any) => { const res = await api.list(); return Object.assign(res, { n: 1 }); };`,
   };
