@@ -8,7 +8,13 @@ import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { LaunchpadSpec, type JobRow, type LaunchpadStatus } from '@forge/shared';
+import {
+  LaunchpadSpec,
+  type JobOwnerTxDetails,
+  type JobRow,
+  type LaunchpadStatus,
+  type SignerLaunchPrepareResponse,
+} from '@forge/shared';
 import {
   assertRepoPath,
   gitBlobSha,
@@ -66,6 +72,14 @@ export const LAUNCHPAD_CONFIG = address(2);
 export const LAUNCHPAD_COIN_CONFIG = address(3);
 export const LAUNCHPAD_COIN_MINT = address(4);
 export const OWNER_TX = Buffer.from('partially signed launch transaction').toString('base64');
+/** Launch accounts of OWNER_TX, as stored in `jobs.owner_tx_details`. */
+export const OWNER_TX_DETAILS: JobOwnerTxDetails = {
+  config: LAUNCHPAD_COIN_CONFIG,
+  pool: address(5),
+  creator: address(6),
+  nonceAccount: address(7),
+  metadataUri: 'https://forge.test/api/coin-meta/moonpad',
+};
 
 export const LAUNCHPAD_ID = '11111111-2222-4333-8444-555555555555';
 export const CREATE_JOB_ID = 'aaaaaaaa-bbbb-4ccc-8ddd-000000000001';
@@ -945,14 +959,24 @@ export class FakeGateway extends Recorder implements AgentGateway {
 
 export class FakeSigner extends Recorder implements PipelineSigner {
   configs = { launchpadConfig: LAUNCHPAD_CONFIG, launchpadCoinConfig: LAUNCHPAD_COIN_CONFIG };
-  prepared = { partiallySignedTx: OWNER_TX, mint: LAUNCHPAD_COIN_MINT };
+  /** The prepare answer, `details` as the signer sends them (with the fields the builder drops). */
+  prepared: SignerLaunchPrepareResponse = {
+    partiallySignedTx: OWNER_TX,
+    mint: LAUNCHPAD_COIN_MINT,
+    details: {
+      ...OWNER_TX_DETAILS,
+      expectedTokensOut: '1000000',
+      minimumTokensOut: '990000',
+      referral: 'none',
+    },
+  };
 
   createConfigs(): Promise<{ launchpadConfig: string; launchpadCoinConfig: string }> {
     return this.around('createConfigs', () => ({ ...this.configs }));
   }
 
-  prepareLaunchCoin(): Promise<{ partiallySignedTx: string; mint: string }> {
-    return this.around('prepareLaunchCoin', () => ({ ...this.prepared }));
+  prepareLaunchCoin(): Promise<SignerLaunchPrepareResponse> {
+    return this.around('prepareLaunchCoin', () => structuredClone(this.prepared));
   }
 }
 

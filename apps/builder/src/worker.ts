@@ -2,6 +2,7 @@
 import { randomBytes } from 'node:crypto';
 import { hostname } from 'node:os';
 import {
+  JobOwnerTxDetails,
   OPS,
   failedStageForStatus,
   isActiveJobStatus,
@@ -50,7 +51,7 @@ export interface JobContext {
 
 /** Result of a successful step. The worker derives the next status from the active one. */
 export interface JobOutcome {
-  /** Required for `building` (preview_url) and `onchain_setup` (owner_tx). */
+  /** Required for `building` (preview_url) and `onchain_setup` (owner_tx + owner_tx_details). */
   patch?: JobPatch;
   /** Overrides the default client-visible completion message. */
   message?: string;
@@ -59,7 +60,9 @@ export interface JobOutcome {
 /**
  * The pipeline. `job.status` is the active status that was just claimed:
  * - `building`: create or modify, produce a preview. Return `{ patch: { preview_url } }`.
- * - `onchain_setup`: signer configs + launch transaction. Return `{ patch: { owner_tx } }`.
+ * - `onchain_setup`: signer configs + launch transaction. Return
+ *   `{ patch: { owner_tx, owner_tx_details } }` (the transaction and its launch accounts, written
+ *   in the same update).
  * - `deploying`: merge, production deploy. Return `{}`.
  * Throw to fail the step; the message is redacted and stored in `jobs.error`.
  * Must be idempotent (a job can be processed twice after a crash) and honour `ctx.signal`.
@@ -807,7 +810,13 @@ function validateOutcome(active: ActiveJobStatus, outcome: JobOutcome): JobPatch
     if (typeof raw.owner_tx !== 'string' || raw.owner_tx.length === 0) {
       throw new InvalidOutcomeError('on-chain step finished without owner_tx');
     }
+    // The launch accounts apps/web pins are stored with the transaction, never without them.
+    const details = JobOwnerTxDetails.safeParse(raw.owner_tx_details);
+    if (!details.success) {
+      throw new InvalidOutcomeError('on-chain step finished without valid owner_tx_details');
+    }
     patch.owner_tx = raw.owner_tx;
+    patch.owner_tx_details = details.data;
   }
   return patch;
 }

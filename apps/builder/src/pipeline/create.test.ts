@@ -21,6 +21,7 @@ import {
   makeJobsRoot,
   OWNER,
   OWNER_TX,
+  OWNER_TX_DETAILS,
   silentLogger,
 } from './test-fakes.js';
 import {
@@ -50,6 +51,8 @@ afterEach(async () => {
 const building = (over: Partial<JobRow> = {}) => jobFixture({ status: 'building', ...over });
 const onchainJob = (over: Partial<JobRow> = {}) => jobFixture({ status: 'onchain_setup', ...over });
 const deployingJob = (over: Partial<JobRow> = {}) => jobFixture({ status: 'deploying', ...over });
+/** Outcome of the on-chain step: the launch transaction and its accounts, stored together. */
+const STORED_LAUNCH = { patch: { owner_tx: OWNER_TX, owner_tx_details: OWNER_TX_DETAILS } };
 
 function harness(): Harness {
   const h = makeHarness(root);
@@ -504,7 +507,7 @@ describe('create: onchain_setup', () => {
     await buildPreview(h);
     const previewHead = h.github.repos.get(REPO)!.branches.get(BRANCH);
     const { outcome, events } = await runStep(h, onchainJob());
-    expect(outcome).toEqual({ patch: { owner_tx: OWNER_TX } });
+    expect(outcome).toEqual(STORED_LAUNCH);
     expect(h.signer.count('createConfigs')).toBe(1);
     expect(h.signer.count('prepareLaunchCoin')).toBe(1);
     const config = JSON.parse(h.github.text(REPO, BRANCH, 'forge.config.json')!);
@@ -536,6 +539,44 @@ describe('create: onchain_setup', () => {
     expect(h.vercel.deployments.size).toBe(1);
   });
 
+  // Before: only the transaction was stored, so apps/web had to read the creator wallet, the
+  // nonce account and the metadata URI it pins back from that same transaction.
+  it('stores the launch accounts of the prepare answer with the transaction, extra fields dropped', async () => {
+    const h = harness();
+    await buildPreview(h);
+    const { outcome } = await runStep(h, onchainJob());
+    expect(outcome.patch?.owner_tx_details).toEqual(OWNER_TX_DETAILS);
+    expect(Object.keys(outcome.patch?.owner_tx_details ?? {}).sort()).toEqual([
+      'config',
+      'creator',
+      'metadataUri',
+      'nonceAccount',
+      'pool',
+    ]);
+  });
+
+  it.each<[string, (details: Record<string, unknown>) => Record<string, unknown> | undefined]>([
+    ['missing', () => undefined],
+    [
+      'without the creator wallet',
+      (d) => Object.fromEntries(Object.entries(d).filter(([key]) => key !== 'creator')),
+    ],
+    ['with an invalid nonce account', (d) => ({ ...d, nonceAccount: 'not-an-address' })],
+    ['with a non-https metadata URI', (d) => ({ ...d, metadataUri: 'http://forge.test/x.json' })],
+    ['for another coin config', (d) => ({ ...d, config: LAUNCHPAD_CONFIG })],
+  ])('refuses to store the launch transaction when the details are %s', async (_label, change) => {
+    const h = harness();
+    await buildPreview(h);
+    const commits = h.github.count('commitFiles');
+    const details = change({ ...h.signer.prepared.details });
+    h.signer.prepared = { partiallySignedTx: OWNER_TX, mint: LAUNCHPAD_COIN_MINT };
+    if (details !== undefined) h.signer.prepared.details = details;
+    await expect(runStep(h, onchainJob())).rejects.toThrow(/launch transaction is not stored/);
+    // Nothing written: no address commit, no launchpad row update.
+    expect(h.github.count('commitFiles')).toBe(commits);
+    expect(h.store.get(LAUNCHPAD_ID).launchpad_coin_mint).toBeNull();
+  });
+
   it('refuses addresses that differ from the recorded ones', async () => {
     const h = harness();
     await buildPreview(h);
@@ -556,7 +597,7 @@ describe('create: onchain_setup', () => {
     expect(h.github.commits.size).toBe(commits);
     // A crash before owner_tx was stored is still resumed (addresses recorded, no owner_tx).
     const { outcome } = await runStep(h, onchainJob({ owner_tx: null }));
-    expect(outcome).toEqual({ patch: { owner_tx: OWNER_TX } });
+    expect(outcome).toEqual(STORED_LAUNCH);
   });
 
   it('fails before any signer call when the preview branch is missing', async () => {
@@ -611,7 +652,7 @@ describe('create: onchain_setup', () => {
           );
           await expect(runStep(h, onchainJob())).rejects.toThrow();
           const { outcome } = await runStep(h, onchainJob());
-          expect(outcome).toEqual({ patch: { owner_tx: OWNER_TX } });
+          expect(outcome).toEqual(STORED_LAUNCH);
           // Exactly one builder commit with the addresses, whatever the crash point.
           expect(h.github.commits.size).toBe(commitsBefore + 1);
           const config = JSON.parse(h.github.text(REPO, BRANCH, 'forge.config.json')!);

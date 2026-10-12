@@ -1,4 +1,4 @@
-import type { JobRow } from '@forge/shared';
+import { JobOwnerTxDetails, type JobRow } from '@forge/shared';
 import type { JobContext, JobOutcome } from '../worker.js';
 import { guard, jobBranch, jobFields, loadLaunchpad, say, type PipelineDeps } from './context.js';
 import { PipelineError } from './errors.js';
@@ -19,9 +19,11 @@ import type { LaunchpadPatch } from './store.js';
  *
  *   signer /v1/configs -> signer /v1/launch-coin/prepare
  *   -> forge.config.json#onchain on forge/<jobId> (builder-owned commit, never the agent)
- *   -> launchpad row -> owner_tx
+ *   -> launchpad row -> owner_tx + owner_tx_details (one update, by the worker)
  *
  * The mint comes from the prepare call, so the addresses are written once both calls answered.
+ * The launch accounts of the prepare answer (`details`) are required: they are stored with the
+ * transaction so that apps/web pins them instead of reading them back from it.
  * The signer re-reads everything from Supabase and both routes are idempotent, so a re-run after a
  * crash (the team puts the job back to `approved`) creates nothing twice. A failure here is never
  * retried automatically (D18): the worker marks the job failed (stage `onchain`) and alerts.
@@ -56,14 +58,15 @@ export async function runOnchainStep(
   // Re-entry guard: this step already completed for the job (addresses on the branch and on the
   // launchpad, launch transaction handed out). The client may have signed it: never prepare
   // another one. A failed release is retried from `owner_signed`; rebuilding a launch transaction
-  // that was never signed is a deliberate team action (clear `jobs.owner_tx` first).
+  // that was never signed is a deliberate team action (clear `jobs.owner_tx` and
+  // `jobs.owner_tx_details` first).
   if (
     typed.onchain !== undefined &&
     launchpad.launchpad_coin_mint !== null &&
     job.owner_tx !== null
   ) {
     throw new PipelineError(
-      'the on-chain step already completed for this job: retry a failed release from owner_signed (or clear owner_tx to rebuild an unsigned launch transaction)',
+      'the on-chain step already completed for this job: retry a failed release from owner_signed (or clear owner_tx and owner_tx_details to rebuild an unsigned launch transaction)',
     );
   }
 
@@ -73,6 +76,8 @@ export async function runOnchainStep(
   await say(jobCtx, STEP_EVENTS.prepareLaunch);
   guard(signal);
   const prepared = await deps.signer.prepareLaunchCoin(job.id);
+  // Checked before anything is written: no details, no stored launch transaction.
+  const details = launchDetails(prepared.details, configs.launchpadCoinConfig);
 
   const onchain = onchainBlock({
     cluster: deps.config.cluster,
@@ -122,5 +127,31 @@ export async function runOnchainStep(
     guard(signal);
     await deps.store.updateLaunchpad(launchpad.id, patch);
   }
-  return { patch: { owner_tx: prepared.partiallySignedTx } };
+  return { patch: { owner_tx: prepared.partiallySignedTx, owner_tx_details: details } };
+}
+
+/**
+ * The `details` of the prepare answer as stored in `jobs.owner_tx_details`: required, validated
+ * with the shared schema (unknown fields dropped), and naming the launchpad coin config the
+ * signer returned. Otherwise the launch transaction is not stored.
+ */
+function launchDetails(raw: unknown, launchpadCoinConfig: string): JobOwnerTxDetails {
+  if (raw === undefined || raw === null) {
+    throw new PipelineError(
+      'the signer returned no launch details: the launch transaction is not stored',
+    );
+  }
+  const parsed = JobOwnerTxDetails.safeParse(raw);
+  if (!parsed.success) {
+    const fields = [...new Set(parsed.error.issues.map((issue) => String(issue.path[0] ?? '')))];
+    throw new PipelineError(
+      `the signer returned invalid launch details (${fields.join(', ')}): the launch transaction is not stored`,
+    );
+  }
+  if (parsed.data.config !== launchpadCoinConfig) {
+    throw new PipelineError(
+      'the signer returned launch details for another launchpad coin config: the launch transaction is not stored',
+    );
+  }
+  return parsed.data;
 }
