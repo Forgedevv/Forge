@@ -314,7 +314,9 @@ async function scrollThrough() {
   window.scrollTo(0, 0);
   await sleep(400);
   // Development overlay of `next dev` (local tool only): not part of the site.
-  for (const el of document.querySelectorAll('nextjs-portal')) el.remove();
+  const style = document.createElement('style');
+  style.textContent = 'nextjs-portal { display: none !important; }';
+  document.head.appendChild(style);
   return true;
 }
 

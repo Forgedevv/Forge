@@ -157,6 +157,8 @@ export function reviewTaskPrompt(input: ReviewTaskInput, spec: LaunchpadSpec): s
     '',
     'Rules:',
     '- Every rule of the system prompt still applies: the same zones, locked files and security rules.',
+    '- The capture had no network: console errors about it (WebSocket errors, failed requests) are',
+    '  expected and not yours to fix. Fix only errors that come from your own code.',
     `- Do not create, edit or delete anything in \`${dir}/\`. It is removed before your changes are`,
     '  checked, and nothing you write there is kept. Never copy its files into the site.',
     '- When you are done, reply with a short summary of what you changed, in one paragraph.',
