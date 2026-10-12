@@ -184,6 +184,7 @@ create table jobs (
   request text,                             -- client request (modifications)
   preview_url text,
   owner_tx text,                            -- partially signed launch transaction (base64), with durable nonce
+  owner_tx_details jsonb,                   -- launch accounts of owner_tx { config, pool, creator, nonceAccount, metadataUri }, written with owner_tx by the builder
   error text,
   api_cost_usd numeric not null default 0,
   locked_by text,                           -- id of the worker that took the job
@@ -310,7 +311,7 @@ HTTP on the private network. Each request carries:
 | Route | Input | Output | Signer checks |
 |---|---|---|---|
 | `POST /v1/configs` | `{ jobId }` | `{ launchpadConfig, launchpadCoinConfig }` | re-reads the job and the spec from Supabase, job in `onchain_setup`, payment `confirmed`, bounds validation |
-| `POST /v1/launch-coin/prepare` | `{ jobId }` | `{ partiallySignedTx, mint }` | creates a dedicated creator wallet, signs as creator, the client will sign as buyer. Transaction built with a **durable nonce** so it does not expire while the client signs. The builder writes it to `jobs.owner_tx` |
+| `POST /v1/launch-coin/prepare` | `{ jobId }` | `{ partiallySignedTx, mint, summary?, details? }` (the builder requires `details` and writes it to `jobs.owner_tx_details` in the same update as `owner_tx`) | creates a dedicated creator wallet, signs as creator, the client will sign as buyer. Transaction built with a **durable nonce** so it does not expire while the client signs. The builder writes it to `jobs.owner_tx` |
 | `GET /v1/health` | — | `{ ok }` | |
 
 The signer never takes an address or an amount from the request: it re-reads everything from Supabase. Both routes are idempotent.
