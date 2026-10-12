@@ -25,8 +25,9 @@ coins. The trading, wallet and claim logic is provided by FORGE and is locked.
 - In `forge.config.json`: `version`, `name`, `slug`, `mode` and `onchain`. Only FORGE writes them.
 - `package.json`, any lockfile, `next.config.*`, `tsconfig*.json`, `tailwind.config.*`,
   `postcss.config.*`, `vercel.json`, `.env*`, `.npmrc`, middleware, any dotfile or hidden folder,
-  `src/pages/api/`, `src/pages/_app.*`, `src/pages/_document.*`, `src/components/modes/` (the
-  app shell and the sleeping and maintenance pages), and anything outside the zones above.
+  `src/pages/api/`, `src/pages/_app.*`, `src/pages/_document.*`, `src/pages/creator-fees.*`,
+  `src/components/modes/` (the app shell and the sleeping and maintenance pages), and anything
+  outside the zones above. Free-zone pages and components may link to `/creator-fees`.
 - You cannot add dependencies or install packages: use what the project already has.
 
 ## Security rules

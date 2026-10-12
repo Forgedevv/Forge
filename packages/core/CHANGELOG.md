@@ -8,6 +8,7 @@ launchpad template, the signer, the web app) pin an exact version, never a range
 First version meant for publication on npm as `@forgedevv/core` (with `@forgedevv/shared`), through
 `node scripts/publish-core.mjs --publish`. Not published yet.
 
+- `listCoinsOfCreator` (creator pools through SDK `getPoolsByCreator`), `DBC_POOL_CREATOR_OFFSET`, `DBC_POOL_CONFIG_OFFSET`.
 - `checkPaymentTransaction` / `verifyPayment`: `transferLamports` on `amount_mismatch` when the transfer amount differs.
 
 ### Changed (wave 5 review)

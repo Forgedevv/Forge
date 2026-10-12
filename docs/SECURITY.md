@@ -10,7 +10,7 @@ Every protection below is **mandatory** in the MVP. Agents that touch one of the
 - `@forge/core` and `@forge/shared` installed from npm (`@forgedevv/core`, `@forgedevv/shared`) at an exact pinned version. The scan rejects any change to `package.json` on these dependencies (including overrides), any `patch-package`, any file in `node_modules`.
 - The template clearly separates `src/forge/` (untouchable, wired to `@forge/core`) from the rest (design, pages, content).
 - **Blocking scan before every push**:
-  - no modification under `src/forge/` (which holds the mode gate and the mode pages), `src/pages/_app.*`, `src/pages/_document.*`, `src/components/modes/**`, `forge.config.json#onchain` and `#mode`, `next.config.*` (security headers), `package.json#dependencies['@forge/core']`;
+  - no modification under `src/forge/` (which holds the mode gate and the mode pages), `src/pages/_app.*`, `src/pages/_document.*`, `src/pages/creator-fees.*`, `src/components/modes/**`, `forge.config.json#onchain` and `#mode`, `next.config.*` (security headers), `package.json#dependencies['@forge/core']`;
   - free-zone pages are static: no `getServerSideProps` or `getInitialProps`, no use of the response object (`res.end`, `res.write`, headers...), no second React root (`react-dom/client`);
   - no added base58 string of 32 to 44 characters (Solana address);
   - no external `<script src=`, no `fetch`/`import` to a domain outside the allowlist;

@@ -32,17 +32,31 @@ export const Header = () => {
             <span className="block truncate whitespace-nowrap text-base font-bold tracking-tight md:text-lg">
               {content.name}
             </span>
-            <span className="launchpad-tagline hidden truncate text-xs sm:block">{content.tagline}</span>
+            <span className="launchpad-tagline hidden truncate text-xs sm:block">
+              {content.tagline}
+            </span>
           </span>
         </Link>
 
         {/* Navigation and Actions */}
         <div className="flex items-center gap-1.5 md:gap-3">
-          <Link href="/" className="launchpad-nav-link hidden px-3 py-2 text-sm font-medium md:inline-flex">
+          <Link
+            href="/"
+            className="launchpad-nav-link hidden px-3 py-2 text-sm font-medium md:inline-flex"
+          >
             {content.strings.explore}
           </Link>
-          <Link href="/about" className="launchpad-nav-link hidden px-3 py-2 text-sm font-medium md:inline-flex">
+          <Link
+            href="/about"
+            className="launchpad-nav-link hidden px-3 py-2 text-sm font-medium md:inline-flex"
+          >
             {content.strings.aboutTitle}
+          </Link>
+          <Link
+            href="/creator-fees"
+            className="launchpad-nav-link hidden px-3 py-2 text-sm font-medium md:inline-flex"
+          >
+            {content.strings.creatorFees}
           </Link>
           <CreatePoolButton />
           {address ? (

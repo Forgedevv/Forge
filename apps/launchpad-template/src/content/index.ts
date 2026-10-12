@@ -16,6 +16,7 @@ export const content = {
     connectWallet: 'Connect wallet',
     connectShort: 'Connect',
     aboutTitle: 'About',
+    creatorFees: 'Creator fees',
     explore: 'Explore',
     footerNote: 'Built with FORGE',
     homeEyebrow: 'TOKEN LAUNCHPAD',

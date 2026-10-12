@@ -20,6 +20,7 @@ Forked from the `fun-launch` scaffold of [MeteoraAg/meteora-invent](https://gith
 | `src/theme/` | free | CSS variables driven by `forge.config.json#theme`. |
 | `src/content/` | free | Texts driven by `forge.config.json#content`. |
 | `src/components/`, `src/pages/` | free | UI. They import from `src/forge` for anything dynamic. `src/components/AppShell.tsx` holds the global layout and design. |
+| `src/pages/creator-fees.tsx`, `src/forge/pages/` | LOCKED | Creator fee claim page (`/creator-fees`), a one-line re-export of the locked page. |
 | `src/pages/_app.tsx`, `src/pages/_document.tsx` | LOCKED | App entry: FORGE providers, the mode gate (`src/forge/ModeGate.tsx`) and the free-zone `AppShell`. |
 | `src/pages/api/` | server | `upload` only (coin preparation). It answers 503 unless the site is `live`. |
 | `scripts/` | monorepo only | `prepare-template-repo.mjs` (not part of the template repository). |
@@ -42,7 +43,7 @@ version in the template repository):
 
 - `src/forge/trade/core-adapter.ts`: wrappers over `quoteSwap` / `buildBuyTx` / `buildSellTx` and
   the graduation read. The Meteora referral and the 0.3% platform fee are added by the core.
-- `src/forge/claims/core-adapter.ts`: wrappers over `listCoinsOfConfig` and `buildCreatorClaimTx`
+- `src/forge/claims/core-adapter.ts`: wrappers over `listCoinsOfCreator` and `buildCreatorClaimTx`
   (the receiver is the connected wallet).
 - `src/forge/create/launch-builder.ts`: coin launch on the launchpad config (creator = payer =
   buyer). It reuses the core constants and quote inputs but keeps its own SDK call, because the core
