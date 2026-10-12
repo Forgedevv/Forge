@@ -22,9 +22,12 @@ import { sanitizeError } from './worker/messages.js';
  *
  * Mechanism: the builder sets `forge.config.json#mode` on the default branch (a builder-owned
  * commit), then deploys that commit to production and promotes it. With `mode: sleeping` the
- * template serves its lightweight static page only (no wallet, no RPC, no Jupiter data); the coin
- * stays tradable on Meteora and Jupiter. `launchpads.status` follows. A site whose mode is
- * `disabled` (cut by FORGE) is never touched here.
+ * template serves its lightweight page only (no trading, no coin creation, no Jupiter data); the
+ * coin stays tradable on Meteora and Jupiter. Coin creators can still claim their creator fees
+ * there (decision D29): the claim widget runs in the browser through the FORGE RPC relay, so the
+ * sleeping deployment keeps the same project variables (relay URL, cluster) and the on-chain block
+ * of forge.config.json. `launchpads.status` follows. A site whose mode is `disabled` (cut by FORGE)
+ * is never touched here.
  *
  * Every step is idempotent: a re-run after a crash finds the mode already set, gets the existing
  * deployment of the commit back from Vercel, and does not promote twice.
