@@ -31,6 +31,11 @@ Every protection below is **mandatory** in the MVP. Agents that touch one of the
 
 **Protections** (agent 4): Docker network with an egress allowlist: AI gateway, `github.com`, `registry.npmjs.org`. Everything else is denied. No host folder mounted outside the job's working folder.
 
+**Visual review capture** (agent 4, `BUILDER_VISUAL_REVIEW=on`, off by default): after the first agent pass of a new site has been scanned and built, a separate container renders it so a second pass can fix what it sees.
+- It runs the agent's site (`next start`) and a headless Chromium, so it gets the strictest run: review image only (`FORGE_SANDBOX_REVIEW_IMAGE`, pinned, no agent CLI), network `none` (loopback only; the runner refuses the review image with any other network or with a secret), the same hardening flags and resource limits as every sandbox run, the job folder mounted read-only, and one fresh output folder (inside the jobs root, separate from the job folder) as the only writable host path. In the browser, every external request is intercepted: the Jupiter data API gets empty lists, the rest fails, and no host name resolves.
+- Its output is untrusted: the host reads only the expected file names, never through a link, with size caps; the report is parsed with zod and checked against the contract (pages, viewports, sizes); each PNG is checked chunk by chunk and rebuilt from its critical chunks; every string is cut short and reduced to a safe character set before it reaches the agent.
+- The second pass runs like the first (gateway only, job token, what is left of the job budget, capped). Its review input (`.forge-review/`) is removed before the scan, then the same scan against the same baseline and the same install and build run again. Any failure of the review (capture, agent, scan, build, time, budget) keeps the first pass, already scanned and built; the files of the two passes are never mixed.
+
 ## 5. Theft of a creator wallet key
 
 **Threat**: a pool's creator role is **transferable** (`transferPoolCreator`). A stolen key = the whole creator share diverted forever.

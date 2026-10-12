@@ -348,6 +348,8 @@ The signer never takes an address or an amount from the request: it re-reads eve
 | `SIGNER_KEYSTORE_PASSPHRASE`, `SIGNER_KEYSTORE_DIR`, `SIGNER_JOURNAL_DIR`, `SIGNER_ALLOWED_IPS`, `SIGNER_MAX_LAUNCHPADS_PER_DAY` | | | | ✓ |
 | `SIGNER_COIN_METADATA_URL` = `https://<web host>/api/coin-meta/{slug}` (at most 106 bytes once filled) | | | | ✓ |
 | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | | | ✓ | ✓ |
+| `BUILDER_VISUAL_REVIEW` (`off` default / `on`: second agent pass on screenshots of new sites) | | | ✓ | |
+| `FORGE_SANDBOX_REVIEW_IMAGE` (pinned visual review image, needed when the review is on) | | | ✓ | |
 
 "Injected": the builder does not use the value itself, it writes it into the env variables of each client's Vercel project. Client projects only ever receive public values plus their own relay token (D21). Tuning knobs (rate limits, intervals, caps, budgets) are listed with their defaults in each app's `.env.example`.
 
