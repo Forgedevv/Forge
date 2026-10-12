@@ -1,13 +1,18 @@
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import pg from 'pg';
+import { loadMigrate } from './migrate-module.js';
 
 const url = process.env.SUPABASE_DB_URL;
 const describeDb = url ? describe : describe.skip;
+// Same TLS policy as the migration script (SUPABASE_DB_CA_FILE), warned about once.
+const pgConfig = url ? (await loadMigrate()).connectionConfig(url) : null;
 
 const connect = async (): Promise<pg.Client> => {
-  if (!url) throw new Error('SUPABASE_DB_URL is required for database integration tests.');
-  const c = new pg.Client({ connectionString: url, ssl: { rejectUnauthorized: false } });
+  if (!url || !pgConfig) {
+    throw new Error('SUPABASE_DB_URL is required for database integration tests.');
+  }
+  const c = new pg.Client(pgConfig);
   await c.connect();
   return c;
 };
@@ -652,5 +657,123 @@ describeDb('upload_tickets (0006)', () => {
         await expect(insert(c, ticket())).rejects.toThrow(/permission denied/);
       });
     }
+  });
+});
+
+describeDb('payment_anomalies (0008)', () => {
+  // Skipped (not failed) on a database where migration 0008 is not applied yet.
+  let present = false;
+  beforeAll(async () => {
+    const r = await admin.query(`select to_regclass('public.payment_anomalies') is not null as ok`);
+    present = r.rows[0].ok === true;
+  });
+
+  let seq = 0;
+  /** A valid anomaly row for wallet A's payment; `over` replaces columns. */
+  function anomaly(over: Record<string, unknown> = {}): Record<string, unknown> {
+    seq += 1;
+    // 88 base58 characters (no 0, O, I or l), unique per row.
+    const signature = `${run}${seq}`.replace(/[^1-9A-HJ-NP-Za-km-z]/g, 'z').padEnd(88, '5');
+    return {
+      job_id: ids.jobA,
+      payment_id: ids.payA,
+      wallet: '9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin',
+      signature,
+      lamports: '220000000',
+      reason: 'late',
+      ...over,
+    };
+  }
+
+  async function insert(c: pg.Client, row: Record<string, unknown>): Promise<void> {
+    const keys = Object.keys(row);
+    await c.query(
+      `insert into payment_anomalies (${keys.join(',')}) values (${keys.map((_, i) => `$${i + 1}`).join(',')})`,
+      Object.values(row),
+    );
+  }
+
+  /** Runs fn as the service owner in a transaction that is always rolled back. */
+  async function inTx(fn: (c: pg.Client) => Promise<void>): Promise<void> {
+    const c = await connect();
+    try {
+      await c.query('begin');
+      await fn(c);
+    } finally {
+      await c.query('rollback').catch(() => undefined);
+      await c.end();
+    }
+  }
+
+  async function rejects(c: pg.Client, row: Record<string, unknown>, pattern: RegExp) {
+    await c.query('savepoint s');
+    await expect(insert(c, row)).rejects.toThrow(pattern);
+    await c.query('rollback to savepoint s');
+  }
+
+  it('accepts every reason, an unknown amount and no payment, with defaults', async (ctx) => {
+    if (!present) ctx.skip();
+    await inTx(async (c) => {
+      for (const reason of ['late', 'amount_mismatch', 'launchpad_released', 'duplicate']) {
+        await insert(c, anomaly({ reason }));
+      }
+      await insert(c, anomaly({ reason: 'amount_mismatch', lamports: null, payment_id: null }));
+      const r = await c.query(
+        `select count(*)::int as n, bool_and(detected_at is not null and resolved_at is null) as open
+         from payment_anomalies where job_id = $1`,
+        [ids.jobA],
+      );
+      expect(r.rows[0]).toEqual({ n: 5, open: true });
+    });
+  });
+
+  it('records a signature once and checks every column', async (ctx) => {
+    if (!present) ctx.skip();
+    await inTx(async (c) => {
+      const first = anomaly();
+      await insert(c, first);
+      await rejects(
+        c,
+        anomaly({ signature: first.signature, reason: 'duplicate' }),
+        /payment_anomalies_signature_key/,
+      );
+      await rejects(c, anomaly({ reason: 'overpaid' }), /payment_anomalies_reason_check/);
+      await rejects(c, anomaly({ lamports: '0' }), /payment_anomalies_lamports_check/);
+      await rejects(
+        c,
+        anomaly({ signature: 'not-a-signature' }),
+        /payment_anomalies_signature_check/,
+      );
+      await rejects(c, anomaly({ wallet: 'x' }), /payment_anomalies_wallet_check/);
+      await rejects(c, anomaly({ note: 'n'.repeat(1001) }), /payment_anomalies_note_check/);
+      await rejects(c, anomaly({ job_id: randomUUID() }), /foreign key/);
+      await rejects(c, anomaly({ reason: null }), /null value/);
+    });
+  });
+
+  it('has the index of open anomalies', async (ctx) => {
+    if (!present) ctx.skip();
+    const r = await admin.query(
+      `select indexdef from pg_indexes where tablename = 'payment_anomalies' and indexname = 'payment_anomalies_open_idx'`,
+    );
+    expect(r.rows[0]?.indexdef).toMatch(/WHERE \(resolved_at IS NULL\)/);
+  });
+
+  it('is invisible to anon and authenticated clients, owner included', async (ctx) => {
+    if (!present) ctx.skip();
+    for (const role of ['anon', 'authenticated'] as const) {
+      await as(role, role === 'authenticated' ? A : null, async (c) => {
+        await c.query('savepoint s');
+        await expect(c.query('select 1 from payment_anomalies')).rejects.toThrow(
+          /permission denied/,
+        );
+        await c.query('rollback to savepoint s');
+        await expect(insert(c, anomaly())).rejects.toThrow(/permission denied/);
+      });
+    }
+    const rls = await admin.query(
+      `select relrowsecurity from pg_class where oid = 'public.payment_anomalies'::regclass`,
+    );
+    expect(rls.rows[0].relrowsecurity).toBe(true);
   });
 });

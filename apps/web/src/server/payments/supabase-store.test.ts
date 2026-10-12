@@ -121,6 +121,79 @@ describe('SupabasePaymentsStore', () => {
     expect(created.lamports).toBe(9_007_199_254_740_993n);
   });
 
+  it('records a payment anomaly once per signature, lamports as a decimal string', async () => {
+    const { store, calls } = fakeDb([{ data: null }, { error: { code: '23505', message: 'dup' } }]);
+    const anomaly = {
+      jobId: 'j1',
+      paymentId: 'p1',
+      wallet: 'w',
+      signature: 'sig',
+      lamports: 9_007_199_254_740_993n,
+      reason: 'late' as const,
+      note: null,
+    };
+    await expect(store.recordPaymentAnomaly(anomaly)).resolves.toBe('recorded');
+    await expect(store.recordPaymentAnomaly(anomaly)).resolves.toBe('exists');
+    expect(calls[0]).toEqual({
+      table: 'payment_anomalies',
+      ops: [
+        [
+          'insert',
+          [
+            {
+              job_id: 'j1',
+              payment_id: 'p1',
+              wallet: 'w',
+              signature: 'sig',
+              lamports: '9007199254740993',
+              reason: 'late',
+              note: null,
+            },
+          ],
+        ],
+      ],
+    });
+    const unknown = fakeDb([{}]);
+    await unknown.store.recordPaymentAnomaly({ ...anomaly, lamports: null });
+    expect(unknown.calls[0]!.ops[0]![1][0]).toMatchObject({ lamports: null });
+    const broken = fakeDb([{ error: { code: '42501', message: 'denied' } }]);
+    await expect(broken.store.recordPaymentAnomaly(anomaly)).rejects.toBeInstanceOf(StoreError);
+  });
+
+  it('finds the oldest open paid quote of a job and payer', async () => {
+    const { store, calls } = fakeDb([{ data: [ROW] }]);
+    const found = await store.findOpenQuote({
+      jobId: 'j1',
+      payerWallet: 'w',
+      kind: 'creation',
+      expiresAfter: new Date('2026-10-09T12:01:00Z'),
+    });
+    expect(found?.id).toBe('p1');
+    expect(calls[0]!.ops).toEqual([
+      ['select', ['*']],
+      ['eq', ['job_id', 'j1']],
+      ['eq', ['payer_wallet', 'w']],
+      ['eq', ['kind', 'creation']],
+      ['eq', ['status', 'quoted']],
+      ['is', ['tx_signature', null]],
+      ['gt', ['lamports', 0]],
+      ['gt', ['quote_expires_at', '2026-10-09T12:01:00.000Z']],
+      ['order', ['created_at', { ascending: true }]],
+      ['order', ['id', { ascending: true }]],
+      ['limit', [1]],
+    ]);
+  });
+
+  it('lists the confirmed payments of a job in creation order', async () => {
+    const { store, calls } = fakeDb([
+      { data: [ROW, { ...ROW, id: 'p2', status: 'confirmed', tx_signature: 's' }] },
+    ]);
+    const rows = await store.listConfirmedPaymentsForJob('j1');
+    expect(rows.map((r) => r.id)).toEqual(['p1', 'p2']);
+    expect(calls[0]!.ops).toContainEqual(['eq', ['status', 'confirmed']]);
+    expect(calls[0]!.ops).toContainEqual(['order', ['created_at', { ascending: true }]]);
+  });
+
   it('expires and confirms included payments with conditional updates', async () => {
     const { store, calls } = fakeDb([{ data: [{ id: 'p1' }] }, { data: [] }]);
     await expect(store.markPaymentExpired('p1')).resolves.toBe(true);

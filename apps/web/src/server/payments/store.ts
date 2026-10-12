@@ -67,6 +67,36 @@ export interface NewPayment {
  */
 export type ConfirmWriteResult = 'confirmed' | 'not_updated' | 'signature_taken';
 
+/**
+ * Why money that reached the cashbox could not pay for its job (docs/DECISIONS.md D20, table
+ * `payment_anomalies`, supabase/migrations/0008). Recorded for a manual refund.
+ */
+export type PaymentAnomalyReason = 'late' | 'amount_mismatch' | 'launchpad_released' | 'duplicate';
+
+export interface NewPaymentAnomaly {
+  jobId: string;
+  /** The quote the transaction was presented for (or the duplicate payment). */
+  paymentId: string | null;
+  /** The payer: session wallet = launchpad owner = signer of the transaction. */
+  wallet: string;
+  signature: string;
+  /** Lamports moved to the cashbox; null when the verification result does not carry them. */
+  lamports: bigint | null;
+  reason: PaymentAnomalyReason;
+  note: string | null;
+}
+
+/** `recorded` when this call wrote the row, `exists` when the signature was already recorded. */
+export type AnomalyWriteResult = 'recorded' | 'exists';
+
+export interface OpenQuoteQuery {
+  jobId: string;
+  payerWallet: string;
+  kind: PaymentKind;
+  /** Only quotes whose expiry is strictly after this instant. */
+  expiresAfter: Date;
+}
+
 export interface PaymentsStore {
   getJobContext(jobId: string): Promise<JobContext | null>;
   getIncludedModificationsLeft(launchpadId: string): Promise<number | null>;
@@ -74,6 +104,15 @@ export interface PaymentsStore {
   findPaymentBySignature(signature: string): Promise<PaymentRecord | null>;
   /** A payment of this job in status `confirmed`, if any. */
   findConfirmedPaymentForJob(jobId: string): Promise<PaymentRecord | null>;
+  /** Every payment of this job in status `confirmed`, oldest first (creation order, then id). */
+  listConfirmedPaymentsForJob(jobId: string): Promise<PaymentRecord[]>;
+  /**
+   * The oldest open paid quote of this job and payer: status `quoted`, no signature, more than 0
+   * lamports, of `kind`, expiring after `expiresAfter` (creation order, then id).
+   */
+  findOpenQuote(query: OpenQuoteQuery): Promise<PaymentRecord | null>;
+  /** Inserts an anomaly; idempotent on the signature (UNIQUE `payment_anomalies.signature`). */
+  recordPaymentAnomaly(anomaly: NewPaymentAnomaly): Promise<AnomalyWriteResult>;
   /** Inserts a payment in status `quoted`. */
   insertQuote(payment: NewPayment): Promise<PaymentRecord>;
   /** quoted|expired + no signature -> confirmed + signature. */

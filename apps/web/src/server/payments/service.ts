@@ -7,7 +7,7 @@ import { errorName, type PaymentsLogger } from './log';
 import { kindForJobType, usdPriceForKind, usdToLamports } from './pricing';
 import type { SolUsdPriceSource } from './price-source';
 import { defaultSleep } from './retry';
-import type { JobContext, PaymentRecord, PaymentsStore } from './store';
+import type { JobContext, PaymentAnomalyReason, PaymentRecord, PaymentsStore } from './store';
 
 /*
  * Quotes and on-chain payment confirmation (docs/INTERFACES.md §6, docs/SECURITY.md §10).
@@ -20,7 +20,12 @@ import type { JobContext, PaymentRecord, PaymentsStore } from './store';
  *   accepts a single signature (conditional update on `tx_signature is null`);
  * - the job moves spec_ready -> paid with a conditional update, so retries and concurrent
  *   requests are idempotent. The payment row is written first: it is the source of truth, and a
- *   later confirm or quote request repairs a job left behind by a crash between the two writes.
+ *   later confirm or quote request repairs a job left behind by a crash between the two writes;
+ * - money that reached the cashbox without paying for its job (late, wrong amount, released
+ *   draft, second payment of a paid job) is recorded in `payment_anomalies` for a manual refund
+ *   (docs/DECISIONS.md D20) before the request is answered, idempotently on the signature. Only a
+ *   transaction verified on-chain is recorded: landed without error, signed by the payer, with
+ *   exactly one transfer from the payer to the cashbox.
  */
 
 export const QUOTE_TIMING = {
@@ -32,9 +37,20 @@ export const QUOTE_TIMING = {
    * valid payment (it would land after the window), so the quote is marked expired.
    */
   notFoundGraceMs: 90_000,
+  /**
+   * Server-side guard against paying twice (two tabs, a retried request): while an open paid
+   * quote of the job and payer has at least this much validity left, a quote request gets that
+   * same quote back (same amount, memo and expiry, freshly built transaction) instead of a second
+   * one. With the block time tolerance this covers a blockhash lifetime (about 60 to 90 s), so a
+   * transaction built for a reused quote cannot land after its window.
+   */
+  reuseMinRemainingMs: 60_000,
 } as const;
 
-/** The confirm route waits this long for a transaction that is not yet confirmed. */
+/**
+ * The confirm route waits this long for a transaction that is not final yet (finalization takes
+ * about 13 s after confirmation), then answers 202 and the client asks again (Retry-After).
+ */
 export const CONFIRM_WAIT = { totalMs: 10_000, pollMs: 1_000 } as const;
 
 export interface QuoteResult {
@@ -84,6 +100,47 @@ const LAUNCHPAD_DISABLED_MESSAGE = 'This launchpad has been disabled.';
 
 function notFound(what: 'Job' | 'Payment'): PaymentError {
   return new PaymentError(404, 'NOT_FOUND', `${what} not found.`);
+}
+
+type PendingVerification = Extract<PaymentVerification, { status: 'pending' }>;
+type MissingMetaVerification = Extract<PaymentVerification, { status: 'invalid' }> & {
+  reason: 'missing_meta';
+};
+
+/** Not decided yet: poll again (a transaction without its status meta is treated the same). */
+function isPending(
+  verification: PaymentVerification,
+): verification is PendingVerification | MissingMetaVerification {
+  return (
+    verification.status === 'pending' ||
+    (verification.status === 'invalid' && verification.reason === 'missing_meta')
+  );
+}
+
+/** The cluster does not know the signature at all (as opposed to seen but not final yet). */
+function isUnseen(verification: PaymentVerification): boolean {
+  return verification.status === 'pending' && verification.reason === 'not_found';
+}
+
+/** `Transfer of <n> lamports, expected <m>`: the detail of the core's amount_mismatch result. */
+const TRANSFER_DETAIL_RE = /^Transfer of (\d{1,20}) lamports\b/;
+
+/**
+ * Lamports a verified transaction moved from the payer to the cashbox:
+ * - `undefined` when there is nothing to record (not landed, failed, not signed by the payer, no
+ *   single transfer from the payer to the cashbox, or not decided yet);
+ * - `null` when money moved (the core reports amount_mismatch only after those checks) but the
+ *   amount is not readable from the result.
+ */
+export function receivedLamports(verification: PaymentVerification): bigint | null | undefined {
+  if (verification.status === 'confirmed') return verification.lamports;
+  if (verification.status !== 'invalid' || verification.reason !== 'amount_mismatch') {
+    return undefined;
+  }
+  const match = TRANSFER_DETAIL_RE.exec(verification.detail);
+  if (!match) return null;
+  const lamports = BigInt(match[1]!);
+  return lamports > 0n ? lamports : undefined;
 }
 
 export function createPaymentsService(deps: PaymentsServiceDeps): PaymentsService {
@@ -167,11 +224,59 @@ export function createPaymentsService(deps: PaymentsServiceDeps): PaymentsServic
     return createPaidQuote(ctx, wallet, kind);
   }
 
+  /** The open paid quote that a new quote request of this job and payer must reuse, if any. */
+  function findReusableQuote(jobId: string, wallet: string, kind: PaymentKind) {
+    return store.findOpenQuote({
+      jobId,
+      payerWallet: wallet,
+      kind,
+      expiresAfter: new Date(now() + QUOTE_TIMING.reuseMinRemainingMs),
+    });
+  }
+
+  /**
+   * Hands an open quote out again: same payment row, amount, memo and expiry. The transaction is
+   * rebuilt (fresh blockhash) unless `built` already pays exactly this amount.
+   */
+  async function reuseQuote(
+    open: PaymentRecord,
+    built: { lamports: bigint; transaction: string } | null,
+  ): Promise<QuoteResult> {
+    const transaction =
+      built && built.lamports === open.lamports
+        ? built.transaction
+        : (
+            await gateway.buildPayment({
+              payer: new PublicKey(open.payerWallet),
+              lamports: open.lamports,
+              jobId: open.jobId,
+            })
+          ).transaction;
+    logger.log('info', 'quote.reused', {
+      paymentId: open.id,
+      jobId: open.jobId,
+      kind: open.kind,
+      lamports: open.lamports.toString(),
+    });
+    return {
+      paymentId: open.id,
+      kind: open.kind,
+      lamports: open.lamports.toString(),
+      usdAmount: open.usdAmount,
+      expiresAt: new Date(open.quoteExpiresAt).toISOString(),
+      transaction,
+    };
+  }
+
   async function createPaidQuote(
     ctx: JobContext,
     wallet: string,
     kind: PaymentKind,
   ): Promise<QuoteResult> {
+    const jobId = ctx.job.id;
+    const open = await findReusableQuote(jobId, wallet, kind);
+    if (open) return reuseQuote(open, null);
+
     const usdAmount = usdPriceForKind(kind);
     const solUsd = await prices.getSolUsdPrice();
     const lamports = usdToLamports(usdAmount, solUsd);
@@ -179,10 +284,10 @@ export function createPaymentsService(deps: PaymentsServiceDeps): PaymentsServic
     const built = await gateway.buildPayment({
       payer: new PublicKey(wallet),
       lamports,
-      jobId: ctx.job.id,
+      jobId,
     });
     const payment = await store.insertQuote({
-      jobId: ctx.job.id,
+      jobId,
       payerWallet: wallet,
       kind,
       usdAmount,
@@ -193,14 +298,32 @@ export function createPaymentsService(deps: PaymentsServiceDeps): PaymentsServic
     // wallet (chat/store.ts). The release writes the launchpad then reads the payments; a quote
     // writes its row then reads the launchpad: whatever the interleaving, one of the two sees the
     // other and backs off, so a quote is never handed out for a released draft.
-    const fresh = await store.getJobContext(ctx.job.id);
+    const fresh = await store.getJobContext(jobId);
     if (!fresh || fresh.launchpad.status === 'disabled') {
       await store.markPaymentExpired(payment.id);
       throw new PaymentError(403, 'LAUNCHPAD_DISABLED', LAUNCHPAD_DISABLED_MESSAGE);
     }
+    // The job may have been paid meanwhile (e.g. by the last included modification, taken by a
+    // concurrent request of the same job): never hand out a paid quote for a paid job.
+    if (fresh.job.status !== 'spec_ready') {
+      await store.markPaymentExpired(payment.id);
+      throw new PaymentError(409, 'ALREADY_PAID', ALREADY_PAID_MESSAGE);
+    }
+    if (await store.findConfirmedPaymentForJob(jobId)) {
+      await store.markPaymentExpired(payment.id);
+      await markJobPaid(jobId, 'reconcile_on_quote');
+      throw new PaymentError(409, 'ALREADY_PAID', ALREADY_PAID_MESSAGE);
+    }
+    // Concurrent quote requests of the same job: every request reads the oldest open quote after
+    // writing its own, so they all hand out that one and the others are expired.
+    const winner = await findReusableQuote(jobId, wallet, kind);
+    if (winner && winner.id !== payment.id) {
+      await store.markPaymentExpired(payment.id);
+      return reuseQuote(winner, { lamports, transaction: built.transaction });
+    }
     logger.log('info', 'quote.created', {
       paymentId: payment.id,
-      jobId: ctx.job.id,
+      jobId,
       kind,
       lamports: lamports.toString(),
       usdAmount,
@@ -287,12 +410,96 @@ export function createPaymentsService(deps: PaymentsServiceDeps): PaymentsServic
     const deadline = now() + confirmWaitMs;
     for (;;) {
       const result = await gateway.verify(signature, expected);
-      const retryable =
-        result.status === 'pending' ||
-        (result.status === 'invalid' && result.reason === 'missing_meta');
-      if (!retryable || now() + confirmPollMs > deadline) return result;
+      if (!isPending(result) || now() + confirmPollMs > deadline) return result;
       await sleep(confirmPollMs);
     }
+  }
+
+  function expectedFor(payment: PaymentRecord): ExpectedPayment {
+    return {
+      payer: new PublicKey(payment.payerWallet),
+      lamports: payment.lamports,
+      jobId: payment.jobId,
+    };
+  }
+
+  /**
+   * Records money received for `payment` that cannot pay for its job (idempotent on the
+   * signature). A database failure propagates: the request fails and its retry records it.
+   */
+  async function recordAnomaly(
+    payment: PaymentRecord,
+    signature: string,
+    reason: PaymentAnomalyReason,
+    lamports: bigint | null,
+    note: string | null = null,
+  ): Promise<void> {
+    const outcome = await store.recordPaymentAnomaly({
+      jobId: payment.jobId,
+      paymentId: payment.id,
+      wallet: payment.payerWallet,
+      signature,
+      lamports,
+      reason,
+      note,
+    });
+    logger.log('warn', 'payment.anomaly', {
+      paymentId: payment.id,
+      jobId: payment.jobId,
+      signature,
+      reason,
+      lamports: lamports === null ? null : lamports.toString(),
+      outcome,
+    });
+  }
+
+  /**
+   * Second payment of a job: every confirmed payment of the job except the one that paid it is
+   * recorded as a duplicate. Run after each signature write, so of two payments confirmed
+   * concurrently the later reader sees both and records the extra one. The included modification
+   * (0 lamports) paid the job when there is one, otherwise the oldest payment did.
+   */
+  async function recordDuplicates(jobId: string): Promise<void> {
+    const confirmed = await store.listConfirmedPaymentsForJob(jobId);
+    if (confirmed.length < 2) return;
+    const primary = confirmed.find((p) => p.lamports === 0n) ?? confirmed[0]!;
+    for (const extra of confirmed) {
+      if (extra.id === primary.id || extra.txSignature === null || extra.lamports === 0n) continue;
+      await recordAnomaly(
+        extra,
+        extra.txSignature,
+        'duplicate',
+        extra.lamports,
+        `job already paid by payment ${primary.id}`,
+      );
+    }
+  }
+
+  /**
+   * A signature presented for a quote that can no longer accept it (released draft, quote already
+   * paid by another transaction). It is verified like a payment of that quote and, when it moved
+   * money to the cashbox, recorded before `refusal` is thrown. While the transaction is seen but
+   * not final the answer is 202, so the client keeps confirming until it can be recorded.
+   */
+  async function refuseStray(
+    payment: PaymentRecord,
+    signature: string,
+    reason: PaymentAnomalyReason,
+    refusal: PaymentError,
+  ): Promise<ConfirmResult> {
+    // A signature already held by a payment brought no new money.
+    if (!(await store.findPaymentBySignature(signature))) {
+      const verification = await verifyWithWait(signature, expectedFor(payment));
+      if (isPending(verification) && !isUnseen(verification)) {
+        return { httpStatus: 202, status: payment.status };
+      }
+      const received = receivedLamports(verification);
+      if (received !== undefined) {
+        const note = verification.status === 'invalid' ? 'amount differs from the quote' : null;
+        await recordAnomaly(payment, signature, reason, received, note);
+      }
+    }
+    throw refusal;
   }
 
   function reject(payment: PaymentRecord, signature: string, reason: string): never {
@@ -335,7 +542,6 @@ export function createPaymentsService(deps: PaymentsServiceDeps): PaymentsServic
 
   async function expire(payment: PaymentRecord, event: string, signature: string): Promise<never> {
     await store.markPaymentExpired(payment.id);
-    // A late payment moved money that this quote no longer accepts: flagged for a manual refund.
     logger.log(event === 'confirm.late_payment' ? 'warn' : 'info', event, {
       paymentId: payment.id,
       jobId: payment.jobId,
@@ -372,7 +578,7 @@ export function createPaymentsService(deps: PaymentsServiceDeps): PaymentsServic
 
     // A creation draft released after expiry (its slug went to another wallet) can no longer be
     // paid. Only reachable for a quote that was never confirmed within an hour of its expiry (the
-    // release requires that); the signature is logged so that a payment can be refunded by hand.
+    // release requires that); money that reached the cashbox anyway is recorded for a refund.
     if (
       payment.kind === 'creation' &&
       payment.txSignature === null &&
@@ -383,15 +589,29 @@ export function createPaymentsService(deps: PaymentsServiceDeps): PaymentsServic
         jobId: payment.jobId,
         signature,
       });
-      throw new PaymentError(403, 'LAUNCHPAD_DISABLED', LAUNCHPAD_DISABLED_MESSAGE);
+      return refuseStray(
+        payment,
+        signature,
+        'launchpad_released',
+        new PaymentError(403, 'LAUNCHPAD_DISABLED', LAUNCHPAD_DISABLED_MESSAGE),
+      );
     }
 
-    // Already recorded: idempotent retry (which also repairs the job) or another signature.
+    // Already recorded: idempotent retry (which also repairs the job) or another signature, which
+    // is a second payment of this quote when it moved money (two tabs paying one quote).
     if (payment.txSignature !== null) {
       if (payment.txSignature !== signature) {
-        throw new PaymentError(409, 'PAYMENT_ALREADY_CONFIRMED', OTHER_SIGNATURE_MESSAGE);
+        return refuseStray(
+          payment,
+          signature,
+          'duplicate',
+          new PaymentError(409, 'PAYMENT_ALREADY_CONFIRMED', OTHER_SIGNATURE_MESSAGE),
+        );
       }
-      if (payment.status === 'confirmed') await markJobPaid(payment.jobId, 'confirm_retry');
+      if (payment.status === 'confirmed') {
+        await recordDuplicates(payment.jobId);
+        await markJobPaid(payment.jobId, 'confirm_retry');
+      }
       return { httpStatus: 200, status: payment.status };
     }
     if (payment.status !== 'quoted' && payment.status !== 'expired') {
@@ -404,25 +624,32 @@ export function createPaymentsService(deps: PaymentsServiceDeps): PaymentsServic
       throw new PaymentError(409, 'SIGNATURE_ALREADY_USED', SIGNATURE_USED_MESSAGE);
     }
 
-    const verification = await verifyWithWait(signature, {
-      payer: new PublicKey(wallet),
-      lamports: payment.lamports,
-      jobId: payment.jobId,
-    });
+    const verification = await verifyWithWait(signature, expectedFor(payment));
 
-    const stillPending =
-      verification.status === 'pending' ||
-      (verification.status === 'invalid' && verification.reason === 'missing_meta');
-    if (stillPending) {
-      if (now() > payment.quoteExpiresAt + QUOTE_TIMING.notFoundGraceMs) {
+    if (isPending(verification)) {
+      // Only a signature the cluster does not know expires the quote: one that landed and is not
+      // finalized yet (PAYMENT_COMMITMENT) may still have landed in time, so it stays pending.
+      if (isUnseen(verification) && now() > payment.quoteExpiresAt + QUOTE_TIMING.notFoundGraceMs) {
         return expire(payment, 'confirm.expired_unseen', signature);
       }
       return { httpStatus: 202, status: payment.status };
     }
-    if (verification.status === 'invalid') reject(payment, signature, verification.reason);
+    if (verification.status === 'invalid') {
+      if (verification.reason === 'amount_mismatch') {
+        // The payer's transfer reached the cashbox with another amount: refunded by hand.
+        const received = receivedLamports(verification);
+        if (received !== undefined) {
+          await recordAnomaly(payment, signature, 'amount_mismatch', received);
+        }
+      }
+      reject(payment, signature, verification.reason);
+    }
 
     // Defense in depth: the core already requires the exact amount.
-    if (verification.lamports !== payment.lamports) reject(payment, signature, 'amount_mismatch');
+    if (verification.lamports !== payment.lamports) {
+      await recordAnomaly(payment, signature, 'amount_mismatch', verification.lamports);
+      reject(payment, signature, 'amount_mismatch');
+    }
 
     // The transaction must have landed inside the quote window.
     const windowStart =
@@ -433,7 +660,11 @@ export function createPaymentsService(deps: PaymentsServiceDeps): PaymentsServic
       if (now() > windowEnd) return { httpStatus: 202, status: payment.status };
     } else {
       const landedAt = verification.blockTime * 1000;
-      if (landedAt > windowEnd) return expire(payment, 'confirm.late_payment', signature);
+      if (landedAt > windowEnd) {
+        // The money arrived but this quote no longer accepts it: recorded for a manual refund.
+        await recordAnomaly(payment, signature, 'late', verification.lamports);
+        return expire(payment, 'confirm.late_payment', signature);
+      }
       if (landedAt < windowStart) reject(payment, signature, 'before_quote');
     }
 
@@ -457,6 +688,8 @@ export function createPaymentsService(deps: PaymentsServiceDeps): PaymentsServic
       if (!fresh) throw notFound('Payment');
       if (fresh.txSignature !== signature) {
         if (fresh.txSignature !== null) {
+          // Another transaction paid this quote meanwhile: this verified one is a second payment.
+          await recordAnomaly(fresh, signature, 'duplicate', verification.lamports);
           throw new PaymentError(409, 'PAYMENT_ALREADY_CONFIRMED', OTHER_SIGNATURE_MESSAGE);
         }
         return { httpStatus: 200, status: fresh.status };
@@ -474,6 +707,7 @@ export function createPaymentsService(deps: PaymentsServiceDeps): PaymentsServic
       });
     }
 
+    await recordDuplicates(payment.jobId);
     await markJobPaid(payment.jobId, 'payment_confirmed');
     return { httpStatus: 200, status: 'confirmed' };
   }

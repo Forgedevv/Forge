@@ -1,5 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
-import { readRelayConfig, RelayConfigError } from './config';
+import { readRelayConfig, RelayConfigError, upstreamSelectionLog } from './config';
 import { createRelayHandler, type RelayHandler } from './handler';
 import { errorResponse, RPC_ERRORS } from './jsonrpc';
 import { MemoryRateLimitStore } from './limits';
@@ -19,6 +19,9 @@ let handler: RelayHandler | null = null;
 
 function build(): RelayHandler {
   const config = readRelayConfig();
+  // Once per instance (the handler is built once): which variable the upstream comes from.
+  const selection = upstreamSelectionLog(config);
+  consoleLogger.log(selection.level, selection.event, selection.fields);
   const directory = config.supabase
     ? new CachedLaunchpadDirectory(
         createSupabaseSnapshotLoader(
