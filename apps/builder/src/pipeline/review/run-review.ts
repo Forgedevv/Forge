@@ -25,7 +25,7 @@ import {
   type WorkdirFile,
 } from '../workdir.js';
 import { CaptureOutputError, readCaptureOutput, type CaptureResult } from './capture-output.js';
-import { MIN_REVIEW_AGENT_MS, REVIEW_BUILD_RESERVE_MS, type VisualReviewConfig } from './config.js';
+import type { VisualReviewConfig } from './config.js';
 import { CAPTURE_IN_CONTAINER, REPORT_FILE, REVIEW_DIR } from './contract.js';
 import {
   isReviewPath,
@@ -149,11 +149,16 @@ export async function runVisualReview(input: VisualReviewInput): Promise<ReviewO
   else jobCtx.signal.addEventListener('abort', onJobAbort, { once: true });
   const timer = setTimeout(() => controller.abort('review deadline'), timeLeft);
   const signal = controller.signal;
+  /** Past the deadline nothing new starts (the timer above also kills what is running). */
+  const checkDeadline = () => {
+    if (now() >= input.deadline) throw new ReviewDiscarded('timeout');
+  };
   const runner: SandboxRunner = {
     config: deps.runner.config,
     cleanupStale: () => deps.runner.cleanupStale(),
     run: (options) => {
       guard(signal);
+      checkDeadline();
       return deps.runner.run({ ...options, signal });
     },
   };
@@ -247,9 +252,9 @@ export async function runVisualReview(input: VisualReviewInput): Promise<ReviewO
     );
     const agentTimeoutMs = Math.min(
       review.agentTimeoutMs,
-      input.deadline - now() - REVIEW_BUILD_RESERVE_MS,
+      input.deadline - now() - review.buildReserveMs,
     );
-    if (agentTimeoutMs < MIN_REVIEW_AGENT_MS) {
+    if (agentTimeoutMs < review.minAgentMs || agentTimeoutMs < 1_000) {
       throw new ReviewDiscarded('time', { agentTimeoutMs });
     }
     await say(jobCtx, STEP_EVENTS.refineDesign);
@@ -290,6 +295,8 @@ export async function runVisualReview(input: VisualReviewInput): Promise<ReviewO
       'review agent finished',
     );
 
+    checkDeadline();
+
     // 4. The review input goes before anything is read back; then the pass 1 gate, same baseline.
     await removeReviewInput(workdir);
     const tree = await readWorkdirTree(workdir);
@@ -323,7 +330,7 @@ export async function runVisualReview(input: VisualReviewInput): Promise<ReviewO
     // 5. Install + build the reviewed site, within what is left of the review time.
     await say(jobCtx, STEP_EVENTS.buildRefined);
     const buildLeft = input.deadline - now();
-    if (buildLeft < 2 * 60_000) throw new ReviewDiscarded('time', { buildLeftMs: buildLeft });
+    if (buildLeft < 1_000) throw new ReviewDiscarded('time', { buildLeftMs: buildLeft });
     const built = await deps.buildSite(runner, workdir, {
       jobId: job.id,
       signal,
@@ -332,6 +339,7 @@ export async function runVisualReview(input: VisualReviewInput): Promise<ReviewO
     });
     if (!built.ok) throw new ReviewDiscarded('build_failed', { step: built.failedStep });
     guard(signal);
+    checkDeadline();
     log.info(
       jobFields(job, { changed: gate.changes.length, files: files.length }),
       'visual review applied',

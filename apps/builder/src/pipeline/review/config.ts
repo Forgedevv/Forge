@@ -25,6 +25,10 @@ export interface VisualReviewConfig {
   publishMarginMs: number;
   /** Below this much time left after pass 1, the review is skipped. */
   minTimeLeftMs: number;
+  /** Smallest pass 2 agent time worth starting; below, the review is dropped. */
+  minAgentMs: number;
+  /** Time kept for the pass 2 install and build when the agent's timeout is computed. */
+  buildReserveMs: number;
 }
 
 export const REVIEW_DEFAULTS: Readonly<VisualReviewConfig> = {
@@ -38,12 +42,9 @@ export const REVIEW_DEFAULTS: Readonly<VisualReviewConfig> = {
   jobTimeoutMs: OPS.jobLockStaleMinutes * 2 * 60_000,
   publishMarginMs: 5 * 60_000,
   minTimeLeftMs: 20 * 60_000,
+  minAgentMs: 3 * 60_000,
+  buildReserveMs: 10 * 60_000,
 };
-
-/** Smallest agent time worth starting; below, the review is dropped. */
-export const MIN_REVIEW_AGENT_MS = 3 * 60_000;
-/** Time kept for the pass 2 install and build when the agent's timeout is computed. */
-export const REVIEW_BUILD_RESERVE_MS = 10 * 60_000;
 
 export type VisualReviewSetting =
   { enabled: true; config: VisualReviewConfig } | { enabled: false; reason: 'off' | 'no_image' };
