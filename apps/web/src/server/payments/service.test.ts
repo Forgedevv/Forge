@@ -1085,6 +1085,7 @@ describe('receivedLamports', () => {
         status: 'invalid',
         reason: 'amount_mismatch',
         detail: 'Transfer of 219999999 lamports, expected 220000000',
+        transferLamports: 219_999_999n,
       }),
     ).toBe(219_999_999n);
     expect(
@@ -1095,6 +1096,49 @@ describe('receivedLamports', () => {
         detail: 'The cashbox balance did not grow by the expected amount',
       }),
     ).toBeNull();
+    expect(
+      receivedLamports({
+        ...base,
+        status: 'invalid',
+        reason: 'amount_mismatch',
+        detail: 'x',
+        transferLamports: 0n,
+      }),
+    ).toBeUndefined();
+  });
+
+  // Before: the amount was parsed out of the core's free-text detail, so a reworded or
+  // misleading detail recorded a wrong refund amount (or none).
+  it('takes the amount from the structured field only, never from the detail text', () => {
+    expect(
+      receivedLamports({
+        ...base,
+        status: 'invalid',
+        reason: 'amount_mismatch',
+        detail: 'Transfer of 5 lamports, expected 220000000',
+        transferLamports: 219_999_999n,
+      }),
+    ).toBe(219_999_999n);
+    expect(
+      receivedLamports({
+        ...base,
+        status: 'invalid',
+        reason: 'amount_mismatch',
+        detail: 'Transfer of 219999999 lamports, expected 220000000',
+      }),
+    ).toBeNull();
+    expect(
+      receivedLamports({
+        ...base,
+        status: 'invalid',
+        reason: 'amount_mismatch',
+        detail: 'Sent 219999999 lamports instead of 220000000',
+        transferLamports: 219_999_999n,
+      }),
+    ).toBe(219_999_999n);
+  });
+
+  it('ignores the other outcomes', () => {
     expect(
       receivedLamports({ ...base, status: 'invalid', reason: 'memo_mismatch', detail: 'x' }),
     ).toBeUndefined();

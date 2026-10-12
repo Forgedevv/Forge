@@ -317,12 +317,36 @@ describe('checkPaymentTransaction', () => {
       transferIx(payer.publicKey, cashbox, lamports),
       memoIx(paymentMemo(JOB_ID), payer.publicKey),
     ];
-    expectInvalid(checkPaymentTransaction(txResponse(ixs), SIGNATURE, check()), 'amount_mismatch');
+    const result = checkPaymentTransaction(txResponse(ixs), SIGNATURE, check());
+    expectInvalid(result, 'amount_mismatch');
+    // Before: the amount was only in the free-text detail, which callers had to parse.
+    expect(result).toMatchObject({ transferLamports: lamports });
   });
 
   it('rejects when the cashbox balance did not grow by the amount', () => {
     const response = txResponse(goodInstructions(), { cashboxDelta: LAMPORTS - 1n });
-    expectInvalid(checkPaymentTransaction(response, SIGNATURE, check()), 'amount_mismatch');
+    const result = checkPaymentTransaction(response, SIGNATURE, check());
+    expectInvalid(result, 'amount_mismatch');
+    // The transfer carries the expected amount but did not credit it: what arrived is unclear.
+    expect(result).not.toHaveProperty('transferLamports');
+  });
+
+  it('carries no transferred amount for the other rejections', () => {
+    const elsewhere = Keypair.generate().publicKey;
+    const ixs = [
+      transferIx(payer.publicKey, elsewhere, LAMPORTS),
+      memoIx(paymentMemo(JOB_ID), payer.publicKey),
+    ];
+    expect(checkPaymentTransaction(txResponse(ixs), SIGNATURE, check())).not.toHaveProperty(
+      'transferLamports',
+    );
+    const wrongMemo = [
+      transferIx(payer.publicKey, cashbox, LAMPORTS),
+      memoIx('forge:job:other', payer.publicKey),
+    ];
+    expect(checkPaymentTransaction(txResponse(wrongMemo), SIGNATURE, check())).not.toHaveProperty(
+      'transferLamports',
+    );
   });
 
   it('rejects two transfers to the cashbox', () => {
@@ -413,6 +437,20 @@ function verifyConnection(opts: {
 const expected = { payer: payer.publicKey, lamports: LAMPORTS, jobId: JOB_ID };
 
 describe('verifyPayment', () => {
+  it('returns the transferred amount of a mismatched payment as a field', async () => {
+    const ixs = [
+      transferIx(payer.publicKey, cashbox, LAMPORTS - 7n),
+      memoIx(paymentMemo(JOB_ID), payer.publicKey),
+    ];
+    const { connection } = verifyConnection({ tx: txResponse(ixs) });
+    const result = await verifyPayment(connection, SIGNATURE, expected, { env, retry: noRetry });
+    expect(result).toMatchObject({
+      status: 'invalid',
+      reason: 'amount_mismatch',
+      transferLamports: LAMPORTS - 7n,
+    });
+  });
+
   it('confirms a valid payment with its slot', async () => {
     const { connection, mocks } = verifyConnection({});
     const result = await verifyPayment(connection, SIGNATURE, expected, { env, retry: noRetry });
