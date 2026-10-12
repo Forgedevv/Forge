@@ -111,6 +111,16 @@ export interface JobCostStore {
   setJobCost(jobId: string, usd: number): Promise<void>;
 }
 
+/** Read-only total of the API cost of recent jobs, to seed the gateway daily budget. */
+export interface DailyCostSource {
+  /** Sum of `jobs.api_cost_usd` over the jobs updated at or after `sinceIso` (read-only). */
+  sumJobCostsSince(sinceIso: string): Promise<number>;
+}
+
+/** Rows read per page by `sumJobCostsSince`, and pages read at most. */
+const COST_PAGE_SIZE = 1_000;
+const COST_MAX_PAGES = 200;
+
 export class StoreError extends Error {
   readonly status: number | undefined;
   constructor(message: string, status?: number) {
@@ -182,7 +192,9 @@ export interface SupabaseStoreOptions {
   timeoutMs?: number;
 }
 
-export function createSupabaseStore(opts: SupabaseStoreOptions): SleepStore & JobCostStore {
+export function createSupabaseStore(
+  opts: SupabaseStoreOptions,
+): SleepStore & JobCostStore & DailyCostSource {
   const doFetch = opts.fetch ?? globalThis.fetch;
   const timeoutMs = opts.timeoutMs ?? 15_000;
   const base = opts.url.replace(/\/+$/, '');
@@ -338,6 +350,39 @@ export function createSupabaseStore(opts: SupabaseStoreOptions): SleepStore & Jo
       await request('set_job_cost', 'PATCH', `jobs?id=eq.${jobId}&select=id`, {
         api_cost_usd: Number(usd.toFixed(6)),
       });
+    },
+
+    async sumJobCostsSince(sinceIso) {
+      assertIso(sinceIso);
+      const Rows = z.array(
+        z.object({ id: z.string(), api_cost_usd: z.union([z.number(), z.string()]) }),
+      );
+      let total = 0;
+      let after: string | undefined;
+      for (let pageNo = 0; pageNo < COST_MAX_PAGES; pageNo++) {
+        if (after !== undefined) assertId(after, 'cursor');
+        const cursor = after !== undefined ? `&id=gt.${after}` : '';
+        const parsed = Rows.safeParse(
+          await request(
+            'sum_job_costs',
+            'GET',
+            `jobs?updated_at=gte.${sinceIso}&api_cost_usd=gt.0${cursor}&select=id,api_cost_usd&order=id.asc&limit=${COST_PAGE_SIZE}`,
+          ),
+        );
+        if (!parsed.success) throw new StoreError('sum_job_costs: unexpected response shape');
+        for (const row of parsed.data) {
+          const value = Number(row.api_cost_usd);
+          if (!Number.isFinite(value) || value < 0) {
+            throw new StoreError('sum_job_costs: invalid cost value');
+          }
+          total += value;
+        }
+        const last = parsed.data.at(-1);
+        if (parsed.data.length < COST_PAGE_SIZE || !last) return total;
+        after = last.id;
+      }
+      // An underestimate would loosen the budget: refuse rather than return a partial sum.
+      throw new StoreError('sum_job_costs: too many jobs to sum');
     },
   };
 }

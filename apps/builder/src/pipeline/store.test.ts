@@ -1,4 +1,6 @@
+import { pino } from 'pino';
 import { describe, expect, it } from 'vitest';
+import { createGateway } from '../gateway/index.js';
 import { json, stubFetch } from '../http-mock.js';
 import { PersistentCostGatewayStore } from './cost-store.js';
 import {
@@ -189,6 +191,50 @@ describe('launchpad store', () => {
     expect(stub.calls[1]!.body).toEqual({ api_cost_usd: 2.5 });
     await expect(s.setJobCost('job-1', -1)).rejects.toBeInstanceOf(StoreError);
   });
+
+  it('sums the cost of the jobs updated since a time, page by page (read-only)', async () => {
+    const page1 = Array.from({ length: 1_000 }, (_, i) => ({
+      id: `job-${String(i).padStart(4, '0')}`,
+      api_cost_usd: '0.01',
+    }));
+    const stub = stubFetch([
+      { method: 'GET', path: '/rest/v1/jobs', handler: () => json(page1), times: 1 },
+      {
+        method: 'GET',
+        path: '/rest/v1/jobs',
+        handler: () => json([{ id: 'job-1000', api_cost_usd: 2.5 }]),
+      },
+    ]);
+    const total = await store(stub).sumJobCostsSince('2026-10-07T00:00:00.000Z');
+    expect(total).toBeCloseTo(12.5, 9);
+    expect(stub.calls.every((c) => c.method === 'GET')).toBe(true);
+    const first = stub.calls[0]!.query;
+    expect(first.get('updated_at')).toBe('gte.2026-10-07T00:00:00.000Z');
+    expect(first.get('api_cost_usd')).toBe('gt.0');
+    expect(first.get('order')).toBe('id.asc');
+    expect(first.get('id')).toBeNull();
+    expect(stub.calls[1]!.query.get('id')).toBe('gt.job-0999');
+  });
+
+  it('refuses a bad time, a bad row or a bad cost instead of summing part of it', async () => {
+    const stub = stubFetch([
+      { method: 'GET', path: '/rest/v1/jobs', handler: () => json([{ id: 'j', cost: 1 }]) },
+    ]);
+    await expect(store(stub).sumJobCostsSince('2026-10-07')).rejects.toBeInstanceOf(StoreError);
+    await expect(store(stub).sumJobCostsSince('2026-10-07T00:00:00.000Z')).rejects.toBeInstanceOf(
+      StoreError,
+    );
+    const nan = stubFetch([
+      {
+        method: 'GET',
+        path: '/rest/v1/jobs',
+        handler: () => json([{ id: 'j', api_cost_usd: 'x' }]),
+      },
+    ]);
+    await expect(store(nan).sumJobCostsSince('2026-10-07T00:00:00.000Z')).rejects.toBeInstanceOf(
+      StoreError,
+    );
+  });
 });
 
 describe('gateway cost store', () => {
@@ -241,6 +287,85 @@ describe('gateway cost store', () => {
     expect(await s.addJobCost('j', 14)).toBe(14);
     expect(await s.getJobCost('j')).toBe(14);
     expect(warnings).toEqual(['could not record the job API cost']);
+  });
+
+  it('regression: a restart does not reset the daily total of the startup day', async () => {
+    let loads = 0;
+    const s = new PersistentCostGatewayStore(memoryDb().db, undefined, {
+      day: '2026-10-07',
+      load: async () => {
+        loads += 1;
+        return 180;
+      },
+    });
+    // Concurrent first reads load the seed once.
+    expect(await Promise.all([s.getDailyCost('2026-10-07'), s.getDailyCost('2026-10-07')])).toEqual(
+      [180, 180],
+    );
+    expect(await s.addDailyCost('2026-10-07', 2.5)).toBe(182.5);
+    expect(await s.getDailyCost('2026-10-07')).toBe(182.5);
+    // The next day starts at zero: the process has seen all of its spending.
+    expect(await s.getDailyCost('2026-10-08')).toBe(0);
+    await s.seedDailyCost();
+    expect(loads).toBe(1);
+  });
+
+  it('fails closed when the seed cannot be read, and retries it', async () => {
+    let fail = true;
+    const s = new PersistentCostGatewayStore(memoryDb().db, undefined, {
+      day: '2026-10-07',
+      load: async () => {
+        if (fail) throw new Error('db down');
+        return 50;
+      },
+    });
+    await expect(s.seedDailyCost()).rejects.toThrow(/db down/);
+    await expect(s.getDailyCost('2026-10-07')).rejects.toThrow(/db down/);
+    fail = false;
+    expect(await s.getDailyCost('2026-10-07')).toBe(50);
+  });
+
+  it('regression: the gateway refuses requests once the seeded day is over budget', async () => {
+    const s = new PersistentCostGatewayStore(memoryDb().db, undefined, {
+      day: '2026-10-07',
+      load: async () => 200,
+    });
+    const gateway = createGateway({
+      // Never reached: the budget check comes first.
+      upstreamUrl: 'http://127.0.0.1:9',
+      apiKey: 'sk-ant-test-key-0123456789abcdef',
+      store: s,
+      pricing: {
+        'claude-test-model': {
+          inputPerMTok: 1,
+          outputPerMTok: 1,
+          cacheReadPerMTok: 1,
+          cacheWritePerMTok: 1,
+        },
+      },
+      allowedModels: ['claude-test-model'],
+      dailyBudgetUsd: 200,
+      now: () => Date.parse('2026-10-07T15:00:00Z'),
+      onAlert: () => undefined,
+      logger: pino({ level: 'silent' }),
+    });
+    const address = await gateway.listen(0, '127.0.0.1');
+    try {
+      const token = await gateway.issueToken('job-1', { budgetUsd: 15 });
+      const res = await fetch(`http://127.0.0.1:${address.port}/v1/messages`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'anthropic-version': '2023-06-01',
+          authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ model: 'claude-test-model', max_tokens: 10, messages: [] }),
+      });
+      expect(res.status).toBe(402);
+      expect(await res.json()).toMatchObject({ error: { type: 'daily_budget_exceeded_error' } });
+    } finally {
+      await gateway.close();
+    }
   });
 
   it('keeps tokens and daily totals in memory', async () => {
