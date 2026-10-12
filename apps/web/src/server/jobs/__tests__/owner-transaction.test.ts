@@ -30,7 +30,10 @@ beforeEach(() => {
   });
 });
 
-/** A job waiting for the owner's signature of the launch core builds for its launchpad. */
+/**
+ * A job waiting for the owner's signature of the launch core builds for its launchpad, stored
+ * with the launch accounts the signer reported (`ownerTxDetails`, override to change them).
+ */
 function seed(
   overrides: Parameters<typeof h.store.addJob>[1] = {},
   options: CoinLaunchOptions = {},
@@ -44,6 +47,7 @@ function seed(
   const job = h.store.addJob(launchpad.id, {
     status: 'awaiting_owner_signature',
     ownerTx: launch.base64,
+    ownerTxDetails: launch.details,
     ...overrides,
   });
   return { launchpad, job, launch };
@@ -135,16 +139,100 @@ describe('GET /api/jobs/:id/owner-transaction', () => {
 
   // Before: the response carried no launch accounts, so the browser could only check that the
   // config, mint, creator and nonce account were consistent within the transaction itself.
-  it('returns the launch accounts the browser pins: row config and mint, verified creator and nonce', async () => {
+  it('returns the launch accounts the browser pins: row config and mint, stored creator, nonce and URI', async () => {
     const { launchpad, job, launch } = seed();
     const body = (await (await get(job.id)).json()) as Record<string, unknown>;
     expect(body.launch).toEqual({
       config: launchpad.launchpadCoinConfig,
       mint: launchpad.launchpadCoinMint,
+      creator: launch.details.creator,
+      nonceAccount: launch.details.nonceAccount,
+      metadataUri: launch.details.metadataUri,
+    });
+    expect(h.logger.events()).not.toContain('owner_tx.details_missing');
+  });
+
+  // Before: the creator wallet, the nonce account and the metadata URI were read back from the
+  // stored transaction, so a transaction with other ones was verified against itself and handed
+  // out with them as the accounts to pin.
+  it.each<[string, (d: Record<string, string>) => Record<string, string>, string]>([
+    [
+      'another creator wallet',
+      (d) => ({ ...d, creator: Keypair.generate().publicKey.toBase58() }),
+      'launch_check_mismatch',
+    ],
+    [
+      'another durable nonce account',
+      (d) => ({ ...d, nonceAccount: Keypair.generate().publicKey.toBase58() }),
+      'launch_check_mismatch',
+    ],
+    [
+      'another metadata URI',
+      (d) => ({ ...d, metadataUri: 'https://example.com/other.json' }),
+      'launch_check_mismatch',
+    ],
+    [
+      'another pool',
+      (d) => ({ ...d, pool: Keypair.generate().publicKey.toBase58() }),
+      'launch_details_mismatch',
+    ],
+    [
+      'another coin config than the launchpad row',
+      (d) => ({ ...d, config: Keypair.generate().publicKey.toBase58() }),
+      'launch_details_mismatch',
+    ],
+  ])(
+    'never hands out a stored launch that disagrees with its stored details: %s',
+    async (_label, change, reason) => {
+      const { job, launch } = seed();
+      h.store.jobs.set(job.id, { ...job, ownerTxDetails: change({ ...launch.details }) });
+      const res = await get(job.id);
+      expect(res.status).toBe(503);
+      expect(await res.json()).toMatchObject({ code: 'OWNER_TX_UNAVAILABLE' });
+      expect(h.logger.entries.find((e) => e.event === 'owner_tx.unusable')?.fields.reason).toBe(
+        reason,
+      );
+      // Nor accepted signed: nothing is sent.
+      expect((await post(job.id, ownerSign(launch.base64, ownerKey))).status).toBe(503);
+      expect(h.chain.calls).not.toContain('send');
+    },
+  );
+
+  it.each<[string, unknown]>([
+    ['not an object', 'details'],
+    ['without the creator wallet', { config: 'x' }],
+    ['with an invalid nonce account', 'nonce'],
+  ])('never hands out a stored launch whose stored details are %s', async (_label, raw) => {
+    const { job, launch } = seed();
+    const details = raw === 'nonce' ? { ...launch.details, nonceAccount: 'not-an-address' } : raw;
+    h.store.jobs.set(job.id, { ...job, ownerTxDetails: details });
+    const res = await get(job.id);
+    expect(res.status).toBe(503);
+    expect(h.logger.entries.find((e) => e.event === 'owner_tx.unusable')?.fields.reason).toBe(
+      'launch_details_invalid',
+    );
+  });
+
+  it('falls back to the accounts of the transaction for a row stored without details, and says so', async () => {
+    const { job, launch } = seed({ ownerTxDetails: null });
+    const res = await get(job.id);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.launch).toEqual({
+      config: launch.config.toBase58(),
+      mint: launch.mint.publicKey.toBase58(),
       creator: launch.creator.publicKey.toBase58(),
       nonceAccount: launch.nonceAccount.toBase58(),
       metadataUri: launch.metadataUri,
     });
+    const missing = () => h.logger.events().filter((e) => e === 'owner_tx.details_missing');
+    expect(missing()).toHaveLength(1);
+    expect(h.logger.entries.find((e) => e.event === 'owner_tx.details_missing')?.fields).toEqual({
+      jobId: job.id,
+    });
+    // The submission falls back the same way, logged once more for that request.
+    expect((await post(job.id, ownerSign(launch.base64, ownerKey))).status).toBe(200);
+    expect(missing()).toHaveLength(2);
   });
 
   it('never hands out a stored launch whose metadata URI is not https', async () => {

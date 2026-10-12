@@ -36,7 +36,11 @@ beforeEach(setup);
 
 describe('GET /api/jobs/:id', () => {
   it('returns the job and its events to the owner, without owner_tx', async () => {
-    const { job } = seed(h.store, { status: 'building', ownerTx: 'secret-ish' });
+    const { job } = seed(h.store, {
+      status: 'building',
+      ownerTx: 'secret-ish',
+      ownerTxDetails: { creator: 'stored-details' },
+    });
     await h.store.addJobEvent(job.id, 'Build started.');
     const res = await handlers.getJob(
       request('GET', `/api/jobs/${job.id}`, { wallet: owner }),
@@ -50,7 +54,9 @@ describe('GET /api/jobs/:id', () => {
     };
     expect(body.job).toMatchObject({ id: job.id, status: 'building', type: 'create_launchpad' });
     expect(body.job).not.toHaveProperty('ownerTx');
+    expect(body.job).not.toHaveProperty('ownerTxDetails');
     expect(JSON.stringify(body)).not.toContain('secret-ish');
+    expect(JSON.stringify(body)).not.toContain('stored-details');
     expect(body.events.map((e) => e.message)).toEqual(['Build started.']);
   });
 

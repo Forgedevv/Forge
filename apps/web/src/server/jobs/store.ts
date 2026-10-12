@@ -19,6 +19,11 @@ export interface JobRecord {
   previewUrl: string | null;
   /** Partially signed launch transaction (base64). Never sent to the browser except by GET owner-transaction. */
   ownerTx: string | null;
+  /**
+   * `jobs.owner_tx_details` as stored (jsonb, null when absent): the launch accounts of `ownerTx`.
+   * Validated by its reader (`JobOwnerTxDetails`), so a bad value never breaks the other routes.
+   */
+  ownerTxDetails: unknown;
   error: string | null;
   createdAt: string;
   updatedAt: string;
@@ -124,7 +129,7 @@ export class StoreError extends Error {
 // ---------------------------------------------------------------------------------------------
 
 export const JOB_COLUMNS =
-  'id, launchpad_id, type, status, attempts, failed_stage, request, preview_url, owner_tx, error, created_at, updated_at';
+  'id, launchpad_id, type, status, attempts, failed_stage, request, preview_url, owner_tx, owner_tx_details, error, created_at, updated_at';
 
 export const LAUNCHPAD_COLUMNS =
   'id, owner_wallet, slug, spec, launchpad_config, launchpad_coin_config, launchpad_coin_mint, included_modifications_left, status, created_at';
@@ -141,6 +146,7 @@ const JobRowSchema = z.object({
   request: z.string().nullable().optional(),
   preview_url: z.string().nullable().optional(),
   owner_tx: z.string().nullable().optional(),
+  owner_tx_details: z.unknown().optional(),
   error: z.string().nullable().optional(),
   created_at: Timestamp,
   updated_at: Timestamp,
@@ -197,6 +203,7 @@ export function parseJobRow(row: unknown): JobRecord {
     request: r.request ?? null,
     previewUrl: r.preview_url ?? null,
     ownerTx: r.owner_tx ?? null,
+    ownerTxDetails: r.owner_tx_details ?? null,
     error: r.error ?? null,
     createdAt,
     updatedAt: r.updated_at ?? createdAt,
