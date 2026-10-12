@@ -174,7 +174,8 @@ export async function setLaunchpadMode(
     timeoutMs: deps.deploymentTimeoutMs ?? 15 * 60_000,
   });
   // Read the row and the switch again right before production changes: the team may have
-  // disabled the launchpad or paused deploys while the deployment was building.
+  // disabled the launchpad or paused deploys while the deployment was building. The deployment is
+  // staged (vercel.ts): production only changes with the promotion below.
   const current = await deps.store.getLaunchpad(lp.id);
   if (!current) throw new PipelineError('launchpad not found');
   if (current.status === 'disabled') throw new PipelineError('launchpad is disabled by FORGE');

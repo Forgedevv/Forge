@@ -347,6 +347,12 @@ export interface GithubClient {
   }): Promise<{ repo: RepoInfo; created: boolean }>;
   protectDefaultBranch(repo: string, branch?: string): Promise<ProtectionResult>;
   getBranchHead(repo: string, branch: string): Promise<string | null>;
+  /**
+   * Puts a job branch (`forge/<jobId>`, never the default branch) back on `baseSha` when its head
+   * is neither `baseSha` nor a commit whose only parent is `baseSha` (an earlier build attempt on
+   * an older default branch). A missing branch is left alone. Returns whether the ref moved.
+   */
+  resetJobBranch(repo: string, branch: string, baseSha: string): Promise<{ reset: boolean }>;
   commitFiles(input: CommitFilesInput): Promise<CommitFilesResult>;
   compareCommits(repo: string, base: string, head: string): Promise<CompareResult>;
   /** Reads a text file at a ref; null when absent. */
@@ -382,7 +388,14 @@ const InstallationSchema = z.object({
 });
 const TokenSchema = z.object({ token: z.string().min(1), expires_at: z.string() });
 const RefSchema = z.object({ object: z.object({ sha: z.string() }) });
-const CommitSchema = z.object({ sha: z.string(), tree: z.object({ sha: z.string() }) });
+const CommitSchema = z.object({
+  sha: z.string(),
+  tree: z.object({ sha: z.string() }),
+  parents: z.array(z.object({ sha: z.string() })).optional(),
+});
+
+/** Branches the builder may move back (`resetJobBranch`): job branches only. */
+const JOB_BRANCH_RE = /^forge\/[A-Za-z0-9][A-Za-z0-9-]{0,99}$/;
 const ShaSchema = z.object({ sha: z.string() });
 const TreeSchema = z.object({
   sha: z.string(),
@@ -1021,6 +1034,44 @@ export function createGithubClient(opts: GithubClientOptions): GithubClient {
     };
   }
 
+  async function resetJobBranch(
+    repo: string,
+    branch: string,
+    baseSha: string,
+  ): Promise<{ reset: boolean }> {
+    const root = base(repo);
+    if (!JOB_BRANCH_RE.test(branch)) {
+      throw new ServiceError('github', 'invalid_input', 'only a job branch can be reset');
+    }
+    const branchPath = encodeBranch(branch);
+    if (!/^[0-9a-f]{40}$/.test(baseSha)) {
+      throw new ServiceError('github', 'invalid_input', 'invalid base commit sha');
+    }
+    if ((await getRepoDefaultBranch(repo)) === branch) {
+      throw new ServiceError('github', 'invalid_input', 'the default branch is never reset');
+    }
+    const head = await getBranchHead(repo, branch);
+    if (head === null || head === baseSha) return { reset: false };
+    const auth = repoAuth(repo);
+    const call = (req: Parameters<HttpClient['request']>[0]): Promise<HttpResponse> =>
+      withFreshTokenRetry(() => http.request({ ...req, authorization: auth }));
+    const commit = parseBody(
+      CommitSchema,
+      await call({ method: 'GET', path: `${root}/git/commits/${head}` }),
+      'commit',
+    );
+    const parents = (commit.parents ?? []).map((p) => p.sha);
+    if (parents.length === 1 && parents[0] === baseSha) return { reset: false };
+    // The job branch only ever holds the builder's own commits: moving it back is safe.
+    await call({
+      method: 'PATCH',
+      path: `${root}/git/refs/heads/${branchPath}`,
+      body: { sha: baseSha, force: true },
+      idempotent: true,
+    });
+    return { reset: true };
+  }
+
   async function createRef(
     root: string,
     branch: string,
@@ -1265,6 +1316,7 @@ export function createGithubClient(opts: GithubClientOptions): GithubClient {
     ensureRepoFromTemplate,
     protectDefaultBranch,
     getBranchHead,
+    resetJobBranch,
     commitFiles,
     compareCommits,
     readFile,

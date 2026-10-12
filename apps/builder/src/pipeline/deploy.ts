@@ -214,7 +214,8 @@ export async function runDeployStep(
     releaseSha = commit.commitSha;
   }
 
-  // Production deployment of exactly that commit, then promotion.
+  // Production deployment of exactly that commit, then promotion. The deployment is staged
+  // (vercel.ts): the production domains only move with the promotion, after the re-read below.
   await syncProjectEnv(deps, signal, project.id, spec.slug, poolConfigKeys(released.onchain));
   guard(signal);
   const deployment = await deps.vercel.createDeployment({

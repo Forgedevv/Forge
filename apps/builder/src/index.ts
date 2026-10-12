@@ -206,10 +206,26 @@ export async function startBuilder(opts: StartBuilderOptions = {}): Promise<Buil
     minIntervalMs: 60_000,
   });
 
+  // The daily budget survives a restart: the startup day starts from what today's jobs already
+  // spent (an approximation from above, see cost-store.ts), then accumulates in memory.
+  const startupDay = new Date().toISOString().slice(0, 10);
+  const costStore = new PersistentCostGatewayStore(store, logger, {
+    day: startupDay,
+    load: () => store.sumJobCostsSince(`${startupDay}T00:00:00.000Z`),
+  });
+  try {
+    await costStore.seedDailyCost();
+  } catch (err) {
+    // Fail closed: the gateway refuses requests until the seed loads (retried on each request).
+    logger.warn(
+      { error: sanitizeError(err) },
+      'could not read the API cost already spent today; the gateway refuses requests until it can',
+    );
+  }
   const gateway = createGateway({
     upstreamUrl: config.FORGE_GATEWAY_UPSTREAM_URL,
     apiKey: config.ANTHROPIC_API_KEY,
-    store: new PersistentCostGatewayStore(store, logger),
+    store: costStore,
     pricing: DEFAULT_PRICING,
     dailyBudgetUsd: config.FORGE_GATEWAY_DAILY_BUDGET_USD,
     onAlert: (alert) =>

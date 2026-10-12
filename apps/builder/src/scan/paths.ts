@@ -102,6 +102,23 @@ export type ZoneClass =
   | { zone: 'lockfile' }
   | { zone: 'blocked'; rule: RuleId; reason: string };
 
+/**
+ * Files that decide what the whole site renders, whatever the pages are: the custom App (wallet
+ * and data providers, and the gate that serves the static page of a sleeping or disabled site),
+ * the custom Document (head and scripts of every page) and the static mode pages. A change there
+ * could keep a site cut by FORGE fully working, so they are locked like src/forge/. The site mode
+ * itself lives in forge.config.json (`mode`), a field only the builder writes (manifest.ts).
+ */
+function lockedShellReason(lower: string): string | null {
+  const special = /^src\/pages\/(_app|_document)(?:\.|\/|$)/.exec(lower);
+  if (special?.[1] === '_app') return 'src/pages/_app is locked (providers and the site mode gate)';
+  if (special?.[1] === '_document') return 'src/pages/_document is locked (head and scripts)';
+  if (lower === 'src/components/modes' || lower.startsWith('src/components/modes/')) {
+    return 'src/components/modes/ is locked (sleeping and maintenance pages)';
+  }
+  return null;
+}
+
 /** Classifies a normalized path. */
 export function classifyPath(path: string): ZoneClass {
   const lower = path.toLowerCase();
@@ -136,6 +153,8 @@ export function classifyPath(path: string): ZoneClass {
   if (lower.startsWith('src/pages/api/') || lower === 'src/pages/api') {
     return { zone: 'blocked', rule: 'api-route', reason: 'API routes (src/pages/api/) are locked' };
   }
+  const shell = lockedShellReason(lower);
+  if (shell !== null) return { zone: 'blocked', rule: 'app-shell-locked', reason: shell };
 
   const inSrcZone = SRC_ZONES.some((z) => path.startsWith(z));
   const inPublic = path.startsWith('public/');

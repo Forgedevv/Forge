@@ -356,6 +356,31 @@ describe('modify: deploying', () => {
     expect(h.vercel.projectBySlug('moonpad')!.productionDeploymentId).toBe(productionBefore);
   });
 
+  it('regression: a build retried after the default branch moved starts the job branch from it', async () => {
+    const h = await liveLaunchpad();
+    // Attempt 1 committed on the job branch, then failed later (its preview, say).
+    await run(h, modifyJob());
+    const firstHead = h.github.repos.get(REPO)!.branches.get(BRANCH)!;
+    // The default branch moved meanwhile (a builder mode commit, for example).
+    await h.github.commitFiles({
+      repo: REPO,
+      branch: 'main',
+      message: 'Put the site to sleep',
+      files: [{ path: 'README.md', content: 'moved\n' }],
+    });
+    const main = h.github.repos.get(REPO)!.branches.get('main')!;
+    // Attempt 2 builds from the new head: the job branch must start from it, not from attempt 1.
+    await run(h, modifyJob({ attempts: 1 }));
+    const head = h.github.repos.get(REPO)!.branches.get(BRANCH)!;
+    expect(head).not.toBe(firstHead);
+    expect(h.github.commits.get(head)!.parents).toEqual([main]);
+    // The default branch itself was never moved by the reset.
+    expect(h.github.repos.get(REPO)!.branches.get('main')).toBe(main);
+    // And the release goes through (it used to stop at "the default branch moved").
+    const { outcome } = await run(h, modifyJob({ status: 'deploying' }));
+    expect(outcome).toEqual({ message: 'Your launchpad is live at https://moonpad.clients.test' });
+  });
+
   it('never deploys a merge that brought in changes pushed during the release', async () => {
     const h = await liveLaunchpad();
     await run(h, modifyJob());

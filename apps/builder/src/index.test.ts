@@ -190,6 +190,11 @@ describe('builder process', () => {
       { method: 'POST', path: '/rest/v1/rpc/take_build_job', handler: () => json([]) },
       { method: 'GET', path: '/rest/v1/flags', handler: () => json([]) },
       { method: 'GET', path: '/rest/v1/launchpads', handler: () => json([]) },
+      {
+        method: 'GET',
+        path: '/rest/v1/jobs',
+        handler: () => json([{ id: 'job-1', api_cost_usd: '1.5' }]),
+      },
     ]);
     vi.stubGlobal('fetch', stub.fetch);
     const docker = fakeDocker();
@@ -222,6 +227,12 @@ describe('builder process', () => {
       );
       const address = builder.gateway.server.address();
       expect(address && typeof address === 'object' ? address.address : '').toBe('127.0.0.1');
+      // The daily API budget was seeded from today's jobs before the gateway listened.
+      const seed = stub.find('GET', '/rest/v1/jobs');
+      expect(seed).toHaveLength(1);
+      expect(seed[0]!.query.get('updated_at')).toBe(
+        `gte.${new Date().toISOString().slice(0, 10)}T00:00:00.000Z`,
+      );
       for (
         let i = 0;
         i < 100 && stub.find('POST', '/rest/v1/rpc/take_build_job').length === 0;

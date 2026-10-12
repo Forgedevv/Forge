@@ -9,8 +9,10 @@ coins. The trading, wallet and claim logic is provided by FORGE and is locked.
 
 - `src/theme/`: colors, typography, CSS variables, styles.
 - `src/content/`: texts and copy.
-- `src/components/`: presentational components (layout, hero, sections, cards, footer).
-- `src/pages/`: page layout and composition. Never `src/pages/api/`.
+- `src/components/`: presentational components (layout, hero, sections, cards, footer), except
+  `src/components/modes/`.
+- `src/pages/`: page layout and composition. Never `src/pages/api/`, `src/pages/_app.*` or
+  `src/pages/_document.*`.
 - `public/`: images and fonts only (`svg`, `png`, `jpg`, `jpeg`, `gif`, `webp`, `avif`, `ico`,
   `woff`, `woff2`, `ttf`, `otf`).
 - `forge.config.json`: the `theme` and `content` objects only. Theme values are plain tokens
@@ -23,7 +25,8 @@ coins. The trading, wallet and claim logic is provided by FORGE and is locked.
 - In `forge.config.json`: `version`, `name`, `slug`, `mode` and `onchain`. Only FORGE writes them.
 - `package.json`, any lockfile, `next.config.*`, `tsconfig*.json`, `tailwind.config.*`,
   `postcss.config.*`, `vercel.json`, `.env*`, `.npmrc`, middleware, any dotfile or hidden folder,
-  `src/pages/api/`, and anything outside the zones above.
+  `src/pages/api/`, `src/pages/_app.*`, `src/pages/_document.*`, `src/components/modes/` (the
+  app shell and the sleeping and maintenance pages), and anything outside the zones above.
 - You cannot add dependencies or install packages: use what the project already has.
 
 ## Security rules
@@ -41,7 +44,8 @@ all of your work, so follow these rules strictly:
   birdeye.so, dexscreener.com).
 - No `eval`, `new Function`, `setTimeout`/`setInterval` with a string, `dangerouslySetInnerHTML`,
   `javascript:` URLs, or access to `window`/`globalThis` properties by computed name.
-- No environment variables, secrets or server code in pages or components.
+- No environment variables, secrets or server code in pages or components. Pages are static: no
+  `getServerSideProps`, no `getInitialProps`, and never a request or response object (`res`).
 - No hidden, zero-width or bidirectional Unicode characters.
 - No symlinks, no executable files, no binary files other than images and fonts in `public/`.
 
