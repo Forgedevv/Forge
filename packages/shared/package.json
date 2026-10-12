@@ -1,20 +1,40 @@
 {
   "name": "@forge/shared",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Shared contracts (constants, zod schemas, types) between all FORGE apps.",
+  "description": "Shared contracts (constants, zod schemas, types) between all FORGE apps. Published on npm as @forgedevv/shared.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Forgedevv/Forge.git",
+    "directory": "packages/shared"
+  },
+  "homepage": "https://github.com/Forgedevv/Forge/tree/main/packages/shared#readme",
+  "bugs": {
+    "url": "https://github.com/Forgedevv/Forge/issues"
+  },
+  "engines": {
+    "node": ">=20"
+  },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
-    }
+    },
+    "./package.json": "./package.json"
   },
   "files": [
-    "dist"
+    "dist/**/*.js",
+    "dist/**/*.d.ts",
+    "!dist/**/*.test.*"
   ],
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
   "sideEffects": false,
   "scripts": {
     "build": "tsc -p tsconfig.build.json",

@@ -2,6 +2,26 @@
   "name": "@forge/core",
   "version": "0.1.0",
   "private": true,
+  "description": "FORGE transaction core: Meteora Dynamic Bonding Curve configs, pools, swaps, claims and on-chain checks. Published on npm as @forgedevv/core.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Forgedevv/Forge.git",
+    "directory": "packages/core"
+  },
+  "homepage": "https://github.com/Forgedevv/Forge/tree/main/packages/core#readme",
+  "bugs": {
+    "url": "https://github.com/Forgedevv/Forge/issues"
+  },
+  "keywords": [
+    "solana",
+    "meteora",
+    "dynamic-bonding-curve",
+    "launchpad"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
   "type": "module",
   "sideEffects": false,
   "main": "./dist/index.js",
@@ -14,17 +34,25 @@
     "./launch-check": {
       "types": "./dist/launch-check.d.ts",
       "default": "./dist/launch-check.js"
-    }
+    },
+    "./package.json": "./package.json"
   },
   "files": [
-    "dist"
+    "dist/**/*.js",
+    "dist/**/*.d.ts",
+    "!dist/**/*.test.*",
+    "CHANGELOG.md"
   ],
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --passWithNoTests",
     "lint": "eslint .",
-    "publish:packages": "pnpm run typecheck && pnpm run lint && pnpm run test && pnpm run build && pnpm publish --registry https://npm.pkg.github.com --access restricted"
+    "publish:npm": "node ../../scripts/publish-core.mjs"
   },
   "dependencies": {
     "@forge/shared": "workspace:*",
