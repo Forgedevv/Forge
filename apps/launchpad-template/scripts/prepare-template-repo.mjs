@@ -2,15 +2,18 @@
 /**
  * Prepares the content of the standalone template repository from `apps/launchpad-template`.
  *
- * It only reads this folder and writes into an output folder. It never runs git, never pushes,
- * never tags and never publishes: pushing the output to the template repository is a separate,
- * manual step.
+ * It only reads this folder and writes into an output folder. It runs read-only git commands only
+ * (`ls-files`, `cat-file`), never pushes, never tags and never publishes: pushing the output to the
+ * template repository is a separate, manual step.
  *
  * What it copies: only the files tracked by git in this folder (`git ls-files`), never untracked or
  * ignored files, minus a denylist that always applies (even to a file tracked by mistake): local
- * `.npmrc`, assistant notes, `.env*` other than `.env.example`, keys, keypairs and `.state/`. The
+ * `.npmrc`, assistant notes, `.env*` other than `.env.example`, keys, keypairs and `.state/`. File
+ * contents are read from the git index (`git cat-file`), never from the working tree, so the bytes
+ * that are scanned are the bytes that are written, and an unstaged local edit never leaks. The
  * whole output is then scanned for secret shapes (registry tokens, private keys, keypair arrays,
- * GitHub and API tokens, storage keys); one match and nothing is written.
+ * base58 secret keys, JWTs, provider URLs carrying a key, GitHub and API tokens, storage keys);
+ * one match and nothing is written.
  *
  * What the output differs in:
  * - every `workspace:*` dependency is replaced by the exact version given with `--pin name=x.y.z`;
@@ -26,15 +29,7 @@
  *     [--registry https://npm.pkg.github.com --scope @forgedevv] [--typescript 6.0.3] [--dry-run]
  */
 import { execFileSync } from 'node:child_process';
-import {
-  existsSync,
-  lstatSync,
-  mkdirSync,
-  readFileSync,
-  readdirSync,
-  statSync,
-  writeFileSync,
-} from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -106,6 +101,20 @@ export const SECRET_PATTERNS = [
       /(?<![A-Za-z0-9])(?=[0-9a-f]*[a-f])(?=[0-9a-f]*[0-9])(?:[0-9a-f]{64}|[0-9a-f]{32})(?![A-Za-z0-9])/,
   },
   {
+    // A 64-byte ed25519 secret key in base58 is 87 or 88 characters (addresses are 32 to 44).
+    name: 'base58 secret key',
+    pattern: /(?<![1-9A-HJ-NP-Za-km-z])[1-9A-HJ-NP-Za-km-z]{87,88}(?![1-9A-HJ-NP-Za-km-z])/,
+  },
+  {
+    name: 'JWT',
+    pattern: /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/,
+  },
+  {
+    name: 'provider URL with a key',
+    pattern:
+      /[?&](?:api[-_]?key|access[-_]?token|token|key)=[A-Za-z0-9_-]{8,}|[?&][\w-]+=[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i,
+  },
+  {
     name: 'storage secret assignment',
     pattern:
       /(?:aws|r2|s3)[\w-]*(?:secret|access[_-]?key)[\w-]*["']?\s*[:=]\s*["']?[A-Za-z0-9/+=]{20,}/i,
@@ -157,23 +166,83 @@ export function findSecrets(content) {
   return SECRET_PATTERNS.filter(({ pattern }) => pattern.test(content)).map(({ name }) => name);
 }
 
+/** The only git commands this script runs: read-only ones. */
+export const GIT_READ_COMMANDS = ['ls-files', 'cat-file'];
+
+/** Runs one read-only git command in `sourceDir` (no shell) and returns its stdout as a Buffer. */
+function git(sourceDir, args, input) {
+  if (!GIT_READ_COMMANDS.includes(args[0])) {
+    throw new PrepareError(`Refusing to run git ${args[0]}: only read-only commands are allowed.`);
+  }
+  try {
+    return execFileSync('git', ['-C', sourceDir, ...args], {
+      input,
+      stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
+      maxBuffer: 512 * 1024 * 1024,
+    });
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new PrepareError(`Could not read the git index (git ${args[0]}): ${reason}`);
+  }
+}
+
 /**
  * Files tracked by git in `sourceDir`, relative to it and `/` separated. Runs `git ls-files` only
  * (read-only, no shell). Fails when the folder is not inside a git work tree.
  */
 export function listTrackedFiles(sourceDir) {
-  let output;
-  try {
-    output = execFileSync('git', ['-C', sourceDir, 'ls-files', '-z', '--cached', '--', '.'], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-      maxBuffer: 64 * 1024 * 1024,
-    });
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
-    throw new PrepareError(`Could not list the tracked files (git ls-files): ${reason}`);
+  return git(sourceDir, ['ls-files', '-z', '--cached', '--', '.'])
+    .toString('utf8')
+    .split('\0')
+    .filter((rel) => rel.length > 0);
+}
+
+/** Regular-file modes of the git index (symlinks 120000 and submodules 160000 are never read). */
+const REGULAR_FILE_MODES = new Set(['100644', '100755']);
+
+/**
+ * Contents of `rels` as staged in the git index of `sourceDir` (never the working tree). Paths that
+ * are not in the index, or are not regular files, are left out. Fails on unmerged entries.
+ */
+export function readIndexFiles(sourceDir, rels) {
+  const wanted = new Set(rels);
+  const entries = new Map();
+  const records = git(sourceDir, ['ls-files', '-z', '--stage', '--', '.'])
+    .toString('utf8')
+    .split('\0');
+  for (const record of records) {
+    if (!record) continue;
+    const tab = record.indexOf('\t');
+    const [mode, oid, stage] = record.slice(0, tab).split(' ');
+    const rel = record.slice(tab + 1);
+    if (!wanted.has(rel)) continue;
+    if (stage !== '0') throw new PrepareError(`Unmerged file in the git index: ${rel}.`);
+    if (REGULAR_FILE_MODES.has(mode) && /^[0-9a-f]{40,64}$/.test(oid)) entries.set(rel, oid);
   }
-  return output.split('\0').filter((rel) => rel.length > 0);
+  const contents = new Map();
+  if (entries.size === 0) return contents;
+  const oids = [...new Set(entries.values())];
+  const output = git(sourceDir, ['cat-file', '--batch'], `${oids.join('\n')}\n`);
+  const blobs = new Map();
+  let pos = 0;
+  while (pos < output.length) {
+    const eol = output.indexOf(0x0a, pos);
+    if (eol < 0) throw new PrepareError('Unexpected git cat-file output.');
+    const [oid, type, size] = output.subarray(pos, eol).toString('utf8').split(' ');
+    if (type !== 'blob' || !/^\d+$/.test(size ?? '')) {
+      throw new PrepareError(`Could not read ${oid} from the git index.`);
+    }
+    const start = eol + 1;
+    const end = start + Number(size);
+    blobs.set(oid, Buffer.from(output.subarray(start, end)));
+    pos = end + 1;
+  }
+  for (const [rel, oid] of entries) {
+    const blob = blobs.get(oid);
+    if (!blob) throw new PrepareError(`Could not read ${rel} from the git index.`);
+    contents.set(rel, blob);
+  }
+  return contents;
 }
 
 /** Parses repeated `--pin name=version` values. Versions must be exact. */
@@ -269,16 +338,13 @@ export function buildNpmrc({ registry, scope }) {
   return `${scope}:registry=${url.toString().replace(/\/$/, '')}\n`;
 }
 
-/** Tracked files that exist on disk as regular files and pass the filters, sorted. */
-function selectFiles(sourceDir, tracked) {
+/** Tracked paths that pass the filters, sorted. Contents are read separately (git index). */
+function selectFiles(tracked) {
   const files = new Set();
   for (const raw of tracked) {
     const rel = raw.split(sep).join('/').replace(/^\.\//, '');
     if (rel.split('/').some((part) => part === '..' || part === '' || part === '.')) continue;
     if (!isIncluded(rel)) continue;
-    const full = join(sourceDir, ...rel.split('/'));
-    // Symlinks are never followed: a tracked link could point at a secret outside the folder.
-    if (!existsSync(full) || !lstatSync(full).isFile()) continue;
     files.add(rel);
   }
   return [...files].sort();
@@ -305,6 +371,9 @@ export function prepareTemplateRepo(options) {
     dryRun = false,
     sourceDir = SOURCE_DIR,
     listFiles = listTrackedFiles,
+    // Returns a Map rel -> Buffer for the regular files among `rels`. Symlinks are never followed:
+    // a tracked link could point at a secret outside the folder.
+    readFiles = readIndexFiles,
   } = options;
   if (!out) throw new PrepareError('--out <dir> is required.');
   const outDir = resolve(out);
@@ -315,7 +384,9 @@ export function prepareTemplateRepo(options) {
     throw new PrepareError('The output folder exists and is not empty: nothing was written.');
   }
 
-  const sourcePackage = JSON.parse(readFileSync(join(sourceDir, 'package.json'), 'utf8'));
+  const own = readFiles(sourceDir, ['package.json', 'tsconfig.json']);
+  if (!own.has('package.json')) throw new PrepareError('package.json is not tracked by git.');
+  const sourcePackage = JSON.parse(own.get('package.json').toString('utf8'));
   const rootPackagePath = resolve(sourceDir, '../../package.json');
   const version =
     typescriptVersion ??
@@ -329,21 +400,21 @@ export function prepareTemplateRepo(options) {
   generated.set('package.json', stringify(pkg));
   generated.set('vercel.json', stringify(VERCEL_JSON));
   if (npmrc) generated.set('.npmrc', npmrc);
-  const tsconfigPath = join(sourceDir, 'tsconfig.json');
-  if (existsSync(tsconfigPath)) {
-    const tsconfig = inlineTsconfig(JSON.parse(readFileSync(tsconfigPath, 'utf8')), (base) =>
+  if (own.has('tsconfig.json')) {
+    const tsconfig = inlineTsconfig(JSON.parse(own.get('tsconfig.json').toString('utf8')), (base) =>
       JSON.parse(readFileSync(resolve(sourceDir, base), 'utf8')),
     );
     generated.set('tsconfig.json', stringify(tsconfig));
   }
 
-  const copied = selectFiles(sourceDir, listFiles(sourceDir)).filter((rel) => !generated.has(rel));
-  const files = [...new Set([...copied, ...generated.keys()])].sort();
+  const selected = selectFiles(listFiles(sourceDir)).filter((rel) => !generated.has(rel));
+  const read = readFiles(sourceDir, selected);
+  const contents = new Map(
+    selected.filter((rel) => read.has(rel)).map((rel) => [rel, read.get(rel)]),
+  );
+  const files = [...new Set([...contents.keys(), ...generated.keys()])].sort();
 
   // Every output file is checked before anything is written.
-  const contents = new Map(
-    copied.map((rel) => [rel, readFileSync(join(sourceDir, ...rel.split('/')))]),
-  );
   const findings = [];
   for (const [rel, content] of [...contents, ...generated]) {
     const text = typeof content === 'string' ? content : content.toString('utf8');
@@ -414,6 +485,7 @@ function main() {
     for (const name of result.unusedPins) {
       console.warn(`Warning: --pin ${name} matches no dependency.`);
     }
+    console.log('File contents were read from the git index (staged state), not the working tree.');
     console.log('Nothing was pushed or published. Review the folder, then push it by hand.');
   } catch (error) {
     if (error instanceof PrepareError) {

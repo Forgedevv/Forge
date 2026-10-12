@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  GIT_READ_COMMANDS,
   PrepareError,
   VERCEL_JSON,
   buildNpmrc,
@@ -177,7 +178,7 @@ describe('prepare-template-repo: helpers', () => {
 });
 
 describe('prepare-template-repo: safety', () => {
-  it('only runs `git ls-files`, never touches the network', () => {
+  it('only runs read-only git commands, never touches the network', () => {
     const source = readFileSync(scriptPath, 'utf8');
     for (const forbidden of [
       'fetch(',
@@ -194,6 +195,10 @@ describe('prepare-template-repo: safety', () => {
     expect(code).not.toMatch(/git (push|remote|tag)/);
     const calls = [...code.matchAll(/execFileSync\(([^)]*)/g)].map((match) => match[1]);
     expect(calls).toHaveLength(1);
-    expect(calls[0]).toMatch(/^'git', \['-C', sourceDir, 'ls-files'/);
+    expect(calls[0]).toMatch(/^'git', \['-C', sourceDir, \.\.\.args\]/);
+    expect(GIT_READ_COMMANDS).toEqual(['ls-files', 'cat-file']);
+    const gitCalls = [...code.matchAll(/\bgit\(sourceDir, \['([a-z-]+)'/g)].map((m) => m[1]);
+    expect(gitCalls.length).toBeGreaterThan(0);
+    for (const command of gitCalls) expect(GIT_READ_COMMANDS).toContain(command);
   });
 });

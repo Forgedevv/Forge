@@ -39,14 +39,12 @@ export function readPoolCreationFeeSol(value: unknown): number | undefined {
 export const cluster = onchainConfig?.cluster ?? 'mainnet-beta';
 
 /**
- * FORGE RPC relay origin used by the browser (never the RPC provider directly). Read with a literal
- * `process.env.NEXT_PUBLIC_*` so that Next inlines it at build time. `undefined` when unset.
+ * JSON-RPC endpoint of the FORGE RPC relay used by the browser (never the RPC provider directly),
+ * normalised exactly like the trade panel does (a bare origin gets `/api/rpc`; anything that is not
+ * http(s) is refused). Null when unusable. The raw variable is read with a literal
+ * `process.env.NEXT_PUBLIC_*` so that Next inlines it at build time; it is not exported, so no
+ * component can send JSON-RPC to the bare origin.
  */
-export const rpcRelayUrl: string | undefined =
-  process.env.NEXT_PUBLIC_FORGE_RPC_RELAY_URL || undefined;
-
-/**
- * JSON-RPC endpoint of the relay, normalised exactly like the trade panel does (a bare origin gets
- * `/api/rpc`; anything that is not http(s) is refused). Null when unusable.
- */
-export const rpcRelayEndpoint: string | null = resolveRelayUrl(rpcRelayUrl);
+export const rpcRelayEndpoint: string | null = resolveRelayUrl(
+  process.env.NEXT_PUBLIC_FORGE_RPC_RELAY_URL || undefined,
+);

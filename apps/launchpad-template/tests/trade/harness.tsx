@@ -1,4 +1,5 @@
 import { Keypair, PublicKey, Transaction } from '@solana/web3.js';
+import bs58 from 'bs58';
 import { vi } from 'vitest';
 
 /** Shared mutable fakes used by the vi.mock factories of the trade component tests. */
@@ -18,6 +19,7 @@ export interface FakeConnection {
   simulateTransaction: ReturnType<typeof vi.fn>;
   sendRawTransaction: ReturnType<typeof vi.fn>;
   getSignatureStatuses: ReturnType<typeof vi.fn>;
+  getBlockHeight: ReturnType<typeof vi.fn>;
 }
 
 /** On-chain account of an initialized SPL mint with these decimals. */
@@ -57,6 +59,7 @@ export function createFakeConnection(): FakeConnection {
       context: { slot: 1 },
       value: [{ err: null, confirmationStatus: 'confirmed' }],
     })),
+    getBlockHeight: vi.fn(async () => 50),
   };
 }
 
@@ -68,9 +71,16 @@ export const keys = {
   user: Keypair.generate().publicKey,
 };
 
+/** Fee-payer signature written by `okSigner`, and its base58 form (the trade signature). */
+export const SIGNATURE_BYTES = new Uint8Array(64).fill(7);
+export const SIGNED_SIGNATURE = bs58.encode(SIGNATURE_BYTES);
+
 /** A wallet signTransaction that returns an object serialisable like a signed transaction. */
 export function okSigner() {
   return vi.fn(async (tx: Transaction) => {
+    tx.signatures = [
+      { publicKey: tx.feePayer as PublicKey, signature: Buffer.from(SIGNATURE_BYTES) },
+    ];
     (tx as unknown as { serialize: () => Uint8Array }).serialize = () => new Uint8Array([1, 2, 3]);
     return tx;
   });
