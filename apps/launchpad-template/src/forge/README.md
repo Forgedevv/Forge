@@ -14,14 +14,14 @@ This zone contains all the logic that touches money, the network or the chain:
 - `create/` server side of `/api/upload` (server-only modules): `prepare-handler` (rate limit, wallet signature, single-use nonce, image checks, fail closed), `image` (PNG/JPEG/WebP/GIF by magic bytes, 2 MB), `upload-client` (FORGE presigned-upload endpoint, contract in the file header; no storage key in the site), `launch-builder` (pool transaction through the RPC relay, rent read from the cluster), `server-guards`.
 - `ClaimCreatorFees.tsx` and `claims/`: creator fee claims for the connected wallet (adapter to `@forge/core` in `claims/core-adapter.ts`).
 - `ModeGate.tsx`: app-level mode gate rendered by `src/pages/_app.tsx`. Reads the mode from `config.ts` only; when the site is sleeping or disabled it renders a page from `modes/` and nothing else.
-- `modes/`: static sleeping and disabled pages (and their minimal theme style). They import nothing from the free zones.
-- `AppProviders.tsx`: providers of the live site (data, wallet, toasts) and the colour mode provider.
+- `modes/`: sleeping and disabled pages (and their minimal theme style). They import nothing from the free zones. The sleeping page keeps only the creator fee claim (decision D29): `modes/SleepingClaim.tsx` (wallet provider + `ClaimCreatorFees`), loaded on demand when a creator opens it.
+- `AppProviders.tsx`: providers of the live site (data, wallet, toasts), the wallet provider alone (`ForgeWalletProvider`, also used by the sleeping claim) and the colour mode provider.
 - `ModeBanner.tsx`: banner shown instead of an action when the site is sleeping or disabled.
 - `data/`: Jupiter data API client and websocket stream.
 - `chart/`: TradingView chart (loads an external script and queries the data API).
 - `token-icon/`: token images (dynamic image URLs).
 - `CoinLink.tsx`: link to the launchpad coin on Jupiter (sleeping page).
-- `mode-guard.ts`: what each mode allows (`capabilitiesFor`); API routes answer 503 when the site is sleeping or disabled.
+- `mode-guard.ts`: what each mode allows (`capabilitiesFor`: a sleeping site allows the creator fee claim only); API routes answer 503 when the site is sleeping or disabled (the claim needs no API route: it goes from the browser to the FORGE RPC relay).
 
 Rules for the free zones (`src/theme`, `src/content`, `src/components`, `src/pages`): no `fetch`, no
 dynamic URL, no dynamic `img src`, no external script. Import a component from here instead.

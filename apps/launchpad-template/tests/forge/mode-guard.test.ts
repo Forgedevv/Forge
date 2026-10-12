@@ -18,12 +18,12 @@ describe('capabilities', () => {
     });
   });
 
-  it('is read-only when sleeping', () => {
+  it('allows only the creator fee claim when sleeping (D29)', () => {
     expect(capabilitiesFor('sleeping')).toEqual({
-      browse: true,
+      browse: false,
       trade: false,
       create: false,
-      claim: false,
+      claim: true,
     });
   });
 
@@ -43,7 +43,8 @@ describe('modeNotice', () => {
     const sleeping = modeNotice('sleeping');
     const disabled = modeNotice('disabled');
     expect(sleeping?.title).toMatch(/sleeping/i);
-    expect(sleeping?.body).toMatch(/read-only/i);
+    expect(sleeping?.body).toMatch(/trading and coin creation are paused/i);
+    expect(sleeping?.body).toMatch(/can still claim/i);
     expect(disabled?.title).toMatch(/maintenance/i);
   });
 });

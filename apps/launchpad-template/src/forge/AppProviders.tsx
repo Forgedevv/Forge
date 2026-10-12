@@ -51,8 +51,19 @@ export function ForgeThemeProvider({ children }: { children: ReactNode }) {
   );
 }
 
-export function AppProviders({ children }: { children: ReactNode }) {
+/** Theme of the wallet modal and toasts, from the colour mode in use. */
+function useWalletTheme(): 'light' | 'dark' {
   const { resolvedTheme } = useTheme();
+  return resolvedTheme === 'light' ? 'light' : 'dark';
+}
+
+/**
+ * The wallet provider alone (Phantom, Solflare and wallet-standard wallets, this site's cluster and
+ * metadata). The live site renders it inside `AppProviders`; the sleeping page renders it around
+ * the creator fee claim widget only (decision D29), without the data providers.
+ */
+export function ForgeWalletProvider({ children }: { children: ReactNode }) {
+  const walletTheme = useWalletTheme();
 
   const wallets: Adapter[] = useMemo(() => {
     return [new PhantomWalletAdapter(), new SolflareWalletAdapter()].filter(
@@ -60,26 +71,34 @@ export function AppProviders({ children }: { children: ReactNode }) {
     ) as Adapter[];
   }, []);
 
-  const queryClient = useMemo(() => new QueryClient(), []);
   const metadata = useMemo(() => walletMetadata(siteConfig, siteOrigin()), []);
 
-  const walletTheme = resolvedTheme === 'light' ? 'light' : 'dark';
+  return (
+    <UnifiedWalletProvider
+      wallets={wallets}
+      config={{
+        env: walletEnv(cluster),
+        autoConnect: true,
+        metadata,
+        theme: walletTheme,
+        lang: 'en',
+      }}
+    >
+      {children}
+    </UnifiedWalletProvider>
+  );
+}
+
+export function AppProviders({ children }: { children: ReactNode }) {
+  const walletTheme = useWalletTheme();
+  const queryClient = useMemo(() => new QueryClient(), []);
 
   return (
     <QueryClientProvider client={queryClient}>
-      <UnifiedWalletProvider
-        wallets={wallets}
-        config={{
-          env: walletEnv(cluster),
-          autoConnect: true,
-          metadata,
-          theme: walletTheme,
-          lang: 'en',
-        }}
-      >
+      <ForgeWalletProvider>
         <Toaster theme={walletTheme} richColors closeButton />
         {children}
-      </UnifiedWalletProvider>
+      </ForgeWalletProvider>
     </QueryClientProvider>
   );
 }

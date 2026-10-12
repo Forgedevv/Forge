@@ -6,8 +6,10 @@ import { siteConfig } from './config';
  * LOCKED ZONE. What a site may do in each mode (forge.config.json `mode`, written by FORGE only).
  *
  * - `live`: everything.
- * - `sleeping`: read-only. Trading, coin creation and claims are disabled and a banner says so.
- *   The app shell serves the static sleeping page without any RPC or Jupiter call.
+ * - `sleeping`: the app shell serves the lightweight sleeping page (no browsing, no indexer data).
+ *   Trading and coin creation are disabled. Coin creators can still claim their creator fees
+ *   (decision D29): the claim widget is the only action left, and it runs in the browser through
+ *   the FORGE RPC relay, so every API route of the site still answers 503.
  * - `disabled`: cut off by FORGE (maintenance). Nothing is available.
  *
  * Every component and API route that moves money checks these capabilities, so that a wrong
@@ -23,7 +25,7 @@ export interface ModeCapabilities {
 
 const CAPABILITIES: Record<SiteMode, ModeCapabilities> = {
   live: { browse: true, trade: true, create: true, claim: true },
-  sleeping: { browse: true, trade: false, create: false, claim: false },
+  sleeping: { browse: false, trade: false, create: false, claim: true },
   disabled: { browse: false, trade: false, create: false, claim: false },
 };
 
@@ -49,7 +51,7 @@ export function modeNotice(mode: SiteMode): ModeNotice | null {
     case 'sleeping':
       return {
         title: 'This launchpad is sleeping',
-        body: 'It is read-only for now: trading, coin creation and fee claims are paused. Come back later.',
+        body: 'Trading and coin creation are paused for now. Coin creators can still claim their fees.',
       };
     case 'disabled':
       return {
@@ -61,7 +63,8 @@ export function modeNotice(mode: SiteMode): ModeNotice | null {
 
 /**
  * API routes call this first: when the site is `sleeping` or `disabled` they answer 503 and never
- * touch the RPC, R2 or Jupiter. Returns true when the request was rejected. `mode` defaults to the
+ * touch the RPC, R2 or Jupiter. No API route serves the creator fee claim (it is built and sent
+ * from the browser through the FORGE RPC relay), so a sleeping site keeps refusing them all. Returns true when the request was rejected. `mode` defaults to the
  * site's mode and exists for tests.
  */
 export function rejectIfNotLive(

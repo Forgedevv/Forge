@@ -110,6 +110,22 @@ describe('sleep mode', () => {
     expect(store.get(LAUNCHPAD_ID).status).toBe('sleeping');
   });
 
+  it('keeps what the creator fee claim needs on the sleeping site (D29)', async () => {
+    const { github, vercel, deps } = await setup();
+    await sleepLaunchpad(deps, LAUNCHPAD_ID);
+    const config = JSON.parse(github.text(REPO, 'main', 'forge.config.json')!);
+    expect(config.mode).toBe('sleeping');
+    // The claim widget lists the coins of this launchpad config, on this cluster.
+    expect(config.onchain).toMatchObject({ cluster: 'devnet', launchpadConfig: LAUNCHPAD_CONFIG });
+    const project = vercel.projectBySlug('moonpad')!;
+    const production = vercel.deployments.get(project.productionDeploymentId!)!;
+    // The browser builds and sends the claim through the FORGE RPC relay.
+    expect(production.env.NEXT_PUBLIC_FORGE_RPC_RELAY_URL).toBe(
+      TEST_PROJECT_ENV.NEXT_PUBLIC_FORGE_RPC_RELAY_URL,
+    );
+    expect(production.env.NEXT_PUBLIC_SOLANA_CLUSTER).toBe('devnet');
+  });
+
   it('counts a launchpad that never traded from its creation date', async () => {
     const { deps } = await setup({ lastTradeDaysAgo: null });
     expect((await runSleepCycle(deps)).slept).toEqual(['moonpad']);
