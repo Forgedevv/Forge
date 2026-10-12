@@ -9,6 +9,7 @@ import type { JobContext, WorkerLogger } from '../worker.js';
 import type { AgentConfig, AgentGateway } from './agent.js';
 import { PipelineError } from './errors.js';
 import type { RepoSource } from './repo-snapshot.js';
+import type { VisualReviewConfig } from './review/config.js';
 import type { OnchainConfig } from './site-config.js';
 import type { LaunchpadRecord, LaunchpadStore } from './store.js';
 
@@ -65,6 +66,11 @@ export interface PipelineConfig {
   deploymentTimeoutMs: number;
   /** Wait for a promotion to production to apply. */
   promotionTimeoutMs: number;
+  /**
+   * Visual review of new sites (second agent pass on screenshots). Absent: off, the building step
+   * is exactly one agent pass.
+   */
+  review?: VisualReviewConfig;
 }
 
 export const PIPELINE_DEFAULTS = {
@@ -87,6 +93,8 @@ export interface PipelineDeps {
   config: PipelineConfig;
   /** System prompt of the agent (default: prompts/builder.md). */
   systemPrompt?: string;
+  /** Clock (tests). Default `Date.now`. */
+  now?: () => number;
 }
 
 /** Branch holding the work of one job. */

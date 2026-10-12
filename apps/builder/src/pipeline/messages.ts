@@ -11,6 +11,10 @@ export const STEP_EVENTS = {
   buildSite: 'Building your site',
   publishPreview: 'Publishing your preview',
   scanBlocked: 'The changes did not pass our safety checks',
+  /** Visual review (BUILDER_VISUAL_REVIEW=on): screenshots, then a second pass on the design. */
+  reviewDesign: 'Reviewing the design on desktop and mobile',
+  refineDesign: 'Refining the design',
+  buildRefined: 'Building the refined site',
   createConfigs: 'Creating your launchpad configuration on-chain',
   prepareLaunch: 'Preparing your launch transaction',
   release: 'Publishing your launchpad',
