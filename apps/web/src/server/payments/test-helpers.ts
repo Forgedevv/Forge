@@ -149,8 +149,9 @@ export class FakeChainGateway implements PaymentGateway {
 
   constructor(readonly cashbox: PublicKey) {}
 
+  /** Lands `tx` under `signature`, which becomes its first signature (its id on-chain). */
   land(signature: string, tx: VersionedTransactionResponse): void {
-    this.txs.set(signature, tx);
+    this.txs.set(signature, { ...tx, transaction: { ...tx.transaction, signatures: [signature] } });
   }
 
   async buildPayment(params: PaymentParams): Promise<BuiltPayment> {

@@ -43,8 +43,9 @@ const CHECK: PaymentCheck = {
   confirmationStatus: 'confirmed',
 };
 
+/** Checks `tx` under its own id (first signature), as `verifyPayment` looks it up. */
 function check(tx: VersionedTransactionResponse, overrides: Partial<PaymentCheck> = {}) {
-  return checkPaymentTransaction(tx, 'sig', { ...CHECK, ...overrides });
+  return checkPaymentTransaction(tx, tx.transaction.signatures[0]!, { ...CHECK, ...overrides });
 }
 
 function paymentTx(overrides: Partial<Parameters<typeof landedTx>[0]> = {}) {
@@ -80,15 +81,21 @@ function fakeConnection(options: FakeRpcOptions = {}) {
             ? null
             : {
                 slot: 1_000,
-                confirmations: 1,
+                confirmations: null,
                 err: null,
-                confirmationStatus: 'confirmed',
+                confirmationStatus: 'finalized',
                 ...options.status,
               },
         ],
       }),
     ),
-    getTransaction: vi.fn(() => fail(options.tx === undefined ? paymentTx() : options.tx)),
+    // Served under the signature looked up (its first signature), as a real node does.
+    getTransaction: vi.fn((signature: string) => {
+      const tx = options.tx === undefined ? paymentTx() : options.tx;
+      return fail(
+        tx === null ? null : { ...tx, transaction: { ...tx.transaction, signatures: [signature] } },
+      );
+    }),
     getBalance: vi.fn(() => fail(options.balance ?? 5_000_000)),
     getMinimumBalanceForRentExemption: vi.fn(() => fail(options.rent ?? 890_880)),
     getLatestBlockhash: vi.fn(() =>
@@ -168,7 +175,7 @@ describe('checkPaymentTransaction', () => {
     const keys = message.staticAccountKeys;
     const pre = keys.map(() => 10_000_000_000);
     const post = keys.map((k, i) => (k.equals(CASHBOX) ? pre[i]! + Number(LAMPORTS) : pre[i]!));
-    const tx = { ...base, transaction: { message, signatures: ['sig'] } };
+    const tx = { ...base, transaction: { message, signatures: [randomSignature()] } };
     tx.meta = { ...base.meta!, preBalances: pre, postBalances: post };
     expect(check(tx)).toMatchObject({ status: 'confirmed' });
   });
@@ -274,16 +281,33 @@ describe('verifyPayment', () => {
   const expected = { payer: PAYER, lamports: LAMPORTS, jobId: JOB };
   const options = { env: ENV, retry: NO_RETRY };
 
-  it('confirms a confirmed transaction', async () => {
-    const { connection, rpc } = fakeConnection();
+  it('confirms a confirmed transaction when asked for that commitment', async () => {
+    const { connection, rpc } = fakeConnection({ status: { confirmationStatus: 'confirmed' } });
     await expect(
-      verifyPayment(connection, randomSignature(), expected, options),
+      verifyPayment(connection, randomSignature(), expected, {
+        ...options,
+        commitment: 'confirmed',
+      }),
     ).resolves.toMatchObject({
       status: 'confirmed',
       confirmationStatus: 'confirmed',
     });
     expect(rpc.getTransaction).toHaveBeenCalledWith(expect.any(String), {
       commitment: 'confirmed',
+      maxSupportedTransactionVersion: 0,
+    });
+  });
+
+  it('confirms a finalized transaction at the finalized commitment', async () => {
+    const { connection, rpc } = fakeConnection();
+    await expect(
+      verifyPayment(connection, randomSignature(), expected, {
+        ...options,
+        commitment: 'finalized',
+      }),
+    ).resolves.toMatchObject({ status: 'confirmed', confirmationStatus: 'finalized' });
+    expect(rpc.getTransaction).toHaveBeenCalledWith(expect.any(String), {
+      commitment: 'finalized',
       maxSupportedTransactionVersion: 0,
     });
   });
