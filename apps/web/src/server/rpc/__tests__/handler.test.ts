@@ -21,6 +21,8 @@ import {
 } from './helpers';
 
 const CLIENT = 'https://moonpad.forge-sites.app';
+/** Site of a sleeping launchpad (status 'sleeping' in the directory). */
+const SLEEPING = 'https://sleepy.forge-sites.app';
 const FORGE = 'https://forge.example';
 const SECRET = Buffer.from('s'.repeat(48));
 const TX = smallTransactionBase64();
@@ -84,6 +86,7 @@ function makeRelay(options: RelayOptions = {}) {
   };
   const snapshot: DirectorySnapshot = {
     activeSlugs: new Set(['moonpad', 'sun-pad']),
+    sleepingSlugs: new Set(['sleepy']),
     previewOrigins: new Map([['https://forge-moonpad-abc-team.vercel.app', 'moonpad']]),
     loadedAt: 0,
   };
@@ -292,6 +295,76 @@ describe('caller tiers', () => {
     expect(relay.upstreamPayloads).toHaveLength(0);
     expectNoKeyInLogs(relay.logger);
     expect(JSON.stringify(relay.logger.entries)).not.toContain(forged);
+  });
+
+  it('refuses the server token of a sleeping launchpad (no uploads while sleeping)', async () => {
+    const relay = makeRelay();
+    const token = deriveRelayToken(SECRET, 'sleepy');
+    const { res } = await send(relay, call('getBalance', [PK]), { origin: null, token });
+    expect(res.status).toBe(403);
+    expect(relay.upstreamPayloads).toHaveLength(0);
+    expect(relay.logger.entries).toContainEqual(
+      expect.objectContaining({
+        event: 'caller_refused',
+        fields: expect.objectContaining({ reason: 'token_inactive', slug: 'sleepy' }),
+      }),
+    );
+  });
+
+  it('serves a sleeping site the creator fee claim methods only', async () => {
+    const relay = makeRelay();
+    const claim = [
+      call('getProgramAccounts', CREATOR_POOLS_PARAMS, 1),
+      call('getAccountInfo', [PK, { encoding: 'base64', commitment: 'confirmed' }], 2),
+      call('getMultipleAccounts', [[PK, PK2], { encoding: 'base64' }], 3),
+      call('getMinimumBalanceForRentExemption', [165], 4),
+      call('getLatestBlockhash', [{ commitment: 'confirmed' }], 5),
+      call('getBalance', [PK, { commitment: 'confirmed' }], 6),
+      call('sendTransaction', [TX, { encoding: 'base64', maxRetries: 3 }], 7),
+      call('getSignatureStatuses', [[SIG], { searchTransactionHistory: false }], 8),
+    ];
+    const ok = await send(relay, claim, { origin: SLEEPING });
+    expect(ok.res.status).toBe(200);
+    expect(ok.res.headers.get('access-control-allow-origin')).toBe(SLEEPING);
+    expect((ok.json as { error?: unknown }[]).every((r) => r.error === undefined)).toBe(true);
+    expect(relay.upstreamPayloads).toHaveLength(1);
+
+    // Trading, simulation, history and token listing are refused like unknown methods.
+    const others = [
+      call('simulateTransaction', [TX, { encoding: 'base64', sigVerify: false }], 1),
+      call('getTokenAccountsByOwner', [PK, { mint: PK2 }], 2),
+      call('getSlot', [], 3),
+      call('getBlockTime', [5], 4),
+      call('getFeeForMessage', [TX], 5),
+      call('getEpochInfo', [], 6),
+      call('getBlockHeight', [], 7),
+      call('getTokenAccountBalance', [PK], 8),
+    ];
+    const refused = await send(relay, others, { origin: SLEEPING });
+    expect(refused.res.status).toBe(200);
+    for (const answer of refused.json as { error?: { code: number } }[]) {
+      expect(answer.error?.code).toBe(-32601);
+    }
+    expect(relay.upstreamPayloads).toHaveLength(1);
+    // The same calls pass for a live site.
+    const live = await send(relay, others, { origin: CLIENT });
+    expect((live.json as { error?: unknown }[]).every((r) => r.error === undefined)).toBe(true);
+    expect(relay.upstreamPayloads).toHaveLength(2);
+  });
+
+  it('answers the preflight of a sleeping site, never of a disabled one', async () => {
+    const relay = makeRelay();
+    const preflight = (origin: string) =>
+      relay.handler.options(
+        new Request('https://forge.example/api/rpc', {
+          method: 'OPTIONS',
+          headers: { origin, 'access-control-request-method': 'POST' },
+        }),
+      );
+    const ok = await preflight(SLEEPING);
+    expect(ok.status).toBe(204);
+    expect(ok.headers.get('access-control-allow-origin')).toBe(SLEEPING);
+    expect((await preflight('https://cut-pad.forge-sites.app')).status).toBe(403);
   });
 
   it('refuses tokens when the server tier is disabled', async () => {

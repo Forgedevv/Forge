@@ -335,3 +335,27 @@ export function isAllowedMethod(method: string): boolean {
 }
 
 export const ALLOWED_METHODS: readonly string[] = Object.freeze(Object.keys(METHODS));
+
+/**
+ * What the browser of a sleeping site may call (origins.ts, kind `sleeping`): the one action left
+ * on a sleeping site is the creator fee claim (decision D29, template `ClaimCreatorFees`), so only
+ * the methods that claim sends are served. Everything else (trades, simulations, coin creation)
+ * answers -32601.
+ */
+export const SLEEPING_SITE_METHODS: ReadonlySet<string> = new Set([
+  // Coins of the wallet: core listCoinsOfCreator (SDK getPoolsByCreator).
+  'getProgramAccounts',
+  // Pool and config (SDK fetchers), the wallet's coin account (SDK getOrCreateATAInstruction).
+  'getAccountInfo',
+  // Core claim build: the receiver's coin account, the temporary WSOL account, the receiver.
+  'getMultipleAccounts',
+  // Core claim build: token account rent, read from the cluster.
+  'getMinimumBalanceForRentExemption',
+  // Core claim build: the claim transaction's blockhash.
+  'getLatestBlockhash',
+  // Template chain client: balance check before signing.
+  'getBalance',
+  // Template chain client: the signed claim, then confirmation by polling.
+  'sendTransaction',
+  'getSignatureStatuses',
+]);

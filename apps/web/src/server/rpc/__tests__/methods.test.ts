@@ -26,6 +26,7 @@ import {
   MAX_SIGNATURE_STATUSES,
   METHODS,
   PACKET_DATA_SIZE,
+  SLEEPING_SITE_METHODS,
 } from '../methods';
 import {
   base64OfSize,
@@ -77,6 +78,12 @@ describe('method allowlist', () => {
       ].sort(),
     );
     for (const spec of Object.values(METHODS)) expect(spec.usedBy.length).toBeGreaterThan(10);
+  });
+
+  it("serves sleeping sites a subset of it: the creator fee claim's methods", () => {
+    for (const method of SLEEPING_SITE_METHODS) expect(ALLOWED_METHODS).toContain(method);
+    expect(SLEEPING_SITE_METHODS.has('simulateTransaction')).toBe(false);
+    expect(SLEEPING_SITE_METHODS.has('getTokenAccountsByOwner')).toBe(false);
   });
 
   it.each([

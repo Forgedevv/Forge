@@ -4,6 +4,7 @@ import {
   errorForAll,
   errorResponse,
   parseBody,
+  restrictCalls,
   RPC_ERRORS,
   type CheckedCall,
   type JsonRpcError,
@@ -18,7 +19,7 @@ import {
   type RelayRateLimitStore,
 } from './limits';
 import type { RelayLogger } from './log';
-import { METHODS } from './methods';
+import { METHODS, SLEEPING_SITE_METHODS } from './methods';
 import { decideOrigin, type LaunchpadDirectory, type OriginDecision } from './origins';
 import { RELAY_TOKEN_HEADER, verifyRelayToken } from './server-token';
 import type { Upstream, UpstreamResult } from './upstream';
@@ -28,8 +29,12 @@ import type { Upstream, UpstreamResult } from './upstream';
  *
  * Pipeline: caller tier (Origin / server token / anonymous) -> request overhead charged ->
  * content type -> body size cap -> JSON-RPC parsing (single call or batch of at most 10) ->
- * per-call allowlist and params validation -> weighted rate limits -> upstream (ids rewritten) ->
- * answers mapped back to the caller's ids, in request order.
+ * per-call allowlist and params validation (narrowed to the creator fee claim's methods for the
+ * origin of a sleeping site) -> weighted rate limits -> upstream (ids rewritten) -> answers mapped
+ * back to the caller's ids, in request order.
+ *
+ * Sleeping sites: their browser origin is served (the claim stays available, decision D29), their
+ * server token is not (draft and live only), so nothing else runs while a launchpad sleeps.
  *
  * Invalid calls of a batch get their own error and are not forwarded; the others are. Upstream
  * failures are mapped to fixed JSON-RPC errors: the provider URL, its key and its error texts never
@@ -243,6 +248,7 @@ export function createRelayHandler(deps: RelayDeps): RelayHandler {
   type TierResult =
     { ok: true; caller: CallerTier; corsOrigin: string | null } | { ok: false; response: Response };
 
+  /** Server tokens are served for draft and live launchpads only (never sleeping ones). */
   async function activeSlug(slug: string): Promise<boolean | null> {
     if (!directory) return null;
     try {
@@ -479,7 +485,12 @@ export function createRelayHandler(deps: RelayDeps): RelayHandler {
 
       const parsed = parseBody(text);
       if (!parsed.ok) return json(errorResponse(null, parsed.error), parsed.status, corsOrigin);
-      const { batch, calls } = parsed;
+      const { batch } = parsed;
+      // A sleeping site only claims creator fees (D29): it gets the claim's methods, nothing else.
+      const calls =
+        caller.tier === 'browser' && caller.originKind === 'sleeping'
+          ? restrictCalls(parsed.calls, SLEEPING_SITE_METHODS)
+          : parsed.calls;
       const valid = calls.filter((c): c is ValidCall => c.ok);
 
       let units = 0;
