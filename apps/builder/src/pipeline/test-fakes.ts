@@ -47,6 +47,7 @@ import type { JobContext, WorkerLogger } from '../worker.js';
 import type { AgentGateway } from './agent.js';
 import type { PipelineGithub, PipelineSigner, PipelineVercel } from './context.js';
 import type { RepoSnapshot, RepoSource, RepoTree, RepoTreeEntry } from './repo-snapshot.js';
+import { writeFakeCapture } from './review/test-helpers.js';
 import {
   BLOCKING_FAILED_STAGES,
   launchpadStatusFilter,
@@ -827,7 +828,7 @@ export class FakeVercel extends Recorder implements PipelineVercel {
 // Sandbox
 // ---------------------------------------------------------------------------------------------
 
-export type SandboxStep = 'agent' | 'install' | 'build';
+export type SandboxStep = 'agent' | 'install' | 'build' | 'capture';
 
 export type AgentBehaviour = (workdir: string, options: SandboxRunOptions) => void | Promise<void>;
 
@@ -850,12 +851,26 @@ export class FakeRunner extends Recorder implements SandboxRunner {
   buildExitCode = 0;
   /** Runs while a step executes (tests use it to rewrite the folder during the build). */
   duringBuild: ((workdir: string) => void | Promise<void>) | undefined;
+  /** Exit codes of the next install / build runs, in order (then installExitCode / buildExitCode). */
+  installExitCodes: number[] = [];
+  buildExitCodes: number[] = [];
+  /** Visual review capture: what it writes into its output folder, and its exit code. */
+  capture: (outputDir: string, options: SandboxRunOptions) => void | Promise<void> = (dir) =>
+    writeFakeCapture(dir);
+  captureExitCode = 0;
+  /** Agent runs after the first one (the visual review pass); unset fields fall back to `agent*`. */
+  reviewAgent: AgentBehaviour | undefined;
+  reviewAgentExitCode: number | undefined;
+  reviewAgentTimedOut: boolean | undefined;
+  reviewAgentStdout: string | undefined;
+  private agentRuns = 0;
 
   constructor(jobsRoot: string) {
     super();
     this.config = {
       image: `sha256:${'a'.repeat(64)}`,
       proxyImage: `sha256:${'b'.repeat(64)}`,
+      reviewImage: `sha256:${'c'.repeat(64)}`,
       jobsRoot,
       dockerBinary: 'docker',
       uid: 1000,
@@ -870,6 +885,7 @@ export class FakeRunner extends Recorder implements SandboxRunner {
   }
 
   private stepOf(options: SandboxRunOptions): SandboxStep {
+    if (options.image === 'review') return 'capture';
     const [bin, sub] = options.command;
     if ((bin === 'pnpm' || bin === 'npm') && (sub === 'install' || sub === 'ci')) return 'install';
     if ((bin === 'pnpm' || bin === 'npm') && sub === 'run') return 'build';
@@ -884,18 +900,24 @@ export class FakeRunner extends Recorder implements SandboxRunner {
       let stdout: string;
       let timedOut = false;
       if (step === 'agent') {
-        await this.agent(options.workdir, options);
-        exitCode = this.agentExitCode;
-        stdout = this.agentStdout;
-        timedOut = this.agentTimedOut;
+        this.agentRuns += 1;
+        const review = this.agentRuns > 1;
+        await ((review ? this.reviewAgent : undefined) ?? this.agent)(options.workdir, options);
+        exitCode = (review ? this.reviewAgentExitCode : undefined) ?? this.agentExitCode;
+        stdout = (review ? this.reviewAgentStdout : undefined) ?? this.agentStdout;
+        timedOut = (review ? this.reviewAgentTimedOut : undefined) ?? this.agentTimedOut;
+      } else if (step === 'capture') {
+        if (options.outputDir) await this.capture(options.outputDir, options);
+        exitCode = this.captureExitCode;
+        stdout = 'capture: done';
       } else if (step === 'install') {
-        exitCode = this.installExitCode;
+        exitCode = this.installExitCodes.shift() ?? this.installExitCode;
         if (exitCode === 0)
           await mkdir(path.join(options.workdir, 'node_modules'), { recursive: true });
         stdout = exitCode === 0 ? 'Packages: +42' : 'ERR_PNPM_FETCH_404';
       } else {
         await this.duringBuild?.(options.workdir);
-        exitCode = this.buildExitCode;
+        exitCode = this.buildExitCodes.shift() ?? this.buildExitCode;
         if (exitCode === 0) await mkdir(path.join(options.workdir, '.next'), { recursive: true });
         stdout =
           exitCode === 0 ? 'Compiled successfully' : "Type error: Cannot find module './Hero'";
@@ -938,6 +960,8 @@ export class FakeGateway extends Recorder implements AgentGateway {
     ttlMinutes?: number;
   }> = [];
   readonly revoked: string[] = [];
+  /** What the gateway recorded for the job so far (`jobCostUsd`). */
+  spentUsd = 0.42;
 
   issueToken(
     jobId: string,
@@ -954,6 +978,10 @@ export class FakeGateway extends Recorder implements AgentGateway {
     return this.around('revokeToken', () => {
       this.revoked.push(token);
     });
+  }
+
+  jobCostUsd(): Promise<number> {
+    return this.around('jobCostUsd', () => this.spentUsd);
   }
 }
 

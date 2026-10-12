@@ -1,4 +1,4 @@
-export { createSandboxRunner, parseRunOptions, resolveWorkdir } from './run.js';
+export { createSandboxRunner, parseRunOptions, resolveOutputDir, resolveWorkdir } from './run.js';
 export type { SandboxDeps, SandboxLogger, SandboxRunner } from './run.js';
 export { buildSite, buildCommands, detectPackageManager, BUILD_DEFAULTS } from './build.js';
 export type {
@@ -15,6 +15,7 @@ export {
   PINNED_IMAGE_RE,
   resolveSandboxConfig,
   SANDBOX_DEFAULTS,
+  SANDBOX_IMAGES,
   SANDBOX_LIMITS,
 } from './config.js';
 export type {
@@ -22,6 +23,7 @@ export type {
   GatewayUpstream,
   ResolvedSandboxConfig,
   SandboxConfig,
+  SandboxImageKind,
   SandboxRuntime,
 } from './config.js';
 export { SandboxError } from './errors.js';

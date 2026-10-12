@@ -2,7 +2,7 @@ import type { JobRow } from '@forge/shared';
 import type { RepoFile, RepoInfo } from '../github.js';
 import type { SandboxRunner } from '../sandbox/index.js';
 import { resolveConfig, hostMatches } from '../scan/config.js';
-import type { Violation } from '../scan/index.js';
+import type { ScanOptions } from '../scan/index.js';
 import type { JobContext, JobOutcome } from '../worker.js';
 import {
   builderSystemPrompt,
@@ -24,10 +24,11 @@ import {
   type PipelineDeps,
 } from './context.js';
 import { PipelineError, PolicyViolationError, SiteBuildError } from './errors.js';
+import { gateTree } from './gate.js';
 import { STEP_EVENTS } from './messages.js';
 import type { RepoSnapshot } from './repo-snapshot.js';
+import { runVisualReview } from './review/run-review.js';
 import {
-  checkAgentSiteConfig,
   initialSiteConfig,
   parseSiteConfig,
   serializeSiteConfig,
@@ -36,7 +37,6 @@ import {
   withMode,
   type OnchainConfig,
 } from './site-config.js';
-import { scanInput } from './scan-input.js';
 import {
   createWorkdir,
   readWorkdirTree,
@@ -54,6 +54,8 @@ import {
  *   -> agent in the sandbox, through the gateway (budget, timeout)
  *   -> blocking scan of the diff + forge.config.json check   <- BEFORE any install or build
  *   -> local install + build in the sandbox (the build itself has no network)
+ *   -> new sites, BUILDER_VISUAL_REVIEW=on: screenshots of the built site, a second agent pass
+ *      on them, the same scan and build again; any failure keeps the first pass (review/)
  *   -> commit of the scanned bytes to forge/<jobId>
  *   -> env sync + explicit Vercel preview deployment -> preview_url
  *
@@ -119,11 +121,11 @@ export function prepareBaseline(
 }
 
 /** Image URLs worth showing to the agent: only those the scan lets the site load. */
-function allowedImageUrls(
-  deps: PipelineDeps,
+export function allowedImageUrls(
+  scanOptions: ScanOptions | undefined,
   urls: { logoUrl?: string | undefined; coinImageUrl?: string | undefined },
 ): { logoUrl?: string; coinImageUrl?: string } {
-  const hosts = resolveConfig(deps.config.scanOptions).allowedHosts;
+  const hosts = resolveConfig(scanOptions).allowedHosts;
   const ok = (u: string | undefined): u is string => {
     if (!u) return false;
     try {
@@ -137,16 +139,6 @@ function allowedImageUrls(
     ...(ok(urls.logoUrl) ? { logoUrl: urls.logoUrl } : {}),
     ...(ok(urls.coinImageUrl) ? { coinImageUrl: urls.coinImageUrl } : {}),
   };
-}
-
-function dedupe(violations: Violation[]): Violation[] {
-  const seen = new Set<string>();
-  return violations.filter((v) => {
-    const key = `${v.rule}|${v.file}|${v.line ?? ''}|${v.reason}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
 }
 
 /** Last lines of the build logs, for `jobs.error` (already redacted by the sandbox). */
@@ -168,6 +160,7 @@ async function codeAndCheck(
   kind: BuildKind,
   lp: LaunchpadContext,
   baseline: Baseline,
+  stepStartedAt: number,
 ): Promise<RepoFile[]> {
   const { signal } = jobCtx;
   const log = jobCtx.logger;
@@ -188,7 +181,7 @@ async function codeAndCheck(
     let taskPrompt: string;
     if (kind === 'create') {
       taskPrompt = createTaskPrompt(lp.spec, {
-        imageUrls: allowedImageUrls(deps, {
+        imageUrls: allowedImageUrls(deps.config.scanOptions, {
           logoUrl: lp.spec.theme.logoUrl,
           coinImageUrl: lp.spec.launchpadCoin.imageUrl,
         }),
@@ -222,33 +215,9 @@ async function codeAndCheck(
     // 2. Blocking scan of everything the agent left, before anything is installed or built.
     await say(jobCtx, STEP_EVENTS.checkChanges);
     const tree = await readWorkdirTree(workdir);
-    const changes = scanInput({
-      baseline: baseline.map,
-      tree,
-      configReference: baseline.configReference,
-    });
-    const violations: Violation[] = [];
-    const scan = deps.scan(changes, deps.config.scanOptions);
-    if (!scan.ok) violations.push(...scan.violations);
-    const configEntry = tree.find((e) => e.path === SITE_CONFIG_PATH);
-    violations.push(
-      ...checkAgentSiteConfig(
-        baseline.configText,
-        configEntry && configEntry.mode === '100644' ? configEntry.content.toString('utf8') : null,
-      ),
-    );
-    for (const entry of tree) {
-      if (entry.mode !== '100644' && entry.mode !== '100755') {
-        violations.push({
-          rule: 'file-mode',
-          file: entry.path,
-          line: null,
-          reason: 'only regular files can be published',
-        });
-      }
-    }
+    const { changes, violations } = gateTree(tree, baseline, deps.scan, deps.config.scanOptions);
     if (violations.length > 0) {
-      const unique = dedupe(violations);
+      const unique = violations;
       log.warn(
         jobFields(job, {
           violations: unique.length,
@@ -298,6 +267,30 @@ async function codeAndCheck(
     const built = await deps.buildSite(guardedRunner, workdir, { jobId: job.id, signal });
     guard(signal);
     if (!built.ok) throw new SiteBuildError(built.failedStep, logTail(built.logs));
+
+    // 4. Visual review of a new site (off by default). Never fails the job: on any problem the
+    // pass 1 files above, scanned and built, are kept.
+    const review = deps.config.review;
+    if (kind === 'create' && review) {
+      const outcome = await runVisualReview({
+        deps,
+        review,
+        job,
+        jobCtx,
+        lp,
+        baseline,
+        pass1Workdir: workdir,
+        pass1Files: scanned,
+        pass1ReportedCostUsd: agent.reportedCostUsd,
+        deadline:
+          stepStartedAt +
+          review.jobTimeoutMs -
+          deps.config.deploymentTimeoutMs -
+          review.publishMarginMs,
+      });
+      guard(signal);
+      if (outcome.applied) return outcome.files;
+    }
     return scanned;
   } finally {
     await removeWorkdir(workdir, deps.runner.config.jobsRoot).catch((err: unknown) =>
@@ -318,6 +311,7 @@ export async function runBuildStep(
 ): Promise<JobOutcome> {
   const { signal } = jobCtx;
   const log = jobCtx.logger;
+  const stepStartedAt = (deps.now ?? Date.now)();
   const lp = await loadLaunchpad(deps, job);
   const { launchpad, spec, repoName } = lp;
   if (kind === 'modify' && launchpad.status !== 'live' && launchpad.status !== 'sleeping') {
@@ -377,7 +371,7 @@ export async function runBuildStep(
   // Job folder, agent, scan, local build.
   const snapshot = await deps.repoSource.snapshot(repo.name, repo.defaultBranch);
   const baseline = prepareBaseline(kind, snapshot, lp);
-  const files = await codeAndCheck(deps, job, jobCtx, kind, lp, baseline);
+  const files = await codeAndCheck(deps, job, jobCtx, kind, lp, baseline, stepStartedAt);
 
   // Commit the scanned files. The branch must start from the commit the agent worked on.
   await say(jobCtx, STEP_EVENTS.publishPreview);

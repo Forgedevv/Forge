@@ -16,6 +16,8 @@ export const SANDBOX_DEFAULTS = {
   gid: 1000,
   homeDir: '/home/node',
   workspaceDir: '/workspace',
+  /** Container path of the optional output folder (`outputDir` run option). */
+  outputDir: '/output',
   /** Shared bridge the egress proxies use to reach the internet (ICC disabled). */
   egressNetwork: 'forge-egress-out',
   /** Host interface name of the egress bridge (used by docker/host-firewall.sh). */
@@ -79,6 +81,13 @@ export type HostPreset = Exclude<EgressPreset, 'gateway'>;
 export const SANDBOX_RUNTIMES = ['runc', 'runsc'] as const;
 export type SandboxRuntime = (typeof SANDBOX_RUNTIMES)[number];
 
+/**
+ * Images a run may use, both configured by the operator: `sandbox` (agent, install, build) and
+ * `review` (headless browser of the visual review capture; never network, never a secret).
+ */
+export const SANDBOX_IMAGES = ['sandbox', 'review'] as const;
+export type SandboxImageKind = (typeof SANDBOX_IMAGES)[number];
+
 export interface GatewayUpstream {
   /**
    * Host of the AI gateway as seen from the proxy container. `host.docker.internal`
@@ -93,6 +102,11 @@ export interface SandboxConfig {
   image: string;
   /** Egress proxy image, pinned the same way. */
   proxyImage: string;
+  /**
+   * Visual review image (headless browser, docker/review.Dockerfile), pinned the same way.
+   * Absent: runs asking for the `review` image are refused.
+   */
+  reviewImage?: string | null;
   /** Only folders strictly inside this directory can be mounted. */
   jobsRoot: string;
   dockerBinary?: string;
@@ -129,6 +143,11 @@ const GatewayUpstreamSchema = z.strictObject({
 export const SandboxConfigSchema = z.strictObject({
   image: z.string().regex(PINNED_IMAGE_RE, 'image must be pinned by digest or image ID'),
   proxyImage: z.string().regex(PINNED_IMAGE_RE, 'proxyImage must be pinned by digest or image ID'),
+  reviewImage: z
+    .string()
+    .regex(PINNED_IMAGE_RE, 'reviewImage must be pinned by digest or image ID')
+    .nullable()
+    .optional(),
   jobsRoot: z.string().refine((p) => path.isAbsolute(p), 'jobsRoot must be absolute'),
   dockerBinary: z
     .string()
@@ -152,6 +171,8 @@ export const SandboxConfigSchema = z.strictObject({
 export interface ResolvedSandboxConfig {
   image: string;
   proxyImage: string;
+  /** `null`: no review image configured (the visual review cannot run). */
+  reviewImage: string | null;
   jobsRoot: string;
   dockerBinary: string;
   uid: number;
@@ -176,6 +197,7 @@ export function resolveSandboxConfig(input: SandboxConfig): ResolvedSandboxConfi
   return {
     image: c.image,
     proxyImage: c.proxyImage,
+    reviewImage: c.reviewImage ?? null,
     jobsRoot: path.resolve(c.jobsRoot),
     dockerBinary: c.dockerBinary ?? SANDBOX_DEFAULTS.dockerBinary,
     uid: c.uid ?? SANDBOX_DEFAULTS.uid,
@@ -199,7 +221,7 @@ function parseHostPort(value: string, name: string): GatewayUpstream {
  * Reads the sandbox configuration from the environment:
  * FORGE_SANDBOX_IMAGE, FORGE_SANDBOX_PROXY_IMAGE, FORGE_SANDBOX_JOBS_ROOT (required);
  * FORGE_SANDBOX_GATEWAY_UPSTREAM (host:port), FORGE_SANDBOX_RUNTIME, FORGE_SANDBOX_UID,
- * FORGE_SANDBOX_GID, FORGE_DOCKER_BIN (optional).
+ * FORGE_SANDBOX_GID, FORGE_SANDBOX_REVIEW_IMAGE, FORGE_DOCKER_BIN (optional).
  */
 export function loadSandboxConfig(env: NodeJS.ProcessEnv = process.env): ResolvedSandboxConfig {
   const required = (name: string): string => {
@@ -218,6 +240,7 @@ export function loadSandboxConfig(env: NodeJS.ProcessEnv = process.env): Resolve
   return resolveSandboxConfig({
     image: required('FORGE_SANDBOX_IMAGE'),
     proxyImage: required('FORGE_SANDBOX_PROXY_IMAGE'),
+    reviewImage: env.FORGE_SANDBOX_REVIEW_IMAGE || null,
     jobsRoot: required('FORGE_SANDBOX_JOBS_ROOT'),
     dockerBinary: env.FORGE_DOCKER_BIN || undefined,
     uid: optionalInt('FORGE_SANDBOX_UID'),

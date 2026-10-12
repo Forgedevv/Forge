@@ -30,6 +30,10 @@ export type {
   SleepStore,
 } from './store.js';
 export { removeStaleWorkdirs } from './workdir.js';
+export { gateTree } from './gate.js';
+export type { GateBaseline, GateResult } from './gate.js';
+export { REVIEW_DEFAULTS, visualReviewFromEnv } from './review/config.js';
+export type { VisualReviewConfig, VisualReviewSetting } from './review/config.js';
 
 /** The builder's job handler: routes a claimed job to the creation or modification pipeline. */
 export function createPipelineHandler(deps: PipelineDeps): JobHandler {

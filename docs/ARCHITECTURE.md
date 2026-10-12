@@ -110,6 +110,8 @@ spec_ready → paid → building → preview_ready → approved → onchain_setu
 
 A modification skips `onchain_setup`, `awaiting_owner_signature` and `owner_signed`: `approved → deploying → live`.
 
+Inside `building` (creation): agent → scan → install + build → with `BUILDER_VISUAL_REVIEW=on`, visual review (screenshots of the built site in a no-network container, second agent pass, the same scan and build again; any failure keeps the first pass) → commit → preview. No status is added.
+
 Details of statuses and transitions: `INTERFACES.md`.
 
 ## Environments

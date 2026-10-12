@@ -53,6 +53,11 @@ export const AGENT_DEFAULTS = {
 export interface AgentGateway {
   issueToken(jobId: string, options?: { budgetUsd?: number; ttlMinutes?: number }): Promise<string>;
   revokeToken(token: string): Promise<void>;
+  /**
+   * API cost already recorded for the job, all attempts and passes (the gateway's accounting).
+   * Optional: without it the visual review budgets from the cost the CLI reported.
+   */
+  jobCostUsd?(jobId: string): Promise<number>;
 }
 
 /** argv of the agent run. The prompt is an argument (never a shell string). */

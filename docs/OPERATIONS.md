@@ -29,6 +29,15 @@ Sent by `apps/signer` and `apps/builder` via `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CH
 
 Each service rereads the flags at least every minute, and the money jobs reread their flag again right before signing.
 
+## Builder feature flags (environment, read at startup)
+
+| Variable | Effect |
+|---|---|
+| `BUILDER_VISUAL_REVIEW` | `off` (default) or `on`: new sites get a second agent pass on screenshots of the built site (desktop and mobile, measured overflow report), then the same scan and build; any failure of that pass keeps the first one. Costs up to 5 USD more per job (within the job budget) and a few minutes; it is skipped when less than 20 minutes or 1 USD are left. Needs `FORGE_SANDBOX_REVIEW_IMAGE`: when it is missing the review stays off and the startup log says so. |
+| `FORGE_SANDBOX_REVIEW_IMAGE` | Pinned ID of the review image (`apps/builder/docker/review.Dockerfile`, printed by `build-images.sh`). Rebuild it regularly: it carries Chromium. |
+
+The builder logs `visual review discarded, first pass kept` with the reason (`capture_failed`, `agent_failed`, `scan_blocked`, `build_failed`, `timeout`, `budget`...) when a review does not apply; a scan block of the second pass also sends a normal alert (`review_scan_blocked`). To test site quality on a laptop: `pnpm --filter @forge/builder site-test` (apps/builder/README.md).
+
 ## Automatic tasks
 
 | Task | Frequency | Service |

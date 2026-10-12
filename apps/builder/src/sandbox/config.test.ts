@@ -97,6 +97,18 @@ describe('loadSandboxConfig', () => {
     expect(c.uid).toBe(1001);
   });
 
+  it('reads the optional review image, pinned like the others', () => {
+    expect(loadSandboxConfig(env).reviewImage).toBeNull();
+    expect(loadSandboxConfig({ ...env, FORGE_SANDBOX_REVIEW_IMAGE: '' }).reviewImage).toBeNull();
+    expect(loadSandboxConfig({ ...env, FORGE_SANDBOX_REVIEW_IMAGE: ID }).reviewImage).toBe(ID);
+    expect(() =>
+      loadSandboxConfig({ ...env, FORGE_SANDBOX_REVIEW_IMAGE: 'chromium:latest' }),
+    ).toThrow(/reviewImage/);
+    // A resolved configuration with a review image can be resolved again.
+    const c = loadSandboxConfig({ ...env, FORGE_SANDBOX_REVIEW_IMAGE: ID });
+    expect(resolveSandboxConfig(c).reviewImage).toBe(ID);
+  });
+
   it('refuses missing, unpinned or unsafe values', () => {
     expect(() => loadSandboxConfig({ ...env, FORGE_SANDBOX_IMAGE: '' })).toThrow(/required/);
     expect(() => loadSandboxConfig({ ...env, FORGE_SANDBOX_IMAGE: 'node:22' })).toThrow(/pinned/);

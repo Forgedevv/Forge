@@ -238,6 +238,69 @@ describe('assertHardenedSandboxArgs', () => {
   });
 });
 
+describe('read-only workdir and output folder (visual review capture)', () => {
+  const capture = plan({
+    workspaceReadOnly: true,
+    hostOutputDir: '/srv/forge/jobs/job-1-out',
+    command: ['node', '/opt/forge/review/capture.mjs'],
+  });
+
+  it('mounts the workdir read-only and one output folder at /output', () => {
+    const args = buildSandboxCreateArgs(capture);
+    const mounts = args.filter((a) => a.startsWith('--mount='));
+    expect(mounts).toEqual([
+      '--mount=type=bind,source=/srv/forge/jobs/job-1,target=/workspace,readonly',
+      '--mount=type=bind,source=/srv/forge/jobs/job-1-out,target=/output',
+    ]);
+    expect(() => assertHardenedSandboxArgs(args)).not.toThrow();
+    // The default stays a single read-write workdir mount.
+    expect(buildSandboxCreateArgs(plan()).filter((a) => a.startsWith('--mount='))).toEqual([
+      '--mount=type=bind,source=/srv/forge/jobs/job-1,target=/workspace',
+    ]);
+  });
+
+  it('refuses an unsafe output path', () => {
+    expectUnsafe(() =>
+      buildSandboxCreateArgs(plan({ hostOutputDir: '/srv/jobs/out,target=/etc' })),
+    );
+    expectUnsafe(() => buildSandboxCreateArgs(plan({ hostOutputDir: '/srv/jobs/"out' })));
+  });
+
+  it('refuses any other mount, a second output or a second workdir', () => {
+    const args = buildSandboxCreateArgs(capture);
+    const imageIndex = args.indexOf(IMAGE);
+    const withFlag = (...flags: string[]) => [
+      ...args.slice(0, imageIndex),
+      ...flags,
+      ...args.slice(imageIndex),
+    ];
+    for (const flag of [
+      '--mount=type=bind,source=/etc,target=/etc',
+      '--mount=type=bind,source=/srv/x,target=/output',
+      '--mount=type=bind,source=/srv/x,target=/workspace',
+      '--mount=type=volume,source=x,target=/output',
+      '--mount=type=bind,source=/srv/x,target=/output/sub',
+      '--mount=type=bind,source=,target=/output',
+    ]) {
+      expectUnsafe(() => assertHardenedSandboxArgs(withFlag(flag)));
+    }
+    const replaced = (value: string) =>
+      args.map((a) =>
+        a.startsWith('--mount=type=bind,source=/srv/forge/jobs/job-1-out') ? value : a,
+      );
+    for (const value of [
+      '--mount=type=bind,source=/srv/forge/jobs/job-1-out,target=/output,bind-propagation=rshared',
+      '--mount=type=bind,source=/srv/forge/jobs/job-1-out,target=/output,readonly,z',
+    ]) {
+      expectUnsafe(() => assertHardenedSandboxArgs(replaced(value)));
+    }
+    // Without the workdir mount, the output mount alone is not enough.
+    expectUnsafe(() =>
+      assertHardenedSandboxArgs(args.filter((a) => !a.includes('target=/workspace'))),
+    );
+  });
+});
+
 describe('proxy args', () => {
   it('builds hardened proxy arguments', () => {
     const args = buildProxyCreateArgs(proxyPlan({ hostGateway: true }));
