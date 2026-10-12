@@ -59,9 +59,17 @@ The scan is strict about names, so also avoid these common traps in free-zone co
   `<link>`, `<base>` or `<object>` elements (`next/link`'s `<Link>` is fine); `<meta>` only as
   `<meta name="description" content={...} />` inside `<Head>`.
 - Keep copy as arrays of plain objects and render them with `.map()`. Do not call
-  `Object.entries`/`Object.values` on anything but a literal written in the same file.
+  `Object.entries`/`Object.values` on anything but a literal written in the same file, and do not
+  index an object with a computed key (`items[key]`): use the array items, `.at(i)` or a `switch`.
+- Do not spread props onto an element whose type is a variable (`<Tag {...props} />`). The app
+  shell renders `<Component {...pageProps} />` once: keep that single line as it is.
+- The header imports `@jup-ag/wallet-adapter` for its connect button: keep that import and that
+  code as they are. Never import `@solana/*`, `@jup-ag/*`, `@meteora-ag/*`, `@forge/*`, `bs58` or
+  an HTTP client anywhere else; FORGE components are imported from `@/forge/...`, as the pages do.
 - In CSS, no `@import` and no `url()` pointing to another site; no `url(data:image/svg+xml...)`.
-  Draw shapes with inline SVG components, gradients, borders and pseudo-elements instead.
+  Draw shapes with inline SVG components, gradients, borders and pseudo-elements instead. Do not
+  write `scroll-behavior` (the template already sets it; the scan reads it as the forbidden
+  `behavior:` property).
 - In SVG (inline or in `public/`), no `<script>`, no event attributes (`onload`...), no `<a>` and
   no `href` except to an id in the same SVG (`#gradient`).
 - Images: only static local paths (`/logo.svg`) or the exact image URLs given in the brief.

@@ -19,25 +19,20 @@ const FRAMED_LOCKED_ROUTES = new Set(['/creator-fees']);
 export function AppShell({ Component, pageProps, router }: AppProps) {
   useWindowWidthListener();
 
-  if (router && FRAMED_LOCKED_ROUTES.has(router.pathname)) {
-    return (
-      <>
-        <ThemeStyle />
-        <div className="launchpad-framed-page flex min-h-screen flex-col bg-background text-foreground">
-          <Header />
-          <div className="launchpad-framed-body flex-1">
-            <Component {...pageProps} />
-          </div>
-          <SiteFooter />
-        </div>
-      </>
-    );
-  }
+  const page = <Component {...pageProps} />;
 
   return (
     <>
       <ThemeStyle />
-      <Component {...pageProps} />
+      {router && FRAMED_LOCKED_ROUTES.has(router.pathname) ? (
+        <div className="launchpad-framed-page flex min-h-screen flex-col bg-background text-foreground">
+          <Header />
+          <div className="launchpad-framed-body flex-1">{page}</div>
+          <SiteFooter />
+        </div>
+      ) : (
+        page
+      )}
     </>
   );
 }
