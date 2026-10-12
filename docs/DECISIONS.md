@@ -31,6 +31,10 @@ Kept up to date by the lead session. Agents read it, do not modify it.
 | D23 | Launchpad coin creation fee | the launchpad coin config has `poolCreationFee` = 0; the launchpad config keeps the client's `poolCreationFeeSol` |
 | D24 | Disabled launchpads | the builder deploys the maintenance page and also pauses the Vercel project, so neither the site nor its old previews keep serving |
 | D25 | Payment anomalies | late, mismatched, duplicate and released-launchpad payments are stored in `payment_anomalies` and refunded by hand (completes D20) |
+| D26 | `@forge/core` distribution | published publicly on npm under the `@forgedevv` scope (`@forgedevv/core`), pinned to an exact version in each client repo; no registry token reaches client projects |
+| D27 | Migrated pool fee | fixed 0.25% after graduation (`FixedBps25`) |
+| D28 | Client previews | public behind an unguessable Vercel URL |
+| D29 | Claims while sleeping | coin creators can still claim their creator fees while a launchpad is sleeping: the sleeping page keeps the claim widget |
 
 ## Open (to be decided by the team)
 
@@ -43,10 +47,6 @@ Kept up to date by the lead session. Agents read it, do not modify it.
 | Q5 | First test clients | mainnet tests |
 | Q6 | Who handles support | public launch |
 | Q7 | Public launch date | planning |
-| Q8 | `@forge/core` distribution: publish publicly (recommended), vendor it into client repos, or a FORGE registry proxy. GitHub Packages also requires the scope to match the owner (`@forgedevv`) | client site builds |
-| Q9 | Migrated pool fee: fixed 0.25% (current) or equal to the trading fee | post-graduation revenue |
-| Q10 | Client previews public behind an unguessable URL (current), or protected | preview step |
-| Q11 | Creator fee claims allowed while a launchpad is sleeping (currently blocked) | sleeping mode |
 
 ## Devnet test results
 
