@@ -54,7 +54,7 @@ Also set an R2 lifecycle rule that deletes objects under `pending/` after 1 day,
 
 ## Sleep mode
 
-A launchpad with no trade for 30 days goes to `sleeping`: the builder replaces the deployment with a lightweight static page (no RPC, no Jupiter data). The coin stays tradable on Meteora and Jupiter. The client can reactivate it from their dashboard.
+A launchpad with no trade for 30 days goes to `sleeping`: the builder replaces the deployment with a lightweight static page (no Jupiter data, no RPC call until a visitor opens the fee claim). The coin stays tradable on Meteora and Jupiter. Coin creators can still claim their creator fees there (D29): the sleeping page keeps the claim widget, which goes through the FORGE RPC relay. The relay serves a sleeping site's origin the claim's methods only and refuses its server token, so uploads and coin creation stay off. Live sites serve the same claim at `/creator-fees`. The client can reactivate it from their dashboard.
 
 ## Support
 
