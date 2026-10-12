@@ -3,6 +3,10 @@
 Colours, fonts and radius of the site. `forge.config.json#theme` drives the primary/accent colours and
 the default light/dark mode; everything else is plain CSS in `theme.css`.
 
+Web fonts: `fonts.ts` (imported by `src/components/AppShell.tsx`) lists the self-hosted font packages that
+are installed; import at most two there and name them in `--font-heading` / `--font-body`. The
+default template imports none and uses system font stacks.
+
 ## CSS variables
 
 | Variable | Source |

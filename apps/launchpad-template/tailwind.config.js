@@ -135,7 +135,8 @@ export default {
     //  <span class="iconify ph--airplane-tilt-fill"></span>
     addIconSelectors({
       // List of icon sets
-      prefixes: ['ph'],
+      // Phosphor, Lucide and Tabler for UI icons; Simple Icons for brand logos (X, Telegram, Discord...).
+      prefixes: ['ph', 'lucide', 'tabler', 'simple-icons'],
     }),
     plugin(({ addUtilities, addVariant }) => {
       // Only apply hover styles on devices that actually support hover

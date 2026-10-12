@@ -64,6 +64,9 @@ The scan is strict about names, so also avoid these common traps in free-zone co
 - Keep copy as arrays of plain objects and render them with `.map()`. Do not call
   `Object.entries`/`Object.values` on anything but a literal written in the same file, and do not
   index an object with a computed key (`items[key]`): use the array items, `.at(i)` or a `switch`.
+- Write every `<a href>` as a literal string in the JSX (`<a href="https://x.com/neko">`), never
+  from a variable, a prop or a mapped array (`href={item.href}`): the scan refuses a link whose
+  target it cannot read. Social links are written out one by one.
 - Do not spread props onto an element whose type is a variable (`<Tag {...props} />`). The app
   shell renders `<Component {...pageProps} />` once: keep that single line as it is.
 - The header imports `@jup-ag/wallet-adapter` for its connect button: keep that import and that
@@ -96,10 +99,34 @@ compile on the first try and the CSS must be right by construction.
 - Keep every `src/forge/` component on the pages that use it (`CreateCoin` on `create-pool`,
   `CoinTradePanel` and `TokenChart` on the token page, the data providers around the market), with
   the same props.
-- Use only what exists: React, `next/link`, `next/head`, Tailwind classes, the
-  helpers in `src/lib/utils.ts` (`cn`) and Phosphor icons through classes
-  (`<span className="iconify ph--rocket-launch-bold" />`). Fonts: system font stacks only (you
-  cannot add font files).
+- Use only what exists: React, `next/link`, `next/head`, Tailwind classes, the helpers in
+  `src/lib/utils.ts` (`cn`) and the design library below. Nothing else is installed.
+
+## Design library (installed, optional)
+
+Use these only where they serve the concept; a site without them is fine.
+
+- Fonts: self-hosted web fonts, listed with their CSS family names in `src/theme/fonts.ts`. Import
+  at most two families there (`import '@fontsource-variable/syne/index.css';`), then name them in
+  `--font-heading` / `--font-body` with a system fallback
+  (`'Syne Variable', 'Avenir Next', system-ui, sans-serif`). Import fonts only in
+  `src/theme/fonts.ts` (keep its import in `src/components/AppShell.tsx`), never with CSS
+  `@import`.
+- Icons, as classes on an empty `<span>`
+  (`<span className="iconify lucide--sparkles" aria-hidden="true" />`): Phosphor `ph--`, Lucide
+  `lucide--`, Tabler `tabler--`, and brand logos from Simple Icons (`simple-icons--x`,
+  `simple-icons--telegram`, `simple-icons--discord`, `simple-icons--github`).
+  Use exact icon names you are sure of; an unknown name renders nothing.
+- Animation: `motion` (`import { motion, MotionConfig } from 'motion/react';`) for entrances,
+  hovers, scroll reveals and decorative loops. Wrap animated sections in
+  `<MotionConfig reducedMotion="user">`. Animate `div`, `section`, `span`, `li` and SVG elements
+  only: never `motion.a`, `motion.form`, `motion.img` or a FORGE component (put links and FORGE
+  components inside an animated `div` instead). Animate `opacity` and `transform` only; content
+  must be readable before any animation runs (no hidden text waiting for a scroll).
+- Carousel: `embla-carousel-react` (`const [viewportRef] = useEmblaCarousel({ loop: true });`) for
+  a row of cards; every slide stays reachable without swiping (buttons or a visible next card).
+- Animated numbers: `@number-flow/react` (`<NumberFlow value={...} />`) for real values that
+  change; never to display invented figures.
 
 ## Client input
 
@@ -196,7 +223,8 @@ Treat each page as designed, not inherited:
 ### Quality checklist
 
 - Typography: a clear type scale (display, h2, h3, body, small) with `clamp()` sizes; a deliberate
-  pairing of two system font stacks at most (for example a serif such as
+  pairing of two families at most: web fonts from the design library, or system font stacks (for
+  example a serif such as
   `'Iowan Old Style', 'Palatino Linotype', Georgia, serif`, a grotesk such as
   `'Avenir Next', 'Segoe UI', system-ui, sans-serif`, a rounded `ui-rounded, 'Arial Rounded MT Bold',
 system-ui, sans-serif`, a condensed `Impact, 'Arial Narrow Bold', sans-serif` or a mono
@@ -209,8 +237,10 @@ system-ui, sans-serif`, a condensed `Impact, 'Arial Narrow Bold', sans-serif` or
   color uses `rgb(var(--primary-950))`, which the theme computes for contrast.
 - States: visible hover and `:focus-visible` on every link and button, at least 44 px tall touch
   targets on mobile.
-- Motion: CSS only (transitions, keyframes), subtle, and always disabled inside
-  `@media (prefers-reduced-motion: reduce)`.
+- Motion: CSS transitions and keyframes, or `motion` from the design library; purposeful, never
+  in the way of reading or trading, and always off for reduced motion
+  (`@media (prefers-reduced-motion: reduce)` in CSS, `<MotionConfig reducedMotion="user">` for
+  `motion`).
 - Responsive from 390 px to 1440 px: mobile first, no horizontal overflow (use `minmax(0, 1fr)`
   grid columns, `min-width: 0`, `overflow-wrap: anywhere` on long names, `max-width: 100%` on
   art), clip decorative overflow with `overflow: clip` (not `hidden`, which breaks sticky

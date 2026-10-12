@@ -1,5 +1,7 @@
 import type { AppProps } from 'next/app';
 import { useWindowWidthListener } from '@/lib/device';
+// Web fonts chosen for the site (src/theme/fonts.ts): keep this import.
+import '@/theme/fonts';
 import { ThemeStyle } from '@/theme/ThemeStyle';
 import Header from './Header';
 import { SiteFooter } from './SiteFooter';
