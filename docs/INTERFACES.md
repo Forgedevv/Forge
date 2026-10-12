@@ -286,6 +286,7 @@ Crashed job: a job left in an active status with `locked_at` older than `OPS.job
 | `POST /api/jobs/:id/owner-transaction` | `{ signedTransaction }` | `{ signature }` | sent on-chain, then `owner_signed` once the transaction is confirmed |
 | `GET /api/launchpads/:id/claim-transaction` | session | `{ transaction }` | claim of the client's partner fees |
 | `POST /api/rpc` | JSON-RPC request | response | Helius relay, method allowlist, per-IP rate limit |
+| `GET /api/coin-meta/:slug` | public | Metaplex metadata JSON | `{ name, symbol, description, image, external_url }` of the launchpad coin, served once the creation job is approved; the on-chain metadata URI points here, so the path never changes |
 
 Encodings: transactions in base64; signatures in base58; IDs are UUIDs; lamports and raw token amounts as decimal strings in JSON. Request bodies are strict (unknown keys rejected).
 
@@ -318,29 +319,35 @@ The signer never takes an address or an amount from the request: it re-reads eve
 
 `packages/core/src/addresses.ts` does not require all addresses at load time: each app calls `requireAddresses([...])` at startup with the list of those it uses (columns below) and crashes if one is missing or invalid. `FORGE_MINT` is the only optional address (absent before the $FORGE launch: token-gating disabled, buyback in simulation); if it is present, `FORGE_GATING_AMOUNT` is required on the web side.
 
-| Variable | web | template | builder | signer |
+| Variable | web | template (client site) | builder | signer |
 |---|---|---|---|---|
-| `SOLANA_CLUSTER` | ✓ | ✓ | ✓ | ✓ |
-| `RPC_URL` (Helius) | ✓ (server) | ✓ (server) | | ✓ |
-| `SUPABASE_URL` | ✓ | | ✓ | ✓ |
-| `SUPABASE_ANON_KEY` | ✓ | | | |
-| `SUPABASE_SERVICE_ROLE_KEY` | ✓ (server) | | ✓ | ✓ |
-| `ANTHROPIC_API_KEY` | ✓ (design chat) | | ✓ (AI gateway only) | |
-| `FORGE_MINT` (optional) | ✓ | | | ✓ (buyback) |
-| `FORGE_GATING_AMOUNT` | ✓ | | | |
-| `FORGE_CASHBOX_WALLET` (cashbox) | ✓ | | | ✓ |
-| `FORGE_MULTISIG_VAULT` | | ✓ (via core) | ✓ (injected into Vercel) | ✓ |
-| `FORGE_METEORA_REFERRAL_ACCOUNT` | | ✓ (via core) | ✓ (injected into Vercel) | |
-| `FORGE_PLATFORM_FEE_WALLET` | | ✓ (via core) | ✓ (injected into Vercel) | |
-| `FORGE_JUPITER_REFERRAL_ACCOUNT` | | ✓ (via core) | ✓ (injected into Vercel) | ✓ (fee conversion) |
-| `JUPITER_API_KEY` | ✓ | ✓ | ✓ (injected into Vercel) | ✓ |
-| `R2_*` | ✓ | ✓ | ✓ (injected into Vercel) | |
-| `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_ORG` | | | ✓ | |
+| `SOLANA_CLUSTER` / `NEXT_PUBLIC_SOLANA_CLUSTER` | ✓ / ✓ | — / ✓ | ✓ (injected) | ✓ |
+| `RPC_URL` (Helius) | ✓ (server: payments, launches, claims) | | ✓ | ✓ |
+| `RPC_RELAY_UPSTREAM_URL` (optional, separate Helius key for the public relay) | ✓ | | | |
+| `RPC_RELAY_TOKEN_SECRET` | ✓ (relay, uploads) | | ✓ (derives `FORGE_RPC_RELAY_TOKEN`) | |
+| `FORGE_RPC_RELAY_TOKEN`, `NEXT_PUBLIC_FORGE_RPC_RELAY_URL` | | ✓ (server-only token / public URL) | ✓ (injected) | |
+| `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` | ✓ (server) | | ✓ | ✓ |
+| `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_JWT_SECRET` | ✓ | | | |
+| `SUPABASE_DB_URL`, `SUPABASE_DB_CA_FILE` (optional) | migrations and DB tests only | | | |
+| `SESSION_SECRET` | ✓ | | | |
+| `FORGE_BETA_MODE`, `FORGE_BETA_ALLOWLIST` | ✓ | | | |
+| `FORGE_INTERNAL_CRON_SECRET` | ✓ (upload sweep) | | | |
+| `ANTHROPIC_API_KEY` | ✓ (design chat) | | ✓ (model gateway only) | |
+| `FORGE_MINT` (optional), `FORGE_GATING_AMOUNT` | ✓ | | | ✓ (buyback) |
+| `FORGE_CASHBOX_WALLET` / `NEXT_PUBLIC_FORGE_CASHBOX_WALLET` | ✓ / ✓ (required in production) | | | ✓ |
+| `FORGE_MULTISIG_VAULT` | | | ✓ | ✓ |
+| `FORGE_METEORA_REFERRAL_ACCOUNT`, `FORGE_PLATFORM_FEE_WALLET`, `FORGE_JUPITER_REFERRAL_ACCOUNT` | | ✓ as `NEXT_PUBLIC_*` twins | ✓ (injects the public twins) | ✓ |
+| `NEXT_PUBLIC_POOL_CONFIG_KEY`, `NEXT_PUBLIC_R2_PUBLIC_URL`, `NEXT_PUBLIC_SITE_NAME` | | ✓ | ✓ (injected) | |
+| `JUPITER_API_KEY` | ✓ | | | ✓ |
+| `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET`, `R2_PUBLIC_URL` | ✓ (presigned uploads) | | | |
+| `CLIENTS_DOMAIN` | ✓ (coin metadata, previews) | | ✓ | |
+| `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY(_PATH)`, `GITHUB_ORG`, `GITHUB_PACKAGES_TOKEN` | | | ✓ | |
 | `VERCEL_TOKEN`, `VERCEL_TEAM_ID` | | | ✓ | |
 | `SIGNER_URL`, `SIGNER_HMAC_SECRET` | | | ✓ | ✓ |
-| `SIGNER_KEYSTORE_PASSPHRASE` | | | | ✓ |
+| `SIGNER_KEYSTORE_PASSPHRASE`, `SIGNER_KEYSTORE_DIR`, `SIGNER_JOURNAL_DIR`, `SIGNER_ALLOWED_IPS`, `SIGNER_MAX_LAUNCHPADS_PER_DAY` | | | | ✓ |
+| `SIGNER_COIN_METADATA_URL` = `https://<web host>/api/coin-meta/{slug}` (at most 106 bytes once filled) | | | | ✓ |
 | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | | | ✓ | ✓ |
 
-"Injected into Vercel": the builder does not use it itself, it copies the value into the env variables of each client's Vercel project.
+"Injected": the builder does not use the value itself, it writes it into the env variables of each client's Vercel project. Client projects only ever receive public values plus their own relay token (D21). Tuning knobs (rate limits, intervals, caps, budgets) are listed with their defaults in each app's `.env.example`.
 
 **Cashbox**: `FORGE_CASHBOX_WALLET` is a wallet held by the signer (its key is in the keystore, the public address in the env). It receives payments, keeps a small buffer for refunds and transaction fees, and the rest is transferred to the multisig every day. `apps/web` holds no key: refunds are made by the signer, which watches `failed` jobs with `failed_stage = 'build'` and `attempts = 2`.
