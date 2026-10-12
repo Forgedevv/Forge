@@ -76,6 +76,58 @@ describe('app/api/rpc/route', { timeout: 30_000 }, () => {
     expect(loggedText()).not.toContain(FAKE_KEY);
   });
 
+  it('prefers RPC_RELAY_UPSTREAM_URL and logs once which variable it uses, never the URL', async () => {
+    const RELAY_KEY = 'relay-only-key-0123456789abcdef';
+    const RELAY_URL = `https://devnet.helius-rpc.com/?api-key=${RELAY_KEY}`;
+    vi.stubEnv('RPC_RELAY_UPSTREAM_URL', RELAY_URL);
+    const fetchMock = vi.fn(async (url: string, init: RequestInit) => {
+      expect(url).toBe(RELAY_URL);
+      const body = JSON.parse(String(init.body)) as { id: number; method: string };
+      const result = body.method === 'getGenesisHash' ? DEVNET_GENESIS : 4242;
+      return Response.json({ jsonrpc: '2.0', id: body.id, result });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const { POST } = await import('../../../../app/api/rpc/route');
+    expect((await POST(rpcRequest(call('getSlot')))).status).toBe(200);
+    expect((await POST(rpcRequest(call('getSlot')))).status).toBe(200);
+
+    const lines = (console.info as unknown as { mock: { calls: unknown[][] } }).mock.calls
+      .map((c) => String(c[0]))
+      .filter((line) => line.includes('upstream_selected'));
+    expect(lines).toHaveLength(1);
+    expect(JSON.parse(lines[0]!)).toMatchObject({
+      event: 'upstream_selected',
+      upstream: 'RPC_RELAY_UPSTREAM_URL',
+      sharedWithServerRoutes: false,
+    });
+    const logs = loggedText();
+    expect(logs).not.toContain(RELAY_KEY);
+    expect(logs).not.toContain(FAKE_KEY);
+    expect(logs).not.toContain('helius');
+  });
+
+  it('warns at startup in production when the relay shares RPC_URL', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: string, init: RequestInit) => {
+        const body = JSON.parse(String(init.body)) as { id: number; method: string };
+        const result = body.method === 'getGenesisHash' ? DEVNET_GENESIS : 4242;
+        return Response.json({ jsonrpc: '2.0', id: body.id, result });
+      }),
+    );
+    const { POST } = await import('../../../../app/api/rpc/route');
+    await POST(rpcRequest(call('getSlot')));
+    const warned = (console.warn as unknown as { mock: { calls: unknown[][] } }).mock.calls
+      .map((c) => String(c[0]))
+      .filter((line) => line.includes('upstream_selected'));
+    expect(warned).toHaveLength(1);
+    expect(JSON.parse(warned[0]!)).toMatchObject({
+      upstream: 'RPC_URL',
+      sharedWithServerRoutes: true,
+    });
+    expect(loggedText()).not.toContain(FAKE_KEY);
+  });
+
   it('answers 503 without detail on a configuration error, and names only the variable', async () => {
     vi.stubEnv('RPC_URL', `https://mainnet.helius-rpc.com/?api-key=${FAKE_KEY}`);
     const fetchMock = vi.fn();

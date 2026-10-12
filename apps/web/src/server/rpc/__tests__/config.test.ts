@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { CLUSTER_GENESIS_HASH } from '@forge/core';
 import { describe, expect, it } from 'vitest';
-import { readRelayConfig, RelayConfigError } from '../config';
+import { readRelayConfig, RelayConfigError, upstreamSelectionLog } from '../config';
 import { containsSecret, secretFragments } from '../redact';
 import { deriveRelayToken, readServerTokenSecret, verifyRelayToken } from '../server-token';
 import { GENESIS_HASH } from '../upstream';
@@ -66,6 +66,74 @@ describe('readRelayConfig', () => {
     expectConfigError({ ...BASE, RPC_RELAY_TOKEN_SECRET: 'short' }, 'at least 32 bytes');
     expectConfigError({ ...BASE, RPC_RELAY_ANONYMOUS: 'maybe' }, 'RPC_RELAY_ANONYMOUS');
     expectConfigError({ ...BASE, NEXT_PUBLIC_APP_URL: 'nope' }, 'NEXT_PUBLIC_APP_URL');
+  });
+
+  it('uses RPC_URL when RPC_RELAY_UPSTREAM_URL is not set', () => {
+    for (const env of [BASE, { ...BASE, RPC_RELAY_UPSTREAM_URL: '  ' }]) {
+      const config = readRelayConfig(env);
+      expect(config.upstreamUrl).toBe(UPSTREAM_URL);
+      expect(config.upstreamSource).toBe('RPC_URL');
+    }
+  });
+
+  it('prefers RPC_RELAY_UPSTREAM_URL, validated like RPC_URL and https only', () => {
+    const relay = `https://devnet.relay-provider.example/?api-key=${FAKE_KEY}`;
+    const config = readRelayConfig({ ...BASE, RPC_RELAY_UPSTREAM_URL: relay });
+    expect(config.upstreamUrl).toBe(relay);
+    expect(config.upstreamSource).toBe('RPC_RELAY_UPSTREAM_URL');
+    // RPC_URL is not even required then.
+    expect(
+      readRelayConfig({ ...BASE, RPC_URL: '', RPC_RELAY_UPSTREAM_URL: relay }).upstreamSource,
+    ).toBe('RPC_RELAY_UPSTREAM_URL');
+
+    // A set but invalid value is an error, never a silent fallback to RPC_URL.
+    expectConfigError(
+      { ...BASE, RPC_RELAY_UPSTREAM_URL: `http://devnet.example/?api-key=${FAKE_KEY}` },
+      'RPC_RELAY_UPSTREAM_URL must be an https URL',
+    );
+    expectConfigError(
+      { ...BASE, RPC_RELAY_UPSTREAM_URL: `devnet ${FAKE_KEY}` },
+      'RPC_RELAY_UPSTREAM_URL is not a valid URL',
+    );
+    expectConfigError(
+      {
+        ...BASE,
+        RPC_RELAY_UPSTREAM_URL: `https://mainnet.helius-rpc.com/?api-key=${FAKE_KEY}&c=devnet`,
+      },
+      'RPC_RELAY_UPSTREAM_URL host does not look like a devnet endpoint',
+    );
+    expectConfigError(
+      {
+        ...BASE,
+        SOLANA_CLUSTER: 'mainnet-beta',
+        RPC_URL: 'https://mainnet.helius-rpc.com/?api-key=x',
+        RPC_RELAY_UPSTREAM_URL: relay,
+      },
+      'RPC_RELAY_UPSTREAM_URL host looks like a test cluster',
+    );
+    expect(
+      readRelayConfig({
+        ...BASE,
+        SOLANA_CLUSTER: 'mainnet-beta',
+        RPC_URL: 'https://mainnet.helius-rpc.com/?api-key=x',
+        RPC_RELAY_UPSTREAM_URL: 'https://mainnet.relay-provider.example/?api-key=y',
+      }).upstreamSource,
+    ).toBe('RPC_RELAY_UPSTREAM_URL');
+  });
+
+  it('describes the upstream choice by variable name only', () => {
+    expect(upstreamSelectionLog({ upstreamSource: 'RPC_RELAY_UPSTREAM_URL' }, BASE)).toEqual({
+      level: 'info',
+      event: 'upstream_selected',
+      fields: { upstream: 'RPC_RELAY_UPSTREAM_URL', sharedWithServerRoutes: false },
+    });
+    expect(upstreamSelectionLog({ upstreamSource: 'RPC_URL' }, BASE)).toMatchObject({
+      level: 'warn',
+      fields: { upstream: 'RPC_URL', sharedWithServerRoutes: true },
+    });
+    expect(
+      upstreamSelectionLog({ upstreamSource: 'RPC_URL' }, { NODE_ENV: 'development' }).level,
+    ).toBe('info');
   });
 
   it('enables localhost outside production, the token tier and the directory', () => {

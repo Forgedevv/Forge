@@ -14,8 +14,13 @@ import { MIN_SERVER_TOKEN_SECRET_BYTES, readServerTokenSecret } from './server-t
  *
  * Variables:
  * - SOLANA_CLUSTER            devnet (default) or mainnet-beta.
- * - RPC_URL                   upstream provider URL (server only, holds the key). Its host must
- *                             match the cluster; the genesis hash is also checked at runtime.
+ * - RPC_RELAY_UPSTREAM_URL    optional, recommended in production: upstream provider URL of the
+ *                             relay only (server only, holds a key), https, host matching the
+ *                             cluster. A separate key keeps the public relay from spending the
+ *                             quota of the payment and launch routes, which use RPC_URL.
+ * - RPC_URL                   upstream provider URL (server only, holds the key), used by the
+ *                             relay when RPC_RELAY_UPSTREAM_URL is not set. Its host must match
+ *                             the cluster; the genesis hash is also checked at runtime.
  * - NEXT_PUBLIC_APP_URL       the FORGE site; its origin is always allowed.
  * - CLIENTS_DOMAIN            client sites live at https://<slug>.<CLIENTS_DOMAIN>. Optional: when
  *                             absent, only the FORGE site (and localhost outside production) may
@@ -47,10 +52,14 @@ export class RelayConfigError extends Error {
   }
 }
 
+/** Variable the relay's upstream URL was read from (its name only, never the value). */
+export type UpstreamSource = 'RPC_RELAY_UPSTREAM_URL' | 'RPC_URL';
+
 export interface RelayConfig {
   cluster: RelayCluster;
   /** Upstream provider URL. Secret: never log, never return, never put in an error message. */
   upstreamUrl: string;
+  upstreamSource: UpstreamSource;
   /** Origin of the FORGE site (NEXT_PUBLIC_APP_URL), e.g. `https://forge.example`. */
   appOrigin: string | null;
   /** Lower-case domain of the client sites, e.g. `forge-sites.app`, or null. */
@@ -83,32 +92,78 @@ export function readCluster(env: Env): RelayCluster {
 /**
  * The upstream must match the cluster, judged on the HOST (a query string could contain anything):
  * a devnet host contains "devnet"; a mainnet host contains neither "devnet" nor "testnet". The
- * genesis hash is verified at runtime as well (upstream.ts).
+ * genesis hash is verified at runtime as well (upstream.ts). Messages name `name`, never the value.
  */
-export function readUpstreamUrl(env: Env, cluster: RelayCluster): string {
-  const raw = trimmed(env, 'RPC_URL');
-  if (!raw) throw new RelayConfigError('RPC_URL is not set');
+function validateUpstream(
+  name: UpstreamSource,
+  raw: string,
+  cluster: RelayCluster,
+  protocols: readonly string[],
+): string {
   let url: URL;
   try {
     url = new URL(raw);
   } catch {
-    throw new RelayConfigError('RPC_URL is not a valid URL');
+    throw new RelayConfigError(`${name} is not a valid URL`);
   }
-  if (url.protocol !== 'https:' && url.protocol !== 'http:') {
-    throw new RelayConfigError('RPC_URL must be an http(s) URL');
+  if (!protocols.includes(url.protocol)) {
+    throw new RelayConfigError(
+      protocols.length === 1 ? `${name} must be an https URL` : `${name} must be an http(s) URL`,
+    );
   }
   const host = url.hostname.toLowerCase();
   if (cluster === 'devnet' && !host.includes('devnet')) {
     throw new RelayConfigError(
-      'RPC_URL host does not look like a devnet endpoint (SOLANA_CLUSTER)',
+      `${name} host does not look like a devnet endpoint (SOLANA_CLUSTER)`,
     );
   }
   if (cluster === 'mainnet-beta' && (host.includes('devnet') || host.includes('testnet'))) {
     throw new RelayConfigError(
-      'RPC_URL host looks like a test cluster while SOLANA_CLUSTER is mainnet-beta',
+      `${name} host looks like a test cluster while SOLANA_CLUSTER is mainnet-beta`,
     );
   }
   return raw;
+}
+
+/**
+ * Upstream of the relay: RPC_RELAY_UPSTREAM_URL when set (https only), else RPC_URL. A set but
+ * invalid RPC_RELAY_UPSTREAM_URL is an error, never a silent fallback to RPC_URL.
+ */
+export function readUpstream(
+  env: Env,
+  cluster: RelayCluster,
+): { url: string; source: UpstreamSource } {
+  const relay = trimmed(env, 'RPC_RELAY_UPSTREAM_URL');
+  if (relay) {
+    return {
+      url: validateUpstream('RPC_RELAY_UPSTREAM_URL', relay, cluster, ['https:']),
+      source: 'RPC_RELAY_UPSTREAM_URL',
+    };
+  }
+  const raw = trimmed(env, 'RPC_URL');
+  if (!raw) throw new RelayConfigError('RPC_URL is not set');
+  return { url: validateUpstream('RPC_URL', raw, cluster, ['https:', 'http:']), source: 'RPC_URL' };
+}
+
+/** The relay's upstream URL (see readUpstream). */
+export function readUpstreamUrl(env: Env, cluster: RelayCluster): string {
+  return readUpstream(env, cluster).url;
+}
+
+/**
+ * The startup log line naming the upstream variable in use (never its value). Sharing RPC_URL in
+ * production is a warning: relay traffic then spends the quota of the payment routes.
+ */
+export function upstreamSelectionLog(
+  config: Pick<RelayConfig, 'upstreamSource'>,
+  env: Env = process.env,
+) {
+  const shared = config.upstreamSource === 'RPC_URL';
+  return {
+    level: shared && env.NODE_ENV === 'production' ? ('warn' as const) : ('info' as const),
+    event: 'upstream_selected',
+    fields: { upstream: config.upstreamSource, sharedWithServerRoutes: shared },
+  };
 }
 
 function readAppOrigin(env: Env): string | null {
@@ -197,9 +252,11 @@ export function readLimits(env: Env): RelayLimits {
 
 export function readRelayConfig(env: Env = process.env): RelayConfig {
   const cluster = readCluster(env);
+  const upstream = readUpstream(env, cluster);
   return {
     cluster,
-    upstreamUrl: readUpstreamUrl(env, cluster),
+    upstreamUrl: upstream.url,
+    upstreamSource: upstream.source,
     appOrigin: readAppOrigin(env),
     clientsDomain: readClientsDomain(env),
     allowLocalhost: env.NODE_ENV !== 'production',
