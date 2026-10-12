@@ -4,16 +4,18 @@ import {
   DbcReadError,
   FORGE_TOKEN_SETTINGS,
   buildCreatorClaimTx as coreBuildCreatorClaimTx,
-  listCoinsOfConfig,
+  listCoinsOfCreator,
 } from '@forge/core';
 import { forgeConfig } from '../config';
 import { getRelayConnection } from '../trade/connection';
 
 /**
  * LOCKED ZONE. Adapter between the claim UI and `@forge/core`; a thin wrapper:
- *  - `listCoinsOfConfig` (reads.ts) lists the pools of the launchpad config, the adapter keeps the
- *    ones whose `creator` is the connected wallet and reads their claimable creator share from the
- *    `fees` of each coin;
+ *  - `listCoinsOfCreator` (reads.ts) lists the pools created by the connected wallet on this
+ *    launchpad's configs (one `getProgramAccounts` per pool account variant, filtered on the
+ *    creator: the only program scan the FORGE RPC relay accepts; creator and config are checked
+ *    again on the decoded pools, here too); the adapter reads their claimable creator share from
+ *    the `fees` of each coin;
  *  - `buildCreatorClaimTx` (claims.ts) builds the claim with `receiver` = the connected wallet; the
  *    legacy transaction it returns is wrapped in a `VersionedTransaction` for the signing flow, and
  *    the costs the core computed (`summary.costs`: network fee, the coin account rent of a first
@@ -91,19 +93,10 @@ export function createCoreClaimsCore(options: CoreClaimsOptions): ClaimsCore {
       const connection = requireConnection(options);
       if (options.launchpadConfigs.length === 0) return [];
       const owner = new PublicKey(creator);
-      const perConfig = await Promise.all(
-        options.launchpadConfigs.map(async (config) => {
-          try {
-            return await listCoinsOfConfig(connection, new PublicKey(config));
-          } catch (error) {
-            if (error instanceof DbcReadError && error.code === 'config_not_found') return [];
-            throw error;
-          }
-        }),
-      );
-      return perConfig
-        .flat()
-        .filter((coin) => coin.creator.equals(owner))
+      const configs = options.launchpadConfigs.map((config) => new PublicKey(config));
+      const coins = await listCoinsOfCreator(connection, owner, configs);
+      return coins
+        .filter((coin) => coin.creator.equals(owner) && configs.some((c) => c.equals(coin.config)))
         .map((coin) => ({
           pool: coin.pool.toBase58(),
           mint: coin.baseMint.toBase58(),

@@ -4,6 +4,8 @@ import { DYNAMIC_BONDING_CURVE_PROGRAM_ID } from '@meteora-ag/dynamic-bonding-cu
 import { describe, expect, it, vi } from 'vitest';
 import {
   CURVE_PROGRESS_FULL_BPS,
+  DBC_POOL_CONFIG_OFFSET,
+  DBC_POOL_CREATOR_OFFSET,
   DbcReadError,
   PARTNER_POOL_CREATION_FEE_CLAIMED_BIT,
   PROTOCOL_POOL_CREATION_FEE_CLAIMED_BIT,
@@ -14,6 +16,7 @@ import {
   isGraduated,
   isTransientRpcError,
   listCoinsOfConfig,
+  listCoinsOfCreator,
   partnerPoolCreationFeeShare,
   poolCreationFeeStatus,
   readCoin,
@@ -242,6 +245,114 @@ describe('listCoinsOfConfig', () => {
   it('throws config_not_found for an unknown config', async () => {
     const { connection } = mockConnection();
     const err = await listCoinsOfConfig(connection, PublicKey.unique(), noRetry).catch((e) => e);
+    expect((err as DbcReadError).code).toBe('config_not_found');
+  });
+});
+
+describe('listCoinsOfCreator', () => {
+  // The three fixture pools share this creator, each on its own config.
+  const CREATOR = new PublicKey('EARQA94FiunfJeB9ZdQALU2EU4AXLEuwxhMRReZ5Lf2u');
+  /** Account discriminators of `VirtualPool` and `TransferHookPool` (SDK 1.5.13 IDL). */
+  const VIRTUAL_POOL_DISCRIMINATOR = Buffer.from([213, 224, 5, 209, 98, 69, 119, 92]);
+  const TRANSFER_HOOK_POOL_DISCRIMINATOR = Buffer.from([237, 219, 184, 23, 42, 189, 169, 35]);
+
+  it('lists the pools of the creator on the given configs only', async () => {
+    const { connection } = mockConnection();
+    const coins = await listCoinsOfCreator(
+      connection,
+      CREATOR,
+      [key('test1Config'), key('test3Config')],
+      noRetry,
+    );
+    expect(coins.map((c) => c.pool.toBase58())).toEqual(
+      [key('test1Pool'), key('test3Pool')].map((k) => k.toBase58()).sort(),
+    );
+    const test3 = coins.find((c) => c.pool.equals(key('test3Pool')))!;
+    expect(test3.creator.equals(CREATOR)).toBe(true);
+    expect(test3.config.equals(key('test3Config'))).toBe(true);
+    expect(test3.fees.claimable.creator.quote).toBe(10_000_000n);
+  });
+
+  it('sends the getPoolsByCreator query: discriminator at 0, creator at 104, nothing else', async () => {
+    const { connection, getProgramAccounts } = mockConnection();
+    await listCoinsOfCreator(connection, CREATOR, [key('test1Config')], noRetry);
+    expect(DBC_POOL_CREATOR_OFFSET).toBe(104);
+    expect(DBC_POOL_CONFIG_OFFSET).toBe(72);
+    // One query per pool account variant (plain and transfer-hook pools).
+    expect(getProgramAccounts).toHaveBeenCalledTimes(2);
+    const discriminators = getProgramAccounts.mock.calls.map(([programId, config]) => {
+      expect(programId.equals(DYNAMIC_BONDING_CURVE_PROGRAM_ID)).toBe(true);
+      const { filters, ...rest } = config as { filters: Filter[] };
+      // No dataSlice, no dataSize, no encoding override: the relay checks this exact shape.
+      expect(Object.keys(rest).sort()).toEqual(['commitment']);
+      expect(filters).toHaveLength(2);
+      expect(filters[0]).toEqual({ memcmp: { offset: 0, bytes: expect.any(String) } });
+      expect(filters[1]).toEqual({
+        memcmp: { offset: DBC_POOL_CREATOR_OFFSET, bytes: CREATOR.toBase58(), encoding: 'base58' },
+      });
+      return base58Decode(filters[0]!.memcmp!.bytes);
+    });
+    expect(discriminators).toEqual([VIRTUAL_POOL_DISCRIMINATOR, TRANSFER_HOOK_POOL_DISCRIMINATOR]);
+  });
+
+  it('re-checks the creator and the config on the decoded data', async () => {
+    const { connection, getProgramAccounts } = mockConnection();
+    // A wrong answer (relay or provider) hands back every pool, whatever the filters.
+    const all = ['test1Pool', 'test2Pool', 'test3Pool'].map((n) => ({
+      pubkey: key(n),
+      account: accountInfo(fx(n)),
+    }));
+    getProgramAccounts.mockImplementation(async (_programId, config) => {
+      const first = config?.filters?.[0]?.memcmp?.bytes ?? '';
+      return base58Decode(first).equals(VIRTUAL_POOL_DISCRIMINATOR) ? all : [];
+    });
+    const other = PublicKey.unique();
+    expect(await listCoinsOfCreator(connection, other, [key('test1Config')], noRetry)).toEqual([]);
+    const coins = await listCoinsOfCreator(connection, CREATOR, [key('test2Config')], noRetry);
+    expect(coins.map((c) => c.pool.toBase58())).toEqual([key('test2Pool').toBase58()]);
+  });
+
+  it('keeps one entry per pool, sorted by pool address', async () => {
+    const { connection, getProgramAccounts } = mockConnection();
+    const pools = ['test3Pool', 'test1Pool', 'test3Pool'].map((n) => ({
+      pubkey: key(n),
+      account: accountInfo(fx(n)),
+    }));
+    getProgramAccounts.mockResolvedValueOnce(pools).mockResolvedValueOnce([]);
+    const coins = await listCoinsOfCreator(
+      connection,
+      CREATOR,
+      [key('test1Config'), key('test3Config')],
+      noRetry,
+    );
+    const expected = [key('test1Pool'), key('test3Pool')].map((k) => k.toBase58()).sort();
+    expect(coins.map((c) => c.pool.toBase58())).toEqual(expected);
+  });
+
+  it('reads only the configs that have a pool of the creator', async () => {
+    const { connection, getAccountInfoAndContext } = mockConnection();
+    await listCoinsOfCreator(
+      connection,
+      CREATOR,
+      [key('test1Config'), PublicKey.unique(), PublicKey.unique()],
+      noRetry,
+    );
+    const read = getAccountInfoAndContext.mock.calls.map(([address]) => address.toBase58());
+    expect(new Set(read)).toEqual(new Set([key('test1Config').toBase58()]));
+  });
+
+  it('makes no RPC call without a config', async () => {
+    const { connection, getProgramAccounts, getAccountInfoAndContext } = mockConnection();
+    expect(await listCoinsOfCreator(connection, CREATOR, [], noRetry)).toEqual([]);
+    expect(getProgramAccounts).not.toHaveBeenCalled();
+    expect(getAccountInfoAndContext).not.toHaveBeenCalled();
+  });
+
+  it('throws config_not_found when the config of a matching pool is missing', async () => {
+    const { connection } = mockConnection(['test1Pool']);
+    const err = await listCoinsOfCreator(connection, CREATOR, [key('test1Config')], noRetry).catch(
+      (e) => e,
+    );
     expect((err as DbcReadError).code).toBe('config_not_found');
   });
 });

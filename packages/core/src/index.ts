@@ -95,6 +95,8 @@ export {
 export {
   CURVE_PROGRESS_FULL_BPS,
   DBC_MIGRATION_PROGRESS,
+  DBC_POOL_CONFIG_OFFSET,
+  DBC_POOL_CREATOR_OFFSET,
   DbcReadError,
   PROTOCOL_POOL_CREATION_FEE_CLAIMED_BIT,
   READ_COMMITMENT,
@@ -105,6 +107,7 @@ export {
   isGraduated,
   isTransientRpcError,
   listCoinsOfConfig,
+  listCoinsOfCreator,
   poolCreationFeeStatus,
   readCoin,
   retryRpc,
