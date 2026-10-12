@@ -1,13 +1,18 @@
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import pg from 'pg';
+import { loadMigrate } from './migrate-module.js';
 
 const url = process.env.SUPABASE_DB_URL;
 const describeDb = url ? describe : describe.skip;
+// Same TLS policy as the migration script (SUPABASE_DB_CA_FILE), warned about once.
+const pgConfig = url ? (await loadMigrate()).connectionConfig(url) : null;
 
 const connect = async (): Promise<pg.Client> => {
-  if (!url) throw new Error('SUPABASE_DB_URL is required for database integration tests.');
-  const c = new pg.Client({ connectionString: url, ssl: { rejectUnauthorized: false } });
+  if (!url || !pgConfig) {
+    throw new Error('SUPABASE_DB_URL is required for database integration tests.');
+  }
+  const c = new pg.Client(pgConfig);
   await c.connect();
   return c;
 };
