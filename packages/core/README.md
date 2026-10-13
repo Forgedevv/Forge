@@ -43,4 +43,5 @@ provided by the operator in the environment.
 
 ## License
 
-MIT
+UNLICENSED. Copyright (c) 2026 FORGE. All rights reserved: the package is published so FORGE
+launchpads can install it, and no license is granted to use, copy, modify or distribute it.

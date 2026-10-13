@@ -75,7 +75,7 @@ function tarGz(entries: Array<[string, string | Buffer, string?]>): Buffer {
 const GOOD_MANIFEST: Manifest = {
   name: '@forgedevv/core',
   version: '1.2.3',
-  license: 'MIT',
+  license: 'UNLICENSED',
   repository: { url: 'git+https://github.com/Forgedevv/Forge.git' },
   type: 'module',
   main: './dist/index.js',
@@ -126,7 +126,7 @@ describe('publish-core: workspace manifests', () => {
       const pkg = readManifest(dir);
       expect(pkg.private, dir).toBe(true);
       expect(pkg.publishConfig, dir).toEqual({ access: 'public', registry: REGISTRY });
-      expect(pkg.license, dir).toBe('MIT');
+      expect(pkg.license, dir).toBe('UNLICENSED');
       expect(pkg.repository?.url, dir).toBe('git+https://github.com/Forgedevv/Forge.git');
       expect(pkg.type, dir).toBe('module');
       expect(pkg.version, dir).toMatch(/^\d+\.\d+\.\d+$/);
