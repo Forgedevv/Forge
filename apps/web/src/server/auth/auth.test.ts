@@ -105,7 +105,7 @@ describe('sign-in', () => {
 
     expect(message).toMatch(
       new RegExp(
-        `^forge\\.app wants you to sign in with your Solana account: ${wallet.address}\\n\\n` +
+        `^forge\\.app wants you to sign in with your Solana account:\\n${wallet.address}\\n\\n` +
           'Nonce: [0-9a-f]{32}\\nIssued At: 2026-10-07T12:00:00\\.000Z\\n' +
           'Expiration Time: 2026-10-07T12:05:00\\.000Z$',
       ),
@@ -373,6 +373,38 @@ describe('nonce store', () => {
     const good = await verifySignIn({ ...base, signature: signMessage(wallet, issued.message) });
     expect(good).toEqual({ ok: true, wallet: wallet.address });
     expect(buildSignInMessage(issued.challenge)).toBe(issued.message);
+  });
+
+  it('follows the Sign-In With Solana format that wallets parse', () => {
+    // The parser of the SIWS reference implementation (@solana/wallet-standard-util,
+    // parseSignInMessage). Phantom refuses to show a message that starts like SIWS but fails it.
+    const SIWS = new RegExp(
+      '^(?<domain>[^\\n]+?) wants you to sign in with your Solana account:\\n' +
+        '(?<address>[^\\n]+)(?:\\n|$)' +
+        '(?:\\n(?<statement>[\\S\\s]*?)(?:\\n|$))??' +
+        '(?:\\nURI: (?<uri>[^\\n]+))?' +
+        '(?:\\nVersion: (?<version>[^\\n]+))?' +
+        '(?:\\nChain ID: (?<chainId>[^\\n]+))?' +
+        '(?:\\nNonce: (?<nonce>[^\\n]+))?' +
+        '(?:\\nIssued At: (?<issuedAt>[^\\n]+))?' +
+        '(?:\\nExpiration Time: (?<expirationTime>[^\\n]+))?' +
+        '(?:\\nNot Before: (?<notBefore>[^\\n]+))?' +
+        '(?:\\nRequest ID: (?<requestId>[^\\n]+))?' +
+        '(?:\\nResources:(?<resources>(?:\\n- [^\\n]+)*))?' +
+        '\\n*$',
+    );
+    const wallet = newWallet();
+    const now = Math.floor(T0.getTime() / 1000);
+    const issued = issueChallenge(Buffer.from(SESSION_SECRET), wallet.address, 'forge.app', now);
+    const parsed = SIWS.exec(issued.message)?.groups;
+    expect(parsed).toMatchObject({
+      domain: 'forge.app',
+      address: wallet.address,
+      nonce: issued.challenge.nonce,
+      issuedAt: new Date(now * 1000).toISOString(),
+      expirationTime: issued.expiresAt,
+    });
+    expect(parsed?.statement).toBeUndefined();
   });
 });
 

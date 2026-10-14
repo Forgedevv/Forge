@@ -25,9 +25,14 @@ export interface SignInChallenge {
   exp: number;
 }
 
+/**
+ * Sign-In With Solana (SIWS) text: the address goes on its own line, as wallets require. Phantom
+ * refuses to display a message that starts like SIWS but does not follow the format.
+ */
 export function buildSignInMessage(challenge: SignInChallenge): string {
   return (
-    `${challenge.domain} wants you to sign in with your Solana account: ${challenge.wallet}\n` +
+    `${challenge.domain} wants you to sign in with your Solana account:\n` +
+    `${challenge.wallet}\n` +
     `\n` +
     `Nonce: ${challenge.nonce}\n` +
     `Issued At: ${new Date(challenge.iat * 1000).toISOString()}\n` +
