@@ -255,6 +255,44 @@ describe('request building', () => {
       kind: 'invalid_input',
     });
   });
+
+  it('sends raw bytes as they are, with their content type, on every attempt', async () => {
+    const { stub, client } = make([
+      { method: 'POST', path: '/files', times: 1, handler: () => json({}, 503) },
+      { method: 'POST', path: '/files', handler: () => new Response('OK', { status: 200 }) },
+    ]);
+    const data = new Uint8Array([0, 1, 2, 255, 10, 13]);
+    const res = await client.request({
+      method: 'POST',
+      path: '/files',
+      rawBody: { data, contentType: 'application/octet-stream' },
+      headers: { 'x-digest': 'abc' },
+      idempotent: true,
+      allowNonJsonResponse: true,
+    });
+    // A 2xx text answer is accepted when asked for.
+    expect(res).toMatchObject({ status: 200, json: undefined });
+    expect(stub.calls).toHaveLength(2);
+    for (const call of stub.calls) {
+      expect(call.headers['content-type']).toBe('application/octet-stream');
+      expect(call.headers['x-digest']).toBe('abc');
+      expect(call.body).toBeUndefined();
+      expect([...(call.raw ?? [])]).toEqual([0, 1, 2, 255, 10, 13]);
+    }
+  });
+
+  it('refuses a request with both a JSON body and raw bytes', async () => {
+    const { stub, client } = make([]);
+    await expect(
+      client.request({
+        method: 'POST',
+        path: '/files',
+        body: {},
+        rawBody: { data: new Uint8Array(1), contentType: 'application/octet-stream' },
+      }),
+    ).rejects.toMatchObject({ kind: 'invalid_input' });
+    expect(stub.calls).toHaveLength(0);
+  });
 });
 
 describe('helpers', () => {

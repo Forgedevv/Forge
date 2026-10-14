@@ -1,7 +1,8 @@
 /// <reference types="node" />
-import { createHmac } from 'node:crypto';
+import { createHash, createHmac } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import { empty, json, stubFetch, type Route } from './http-mock.js';
+import { gitBlobSha, type CommitTree, type TreeLimits } from './github.js';
+import { empty, json, stubFetch, type RecordedCall, type Route } from './http-mock.js';
 import {
   assertClientsDomain,
   createVercelClient,
@@ -17,6 +18,7 @@ import {
   projectNameForSlug,
   subdomainFor,
   vercelOptionsFromEnv,
+  type DeploymentSource,
   type VercelClient,
 } from './vercel.js';
 
@@ -74,6 +76,97 @@ const deploymentJson = (state: string, over: Record<string, unknown> = {}) => ({
   target: null,
   ...over,
 });
+
+/** Commit deployed by the deployment tests, and another one. */
+const COMMIT = 'c'.repeat(40);
+const OTHER_COMMIT = 'd'.repeat(40);
+const PROJECT = { id: 'prj_123', name: 'lp-moonpad' };
+
+const sha1 = (content: Buffer): string => createHash('sha1').update(content).digest('hex');
+
+interface SourceFile {
+  path: string;
+  content: Buffer;
+  executable?: boolean;
+}
+
+const SITE_FILES: SourceFile[] = [
+  { path: 'package.json', content: Buffer.from('{"name":"lp-moonpad"}\n') },
+  { path: 'src/pages/index.tsx', content: Buffer.from('export default () => null;\n') },
+  { path: 'scripts/check.sh', content: Buffer.from('#!/bin/sh\nexit 0\n'), executable: true },
+];
+
+/** In-memory stand-in for the GitHub client side of a deployment (`DeploymentSource`). */
+function fakeSource(files: SourceFile[] = SITE_FILES, opts: { head?: string | null } = {}) {
+  const calls = {
+    heads: [] as string[],
+    trees: [] as Array<{ repo: string; commitSha: string; limits: Partial<TreeLimits> }>,
+    blobs: [] as string[][],
+  };
+  const byBlob = new Map(files.map((f) => [gitBlobSha(f.content), f.content]));
+  const source: DeploymentSource = {
+    getBranchHead: async (_repo, branch) => {
+      calls.heads.push(branch);
+      return opts.head === undefined ? COMMIT : opts.head;
+    },
+    listCommitTree: async (repo, commitSha, limits = {}): Promise<CommitTree> => {
+      calls.trees.push({ repo, commitSha, limits });
+      return {
+        commitSha,
+        treeSha: 'e'.repeat(40),
+        files: files.map((f) => ({
+          path: f.path,
+          blobSha: gitBlobSha(f.content),
+          size: f.content.byteLength,
+          executable: f.executable === true,
+        })),
+        totalBytes: files.reduce((n, f) => n + f.content.byteLength, 0),
+      };
+    },
+    readBlobs: async (_repo, blobShas) => {
+      calls.blobs.push([...blobShas]);
+      const out = new Map<string, Buffer>();
+      for (const s of blobShas) {
+        const content = byBlob.get(s);
+        if (content) out.set(s, content);
+      }
+      return out;
+    },
+  };
+  return { source, calls };
+}
+
+/** Lookup of an earlier deployment of the same commit: none by default. */
+const noEarlierDeployment: Route = {
+  method: 'GET',
+  path: '/v6/deployments',
+  handler: () => json({ deployments: [], pagination: { count: 0 } }),
+};
+
+const missingFiles = (digests: string[]) =>
+  json({ error: { code: 'missing_files', message: 'Missing files', missing: digests } }, 400);
+
+const uploadRoute: Route = { method: 'POST', path: '/v2/files', handler: () => json({}) };
+
+/** Expected `files` entry of the deployment body for a source file. */
+const fileEntry = (f: SourceFile) => ({
+  file: f.path,
+  sha: sha1(f.content),
+  size: f.content.byteLength,
+  mode: f.executable ? 0o100755 : 0o100644,
+});
+
+const createdDeployment = (over: Record<string, unknown> = {}) =>
+  json(
+    deploymentJson('QUEUED', {
+      projectId: 'prj_123',
+      meta: { githubCommitSha: COMMIT },
+      ...over,
+    }),
+  );
+
+const deploymentPosts = (stub: Harness['stub']): RecordedCall[] =>
+  stub.find('POST', '/v13/deployments');
 
 describe('names, domain and env selection', () => {
   it('derives project names and subdomains from validated slugs', () => {
@@ -399,39 +492,62 @@ describe('ensureProject: git-triggered deployments', () => {
     expect(protectionPatch(stub)).toBeDefined();
   });
 
-  it('keeps deployments explicit: createDeployment still posts a git source', async () => {
-    const { client, stub } = make([
-      { method: 'POST', path: '/v13/deployments', handler: () => json(deploymentJson('QUEUED')) },
-    ]);
-    await client.createDeployment({
-      project: { id: 'prj_123', name: 'lp-moonpad' },
-      repo: 'lp-moonpad',
-      ref: 'main',
-    });
-    expect(stub.find('POST', '/v13/deployments')).toHaveLength(1);
+  it('keeps deployments explicit: createDeployment uploads files, never a git source', async () => {
+    const { source } = fakeSource();
+    const { client, stub } = make(
+      [
+        noEarlierDeployment,
+        { method: 'POST', path: '/v13/deployments', handler: () => createdDeployment() },
+      ],
+      { source },
+    );
+    await client.createDeployment({ project: PROJECT, repo: 'lp-moonpad', ref: 'main' });
+    const posts = deploymentPosts(stub);
+    expect(posts).toHaveLength(1);
+    expect(posts[0]?.body).not.toHaveProperty('gitSource');
+    expect(posts[0]?.body).toHaveProperty('files');
   });
 });
 
 describe('ensureProject', () => {
-  it('creates a project linked to the repo and opens previews to the client', async () => {
+  it('creates a project without a git link and opens previews to the client', async () => {
     const { client, stub } = make([
       {
         method: 'GET',
         path: '/v9/projects/lp-moonpad',
         handler: () => json({ error: { code: 'not_found', message: 'x' } }, 404),
       },
-      { method: 'POST', path: '/v10/projects', handler: () => json(projectJson()) },
-      { method: 'PATCH', path: '/v9/projects/prj_123', handler: () => json(projectJson()) },
-      readBack,
+      {
+        method: 'POST',
+        path: '/v10/projects',
+        handler: () => json(projectJson({ link: undefined })),
+      },
+      {
+        method: 'PATCH',
+        path: '/v9/projects/prj_123',
+        handler: () => json(projectJson({ link: undefined })),
+      },
+      {
+        method: 'GET',
+        path: '/v9/projects/prj_123',
+        handler: () =>
+          json(projectJson({ link: undefined, deploymentPolicy: API_ONLY_DEPLOYMENT_POLICY })),
+      },
     ]);
     const out = await client.ensureProject({ slug: 'moonpad' });
     expect(out.created).toBe(true);
-    expect(out.project).toMatchObject({ id: 'prj_123', linkedRepo: `${ORG}/lp-moonpad` });
+    expect(out.project).toMatchObject({
+      id: 'prj_123',
+      linkedRepo: undefined,
+      gitDeploymentsDisabled: true,
+    });
+    // No `gitRepository`: Vercel never needs access to the GitHub organization.
     expect(stub.find('POST', '/v10/projects')[0]?.body).toEqual({
       name: 'lp-moonpad',
       framework: 'nextjs',
-      gitRepository: { type: 'github', repo: `${ORG}/lp-moonpad` },
     });
+    expect(stub.find('POST', /\/link$/)).toHaveLength(0);
+    expect(policyPatches(stub)).toHaveLength(1);
     expect(protectionPatch(stub)?.body).toEqual({ ssoProtection: null });
   });
 
@@ -482,22 +598,39 @@ describe('ensureProject', () => {
     });
   });
 
-  it('links an existing project that has no git repository', async () => {
+  it('reuses an existing project that has no git repository without linking it', async () => {
     const { client, stub } = make([
       {
         method: 'GET',
         path: '/v9/projects/lp-moonpad',
         handler: () => json(projectJson({ link: null })),
       },
-      { method: 'POST', path: '/v9/projects/prj_123/link', handler: () => json(projectJson()) },
       { method: 'PATCH', path: '/v9/projects/prj_123', handler: () => json(projectJson()) },
-      readBack,
+      {
+        method: 'GET',
+        path: '/v9/projects/prj_123',
+        handler: () =>
+          json(projectJson({ link: null, deploymentPolicy: API_ONLY_DEPLOYMENT_POLICY })),
+      },
     ]);
-    await client.ensureProject({ slug: 'moonpad' });
-    expect(stub.find('POST', '/v9/projects/prj_123/link')[0]?.body).toEqual({
-      type: 'github',
-      repo: `${ORG}/lp-moonpad`,
-    });
+    const out = await client.ensureProject({ slug: 'moonpad' });
+    expect(out).toMatchObject({ created: false, project: { linkedRepo: undefined } });
+    expect(stub.find('POST', /\/link$/)).toHaveLength(0);
+    expect(protectionPatch(stub)).toBeDefined();
+  });
+
+  it('still reuses a project created earlier with a link to its own repository', async () => {
+    const { client, stub } = make([
+      {
+        method: 'GET',
+        path: '/v9/projects/lp-moonpad',
+        handler: () => json(projectJson({ deploymentPolicy: API_ONLY_DEPLOYMENT_POLICY })),
+      },
+      { method: 'PATCH', path: '/v9/projects/prj_123', handler: () => json(projectJson()) },
+    ]);
+    const out = await client.ensureProject({ slug: 'moonpad' });
+    expect(out.project.linkedRepo).toBe(`${ORG}/lp-moonpad`);
+    expect(stub.find('POST', /./)).toHaveLength(0);
   });
 
   it('refuses a project linked to another repository', async () => {
@@ -513,7 +646,7 @@ describe('ensureProject', () => {
     });
   });
 
-  it('maps a missing Vercel GitHub integration to a typed error', async () => {
+  it('maps a refused project creation to a typed error', async () => {
     const { client } = make([
       {
         method: 'GET',
@@ -524,15 +657,7 @@ describe('ensureProject', () => {
         method: 'POST',
         path: '/v10/projects',
         handler: () =>
-          json(
-            {
-              error: {
-                code: 'bad_request',
-                message: 'To link a GitHub repository, you need to install the Vercel GitHub App.',
-              },
-            },
-            400,
-          ),
+          json({ error: { code: 'bad_request', message: 'Invalid request: name' } }, 400),
       },
     ]);
     await expect(client.ensureProject({ slug: 'moonpad' })).rejects.toMatchObject({
@@ -714,136 +839,773 @@ describe('setEnv', () => {
   });
 });
 
-describe('deployments', () => {
-  it('creates a preview deployment from a git ref and commit', async () => {
-    const sha = 'a'.repeat(40);
-    const { client, stub } = make([
-      { method: 'POST', path: '/v13/deployments', handler: () => json(deploymentJson('QUEUED')) },
-    ]);
+describe('deployments from files', () => {
+  const [pkg, page, script] = SITE_FILES as [SourceFile, SourceFile, SourceFile];
+
+  it('creates a preview from the exact files of the commit, uploading only what Vercel lacks', async () => {
+    const { source, calls } = fakeSource();
+    let posts = 0;
+    const { client, stub } = make(
+      [
+        noEarlierDeployment,
+        {
+          method: 'POST',
+          path: '/v13/deployments',
+          handler: () => (++posts === 1 ? missingFiles([sha1(page.content)]) : createdDeployment()),
+        },
+        uploadRoute,
+      ],
+      { source },
+    );
     const d = await client.createDeployment({
-      project: { id: 'prj_123', name: 'lp-moonpad' },
+      project: PROJECT,
       repo: 'lp-moonpad',
       ref: 'forge/job1',
-      sha,
+      sha: COMMIT,
     });
     expect(d).toMatchObject({
       id: 'dpl_1',
       url: 'https://lp-moonpad-abc123-forge.vercel.app',
       readyState: 'QUEUED',
       target: 'preview',
+      commitSha: COMMIT,
     });
-    const call = stub.calls[0];
-    expect(call?.query.get('teamId')).toBe(TEAM);
-    expect(call?.query.get('forceNew')).toBeNull();
-    expect(call?.body).toEqual({
+
+    // The exact tree of that commit, read from the client repo.
+    expect(calls.trees).toEqual([
+      { repo: 'lp-moonpad', commitSha: COMMIT, limits: expect.any(Object) as unknown },
+    ]);
+    expect(calls.heads).toEqual([]);
+
+    // Created twice: the first answer lists the missing file, which alone is uploaded.
+    const created = deploymentPosts(stub);
+    expect(created).toHaveLength(2);
+    const expectedBody = {
       name: 'lp-moonpad',
       project: 'prj_123',
-      gitSource: { type: 'github', org: ORG, repo: 'lp-moonpad', ref: 'forge/job1', sha },
-    });
+      files: SITE_FILES.map(fileEntry),
+      projectSettings: { framework: 'nextjs' },
+      meta: {
+        githubCommitSha: COMMIT,
+        githubCommitRef: 'forge/job1',
+        githubRepo: 'lp-moonpad',
+        githubOrg: ORG,
+      },
+    };
+    expect(created[0]?.body).toEqual(expectedBody);
+    expect(created[1]?.body).toEqual(expectedBody);
+    expect(created[0]?.query.get('teamId')).toBe(TEAM);
+    // Reuse is decided per commit by the lookup, never by Vercel's own deduplication.
+    expect(created[0]?.query.get('forceNew')).toBe('1');
+    expect(created[0]?.query.get('skipAutoDetectionConfirmation')).toBe('1');
+
+    const uploads = stub.find('POST', '/v2/files');
+    expect(uploads).toHaveLength(1);
+    const upload = uploads[0]!;
+    expect(upload.headers['x-vercel-digest']).toBe(sha1(page.content));
+    expect(upload.headers['content-length']).toBe(String(page.content.byteLength));
+    expect(upload.headers['content-type']).toBe('application/octet-stream');
+    expect(upload.headers['authorization']).toBe(`Bearer ${TOKEN}`);
+    expect(upload.query.get('teamId')).toBe(TEAM);
+    expect(Buffer.from(upload.raw ?? new Uint8Array()).equals(page.content)).toBe(true);
+    // Upload, then the second creation.
+    const order = stub.calls.map((c) => `${c.method} ${c.path}`);
+    expect(order).toEqual([
+      'GET /v6/deployments',
+      'POST /v13/deployments',
+      'POST /v2/files',
+      'POST /v13/deployments',
+    ]);
   });
 
-  it('can target production directly', async () => {
-    const { client, stub } = make([
-      {
-        method: 'POST',
-        path: '/v13/deployments',
-        handler: () => json(deploymentJson('QUEUED', { target: 'production' })),
-      },
-    ]);
-    const d = await client.createDeployment({
-      project: { id: 'prj_123', name: 'lp-moonpad' },
+  it('looks for an earlier deployment of the same commit, project and target first', async () => {
+    const { source } = fakeSource();
+    const { client, stub } = make(
+      [
+        noEarlierDeployment,
+        { method: 'POST', path: '/v13/deployments', handler: () => createdDeployment() },
+      ],
+      { source },
+    );
+    await client.createDeployment({
+      project: PROJECT,
       repo: 'lp-moonpad',
       ref: 'main',
-      target: 'production',
+      sha: COMMIT,
     });
-    expect(d.target).toBe('production');
-    expect((stub.calls[0]?.body as Record<string, unknown>)['target']).toBe('production');
+    const lookup = stub.find('GET', '/v6/deployments')[0]!;
+    expect(lookup.query.get('projectId')).toBe('prj_123');
+    expect(lookup.query.get('target')).toBe('preview');
+    expect(lookup.query.get('meta-githubCommitSha')).toBe(COMMIT);
+    expect(lookup.query.get('teamId')).toBe(TEAM);
+    // Vercel already had every file: nothing uploaded, created once.
+    expect(stub.find('POST', '/v2/files')).toHaveLength(0);
+    expect(deploymentPosts(stub)).toHaveLength(1);
   });
 
   it('regression: stages production deployments (domains only move with the explicit promotion)', async () => {
-    const sha = 'b'.repeat(40);
-    const { client, stub } = make([
-      {
-        method: 'POST',
-        path: '/v13/deployments',
-        handler: () =>
-          json(deploymentJson('QUEUED', { target: 'production', autoAssignCustomDomains: false })),
-      },
-    ]);
-    await client.createDeployment({
-      project: { id: 'prj_123', name: 'lp-moonpad' },
+    const { source } = fakeSource();
+    const { client, stub } = make(
+      [
+        noEarlierDeployment,
+        {
+          method: 'POST',
+          path: '/v13/deployments',
+          handler: () =>
+            createdDeployment({ target: 'production', autoAssignCustomDomains: false }),
+        },
+      ],
+      { source },
+    );
+    const d = await client.createDeployment({
+      project: PROJECT,
       repo: 'lp-moonpad',
       ref: 'main',
-      sha,
+      sha: COMMIT,
       target: 'production',
     });
-    expect(stub.calls[0]?.body).toEqual({
+    expect(d).toMatchObject({ target: 'production', commitSha: COMMIT });
+    expect(deploymentPosts(stub)[0]?.body).toEqual({
       name: 'lp-moonpad',
       project: 'prj_123',
       target: 'production',
       autoAssignCustomDomains: false,
-      gitSource: { type: 'github', org: ORG, repo: 'lp-moonpad', ref: 'main', sha },
+      files: SITE_FILES.map(fileEntry),
+      projectSettings: { framework: 'nextjs' },
+      meta: {
+        githubCommitSha: COMMIT,
+        githubCommitRef: 'main',
+        githubRepo: 'lp-moonpad',
+        githubOrg: ORG,
+      },
     });
+    expect(stub.find('GET', '/v6/deployments')[0]?.query.get('target')).toBe('production');
     // Nothing else: no alias or promotion is requested by the creation.
-    expect(stub.calls).toHaveLength(1);
+    expect(stub.calls.map((c) => `${c.method} ${c.path}`)).toEqual([
+      'GET /v6/deployments',
+      'POST /v13/deployments',
+    ]);
   });
 
   it('cancels and refuses a production deployment that Vercel did not stage', async () => {
-    const { client, stub } = make([
-      {
-        method: 'POST',
-        path: '/v13/deployments',
-        handler: () =>
-          json(deploymentJson('BUILDING', { target: 'production', autoAssignCustomDomains: true })),
-      },
-      { method: 'PATCH', path: '/v12/deployments/dpl_1/cancel', handler: () => json({}) },
-    ]);
+    const { source } = fakeSource();
+    const { client, stub } = make(
+      [
+        noEarlierDeployment,
+        {
+          method: 'POST',
+          path: '/v13/deployments',
+          handler: () =>
+            createdDeployment({
+              readyState: 'BUILDING',
+              target: 'production',
+              autoAssignCustomDomains: true,
+            }),
+        },
+        { method: 'PATCH', path: '/v12/deployments/dpl_1/cancel', handler: () => json({}) },
+      ],
+      { source },
+    );
     await expect(
       client.createDeployment({
-        project: { id: 'prj_123', name: 'lp-moonpad' },
+        project: PROJECT,
         repo: 'lp-moonpad',
         ref: 'main',
+        sha: COMMIT,
         target: 'production',
       }),
     ).rejects.toMatchObject({ kind: 'unexpected', message: expect.stringMatching(/not staged/) });
     expect(stub.find('PATCH', '/v12/deployments/dpl_1/cancel')).toHaveLength(1);
   });
 
-  it('accepts the existing finished deployment of a commit on a replay', async () => {
-    // Created before staging was used: already READY, nothing more can happen to it.
-    const { client, stub } = make([
-      {
-        method: 'POST',
-        path: '/v13/deployments',
-        handler: () =>
-          json(deploymentJson('READY', { target: 'production', autoAssignCustomDomains: true })),
-      },
-    ]);
+  it('accepts a finished deployment Vercel returns for identical files', async () => {
+    // Already READY: nothing more can happen to it, the promotion stays explicit.
+    const { source } = fakeSource();
+    const { client, stub } = make(
+      [
+        noEarlierDeployment,
+        {
+          method: 'POST',
+          path: '/v13/deployments',
+          handler: () =>
+            createdDeployment({
+              readyState: 'READY',
+              target: 'production',
+              autoAssignCustomDomains: true,
+            }),
+        },
+      ],
+      { source },
+    );
     const d = await client.createDeployment({
-      project: { id: 'prj_123', name: 'lp-moonpad' },
+      project: PROJECT,
       repo: 'lp-moonpad',
       ref: 'main',
+      sha: COMMIT,
       target: 'production',
     });
     expect(d.readyState).toBe('READY');
-    expect(stub.calls).toHaveLength(1);
+    expect(stub.find('PATCH', /cancel/)).toHaveLength(0);
   });
 
-  it('validates inputs', async () => {
+  it('idempotent: reuses a deployment of the same commit and target that has not failed', async () => {
+    const { source, calls } = fakeSource();
+    const { client, stub } = make(
+      [
+        {
+          method: 'GET',
+          path: '/v6/deployments',
+          handler: () =>
+            json({
+              deployments: [
+                // Newest first: a failed attempt, one of another commit, then the one to reuse.
+                { uid: 'dpl_err', readyState: 'ERROR', meta: { githubCommitSha: COMMIT } },
+                { uid: 'dpl_old', readyState: 'READY', meta: { githubCommitSha: OTHER_COMMIT } },
+                { uid: 'dpl_9', readyState: 'BUILDING', meta: { githubCommitSha: COMMIT } },
+              ],
+            }),
+        },
+        {
+          method: 'GET',
+          path: '/v13/deployments/dpl_9',
+          handler: () =>
+            json(
+              deploymentJson('BUILDING', {
+                id: 'dpl_9',
+                projectId: 'prj_123',
+                meta: { githubCommitSha: COMMIT },
+              }),
+            ),
+        },
+      ],
+      { source },
+    );
+    const d = await client.createDeployment({
+      project: PROJECT,
+      repo: 'lp-moonpad',
+      ref: 'forge/job1',
+      sha: COMMIT,
+    });
+    expect(d).toMatchObject({ id: 'dpl_9', commitSha: COMMIT, readyState: 'BUILDING' });
+    expect(deploymentPosts(stub)).toHaveLength(0);
+    expect(stub.find('POST', '/v2/files')).toHaveLength(0);
+    expect(stub.find('GET', /\/v13\/deployments\/dpl_(err|old)$/)).toHaveLength(0);
+    // Nothing read from GitHub either.
+    expect(calls.trees).toEqual([]);
+    expect(calls.blobs).toEqual([]);
+  });
+
+  it('never reuses a deployment of another project or commit, a failed one or an unstaged one', async () => {
+    const candidates: Record<string, Record<string, unknown>> = {
+      dpl_a: deploymentJson('READY', {
+        id: 'dpl_a',
+        projectId: 'prj_other',
+        target: 'production',
+        meta: { githubCommitSha: COMMIT },
+      }),
+      dpl_b: deploymentJson('READY', {
+        id: 'dpl_b',
+        projectId: 'prj_123',
+        target: 'production',
+        meta: { githubCommitSha: OTHER_COMMIT },
+      }),
+      dpl_c: deploymentJson('CANCELED', {
+        id: 'dpl_c',
+        projectId: 'prj_123',
+        target: 'production',
+        meta: { githubCommitSha: COMMIT },
+      }),
+      dpl_d: deploymentJson('BUILDING', {
+        id: 'dpl_d',
+        projectId: 'prj_123',
+        target: 'production',
+        autoAssignCustomDomains: true,
+        meta: { githubCommitSha: COMMIT },
+      }),
+      dpl_e: deploymentJson('READY', {
+        id: 'dpl_e',
+        projectId: 'prj_123',
+        target: null,
+        meta: { githubCommitSha: COMMIT },
+      }),
+      dpl_f: deploymentJson('READY', { id: 'dpl_f', target: 'production', meta: {} }),
+    };
+    const { source } = fakeSource();
+    const { client, stub } = make(
+      [
+        {
+          method: 'GET',
+          path: '/v6/deployments',
+          // The list carries no meta: every candidate is checked on its full record.
+          handler: () => json({ deployments: Object.keys(candidates).map((uid) => ({ uid })) }),
+        },
+        {
+          method: 'GET',
+          path: /^\/v13\/deployments\/dpl_[a-f]$/,
+          handler: (call) => json(candidates[call.path.split('/').pop()!]),
+        },
+        {
+          method: 'POST',
+          path: '/v13/deployments',
+          handler: () =>
+            createdDeployment({
+              id: 'dpl_new',
+              target: 'production',
+              autoAssignCustomDomains: false,
+            }),
+        },
+      ],
+      { source },
+    );
+    const d = await client.createDeployment({
+      project: PROJECT,
+      repo: 'lp-moonpad',
+      ref: 'main',
+      sha: COMMIT,
+      target: 'production',
+    });
+    expect(d.id).toBe('dpl_new');
+    expect(deploymentPosts(stub)).toHaveLength(1);
+  });
+
+  it('falls back to an unfiltered lookup when Vercel refuses the metadata filter', async () => {
+    const { source } = fakeSource();
+    const { client, stub } = make(
+      [
+        {
+          method: 'GET',
+          path: '/v6/deployments',
+          handler: (call) =>
+            call.query.has('meta-githubCommitSha')
+              ? json({ error: { code: 'bad_request', message: 'Invalid query' } }, 400)
+              : json({
+                  deployments: [
+                    { uid: 'dpl_9', readyState: 'READY', meta: { githubCommitSha: COMMIT } },
+                  ],
+                }),
+        },
+        {
+          method: 'GET',
+          path: '/v13/deployments/dpl_9',
+          handler: () =>
+            json(
+              deploymentJson('READY', {
+                id: 'dpl_9',
+                projectId: 'prj_123',
+                meta: { githubCommitSha: COMMIT },
+              }),
+            ),
+        },
+      ],
+      { source },
+    );
+    const d = await client.createDeployment({
+      project: PROJECT,
+      repo: 'lp-moonpad',
+      ref: 'main',
+      sha: COMMIT,
+    });
+    expect(d.id).toBe('dpl_9');
+    const lookups = stub.find('GET', '/v6/deployments');
+    expect(lookups).toHaveLength(2);
+    expect(lookups[1]?.query.get('projectId')).toBe('prj_123');
+    expect(deploymentPosts(stub)).toHaveLength(0);
+  });
+
+  it('does not replay a creation blindly after an ambiguous failure', async () => {
+    const { source } = fakeSource();
+    let created = false;
+    const { client, stub } = make(
+      [
+        {
+          method: 'GET',
+          path: '/v6/deployments',
+          handler: () =>
+            json({
+              deployments: created
+                ? [{ uid: 'dpl_1', readyState: 'QUEUED', meta: { githubCommitSha: COMMIT } }]
+                : [],
+            }),
+        },
+        {
+          method: 'POST',
+          path: '/v13/deployments',
+          handler: () => {
+            // Vercel created it, but the answer was lost.
+            created = true;
+            return json({ error: { code: 'internal', message: 'oops' } }, 502);
+          },
+        },
+        {
+          method: 'GET',
+          path: '/v13/deployments/dpl_1',
+          handler: () => createdDeployment(),
+        },
+      ],
+      { source },
+    );
+    const d = await client.createDeployment({
+      project: PROJECT,
+      repo: 'lp-moonpad',
+      ref: 'main',
+      sha: COMMIT,
+    });
+    expect(d.id).toBe('dpl_1');
+    expect(deploymentPosts(stub)).toHaveLength(1);
+    expect(stub.find('GET', '/v6/deployments')).toHaveLength(2);
+  });
+
+  it('tries once more after an ambiguous failure that created nothing', async () => {
+    const { source } = fakeSource();
+    let posts = 0;
+    const { client, stub } = make(
+      [
+        noEarlierDeployment,
+        {
+          method: 'POST',
+          path: '/v13/deployments',
+          handler: () =>
+            ++posts === 1 ? json({ error: { message: 'down' } }, 503) : createdDeployment(),
+        },
+      ],
+      { source },
+    );
+    await expect(
+      client.createDeployment({ project: PROJECT, repo: 'lp-moonpad', ref: 'main', sha: COMMIT }),
+    ).resolves.toMatchObject({ id: 'dpl_1' });
+    expect(deploymentPosts(stub)).toHaveLength(2);
+
+    // Only once: a second ambiguous failure is reported.
+    posts = 0;
+    const failing = make(
+      [
+        noEarlierDeployment,
+        {
+          method: 'POST',
+          path: '/v13/deployments',
+          handler: () => json({ error: { message: 'down' } }, 503),
+        },
+      ],
+      { source },
+    );
+    await expect(
+      failing.client.createDeployment({
+        project: PROJECT,
+        repo: 'lp-moonpad',
+        ref: 'main',
+        sha: COMMIT,
+      }),
+    ).rejects.toMatchObject({ kind: 'server', status: 503 });
+    expect(deploymentPosts(failing.stub)).toHaveLength(2);
+  });
+
+  it('uploads each missing file once, with bounded concurrency, then retries once', async () => {
+    const files: SourceFile[] = Array.from({ length: 20 }, (_, i) => ({
+      path: `public/f${i}.txt`,
+      content: Buffer.from(`file ${i}\n`),
+    }));
+    // Same content at two paths: one upload.
+    files.push({ path: 'public/copy.txt', content: Buffer.from('file 0\n') });
+    const { source } = fakeSource(files);
+    let posts = 0;
+    let inflight = 0;
+    let peak = 0;
+    const { client, stub } = make(
+      [
+        noEarlierDeployment,
+        {
+          method: 'POST',
+          path: '/v13/deployments',
+          handler: () =>
+            ++posts === 1
+              ? missingFiles([...new Set(files.map((f) => sha1(f.content)))])
+              : createdDeployment(),
+        },
+        {
+          method: 'POST',
+          path: '/v2/files',
+          handler: async () => {
+            inflight++;
+            peak = Math.max(peak, inflight);
+            await new Promise((r) => setTimeout(r, 2));
+            inflight--;
+            return json({});
+          },
+        },
+      ],
+      { source, uploadConcurrency: 4 },
+    );
+    await client.createDeployment({
+      project: PROJECT,
+      repo: 'lp-moonpad',
+      ref: 'main',
+      sha: COMMIT,
+    });
+    const uploads = stub.find('POST', '/v2/files');
+    expect(uploads).toHaveLength(20);
+    expect(new Set(uploads.map((u) => u.headers['x-vercel-digest'])).size).toBe(20);
+    expect(peak).toBeGreaterThan(1);
+    expect(peak).toBeLessThanOrEqual(4);
+    expect(deploymentPosts(stub)).toHaveLength(2);
+  });
+
+  it('retries a file upload on a server error (content-addressed, safe to replay)', async () => {
+    const { source } = fakeSource();
+    let posts = 0;
+    let uploads = 0;
+    const { client, stub, sleeps } = make(
+      [
+        noEarlierDeployment,
+        {
+          method: 'POST',
+          path: '/v13/deployments',
+          handler: () => (++posts === 1 ? missingFiles([sha1(pkg.content)]) : createdDeployment()),
+        },
+        {
+          method: 'POST',
+          path: '/v2/files',
+          handler: () => (++uploads === 1 ? json({ error: { message: 'busy' } }, 500) : json({})),
+        },
+      ],
+      { source },
+    );
+    await client.createDeployment({
+      project: PROJECT,
+      repo: 'lp-moonpad',
+      ref: 'main',
+      sha: COMMIT,
+    });
+    expect(stub.find('POST', '/v2/files')).toHaveLength(2);
+    expect(sleeps.length).toBeGreaterThan(0);
+  });
+
+  it('fails clearly when Vercel still reports missing files after the upload', async () => {
+    const { source } = fakeSource();
+    const { client, stub } = make(
+      [
+        noEarlierDeployment,
+        {
+          method: 'POST',
+          path: '/v13/deployments',
+          handler: () => missingFiles([sha1(script.content)]),
+        },
+        uploadRoute,
+      ],
+      { source },
+    );
+    await expect(
+      client.createDeployment({ project: PROJECT, repo: 'lp-moonpad', ref: 'main', sha: COMMIT }),
+    ).rejects.toMatchObject({
+      kind: 'unexpected',
+      apiCode: 'missing_files',
+      message: expect.stringMatching(/still/) as unknown,
+    });
+    expect(deploymentPosts(stub)).toHaveLength(2);
+    expect(stub.find('POST', '/v2/files')).toHaveLength(1);
+  });
+
+  it('refuses to upload a file Vercel asks for that is not part of the deployment', async () => {
+    const { source } = fakeSource();
+    const { client, stub } = make(
+      [
+        noEarlierDeployment,
+        {
+          method: 'POST',
+          path: '/v13/deployments',
+          handler: () => missingFiles(['f'.repeat(40)]),
+        },
+        uploadRoute,
+      ],
+      { source },
+    );
+    await expect(
+      client.createDeployment({ project: PROJECT, repo: 'lp-moonpad', ref: 'main', sha: COMMIT }),
+    ).rejects.toMatchObject({ kind: 'invalid_response' });
+    expect(stub.find('POST', '/v2/files')).toHaveLength(0);
+  });
+
+  it('surfaces any other refusal of the creation as a typed error', async () => {
+    const { source } = fakeSource();
+    const { client } = make(
+      [
+        noEarlierDeployment,
+        {
+          method: 'POST',
+          path: '/v13/deployments',
+          handler: () =>
+            json({ error: { code: 'bad_request', message: `Invalid files, token ${TOKEN}` } }, 400),
+        },
+      ],
+      { source },
+    );
+    const err = (await client
+      .createDeployment({ project: PROJECT, repo: 'lp-moonpad', ref: 'main', sha: COMMIT })
+      .catch((e: unknown) => e)) as Error;
+    expect(err).toMatchObject({ kind: 'validation', status: 400, apiCode: 'bad_request' });
+    expect(err.message).not.toContain(TOKEN.slice(4));
+  });
+
+  it('reads each file from GitHub once per client: later deployments reuse the digests', async () => {
+    const changed: SourceFile = { path: 'src/pages/index.tsx', content: Buffer.from('changed\n') };
+    const first = fakeSource();
+    const second = fakeSource([pkg, changed, script]);
+    let source: DeploymentSource = first.source;
+    const proxy: DeploymentSource = {
+      getBranchHead: (r, b) => source.getBranchHead(r, b),
+      listCommitTree: (r, s, l) => source.listCommitTree(r, s, l),
+      readBlobs: (r, b, o) => source.readBlobs(r, b, o),
+    };
+    let posts = 0;
+    const { client, stub } = make(
+      [
+        noEarlierDeployment,
+        {
+          method: 'POST',
+          path: '/v13/deployments',
+          handler: () => {
+            posts++;
+            // First commit: Vercel has nothing. Second commit: it lacks the package.json (an
+            // expired upload) and the changed page.
+            if (posts === 1) return missingFiles(SITE_FILES.map((f) => sha1(f.content)));
+            if (posts === 3) return missingFiles([sha1(pkg.content), sha1(changed.content)]);
+            return createdDeployment({
+              meta: { githubCommitSha: posts === 2 ? COMMIT : OTHER_COMMIT },
+            });
+          },
+        },
+        uploadRoute,
+      ],
+      { source: proxy },
+    );
+    await client.createDeployment({
+      project: PROJECT,
+      repo: 'lp-moonpad',
+      ref: 'main',
+      sha: COMMIT,
+    });
+    expect(first.calls.blobs).toHaveLength(1);
+    expect(new Set(first.calls.blobs[0])).toEqual(
+      new Set(SITE_FILES.map((f) => gitBlobSha(f.content))),
+    );
+
+    source = second.source;
+    await client.createDeployment({
+      project: PROJECT,
+      repo: 'lp-moonpad',
+      ref: 'main',
+      sha: OTHER_COMMIT,
+    });
+    // The changed page first (unknown digest), then the package.json Vercel asked for.
+    expect(second.calls.blobs).toEqual([[gitBlobSha(changed.content)], [gitBlobSha(pkg.content)]]);
+    const uploads = stub.find('POST', '/v2/files').slice(3);
+    expect(uploads.map((u) => u.headers['x-vercel-digest']).sort()).toEqual(
+      [sha1(pkg.content), sha1(changed.content)].sort(),
+    );
+  });
+
+  it('resolves the ref to its head commit when no sha is given', async () => {
+    const { source, calls } = fakeSource();
+    const { client, stub } = make(
+      [
+        noEarlierDeployment,
+        { method: 'POST', path: '/v13/deployments', handler: () => createdDeployment() },
+      ],
+      { source },
+    );
+    const d = await client.createDeployment({ project: PROJECT, repo: 'lp-moonpad', ref: 'main' });
+    expect(d.commitSha).toBe(COMMIT);
+    expect(calls.heads).toEqual(['main']);
+    expect(calls.trees[0]?.commitSha).toBe(COMMIT);
+    expect((deploymentPosts(stub)[0]?.body as { meta: unknown }).meta).toMatchObject({
+      githubCommitSha: COMMIT,
+      githubCommitRef: 'main',
+    });
+
+    const missing = fakeSource(SITE_FILES, { head: null });
+    const none = make([], { source: missing.source });
+    await expect(
+      none.client.createDeployment({ project: PROJECT, repo: 'lp-moonpad', ref: 'forge/gone' }),
+    ).rejects.toMatchObject({ kind: 'not_found' });
+    expect(none.stub.calls).toHaveLength(0);
+  });
+
+  it('refuses a deployment that reports another commit than the one uploaded', async () => {
+    const { source } = fakeSource();
+    const { client } = make(
+      [
+        noEarlierDeployment,
+        {
+          method: 'POST',
+          path: '/v13/deployments',
+          handler: () => createdDeployment({ meta: { githubCommitSha: OTHER_COMMIT } }),
+        },
+      ],
+      { source },
+    );
+    await expect(
+      client.createDeployment({ project: PROJECT, repo: 'lp-moonpad', ref: 'main', sha: COMMIT }),
+    ).rejects.toMatchObject({ kind: 'unexpected', message: expect.stringMatching(/commit/) });
+  });
+
+  it('enforces the file count and size limits before reading or uploading anything', async () => {
+    const big: SourceFile[] = [
+      ...SITE_FILES,
+      { path: 'public/big.bin', content: Buffer.alloc(2048, 1) },
+    ];
+    for (const [limits, message] of [
+      [{ maxFiles: 3 }, /too many files/],
+      [{ maxTotalBytes: 1024 }, /too large/],
+      [{ maxFileBytes: 1024 }, /public\/big\.bin/],
+    ] as const) {
+      const { source, calls } = fakeSource(big);
+      const { client, stub } = make([noEarlierDeployment], {
+        source,
+        deploymentLimits: limits,
+      });
+      await expect(
+        client.createDeployment({ project: PROJECT, repo: 'lp-moonpad', ref: 'main', sha: COMMIT }),
+      ).rejects.toMatchObject({ kind: 'invalid_input', message: expect.stringMatching(message) });
+      // The limits also reach the GitHub listing.
+      expect(calls.trees[0]?.limits).toMatchObject(limits);
+      expect(calls.blobs).toEqual([]);
+      expect(deploymentPosts(stub)).toHaveLength(0);
+    }
+  });
+
+  it('needs a repository source', async () => {
     const { client, stub } = make([]);
-    const project = { id: 'prj_123', name: 'lp-moonpad' };
     await expect(
-      client.createDeployment({ project, repo: 'forge', ref: 'main' }),
-    ).rejects.toMatchObject({ kind: 'invalid_input' });
-    await expect(
-      client.createDeployment({ project, repo: 'lp-moonpad', ref: 'a..b' }),
-    ).rejects.toMatchObject({ kind: 'invalid_input' });
-    await expect(
-      client.createDeployment({ project, repo: 'lp-moonpad', ref: 'main', sha: 'xyz' }),
-    ).rejects.toMatchObject({ kind: 'invalid_input' });
+      client.createDeployment({ project: PROJECT, repo: 'lp-moonpad', ref: 'main', sha: COMMIT }),
+    ).rejects.toMatchObject({ kind: 'invalid_input', message: expect.stringMatching(/source/) });
     expect(stub.calls).toHaveLength(0);
   });
 
+  it('validates inputs', async () => {
+    const { source, calls } = fakeSource();
+    const { client, stub } = make([], { source });
+    await expect(
+      client.createDeployment({ project: PROJECT, repo: 'forge', ref: 'main' }),
+    ).rejects.toMatchObject({ kind: 'invalid_input' });
+    await expect(
+      client.createDeployment({ project: PROJECT, repo: 'lp-moonpad', ref: 'a..b' }),
+    ).rejects.toMatchObject({ kind: 'invalid_input' });
+    await expect(
+      client.createDeployment({ project: PROJECT, repo: 'lp-moonpad', ref: 'main', sha: 'xyz' }),
+    ).rejects.toMatchObject({ kind: 'invalid_input' });
+    await expect(
+      client.createDeployment({
+        project: { id: '../x', name: 'lp-moonpad' },
+        repo: 'lp-moonpad',
+        ref: 'main',
+        sha: COMMIT,
+      }),
+    ).rejects.toMatchObject({ kind: 'invalid_input' });
+    expect(stub.calls).toHaveLength(0);
+    expect(calls).toEqual({ heads: [], trees: [], blobs: [] });
+  });
+});
+
+describe('deployments', () => {
   it('polls until READY', async () => {
     const states = ['QUEUED', 'INITIALIZING', 'BUILDING', 'READY'];
     let i = 0;

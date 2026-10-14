@@ -246,7 +246,8 @@ export async function startBuilder(opts: StartBuilderOptions = {}): Promise<Buil
 
   const githubOptions = githubOptionsFromEnv(env);
   const github = createGithubClient(githubOptions);
-  const vercel = createVercelClient(vercelOptionsFromEnv(env));
+  // Deployments upload the files of a commit, read through the GitHub App (vercel.ts).
+  const vercel = createVercelClient({ ...vercelOptionsFromEnv(env), source: github });
   const store = createSupabaseStore({
     url: config.SUPABASE_URL,
     serviceRoleKey: config.SUPABASE_SERVICE_ROLE_KEY,

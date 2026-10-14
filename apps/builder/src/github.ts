@@ -9,6 +9,7 @@ import {
   type HttpResponse,
   type RetryEvent,
 } from './http.js';
+import { inPool } from './pool.js';
 
 /**
  * GitHub App client (REST over fetch, no Octokit).
@@ -20,6 +21,9 @@ import {
  * merge or delete a branch, administration:write (alone) to protect the default branch. Only repo
  * creation from the template uses the org-wide installation token. A configurable denylist (default:
  * the FORGE monorepo, `Forge`) is checked before any call or token mint that names a repository.
+ *
+ * Deployments (vercel.ts) read the exact tree of a commit through `listCommitTree` and
+ * `readBlobs` (git data API, contents:read): Vercel itself never needs access to the org.
  */
 
 const API_VERSION = '2022-11-28';
@@ -47,6 +51,44 @@ const BLOB_CONCURRENCY = 6;
 /** GitHub returns at most this many files for a whole comparison (REST docs, "Compare two commits"). */
 const GITHUB_COMPARE_FILE_CAP = 300;
 const COMPARE_MAX_FILES = 3000;
+const SHA_RE = /^[0-9a-f]{40}$/;
+
+/** True when the text holds NUL or another control character (never accepted in a path). */
+function hasControlChar(text: string): boolean {
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    if (code < 0x20 || code === 0x7f) return true;
+  }
+  return false;
+}
+
+/** Size limits of a commit tree read for a deployment (`listCommitTree`, `readBlobs`). */
+export interface TreeLimits {
+  maxFiles: number;
+  maxFileBytes: number;
+  maxTotalBytes: number;
+}
+
+/**
+ * Defaults: the same caps as a commit written by the builder (`commitFiles`) and a job folder
+ * (pipeline/repo-snapshot.ts), so whatever the builder can build it can also deploy.
+ */
+export const TREE_LIMITS: Readonly<TreeLimits> = {
+  maxFiles: MAX_FILES,
+  maxFileBytes: MAX_FILE_BYTES,
+  maxTotalBytes: MAX_TOTAL_BYTES,
+};
+
+/** `TREE_LIMITS` with overrides; an absent or invalid override keeps the default. */
+export function treeLimits(overrides: Partial<TreeLimits> = {}): TreeLimits {
+  const pick = (value: number | undefined, fallback: number): number =>
+    typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : fallback;
+  return {
+    maxFiles: pick(overrides.maxFiles, TREE_LIMITS.maxFiles),
+    maxFileBytes: pick(overrides.maxFileBytes, TREE_LIMITS.maxFileBytes),
+    maxTotalBytes: pick(overrides.maxTotalBytes, TREE_LIMITS.maxTotalBytes),
+  };
+}
 
 // ---------------------------------------------------------------------------------------------
 // Names and paths
@@ -116,6 +158,25 @@ export function assertRepoPath(path: string): string {
     }
   }
   return path;
+}
+
+/**
+ * Whether a path listed in a git tree is safe to recreate elsewhere: the `assertRepoPath` rules
+ * (relative, no `.`, `..` or empty segment, no `.git`, no backslash) and no control character.
+ */
+export function isSafeTreePath(path: string): boolean {
+  if (typeof path !== 'string' || hasControlChar(path)) return false;
+  try {
+    assertRepoPath(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** A path for an error message: truncated and quoted, so no control character reaches a log. */
+function quotePath(path: string): string {
+  return JSON.stringify(path.slice(0, 120));
 }
 
 /** Git blob object id of a file content (sha1 of "blob <len>\0<content>"). */
@@ -318,6 +379,26 @@ export interface RepoToken {
   expiresAt: number;
 }
 
+/** A regular file of a commit tree (no content). */
+export interface TreeFile {
+  /** Repository-relative path with forward slashes, checked safe. */
+  path: string;
+  /** Git blob id of the content (`gitBlobSha`). */
+  blobSha: string;
+  /** Size in bytes, as listed by GitHub. */
+  size: number;
+  /** Mode 100755. */
+  executable: boolean;
+}
+
+export interface CommitTree {
+  commitSha: string;
+  treeSha: string;
+  /** Every regular file of the tree (directories are implied by the paths). */
+  files: TreeFile[];
+  totalBytes: number;
+}
+
 export interface MergeResult {
   /** False when the head was already contained in the base (nothing to do). */
   merged: boolean;
@@ -357,6 +438,26 @@ export interface GithubClient {
   compareCommits(repo: string, base: string, head: string): Promise<CompareResult>;
   /** Reads a text file at a ref; null when absent. */
   readFile(repo: string, path: string, ref: string): Promise<string | null>;
+  /**
+   * Lists the regular files of the full tree of a commit, read-only (contents:read token scoped to
+   * the repo), without their content. Refuses a truncated listing, symlinks, submodules, any other
+   * non-regular entry and any unsafe path, and enforces `limits` (default `TREE_LIMITS`) from the
+   * listed sizes before anything is downloaded.
+   */
+  listCommitTree(
+    repo: string,
+    commitSha: string,
+    limits?: Partial<TreeLimits>,
+  ): Promise<CommitTree>;
+  /**
+   * Contents of blobs of the repo, keyed by blob id, read-only, with bounded concurrency. Each
+   * content is checked against its id (so its size is the listed one).
+   */
+  readBlobs(
+    repo: string,
+    blobShas: readonly string[],
+    opts?: { maxBlobBytes?: number },
+  ): Promise<Map<string, Buffer>>;
   /** Merges `head` (a branch or a full commit sha) into the `base` branch. */
   mergeBranch(
     repo: string,
@@ -401,9 +502,17 @@ const TreeSchema = z.object({
   sha: z.string(),
   truncated: z.boolean().optional(),
   tree: z.array(
-    z.object({ path: z.string(), mode: z.string(), type: z.string(), sha: z.string() }),
+    z.object({
+      path: z.string(),
+      mode: z.string(),
+      type: z.string(),
+      sha: z.string(),
+      /** Blobs only. */
+      size: z.number().optional(),
+    }),
   ),
 });
+const BlobSchema = z.object({ encoding: z.string(), content: z.string() });
 const CompareSchema = z.object({
   status: z.enum(['ahead', 'behind', 'identical', 'diverged']),
   ahead_by: z.number(),
@@ -1280,6 +1389,153 @@ export function createGithubClient(opts: GithubClientOptions): GithubClient {
     return Buffer.from(body.content, 'base64').toString('utf8');
   }
 
+  // --- commit trees for deployments ----------------------------------------------------------
+
+  async function listCommitTree(
+    repo: string,
+    commitSha: string,
+    limits: Partial<TreeLimits> = {},
+  ): Promise<CommitTree> {
+    const root = base(repo);
+    if (typeof commitSha !== 'string' || !SHA_RE.test(commitSha)) {
+      throw new ServiceError('github', 'invalid_input', 'invalid commit sha');
+    }
+    const max = treeLimits(limits);
+    const auth = repoAuth(repo, READ_PERMS);
+    const get = (path: string, query?: Record<string, string>): Promise<HttpResponse> =>
+      withFreshTokenRetry(() =>
+        http.request({ method: 'GET', path, ...(query ? { query } : {}), authorization: auth }),
+      );
+    const at = `${repo}@${commitSha.slice(0, 12)}`;
+
+    const commit = parseBody(CommitSchema, await get(`${root}/git/commits/${commitSha}`), 'commit');
+    if (commit.sha !== commitSha || !SHA_RE.test(commit.tree.sha)) {
+      throw new ServiceError('github', 'invalid_response', `GitHub answered for another commit`);
+    }
+    const tree = parseBody(
+      TreeSchema,
+      await get(`${root}/git/trees/${commit.tree.sha}`, { recursive: '1' }),
+      'tree',
+    );
+    if (tree.truncated) {
+      // GitHub stops a recursive listing at 100,000 entries or 7 MB: far above the file limit.
+      throw new ServiceError(
+        'github',
+        'unexpected',
+        `the tree of ${at} is too large to deploy (GitHub truncated its listing)`,
+      );
+    }
+    if (tree.sha !== commit.tree.sha) {
+      throw new ServiceError('github', 'invalid_response', 'GitHub answered for another tree');
+    }
+
+    const files: TreeFile[] = [];
+    const seen = new Set<string>();
+    let totalBytes = 0;
+    for (const e of tree.tree) {
+      const shown = quotePath(e.path);
+      if (!isSafeTreePath(e.path)) {
+        throw new ServiceError('github', 'unexpected', `unsafe path in ${at}: ${shown}`);
+      }
+      if (e.type === 'tree') continue;
+      // Refused rather than skipped: the deployment must be the whole commit, or nothing.
+      if (e.type === 'commit' || e.mode === '160000') {
+        throw new ServiceError('github', 'unexpected', `submodules cannot be deployed: ${shown}`);
+      }
+      if (e.mode === '120000') {
+        throw new ServiceError('github', 'unexpected', `symlinks are not deployed: ${shown}`);
+      }
+      if (e.type !== 'blob' || (e.mode !== '100644' && e.mode !== '100755')) {
+        throw new ServiceError(
+          'github',
+          'unexpected',
+          `unsupported tree entry (mode ${e.mode.slice(0, 10)}): ${shown}`,
+        );
+      }
+      if (!SHA_RE.test(e.sha)) {
+        throw new ServiceError('github', 'invalid_response', `invalid blob id for ${shown}`);
+      }
+      if (e.size === undefined || !Number.isSafeInteger(e.size) || e.size < 0) {
+        throw new ServiceError('github', 'invalid_response', `no size listed for ${shown}`);
+      }
+      if (seen.has(e.path)) {
+        throw new ServiceError('github', 'invalid_response', `duplicate path ${shown}`);
+      }
+      seen.add(e.path);
+      if (e.size > max.maxFileBytes) {
+        throw new ServiceError(
+          'github',
+          'invalid_input',
+          `file too large to deploy: ${shown} (${e.size} bytes, max ${max.maxFileBytes})`,
+        );
+      }
+      totalBytes += e.size;
+      files.push({
+        path: e.path,
+        blobSha: e.sha,
+        size: e.size,
+        executable: e.mode === '100755',
+      });
+    }
+    if (files.length > max.maxFiles) {
+      throw new ServiceError(
+        'github',
+        'invalid_input',
+        `too many files to deploy in ${at}: ${files.length} (max ${max.maxFiles})`,
+      );
+    }
+    if (totalBytes > max.maxTotalBytes) {
+      throw new ServiceError(
+        'github',
+        'invalid_input',
+        `files of ${at} too large to deploy: ${totalBytes} bytes in total (max ${max.maxTotalBytes})`,
+      );
+    }
+    return { commitSha, treeSha: commit.tree.sha, files, totalBytes };
+  }
+
+  async function readBlobs(
+    repo: string,
+    blobShas: readonly string[],
+    opts: { maxBlobBytes?: number } = {},
+  ): Promise<Map<string, Buffer>> {
+    const root = base(repo);
+    const wanted = [...new Set(blobShas)];
+    for (const sha of wanted) {
+      if (typeof sha !== 'string' || !SHA_RE.test(sha)) {
+        throw new ServiceError('github', 'invalid_input', 'invalid blob id');
+      }
+    }
+    const maxBytes = treeLimits({ maxFileBytes: opts.maxBlobBytes }).maxFileBytes;
+    // Base64 of `maxBytes` bytes, line breaks removed.
+    const maxEncoded = Math.ceil(maxBytes / 3) * 4;
+    const auth = repoAuth(repo, READ_PERMS);
+    const out = new Map<string, Buffer>();
+    await inPool(wanted, BLOB_CONCURRENCY, async (sha) => {
+      const res = await withFreshTokenRetry(() =>
+        http.request({ method: 'GET', path: `${root}/git/blobs/${sha}`, authorization: auth }),
+      );
+      const body = parseBody(BlobSchema, res, 'blob');
+      if (body.encoding !== 'base64') {
+        throw new ServiceError('github', 'invalid_response', 'unexpected blob encoding');
+      }
+      const encoded = body.content.replace(/\s+/g, '');
+      if (encoded.length > maxEncoded) {
+        throw new ServiceError(
+          'github',
+          'invalid_input',
+          `blob ${sha.slice(0, 12)} too large to deploy (max ${maxBytes} bytes)`,
+        );
+      }
+      const content = Buffer.from(encoded, 'base64');
+      if (gitBlobSha(content) !== sha) {
+        throw new ServiceError('github', 'invalid_response', 'blob content does not match its id');
+      }
+      out.set(sha, content);
+    });
+    return out;
+  }
+
   async function mergeBranch(
     repo: string,
     input: { base: string; head: string; message: string },
@@ -1351,6 +1607,8 @@ export function createGithubClient(opts: GithubClientOptions): GithubClient {
     commitFiles,
     compareCommits,
     readFile,
+    listCommitTree,
+    readBlobs,
     mergeBranch,
     deleteBranch,
     createRepoToken,

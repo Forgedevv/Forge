@@ -5,6 +5,16 @@ scans its changes, builds the site, pushes to the client repository, deploys pre
 and asks the signer to wire up Meteora. Task sheet: `tasks/04-BUILDER.md`; sandbox and images:
 `docker/README.md`; threat model: `docs/SECURITY.md`; configuration: `.env.example`.
 
+## Vercel deployments
+
+Client projects on Vercel are not linked to GitHub. To deploy a commit, the builder lists its
+tree with the GitHub App (read-only token scoped to the client repo), uploads the files Vercel
+does not hold yet and creates the deployment from that file list, with the commit sha in the
+deployment metadata. Vercel never needs access to the organization: no Vercel GitHub app, and the
+Hobby plan's refusal of private organization repositories does not apply. Symlinks and submodules
+are refused; file count and sizes are capped; an earlier deployment of the same commit that has
+not failed is reused. Details: the module comment of `src/vercel.ts`.
+
 ## Visual review (`BUILDER_VISUAL_REVIEW=on`)
 
 Off by default. When on (and `FORGE_SANDBOX_REVIEW_IMAGE` is set), a new site gets a second

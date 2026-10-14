@@ -9,7 +9,10 @@ export interface RecordedCall {
   path: string;
   query: URLSearchParams;
   headers: Record<string, string>;
+  /** Parsed JSON body (string bodies only). */
   body: unknown;
+  /** Bytes of a binary body (a file upload), copied. */
+  raw: Uint8Array | undefined;
 }
 
 export type Handler = (call: RecordedCall) => Response | Promise<Response>;
@@ -64,6 +67,7 @@ export function stubFetch(routes: Route[]): FetchStub {
       query: url.searchParams,
       headers,
       body: typeof init?.body === 'string' ? JSON.parse(init.body) : undefined,
+      raw: init?.body instanceof Uint8Array ? new Uint8Array(init.body) : undefined,
     };
     calls.push(call);
     for (let i = 0; i < routes.length; i++) {

@@ -642,7 +642,8 @@ export class FakeGithub extends Recorder implements PipelineGithub, RepoSource {
 interface FakeProject {
   id: string;
   name: string;
-  linkedRepo: string;
+  /** Projects are created without a git link (vercel.ts). */
+  linkedRepo: string | undefined;
   productionDeploymentId: string | undefined;
   paused: boolean;
   env: Map<string, string>;
@@ -697,7 +698,7 @@ export class FakeVercel extends Recorder implements PipelineVercel {
       const p: FakeProject = {
         id: `prj_${this.counter}`,
         name: projectNameForSlug(input.slug),
-        linkedRepo: `forge-org/${repoNameForSlug(input.slug)}`,
+        linkedRepo: undefined,
         productionDeploymentId: undefined,
         paused: false,
         env: new Map(),
@@ -732,9 +733,20 @@ export class FakeVercel extends Recorder implements PipelineVercel {
   createDeployment(input: CreateDeploymentInput): Promise<VercelDeployment> {
     return this.around('createDeployment', () => {
       const p = this.project(input.project.id);
+      // The pipeline always names the exact commit to deploy (vercel.ts reads its files).
+      if (input.sha === undefined || !/^[0-9a-f]{40}$/.test(input.sha)) {
+        throw new ServiceError('vercel', 'invalid_input', 'createDeployment needs the commit sha');
+      }
       const target = input.target ?? 'preview';
+      // Same idempotency rule as vercel.ts: an earlier deployment of this commit, project and
+      // target is reused unless it failed.
       const existing = [...this.deployments.values()].find(
-        (d) => d.projectId === p.id && d.sha === input.sha && d.target === target,
+        (d) =>
+          d.projectId === p.id &&
+          d.sha === input.sha &&
+          d.target === target &&
+          d.readyState !== 'ERROR' &&
+          d.readyState !== 'CANCELED',
       );
       if (existing) return { ...existing };
       this.counter += 1;

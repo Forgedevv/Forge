@@ -9,6 +9,8 @@ import {
   gitBlobSha,
   githubOptionsFromEnv,
   repoNameForSlug,
+  TREE_LIMITS,
+  treeLimits,
   type GithubClient,
 } from './github.js';
 import { empty, json, stubFetch, type FetchStub, type Route } from './http-mock.js';
@@ -1348,6 +1350,320 @@ describe('compare, read, merge, delete', () => {
     const client = makeClient(gh);
     await expect(client.deleteBranch('lp-moonpad', 'forge/job1')).resolves.toBe(true);
     await expect(client.deleteBranch('lp-moonpad', 'forge/job1')).resolves.toBe(false);
+  });
+});
+
+describe('commit trees for deployments (listCommitTree, readBlobs)', () => {
+  const ROOT = `/repos/${ORG}/lp-moonpad`;
+  const COMMIT = 'c'.repeat(40);
+  const TREE = 'e'.repeat(40);
+  const files = {
+    'package.json': Buffer.from('{"name":"lp-moonpad"}\n'),
+    'src/pages/index.tsx': Buffer.from('export default () => null;\n'),
+    'scripts/check.sh': Buffer.from('#!/bin/sh\nexit 0\n'),
+  };
+  const blobs = new Map(Object.values(files).map((c) => [gitBlobSha(c), c]));
+  type TreeItem = { path: string; mode: string; type: string; sha: string; size?: number };
+  const regular: TreeItem[] = [
+    { path: 'scripts', mode: '040000', type: 'tree', sha: 'd'.repeat(40) },
+    ...Object.entries(files).map(([path, c]) => ({
+      path,
+      mode: path.endsWith('.sh') ? '100755' : '100644',
+      type: 'blob',
+      sha: gitBlobSha(c),
+      size: c.byteLength,
+    })),
+  ];
+
+  function setup(
+    tree: TreeItem[] = regular,
+    opts: {
+      truncated?: boolean;
+      commitSha?: string;
+      blob?: (sha: string) => Response | Promise<Response>;
+    } = {},
+  ) {
+    const gh = new FakeGithub([
+      {
+        method: 'GET',
+        path: `${ROOT}/git/commits/${COMMIT}`,
+        handler: () => json({ sha: opts.commitSha ?? COMMIT, tree: { sha: TREE }, parents: [] }),
+      },
+      {
+        method: 'GET',
+        path: `${ROOT}/git/trees/${TREE}`,
+        handler: () => json({ sha: TREE, truncated: opts.truncated ?? false, tree }),
+      },
+      {
+        method: 'GET',
+        path: new RegExp(`^${ROOT}/git/blobs/[0-9a-f]{40}$`),
+        handler: (call) => {
+          const sha = call.path.split('/').pop()!;
+          if (opts.blob) return opts.blob(sha);
+          const content = blobs.get(sha);
+          return content
+            ? json({
+                sha,
+                size: content.byteLength,
+                encoding: 'base64',
+                // GitHub wraps the base64 content in lines.
+                content: content.toString('base64').replace(/(.{8})/g, '$1\n'),
+              })
+            : json({ message: 'Not Found' }, 404);
+        },
+      },
+    ]);
+    gh.addRepo('lp-moonpad');
+    return { gh, client: makeClient(gh) };
+  }
+
+  /** Mint body of the token that authorized a call. */
+  const mintFor = (gh: FakeGithub, call: { headers: Record<string, string> } | undefined) =>
+    gh.mints.find((m) => `Bearer ${m.token}` === call?.headers['authorization'])?.body;
+
+  it('lists the regular files of a commit with a read-only token scoped to the repo', async () => {
+    const { gh, client } = setup();
+    const tree = await client.listCommitTree('lp-moonpad', COMMIT);
+    expect(tree).toEqual({
+      commitSha: COMMIT,
+      treeSha: TREE,
+      files: [
+        {
+          path: 'package.json',
+          blobSha: gitBlobSha(files['package.json']),
+          size: files['package.json'].byteLength,
+          executable: false,
+        },
+        {
+          path: 'src/pages/index.tsx',
+          blobSha: gitBlobSha(files['src/pages/index.tsx']),
+          size: files['src/pages/index.tsx'].byteLength,
+          executable: false,
+        },
+        {
+          path: 'scripts/check.sh',
+          blobSha: gitBlobSha(files['scripts/check.sh']),
+          size: files['scripts/check.sh'].byteLength,
+          executable: true,
+        },
+      ],
+      totalBytes: Object.values(files).reduce((n, c) => n + c.byteLength, 0),
+    });
+    const treeCall = gh.stub.find('GET', `${ROOT}/git/trees/${TREE}`)[0];
+    expect(treeCall?.query.get('recursive')).toBe('1');
+    for (const call of gh.stub.calls.filter((c) => c.path.startsWith(ROOT))) {
+      expect(call.method).toBe('GET');
+      expect(mintFor(gh, call)).toEqual({
+        repositories: ['lp-moonpad'],
+        permissions: { contents: 'read' },
+      });
+    }
+  });
+
+  it('refuses symlinks and submodules instead of skipping them', async () => {
+    const symlink = setup([
+      ...regular,
+      { path: 'public/logo.svg', mode: '120000', type: 'blob', sha: 'a'.repeat(40), size: 9 },
+    ]);
+    await expect(symlink.client.listCommitTree('lp-moonpad', COMMIT)).rejects.toMatchObject({
+      kind: 'unexpected',
+      message: expect.stringMatching(/symlink.*public\/logo\.svg/) as unknown,
+    });
+    const submodule = setup([
+      ...regular,
+      { path: 'vendor/lib', mode: '160000', type: 'commit', sha: 'b'.repeat(40) },
+    ]);
+    await expect(submodule.client.listCommitTree('lp-moonpad', COMMIT)).rejects.toMatchObject({
+      kind: 'unexpected',
+      message: expect.stringMatching(/submodule.*vendor\/lib/) as unknown,
+    });
+    const odd = setup([
+      ...regular,
+      { path: 'x', mode: '100664', type: 'blob', sha: 'b'.repeat(40) },
+    ]);
+    await expect(odd.client.listCommitTree('lp-moonpad', COMMIT)).rejects.toMatchObject({
+      kind: 'unexpected',
+    });
+  });
+
+  it('refuses a truncated listing: the tree would be incomplete', async () => {
+    const { client } = setup(regular, { truncated: true });
+    await expect(client.listCommitTree('lp-moonpad', COMMIT)).rejects.toMatchObject({
+      kind: 'unexpected',
+      message: expect.stringMatching(/too large.*truncated/) as unknown,
+    });
+  });
+
+  it.each([
+    '../x',
+    'a/../b',
+    '/etc/passwd',
+    'a//b',
+    './a',
+    'a\\b',
+    'a\u0000b',
+    'a\nb',
+    'pages/\u001b[31m.tsx',
+    '.git/config',
+    'src/.GIT/hooks',
+    '',
+  ])('refuses the unsafe path %j', async (path) => {
+    const { client } = setup([
+      ...regular,
+      { path, mode: '100644', type: 'blob', sha: 'a'.repeat(40), size: 1 },
+    ]);
+    const err = (await client
+      .listCommitTree('lp-moonpad', COMMIT)
+      .catch((e: unknown) => e)) as Error;
+    expect(err).toMatchObject({
+      kind: 'unexpected',
+      message: expect.stringMatching(/unsafe path/),
+    });
+    // The path is quoted: no raw control character reaches a log line.
+    expect([...err.message].filter((ch) => ch.charCodeAt(0) < 0x20)).toEqual([]);
+  });
+
+  it('refuses an unsafe directory entry too', async () => {
+    const { client } = setup([{ path: '..', mode: '040000', type: 'tree', sha: 'd'.repeat(40) }]);
+    await expect(client.listCommitTree('lp-moonpad', COMMIT)).rejects.toMatchObject({
+      message: expect.stringMatching(/unsafe path/) as unknown,
+    });
+  });
+
+  it('merges limit overrides, keeping the default for an absent or invalid one', () => {
+    expect(treeLimits()).toEqual(TREE_LIMITS);
+    expect(treeLimits({ maxFiles: undefined, maxFileBytes: -1, maxTotalBytes: 10 })).toEqual({
+      ...TREE_LIMITS,
+      maxTotalBytes: 10,
+    });
+    expect(treeLimits({ maxFiles: Number.NaN })).toEqual(TREE_LIMITS);
+  });
+
+  it('enforces the file count, file size and total size limits from the listing', async () => {
+    const { client, gh } = setup();
+    await expect(
+      client.listCommitTree('lp-moonpad', COMMIT, { maxFiles: 2 }),
+    ).rejects.toMatchObject({ kind: 'invalid_input', message: expect.stringMatching(/too many/) });
+    await expect(
+      client.listCommitTree('lp-moonpad', COMMIT, { maxFileBytes: 20 }),
+    ).rejects.toMatchObject({
+      kind: 'invalid_input',
+      message: expect.stringMatching(/package\.json/) as unknown,
+    });
+    await expect(
+      client.listCommitTree('lp-moonpad', COMMIT, { maxTotalBytes: 50 }),
+    ).rejects.toMatchObject({ kind: 'invalid_input', message: expect.stringMatching(/total/) });
+    // Nothing downloaded to find out.
+    expect(gh.stub.find('GET', /\/git\/blobs\//)).toHaveLength(0);
+  });
+
+  it('refuses malformed answers: no size, a bad blob id, another commit', async () => {
+    const noSize = setup([{ path: 'a', mode: '100644', type: 'blob', sha: 'a'.repeat(40) }]);
+    await expect(noSize.client.listCommitTree('lp-moonpad', COMMIT)).rejects.toMatchObject({
+      kind: 'invalid_response',
+    });
+    const badId = setup([{ path: 'a', mode: '100644', type: 'blob', sha: 'xyz', size: 1 }]);
+    await expect(badId.client.listCommitTree('lp-moonpad', COMMIT)).rejects.toMatchObject({
+      kind: 'invalid_response',
+    });
+    const other = setup(regular, { commitSha: 'f'.repeat(40) });
+    await expect(other.client.listCommitTree('lp-moonpad', COMMIT)).rejects.toMatchObject({
+      kind: 'invalid_response',
+    });
+  });
+
+  it('validates its input before any call, and never reads a denylisted repository', async () => {
+    const { client, gh } = setup();
+    await expect(client.listCommitTree('lp-moonpad', 'main')).rejects.toMatchObject({
+      kind: 'invalid_input',
+    });
+    await expect(client.listCommitTree('Forge', COMMIT)).rejects.toMatchObject({
+      kind: 'invalid_input',
+    });
+    await expect(client.readBlobs('lp-moonpad', ['nope'])).rejects.toMatchObject({
+      kind: 'invalid_input',
+    });
+    const denied = makeClient(gh, { repoDenylist: ['lp-moonpad'] });
+    await expect(denied.listCommitTree('lp-moonpad', COMMIT)).rejects.toMatchObject({
+      kind: 'invalid_input',
+    });
+    await expect(
+      denied.readBlobs('lp-moonpad', [gitBlobSha(Buffer.from('x'))]),
+    ).rejects.toMatchObject({
+      kind: 'invalid_input',
+    });
+    expect(gh.stub.calls).toHaveLength(0);
+  });
+
+  it('reads blobs once each, read-only, checking every content against its id', async () => {
+    const { client, gh } = setup();
+    const ids = [...blobs.keys()];
+    const out = await client.readBlobs('lp-moonpad', [...ids, ids[0]!]);
+    expect([...out.keys()].sort()).toEqual([...ids].sort());
+    for (const [id, content] of blobs) expect(out.get(id)?.equals(content)).toBe(true);
+    const reads = gh.stub.find('GET', /\/git\/blobs\//);
+    expect(reads).toHaveLength(3);
+    for (const call of reads) {
+      expect(mintFor(gh, call)).toEqual({
+        repositories: ['lp-moonpad'],
+        permissions: { contents: 'read' },
+      });
+    }
+    await expect(client.readBlobs('lp-moonpad', [])).resolves.toEqual(new Map());
+  });
+
+  it('refuses a blob whose content does not match its id, or that is too large', async () => {
+    const tampered = setup(regular, {
+      blob: (sha) =>
+        json({ sha, encoding: 'base64', content: Buffer.from('tampered').toString('base64') }),
+    });
+    await expect(
+      tampered.client.readBlobs('lp-moonpad', [gitBlobSha(files['package.json'])]),
+    ).rejects.toMatchObject({ kind: 'invalid_response', message: expect.stringMatching(/match/) });
+    const plain = setup(regular, { blob: (sha) => json({ sha, encoding: 'utf-8', content: 'x' }) });
+    await expect(
+      plain.client.readBlobs('lp-moonpad', [gitBlobSha(files['package.json'])]),
+    ).rejects.toMatchObject({ kind: 'invalid_response' });
+    const { client } = setup();
+    await expect(
+      client.readBlobs('lp-moonpad', [gitBlobSha(files['package.json'])], { maxBlobBytes: 8 }),
+    ).rejects.toMatchObject({ kind: 'invalid_input', message: expect.stringMatching(/too large/) });
+  });
+
+  it('reads blobs with bounded concurrency and stops at the first failure', async () => {
+    const many = Array.from({ length: 30 }, (_, i) => Buffer.from(`blob ${i}`));
+    const byId = new Map(many.map((c) => [gitBlobSha(c), c]));
+    let inflight = 0;
+    let peak = 0;
+    const { client } = setup(regular, {
+      blob: async (sha) => {
+        inflight++;
+        peak = Math.max(peak, inflight);
+        await new Promise((r) => setTimeout(r, 2));
+        inflight--;
+        const content = byId.get(sha)!;
+        return json({ sha, encoding: 'base64', content: content.toString('base64') });
+      },
+    });
+    const out = await client.readBlobs('lp-moonpad', [...byId.keys()]);
+    expect(out.size).toBe(30);
+    expect(peak).toBeGreaterThan(1);
+    expect(peak).toBeLessThanOrEqual(6);
+
+    let served = 0;
+    const failing = setup(regular, {
+      blob: (sha) => {
+        served++;
+        return served === 1
+          ? json({ message: 'Not Found' }, 404)
+          : json({ sha, encoding: 'base64', content: byId.get(sha)!.toString('base64') });
+      },
+    });
+    await expect(failing.client.readBlobs('lp-moonpad', [...byId.keys()])).rejects.toMatchObject({
+      kind: 'not_found',
+    });
+    // The other workers stop after their current read instead of fetching all 30.
+    expect(served).toBeLessThan(30);
   });
 });
 

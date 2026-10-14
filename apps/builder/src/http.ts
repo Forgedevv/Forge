@@ -1,10 +1,10 @@
 /// <reference types="node" />
 
 /**
- * Small fetch wrapper shared by the GitHub and Vercel clients: JSON in/out, per-request timeout,
- * retries with exponential backoff on network errors, 5xx and 429 (honoring Retry-After and
- * rate-limit reset headers), and typed errors. It never logs and never puts a header or a request
- * body into an error message, so credentials cannot leak through it.
+ * Small fetch wrapper shared by the GitHub and Vercel clients: JSON in/out (raw bytes in for file
+ * uploads), per-request timeout, retries with exponential backoff on network errors, 5xx and 429
+ * (honoring Retry-After and rate-limit reset headers), and typed errors. It never logs and never
+ * puts a header or a request body into an error message, so credentials cannot leak through it.
  */
 
 export type ServiceName = 'github' | 'vercel';
@@ -108,7 +108,12 @@ export interface RequestOptions {
   /** Absolute path starting with `/`, already URL-encoded. */
   path: string;
   query?: Record<string, QueryValue>;
+  /** JSON body. */
   body?: unknown;
+  /** Raw bytes sent as they are instead of a JSON body (a file upload). Excludes `body`. */
+  rawBody?: { data: Uint8Array<ArrayBuffer>; contentType: string };
+  /** Accepts a 2xx answer whose body is not JSON (its `json` is then undefined). */
+  allowNonJsonResponse?: boolean;
   /** Called before each attempt; returns the full `Authorization` header value. */
   authorization?: () => Promise<string>;
   /** Extra headers for this call only. */
@@ -223,12 +228,21 @@ export function createHttpClient(opts: HttpClientOptions): HttpClient {
     }
     const qs = params.toString();
     const url = `${baseUrl}${req.path}${qs ? `?${qs}` : ''}`;
-    const rawBody = req.body === undefined ? undefined : JSON.stringify(req.body);
+    if (req.rawBody !== undefined && req.body !== undefined) {
+      throw new ServiceError(service, 'invalid_input', 'a request has a JSON body or raw bytes');
+    }
+    const rawBody: string | Uint8Array<ArrayBuffer> | undefined =
+      req.rawBody !== undefined
+        ? req.rawBody.data
+        : req.body === undefined
+          ? undefined
+          : JSON.stringify(req.body);
 
     for (let attempt = 1; ; attempt++) {
       const last = attempt >= maxAttempts;
       const headers: Record<string, string> = { ...opts.defaultHeaders, ...req.headers };
-      if (rawBody !== undefined) headers['content-type'] = 'application/json';
+      if (req.rawBody !== undefined) headers['content-type'] = req.rawBody.contentType;
+      else if (rawBody !== undefined) headers['content-type'] = 'application/json';
       if (req.authorization) headers['authorization'] = await req.authorization();
 
       let res: Response;
@@ -271,6 +285,9 @@ export function createHttpClient(opts: HttpClientOptions): HttpClient {
 
       if (res.ok) {
         if (!jsonOk) {
+          if (req.allowNonJsonResponse) {
+            return { status: res.status, headers: res.headers, json: undefined };
+          }
           throw new ServiceError(
             service,
             'invalid_response',

@@ -1,8 +1,21 @@
 /// <reference types="node" />
+import { createHash } from 'node:crypto';
 import { z } from 'zod';
-import { assertDeployableSlug, encodeBranch, repoNameForSlug } from './github.js';
+import {
+  assertDeployableSlug,
+  encodeBranch,
+  gitBlobSha,
+  isSafeTreePath,
+  repoNameForSlug,
+  TREE_LIMITS,
+  treeLimits,
+  type GithubClient,
+  type TreeLimits,
+} from './github.js';
 import {
   createHttpClient,
+  readApiError,
+  redactSecrets,
   ServiceError,
   type HttpClient,
   type HttpResponse,
@@ -10,6 +23,7 @@ import {
   type RequestOptions,
   type RetryEvent,
 } from './http.js';
+import { inPool } from './pool.js';
 import {
   RELAY_TOKEN_ENV,
   RELAY_TOKEN_RE,
@@ -20,26 +34,73 @@ import {
 /**
  * Vercel client (REST over fetch).
  *
- * Model: one Vercel project per client, linked to the client's GitHub repo (the Vercel GitHub app
- * must be installed on the org). Deployments are created explicitly from a git ref, so the builder
- * controls when a preview exists; the same preview is later promoted to production without a rebuild
- * (docs/INTERFACES.md section 4: preview_ready -> deploying -> live).
+ * Model: one Vercel project per client, not linked to any git repository, so Vercel never needs
+ * access to the GitHub organization (no Vercel GitHub app; the Hobby plan cannot deploy private
+ * repositories of an organization anyway). The builder deploys from files: `createDeployment`
+ * reads the exact tree of one commit of the client repo through the GitHub App (read-only,
+ * github.ts `listCommitTree` / `readBlobs`), uploads what Vercel does not have yet and creates the
+ * deployment from that file list. The builder controls when a preview exists; the same preview is
+ * later promoted to production without a rebuild (docs/INTERFACES.md section 4: preview_ready ->
+ * deploying -> live).
  *
- * Git-triggered deployments are turned off on every project (`ensureProject`): otherwise a push of
- * `forge/<jobId>` would build a second, uncontrolled preview, and the merge into `main` would ship
- * to production on its own, bypassing the promotion step. Mechanism: the project deployment policy
- * (`PATCH /v9/projects/{id}` with `deploymentPolicy.deploymentSources`) allows only the `rest-api`
- * source in production and preview; per the Vercel API reference, `git` is "git provider webhook"
- * and `rest-api` is "direct user/team-token REST upload". The policy is read back and verified; a
- * project where it does not hold is refused. Not to be confused with
+ * Every non-API deployment is turned off on every project (`ensureProject`). A project created by
+ * earlier code may still be linked to its repo (tolerated, never needed, it must be the client's
+ * repo): without the policy, a push of `forge/<jobId>` would build a second, uncontrolled preview,
+ * and the merge into `main` would ship to production on its own, bypassing the promotion step.
+ * Mechanism: the project deployment policy (`PATCH /v9/projects/{id}` with
+ * `deploymentPolicy.deploymentSources`) allows only the `rest-api` source in production and
+ * preview; per the Vercel API reference, `git` is "git provider webhook" and `rest-api` is "direct
+ * user/team-token REST upload", which is what a file deployment is. The policy is read back and
+ * verified; a project where it does not hold is refused. Not to be confused with
  * `gitProviderOptions.createDeployments`, which only controls the GitHub "deployment" objects the
- * Vercel bot posts, not whether Vercel builds on push. Defence in depth: the client repo should
- * also carry `vercel.json` with `{ "git": { "deploymentEnabled": false } }` (documented Vercel
- * setting that turns off automatic deployments for all branches).
+ * Vercel bot posts. Defence in depth: the client repo also carries `vercel.json` with
+ * `{ "git": { "deploymentEnabled": false } }`.
+ *
+ * Deployments from files (`createDeployment`):
+ * - Files: every regular file of the commit tree with its mode (executable or not). Symlinks,
+ *   submodules, unsafe paths and a truncated listing are refused, never skipped: a deployment is
+ *   the whole commit or nothing. `DEPLOYMENT_LIMITS` (file count, file size, total size) are
+ *   checked from the listing before anything is downloaded or uploaded.
+ * - Upload: the deployment is first requested with the file list (`files: [{ file, sha, size,
+ *   mode }]`, sha1 digests). Vercel answers `missing_files` with the digests it does not hold for
+ *   the team; only those are uploaded (`POST /v2/files`, `x-vercel-digest`, bounded concurrency,
+ *   retried on 429/5xx since the upload is content-addressed), then the creation is retried once.
+ *   The client remembers the digest of every git blob it has read (content-addressed, bounded), so
+ *   an unchanged file (for example a template file shared by every client) is not read from
+ *   GitHub again unless Vercel asks for its bytes.
+ * - Build: `projectSettings: { framework: 'nextjs' }`, everything else left to Vercel's defaults:
+ *   it installs with the lockfile the commit holds and runs its `build` script (`next build`),
+ *   the same as a git deployment of that commit.
+ * - Commit: recorded in `meta.githubCommitSha` (with the ref, repo and org), which `toDeployment`
+ *   reports as `commitSha`, so every later check of the deployed commit keeps working.
+ * - Idempotency rule: before creating anything, an earlier deployment of the same project, target
+ *   and commit is looked up; one that is queued, building or READY (and, for production, staged)
+ *   is returned instead of a new one. A failed or canceled one is never reused: a new deployment
+ *   is created. The creation itself is never replayed blindly after an ambiguous failure (network
+ *   error, timeout, 5xx): the lookup runs again first, then at most one more attempt. Vercel's own
+ *   deduplication of similar deployments is turned off (`forceNew=1`), so a deployment always
+ *   carries the commit it was asked for. The project's environment variables are not part of the
+ *   rule: a reused deployment keeps the values it was built with, as with git deployments.
  */
 
 const DEFAULT_API_URL = 'https://api.vercel.com';
 const FRAMEWORK = 'nextjs';
+
+/** Limits of one deployment (count, per-file and total size), checked before any upload. */
+export const DEPLOYMENT_LIMITS: Readonly<TreeLimits> = TREE_LIMITS;
+/** Parallel file uploads to Vercel. */
+const UPLOAD_CONCURRENCY = 6;
+/** Git blob ids whose Vercel digest is remembered (oldest forgotten first). */
+const DIGEST_CACHE_MAX = 50_000;
+/** Earlier deployments listed, and fully read at most, by the idempotency lookup. */
+const REUSE_LOOKUP_LIMIT = 20;
+const REUSE_MAX_CHECKS = 5;
+/** File modes sent to Vercel (`git`'s regular and executable file modes, as the CLI sends). */
+const MODE_REGULAR = 0o100644;
+const MODE_EXECUTABLE = 0o100755;
+const DIGEST_RE = /^[0-9a-f]{40}$/;
+/** Statuses of a refused creation that are read (a `missing_files` answer among them). */
+const CREATE_REFUSALS: readonly number[] = [400, 412, 422];
 
 /** The only deployment source allowed on client projects (see the module comment). */
 const ALLOWED_DEPLOYMENT_SOURCES: readonly string[] = ['rest-api'];
@@ -322,14 +383,29 @@ function sameHost(a: string, b: string): boolean {
 // Public types
 // ---------------------------------------------------------------------------------------------
 
+/**
+ * Where deployments read the client repo from: the GitHub client (github.ts), read-only.
+ * `getBranchHead` only serves a deployment requested without a commit sha.
+ */
+export type DeploymentSource = Pick<GithubClient, 'getBranchHead' | 'listCommitTree' | 'readBlobs'>;
+
 export interface VercelClientOptions {
   /** API token. Never log it. */
   token: string;
   /** Team id (`team_...`), preferred over `teamSlug`. */
   teamId?: string;
   teamSlug?: string;
-  /** GitHub organization owning the client repos (projects are linked as `<org>/<repo>`). */
+  /**
+   * GitHub organization owning the client repos: recorded in the deployment metadata; a project
+   * still linked by earlier code must be linked to `<org>/<repo>`.
+   */
   githubOrg: string;
+  /** Client repo reader used by `createDeployment` (required to deploy). */
+  source?: DeploymentSource;
+  /** Overrides of `DEPLOYMENT_LIMITS`. */
+  deploymentLimits?: Partial<TreeLimits>;
+  /** Parallel file uploads (default 6). */
+  uploadConcurrency?: number;
   /** Domain under which client sites are served (`<slug>.<clientsDomain>`). */
   clientsDomain?: string;
   apiBaseUrl?: string;
@@ -388,7 +464,10 @@ export interface VercelTeam {
 export interface VercelProject {
   id: string;
   name: string;
-  /** `<org>/<repo>` when linked to a GitHub repository. */
+  /**
+   * `<org>/<repo>` when linked to a GitHub repository: only projects created by earlier code,
+   * new ones have no link.
+   */
   linkedRepo: string | undefined;
   /** Id of the deployment currently serving production, if any. */
   productionDeploymentId: string | undefined;
@@ -411,7 +490,10 @@ export interface VercelDeployment {
   target: 'production' | 'preview';
   errorCode: string | undefined;
   errorMessage: string | undefined;
-  /** Git commit the deployment was built from (`gitSource.sha`, else `meta.githubCommitSha`). */
+  /**
+   * Git commit the deployment was built from: `gitSource.sha` for a git deployment, else
+   * `meta.githubCommitSha`, which every file deployment of this client carries.
+   */
   commitSha: string | undefined;
   /** Project the deployment belongs to, when Vercel reports it. */
   projectId: string | undefined;
@@ -439,11 +521,17 @@ export interface DomainResult {
 
 export interface CreateDeploymentInput {
   project: { id: string; name: string };
-  /** Repo name (`lp-<slug>`) in the configured GitHub org. */
+  /** Repo name (`lp-<slug>`) in the configured GitHub org: the files are read from it. */
   repo: string;
-  /** Git ref to build, for example `forge/<jobId>` or `main`. */
+  /**
+   * Branch the commit belongs to, for example `forge/<jobId>` or `main`: recorded in the
+   * deployment metadata, and resolved to its head when `sha` is absent.
+   */
   ref: string;
-  /** Commit sha to build; recommended: makes the call idempotent per commit. */
+  /**
+   * Commit to deploy, exactly. Always pass it: without it, whatever the branch head is when the
+   * call reads it gets deployed.
+   */
   sha?: string;
   target?: 'production' | 'preview';
 }
@@ -458,8 +546,8 @@ export interface VercelClient {
   listProjects(limit?: number): Promise<Array<{ id: string; name: string }>>;
   getProject(nameOrId: string): Promise<VercelProject | null>;
   /**
-   * Creates the project for a slug (linked to its repo) or reuses it; turns off git-triggered
-   * deployments (verified) and applies protection.
+   * Creates the project for a slug (no git link) or reuses it; restricts deployments to the REST
+   * API (verified) and applies protection.
    */
   ensureProject(input: {
     slug: string;
@@ -473,8 +561,10 @@ export interface VercelClient {
   /** Restricts deployments to the REST API (no git webhook deployment) and verifies it. */
   disableGitDeployments(projectId: string): Promise<VercelProject>;
   /**
-   * Creates a deployment from a git ref. A production one is staged: it never takes the
-   * production domains by itself, only `promoteToProduction` does (after the caller's checks).
+   * Deploys the exact files of one commit of the client repo (module comment). Idempotent per
+   * commit: an earlier deployment of the same project, target and commit that has not failed is
+   * returned instead. A production one is staged: it never takes the production domains by
+   * itself, only `promoteToProduction` does (after the caller's checks).
    */
   createDeployment(input: CreateDeploymentInput): Promise<VercelDeployment>;
   getDeployment(idOrUrl: string): Promise<VercelDeployment>;
@@ -539,6 +629,25 @@ const DeploymentSchema = z.object({
   /** Echo of the create option ("applies to custom domains only, defaults to `true`"). */
   autoAssignCustomDomains: z.boolean().nullish(),
 });
+type DeploymentBody = z.infer<typeof DeploymentSchema>;
+
+/** `GET /v6/deployments` (only what the idempotency lookup reads; ids are `uid` there). */
+const DeploymentListSchema = z.object({
+  deployments: z.array(
+    z.object({
+      uid: z.string(),
+      readyState: z.string().nullish(),
+      state: z.string().nullish(),
+      target: z.string().nullish(),
+      meta: z.object({ githubCommitSha: z.string().optional() }).nullish(),
+    }),
+  ),
+});
+
+/** Refused creation: `{ error: { code: 'missing_files', missing: [<sha1>...] } }`. */
+const MissingFilesSchema = z.object({
+  error: z.object({ code: z.literal('missing_files'), missing: z.array(z.string()).optional() }),
+});
 
 const COMMIT_SHA_RE = /^[0-9a-f]{40}$/;
 const DomainSchema = z.object({
@@ -561,6 +670,9 @@ function parseBody<S extends z.ZodType>(schema: S, res: HttpResponse, what: stri
 
 /** States after which a deployment never changes (READY already got whatever it was assigned). */
 const FINAL_STATES = new Set<string>(['READY', 'ERROR', 'CANCELED', 'DELETED']);
+
+/** States of a deployment the idempotency lookup may return (anything else is never reused). */
+const REUSABLE_STATES = new Set<string>(['QUEUED', 'INITIALIZING', 'BUILDING', 'READY']);
 
 const READY_STATES = new Set<string>([
   'QUEUED',
@@ -609,7 +721,7 @@ function apiOnlyPolicyHolds(
   });
 }
 
-function toDeployment(d: z.infer<typeof DeploymentSchema>): VercelDeployment {
+function toDeployment(d: DeploymentBody): VercelDeployment {
   const state = d.readyState.toUpperCase();
   const url = d.url.startsWith('http') ? d.url : d.url ? `https://${d.url}` : '';
   const sha = d.gitSource?.sha ?? d.meta?.githubCommitSha;
@@ -641,6 +753,11 @@ export function createVercelClient(opts: VercelClientOptions): VercelClient {
   const now = opts.now ?? Date.now;
   const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const token = opts.token;
+  const source = opts.source;
+  const limits: TreeLimits = treeLimits(opts.deploymentLimits);
+  const uploadConcurrency = opts.uploadConcurrency ?? UPLOAD_CONCURRENCY;
+  /** Git blob id -> Vercel digest (sha1) and size of its content, learned from read contents. */
+  const digests = new Map<string, { digest: string; size: number }>();
 
   const http: HttpClient = createHttpClient({
     service: 'vercel',
@@ -748,11 +865,8 @@ export function createVercelClient(opts: VercelClientOptions): VercelClient {
       const res = await call({
         method: 'POST',
         path: '/v10/projects',
-        body: {
-          name,
-          framework: FRAMEWORK,
-          gitRepository: { type: 'github', repo: repoFull },
-        },
+        // No `gitRepository`: deployments upload the commit's files (module comment).
+        body: { name, framework: FRAMEWORK },
         // A replay after an ambiguous failure answers 409 (name taken), handled below.
         idempotent: true,
         allowStatus: [409],
@@ -770,23 +884,19 @@ export function createVercelClient(opts: VercelClientOptions): VercelClient {
       }
     }
 
-    if (project.linkedRepo === undefined) {
-      const res = await call({
-        method: 'POST',
-        path: `/v9/projects/${seg(project.id, 'project')}/link`,
-        body: { type: 'github', repo: repoFull },
-        idempotent: true,
-      });
-      project = toProject(parseBody(ProjectSchema, res, 'linked project'));
-    }
-    if (project.linkedRepo?.toLowerCase() !== repoFull.toLowerCase()) {
+    // A git link is never needed (and never made); one made by earlier code must at least be the
+    // client's own repo, otherwise this is not the project it claims to be.
+    if (
+      project.linkedRepo !== undefined &&
+      project.linkedRepo.toLowerCase() !== repoFull.toLowerCase()
+    ) {
       throw new ServiceError(
         'vercel',
         'conflict',
         `project ${name} is linked to a different repository than ${repoFull}`,
       );
     }
-    // Before anything is pushed to the repo: no deployment may start from a git push.
+    // Before anything is pushed to the repo: no deployment may start from anything but the API.
     if (!project.gitDeploymentsDisabled) project = await disableGitDeployments(project.id);
     await setProtection(project.id, protection);
     return { project, created };
@@ -878,38 +988,57 @@ export function createVercelClient(opts: VercelClientOptions): VercelClient {
   async function createDeployment(input: CreateDeploymentInput): Promise<VercelDeployment> {
     assertRepoNameLike(input.repo);
     encodeBranch(input.ref);
-    if (input.sha !== undefined && !/^[0-9a-f]{40}$/.test(input.sha)) {
+    if (input.sha !== undefined && !COMMIT_SHA_RE.test(input.sha)) {
       throw new ServiceError('vercel', 'invalid_input', 'invalid commit sha');
     }
-    const production = input.target === 'production';
-    const res = await call({
-      method: 'POST',
-      path: '/v13/deployments',
-      // No forceNew: for an identical commit Vercel returns the existing deployment, so a replay
-      // is harmless.
-      body: {
-        name: input.project.name,
-        project: input.project.id,
-        // A staged production deployment: built for production, but the production domains are
-        // only assigned by the explicit promotion, after the caller's post-READY checks (the
-        // launchpad may have been disabled, or deploys paused, while it was building). Same
-        // field as `vercel deploy --prod --skip-domain` (the Vercel CLI sends it in this body).
-        ...(production ? { target: 'production', autoAssignCustomDomains: false } : {}),
-        gitSource: {
-          type: 'github',
-          org: githubOrg,
-          repo: input.repo,
-          ref: input.ref,
-          ...(input.sha ? { sha: input.sha } : {}),
-        },
+    const projectId = input.project.id;
+    seg(projectId, 'project');
+    if (!source) {
+      throw new ServiceError(
+        'vercel',
+        'invalid_input',
+        'no repository source configured: deployments read the client repo through GitHub',
+      );
+    }
+    const target = input.target === 'production' ? 'production' : 'preview';
+    const production = target === 'production';
+    const sha = input.sha ?? (await branchHead(source, input.repo, input.ref));
+
+    // Idempotency rule (module comment): an earlier deployment of this commit is reused.
+    const earlier = await findReusableDeployment(projectId, sha, target);
+    if (earlier) return toDeployment(earlier);
+
+    const prepared = await prepareFiles(source, input.repo, sha);
+    const body = {
+      name: input.project.name,
+      project: projectId,
+      // A staged production deployment: built for production, but the production domains are
+      // only assigned by the explicit promotion, after the caller's post-READY checks (the
+      // launchpad may have been disabled, or deploys paused, while it was building). Same
+      // field as `vercel deploy --prod --skip-domain` (the Vercel CLI sends it in this body).
+      ...(production ? { target: 'production', autoAssignCustomDomains: false } : {}),
+      files: prepared.entries,
+      // As the project was created; install, build and output settings stay Vercel's defaults.
+      projectSettings: { framework: FRAMEWORK },
+      meta: {
+        githubCommitSha: sha,
+        githubCommitRef: input.ref,
+        githubRepo: input.repo,
+        githubOrg,
       },
-      idempotent: true,
+    };
+    const created = await postDeployment(body, {
+      source,
+      repo: input.repo,
+      projectId,
+      sha,
+      target,
+      prepared,
     });
-    const body = parseBody(DeploymentSchema, res, 'deployment');
-    const deployment = toDeployment(body);
+    const deployment = toDeployment(created);
     if (
       production &&
-      body.autoAssignCustomDomains === true &&
+      created.autoAssignCustomDomains === true &&
       !FINAL_STATES.has(deployment.readyState)
     ) {
       // Vercel did not stage it: once READY it would take the production domains before the
@@ -926,15 +1055,337 @@ export function createVercelClient(opts: VercelClientOptions): VercelClient {
         `production deployment ${deployment.id} was not staged (domains would be assigned automatically)`,
       );
     }
+    if (deployment.commitSha !== undefined && deployment.commitSha !== sha) {
+      throw new ServiceError(
+        'vercel',
+        'unexpected',
+        `deployment ${deployment.id} reports commit ${deployment.commitSha} instead of ${sha}`,
+      );
+    }
+    if (deployment.projectId !== undefined && deployment.projectId !== projectId) {
+      throw new ServiceError(
+        'vercel',
+        'unexpected',
+        `deployment ${deployment.id} belongs to another project`,
+      );
+    }
     return deployment;
   }
 
-  async function getDeployment(idOrUrl: string): Promise<VercelDeployment> {
+  /** Head commit of a branch of the client repo (a deployment requested without a sha). */
+  async function branchHead(src: DeploymentSource, repo: string, ref: string): Promise<string> {
+    const head = await src.getBranchHead(repo, ref);
+    if (head === null) {
+      throw new ServiceError('github', 'not_found', `branch ${ref} not found in ${repo}`, {
+        status: 404,
+      });
+    }
+    if (!COMMIT_SHA_RE.test(head)) {
+      throw new ServiceError('github', 'invalid_response', 'invalid branch head');
+    }
+    return head;
+  }
+
+  // --- idempotency lookup --------------------------------------------------------------------
+
+  /** Earlier deployments of the project for a target, filtered on the commit when Vercel can. */
+  async function listEarlierDeployments(
+    projectId: string,
+    sha: string,
+    target: 'production' | 'preview',
+  ): Promise<z.infer<typeof DeploymentListSchema>['deployments']> {
+    const query = { projectId, target, limit: REUSE_LOOKUP_LIMIT };
+    let res: HttpResponse;
+    try {
+      res = await call({
+        method: 'GET',
+        path: '/v6/deployments',
+        // Metadata filter, as `vercel list --meta githubCommitSha=<sha>` sends it.
+        query: { ...query, 'meta-githubCommitSha': sha },
+      });
+    } catch (err) {
+      if (!(err instanceof ServiceError && err.kind === 'validation')) throw err;
+      // The filter was refused: the latest deployments are checked one by one instead.
+      res = await call({ method: 'GET', path: '/v6/deployments', query });
+    }
+    return parseBody(DeploymentListSchema, res, 'deployments').deployments;
+  }
+
+  /**
+   * An earlier deployment of exactly this project, target and commit that has not failed (and,
+   * for production, that is staged or already finished), read in full; undefined when none.
+   */
+  async function findReusableDeployment(
+    projectId: string,
+    sha: string,
+    target: 'production' | 'preview',
+  ): Promise<DeploymentBody | undefined> {
+    let checked = 0;
+    for (const item of await listEarlierDeployments(projectId, sha, target)) {
+      // Cheap pre-checks on the list entry, when it carries the fields.
+      const state = (item.readyState ?? item.state ?? '').toUpperCase();
+      if (state !== '' && !REUSABLE_STATES.has(state)) continue;
+      if (item.meta?.githubCommitSha !== undefined && item.meta.githubCommitSha !== sha) continue;
+      if (
+        item.target !== undefined &&
+        (item.target === 'production') !== (target === 'production')
+      ) {
+        continue;
+      }
+      if (checked >= REUSE_MAX_CHECKS) break;
+      checked++;
+      // The decision is made on the full record only.
+      const full = await getDeploymentBody(item.uid);
+      if (isReusable(full, projectId, sha, target)) return full;
+    }
+    return undefined;
+  }
+
+  function isReusable(
+    d: DeploymentBody,
+    projectId: string,
+    sha: string,
+    target: 'production' | 'preview',
+  ): boolean {
+    const state = d.readyState.toUpperCase();
+    const view = toDeployment(d);
+    return (
+      REUSABLE_STATES.has(state) &&
+      view.projectId === projectId &&
+      view.commitSha === sha &&
+      view.target === target &&
+      // A production deployment that would take the domains by itself is never adopted.
+      !(target === 'production' && d.autoAssignCustomDomains === true && state !== 'READY')
+    );
+  }
+
+  // --- files ---------------------------------------------------------------------------------
+
+  interface PreparedFiles {
+    /** The `files` of the deployment body. */
+    entries: Array<{ file: string; sha: string; size: number; mode: number }>;
+    /** Vercel digest -> git blob id, to read the bytes Vercel asks for. */
+    blobOf: Map<string, string>;
+    /** Contents read during this deployment, by git blob id. */
+    contents: Map<string, Buffer>;
+  }
+
+  function rememberDigest(blobSha: string, digest: string, size: number): void {
+    if (digests.has(blobSha)) return;
+    if (digests.size >= DIGEST_CACHE_MAX) {
+      const oldest = digests.keys().next();
+      if (!oldest.done) digests.delete(oldest.value);
+    }
+    digests.set(blobSha, { digest, size });
+  }
+
+  /** Reads blobs and checks each against its id (whatever the source implementation). */
+  async function readChecked(
+    src: DeploymentSource,
+    repo: string,
+    blobShas: readonly string[],
+  ): Promise<Map<string, Buffer>> {
+    const read = await src.readBlobs(repo, blobShas, { maxBlobBytes: limits.maxFileBytes });
+    const out = new Map<string, Buffer>();
+    for (const blobSha of blobShas) {
+      const content = read.get(blobSha);
+      if (!content || gitBlobSha(content) !== blobSha) {
+        throw new ServiceError('github', 'invalid_response', `blob ${blobSha} was not read intact`);
+      }
+      out.set(blobSha, content);
+    }
+    return out;
+  }
+
+  /** The file list of the commit, with the Vercel digest of every file. */
+  async function prepareFiles(
+    src: DeploymentSource,
+    repo: string,
+    sha: string,
+  ): Promise<PreparedFiles> {
+    const tree = await src.listCommitTree(repo, sha, limits);
+    if (tree.commitSha !== sha) {
+      throw new ServiceError('github', 'invalid_response', 'the tree of another commit was listed');
+    }
+    // Checked here too: the deployment limits hold whatever the source enforced.
+    if (tree.files.length > limits.maxFiles) {
+      throw new ServiceError(
+        'vercel',
+        'invalid_input',
+        `too many files to deploy: ${tree.files.length} (max ${limits.maxFiles})`,
+      );
+    }
+    let total = 0;
+    const paths = new Set<string>();
+    const known = new Map<string, { digest: string; size: number }>();
+    for (const f of tree.files) {
+      if (!isSafeTreePath(f.path) || paths.has(f.path) || !COMMIT_SHA_RE.test(f.blobSha)) {
+        throw new ServiceError(
+          'github',
+          'invalid_response',
+          `invalid file in the tree: ${JSON.stringify(f.path.slice(0, 120))}`,
+        );
+      }
+      paths.add(f.path);
+      if (f.size > limits.maxFileBytes) {
+        throw new ServiceError(
+          'vercel',
+          'invalid_input',
+          `file too large to deploy: ${JSON.stringify(f.path.slice(0, 120))} (${f.size} bytes, max ${limits.maxFileBytes})`,
+        );
+      }
+      total += f.size;
+      const cached = digests.get(f.blobSha);
+      if (cached) known.set(f.blobSha, cached);
+    }
+    if (total > limits.maxTotalBytes) {
+      throw new ServiceError(
+        'vercel',
+        'invalid_input',
+        `files too large to deploy: ${total} bytes in total (max ${limits.maxTotalBytes})`,
+      );
+    }
+
+    // Only blobs whose digest is not known yet are read now.
+    const unknown = [...new Set(tree.files.map((f) => f.blobSha))].filter((b) => !known.has(b));
+    const contents = unknown.length > 0 ? await readChecked(src, repo, unknown) : new Map();
+    for (const [blobSha, content] of contents) {
+      const entry = { digest: sha1Hex(content), size: content.byteLength };
+      known.set(blobSha, entry);
+      rememberDigest(blobSha, entry.digest, entry.size);
+    }
+
+    const entries: PreparedFiles['entries'] = [];
+    const blobOf = new Map<string, string>();
+    for (const f of tree.files) {
+      const k = known.get(f.blobSha);
+      if (!k || k.size !== f.size) {
+        throw new ServiceError('github', 'invalid_response', 'listed size differs from the blob');
+      }
+      entries.push({
+        file: f.path,
+        sha: k.digest,
+        size: f.size,
+        mode: f.executable ? MODE_EXECUTABLE : MODE_REGULAR,
+      });
+      blobOf.set(k.digest, f.blobSha);
+    }
+    return { entries, blobOf, contents };
+  }
+
+  /** Uploads the files Vercel reported missing (each digest once), reading them if needed. */
+  async function uploadMissing(
+    src: DeploymentSource,
+    repo: string,
+    missing: readonly string[],
+    prepared: PreparedFiles,
+  ): Promise<void> {
+    const wanted = [...new Set(missing)];
+    const toRead: string[] = [];
+    for (const digest of wanted) {
+      const blobSha = prepared.blobOf.get(digest);
+      if (blobSha === undefined) {
+        throw new ServiceError(
+          'vercel',
+          'invalid_response',
+          'Vercel asked for a file that is not part of the deployment',
+        );
+      }
+      if (!prepared.contents.has(blobSha)) toRead.push(blobSha);
+    }
+    if (toRead.length > 0) {
+      for (const [blobSha, content] of await readChecked(src, repo, toRead)) {
+        prepared.contents.set(blobSha, content);
+      }
+    }
+    await inPool(wanted, uploadConcurrency, async (digest) => {
+      const content = prepared.contents.get(prepared.blobOf.get(digest) ?? '');
+      if (!content || sha1Hex(content) !== digest) {
+        throw new ServiceError('vercel', 'unexpected', 'file content does not match its digest');
+      }
+      await call({
+        method: 'POST',
+        path: '/v2/files',
+        rawBody: { data: bytesOf(content), contentType: 'application/octet-stream' },
+        headers: { 'x-vercel-digest': digest, 'content-length': String(content.byteLength) },
+        // Content-addressed: a replay stores the same bytes under the same digest.
+        idempotent: true,
+        allowNonJsonResponse: true,
+      });
+    });
+  }
+
+  /**
+   * `POST /v13/deployments`; on `missing_files`, uploads those files and retries once. Never
+   * replayed blindly: after an ambiguous failure the idempotency lookup runs first.
+   */
+  async function postDeployment(
+    body: Record<string, unknown>,
+    ctx: {
+      source: DeploymentSource;
+      repo: string;
+      projectId: string;
+      sha: string;
+      target: 'production' | 'preview';
+      prepared: PreparedFiles;
+    },
+  ): Promise<DeploymentBody> {
+    const path = '/v13/deployments';
+    let uploaded = false;
+    let replayed = false;
+    for (;;) {
+      let res: HttpResponse;
+      try {
+        res = await call({
+          method: 'POST',
+          path,
+          // forceNew: Vercel's deduplication of similar deployments could answer with one of
+          // another commit; reuse is decided by the lookup above, per commit.
+          // skipAutoDetectionConfirmation: the framework is given, never asked back.
+          query: { forceNew: '1', skipAutoDetectionConfirmation: '1' },
+          body,
+          // Each accepted call creates a deployment: not replayed by the HTTP client on a 5xx.
+          idempotent: false,
+          allowStatus: CREATE_REFUSALS,
+        });
+      } catch (err) {
+        if (!replayed && isAmbiguous(err)) {
+          replayed = true;
+          // The deployment may exist although its answer was lost.
+          const earlier = await findReusableDeployment(ctx.projectId, ctx.sha, ctx.target);
+          if (earlier) return earlier;
+          continue;
+        }
+        throw err;
+      }
+      if (res.status >= 200 && res.status < 300) {
+        return parseBody(DeploymentSchema, res, 'deployment');
+      }
+      const missing = missingFilesOf(res);
+      if (missing === undefined) throw refusal('POST', path, res);
+      if (uploaded) {
+        throw new ServiceError(
+          'vercel',
+          'unexpected',
+          `Vercel still reports ${missing.length} missing file(s) after the upload`,
+          { status: res.status, apiCode: 'missing_files' },
+        );
+      }
+      await uploadMissing(ctx.source, ctx.repo, missing, ctx.prepared);
+      uploaded = true;
+    }
+  }
+
+  async function getDeploymentBody(idOrUrl: string): Promise<DeploymentBody> {
     const res = await call({
       method: 'GET',
       path: `/v13/deployments/${seg(idOrUrl.replace(/^https?:\/\//, ''), 'deployment')}`,
     });
-    return toDeployment(parseBody(DeploymentSchema, res, 'deployment'));
+    return parseBody(DeploymentSchema, res, 'deployment');
+  }
+
+  async function getDeployment(idOrUrl: string): Promise<VercelDeployment> {
+    return toDeployment(await getDeploymentBody(idOrUrl));
   }
 
   async function waitForDeployment(id: string, w: WaitOptions = {}): Promise<VercelDeployment> {
@@ -1115,6 +1566,52 @@ export function createVercelClient(opts: VercelClientOptions): VercelClient {
     unpauseProject,
     deleteProject,
   };
+}
+
+/** Vercel's file digest: sha1 of the content, hex. */
+function sha1Hex(content: Uint8Array): string {
+  return createHash('sha1').update(content).digest('hex');
+}
+
+/** The bytes of a Buffer as a plain view (no copy). */
+function bytesOf(content: Buffer): Uint8Array<ArrayBuffer> {
+  return new Uint8Array(content.buffer as ArrayBuffer, content.byteOffset, content.byteLength);
+}
+
+/** A failure after which the request may or may not have been processed. */
+function isAmbiguous(err: unknown): boolean {
+  return (
+    err instanceof ServiceError &&
+    (err.kind === 'network' || err.kind === 'timeout' || err.kind === 'server')
+  );
+}
+
+/** Digests listed by a `missing_files` refusal; undefined for any other answer. */
+function missingFilesOf(res: HttpResponse): string[] | undefined {
+  const parsed = MissingFilesSchema.safeParse(res.json);
+  if (!parsed.success) return undefined;
+  const missing = parsed.data.error.missing ?? [];
+  if (missing.length === 0 || missing.some((d) => !DIGEST_RE.test(d))) {
+    throw new ServiceError(
+      'vercel',
+      'invalid_response',
+      'Vercel reported missing files without valid digests',
+      { status: res.status, apiCode: 'missing_files' },
+    );
+  }
+  return missing;
+}
+
+/** A refused request returned through `allowStatus`, as the HTTP client would have thrown it. */
+function refusal(method: string, path: string, res: HttpResponse): ServiceError {
+  const api = readApiError(res.json);
+  const detail = api.message ? `: ${redactSecrets(api.message).slice(0, 200)}` : '';
+  return new ServiceError(
+    'vercel',
+    res.status === 400 || res.status === 422 ? 'validation' : 'unexpected',
+    `vercel ${method} ${path} failed with ${res.status}${detail}`,
+    { status: res.status, ...(api.code !== undefined ? { apiCode: api.code } : {}) },
+  );
 }
 
 function assertRepoNameLike(repo: string): void {
