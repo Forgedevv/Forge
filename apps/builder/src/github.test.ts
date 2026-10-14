@@ -62,6 +62,8 @@ class FakeGithub {
   readinessDelay = 0;
   /** Number of repo reads (generate response included) that show no template link yet. */
   templateLinkDelay = 0;
+  /** Answer 409 "Git Repository is empty" (not 404) while a generated repo is not ready. */
+  emptyRepoStatus: 404 | 409 = 404;
   protectionStatus = 200;
   stub: FetchStub;
 
@@ -119,6 +121,13 @@ class FakeGithub {
       is_template: name === 'launchpad-template',
       template_repository: r.template ? { full_name: r.template } : null,
     };
+  }
+
+  /** Whether the call's token may read the template (org-wide, or scoped to include it). */
+  canReadTemplate(call: { headers: Record<string, string> }): boolean {
+    const token = (call.headers.authorization ?? '').replace(/^Bearer /, '');
+    const repos = this.mints.find((m) => m.token === token)?.body?.repositories;
+    return repos === undefined || repos.includes('launchpad-template');
   }
 
   /** Like GitHub right after a generation: the template link appears a few reads later. */
@@ -195,7 +204,9 @@ class FakeGithub {
         path: /^\/repos\/forge-org\/lp-[a-z0-9-]+$/,
         handler: (call) => {
           const r = this.repoOf(call.path);
-          return r ? json(this.repoJsonLagging(r.name, r.repo)) : notFound();
+          if (!r) return notFound();
+          const body = this.repoJsonLagging(r.name, r.repo) as Record<string, unknown>;
+          return json(this.canReadTemplate(call) ? body : { ...body, template_repository: null });
         },
       },
       {
@@ -208,7 +219,9 @@ class FakeGithub {
           if (this.readinessDelay > 0 && ref === `heads/${r.repo.defaultBranch}`) {
             this.readinessDelay--;
             if (this.readinessDelay === 0) this.restoreMain(r.repo);
-            return notFound();
+            return this.emptyRepoStatus === 409
+              ? json({ message: 'Git Repository is empty.' }, 409)
+              : notFound();
           }
           const sha = r.repo.refs.get(ref);
           return sha ? json({ ref: `refs/${ref}`, object: { sha } }) : notFound();
@@ -661,6 +674,26 @@ describe('ensureRepoFromTemplate', () => {
     expect(gh.stub.find('POST', `/repos/${ORG}/launchpad-template/generate`)).toHaveLength(1);
   });
 
+  it('reads an existing repo with a token that can see the template link', async () => {
+    const gh = new FakeGithub();
+    gh.addRepo('lp-moonpad');
+    const { repo, created } = await makeClient(gh).ensureRepoFromTemplate({ slug: 'moonpad' });
+    expect(created).toBe(false);
+    expect(repo.templateFullName).toBe(TEMPLATE);
+    const scoped = gh.mints.map((m) => m.body?.repositories).filter(Boolean);
+    expect(scoped).toContainEqual(['lp-moonpad', 'launchpad-template']);
+  });
+
+  it('waits while a generated repo answers 409 "Git Repository is empty"', async () => {
+    const gh = new FakeGithub();
+    gh.readinessDelay = 2;
+    gh.emptyRepoStatus = 409;
+    const { created } = await makeClient(gh, { sleep: async () => {} }).ensureRepoFromTemplate({
+      slug: 'moonpad',
+    });
+    expect(created).toBe(true);
+  });
+
   it('refuses an existing repo that never shows a template link', async () => {
     const gh = new FakeGithub();
     gh.addRepo('lp-bare', { template: null });
@@ -670,7 +703,7 @@ describe('ensureRepoFromTemplate', () => {
       kind: 'conflict',
       message: expect.stringContaining('was not generated from'),
     });
-    expect(sleeps).toHaveLength(20);
+    expect(sleeps).toHaveLength(10);
     expect(gh.stub.find('POST', /generate$/)).toHaveLength(0);
   });
 

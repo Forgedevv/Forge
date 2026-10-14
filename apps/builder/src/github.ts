@@ -607,11 +607,11 @@ export function createGithubClient(opts: GithubClientOptions): GithubClient {
    * for a repo that does not exist (or is not visible to the App), and only then an org-wide
    * metadata-only token is used, which can read names and settings but write nothing.
    */
-  function metadataAuth(repo: string) {
+  function metadataAuth(repo: string, alsoReadable: string[] = []) {
     assertNotDenied(repo);
     return async (): Promise<string> => {
       try {
-        return `Bearer ${(await installationToken([repo], META_PERMS)).token}`;
+        return `Bearer ${(await installationToken([repo, ...alsoReadable], META_PERMS)).token}`;
       } catch (err) {
         if (
           err instanceof ServiceError &&
@@ -664,6 +664,15 @@ export function createGithubClient(opts: GithubClientOptions): GithubClient {
     return withFreshTokenRetry(() => fetchRepo(path, metadataAuth(repo)));
   }
 
+  /**
+   * Like getRepo, with a token that can also read the template: GitHub only fills
+   * `template_repository` for a token allowed to see the template repository.
+   */
+  async function getRepoWithTemplateLink(repo: string): Promise<RepoInfo | null> {
+    const path = base(repo);
+    return withFreshTokenRetry(() => fetchRepo(path, metadataAuth(repo, [templateRepo])));
+  }
+
   async function getTemplateRepo(): Promise<RepoInfo> {
     const path = `/repos/${encodeURIComponent(org)}/${encodeURIComponent(templateRepo)}`;
     const repo = await withFreshTokenRetry(() => fetchRepo(path, metadataAuth(templateRepo)));
@@ -685,9 +694,10 @@ export function createGithubClient(opts: GithubClientOptions): GithubClient {
         method: 'GET',
         path,
         authorization: repoAuth(repo, READ_PERMS),
-        allowStatus: [404],
+        // 409 "Git Repository is empty": a repo still being generated from the template.
+        allowStatus: [404, 409],
       });
-      if (res.status === 404) return null;
+      if (res.status === 404 || res.status === 409) return null;
       return parseBody(RefSchema, res, 'ref').object.sha;
     });
   }
@@ -729,21 +739,22 @@ export function createGithubClient(opts: GithubClientOptions): GithubClient {
       return repo;
     };
     /**
-     * GitHub generates a repo from a template asynchronously: for a few seconds the new repo
-     * (and the generate response) shows no `template_repository` yet. Waits for the link before
-     * judging a repo that has none; a link to another template is refused at once.
+     * The repo is read with a token that can also see the template (getRepoWithTemplateLink),
+     * the only way GitHub shows `template_repository`. A repo still being generated may not show
+     * it yet: a missing link is re-read for a short while, a link to another template is refused
+     * at once.
      */
     const verifyFromTemplate = async (repo: RepoInfo): Promise<RepoInfo> => {
       let current = verifyPrivate(repo);
-      for (let i = 0; current.templateFullName === undefined && i < 20; i++) {
+      for (let i = 0; current.templateFullName === undefined && i < 10; i++) {
         await sleep(1500);
-        current = verifyPrivate((await getRepo(repo.name)) ?? current);
+        current = verifyPrivate((await getRepoWithTemplateLink(repo.name)) ?? current);
       }
       if (current.templateFullName !== templateFullName) throw notFromTemplate(current);
       return current;
     };
 
-    const existing = await getRepo(name);
+    const existing = await getRepoWithTemplateLink(name);
     if (existing) {
       const repo = await verifyFromTemplate(existing);
       await waitForDefaultBranch(repo);
@@ -773,7 +784,7 @@ export function createGithubClient(opts: GithubClientOptions): GithubClient {
     }
     if (res.status === 422) {
       // Most likely the repo appeared between our check and the call (retry or concurrent worker).
-      const raced = await getRepo(name);
+      const raced = await getRepoWithTemplateLink(name);
       if (raced) {
         const repo = await verifyFromTemplate(raced);
         await waitForDefaultBranch(repo);
