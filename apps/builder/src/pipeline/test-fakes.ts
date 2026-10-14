@@ -659,6 +659,8 @@ export interface FakeDeployment extends VercelDeployment {
 }
 
 export class FakeVercel extends Recorder implements PipelineVercel {
+  /** Simulates Vercel publishing a preview as production (no placeholder deployed first). */
+  firstDeploymentIsProduction = false;
   readonly projects = new Map<string, FakeProject>();
   readonly deployments = new Map<string, FakeDeployment>();
   /** State the next deployments end in. */
@@ -737,7 +739,9 @@ export class FakeVercel extends Recorder implements PipelineVercel {
       if (input.sha === undefined || !/^[0-9a-f]{40}$/.test(input.sha)) {
         throw new ServiceError('vercel', 'invalid_input', 'createDeployment needs the commit sha');
       }
-      const target = input.target ?? 'preview';
+      // `firstDeploymentIsProduction`: what Vercel does to the first deployment of a project
+      // without git (vercel.ts deployPlaceholder).
+      const target = this.firstDeploymentIsProduction ? 'production' : (input.target ?? 'preview');
       // Same idempotency rule as vercel.ts: an earlier deployment of this commit, project and
       // target is reused unless it failed.
       const existing = [...this.deployments.values()].find(

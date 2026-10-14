@@ -347,6 +347,12 @@ describe('create: building', () => {
     expect(h.runner.stepsRun()).toEqual(['agent']);
   });
 
+  it('refuses a preview that Vercel published as production', async () => {
+    const h = harness();
+    h.vercel.firstDeploymentIsProduction = true;
+    await expect(runStep(h, building())).rejects.toThrow(/as a production deployment/);
+  });
+
   it('fails when the preview deployment fails', async () => {
     const h = harness();
     h.vercel.nextState = 'ERROR';

@@ -102,6 +102,15 @@ const REUSE_MAX_CHECKS = 5;
 const MODE_REGULAR = 0o100644;
 const MODE_EXECUTABLE = 0o100755;
 const DIGEST_RE = /^[0-9a-f]{40}$/;
+/** Static page served in production until the client's approved site is promoted. */
+const PLACEHOLDER_HTML =
+  '<!doctype html><html lang="en"><head><meta charset="utf-8">' +
+  '<meta name="viewport" content="width=device-width, initial-scale=1">' +
+  '<meta name="robots" content="noindex"><title>Coming soon</title></head>' +
+  '<body style="margin:0;min-height:100vh;display:grid;place-items:center;' +
+  'font-family:system-ui,sans-serif;background:#0b0b10;color:#e9e7f5">' +
+  '<p>This launchpad is being built. Come back soon.</p></body></html>\n';
+const PLACEHOLDER_TIMEOUT_MS = 3 * 60_000;
 /** Statuses of a refused creation that are read (a `missing_files` answer among them). */
 const CREATE_REFUSALS: readonly number[] = [400, 412, 422];
 
@@ -907,7 +916,54 @@ export function createVercelClient(opts: VercelClientOptions): VercelClient {
     // Before anything is pushed to the repo: no deployment may start from anything but the API.
     if (!project.gitDeploymentsDisabled) project = await disableGitDeployments(project.id);
     await setProtection(project.id, protection);
+    if (project.productionDeploymentId === undefined) project = await deployPlaceholder(project);
     return { project, created };
+  }
+
+  /**
+   * Vercel makes the FIRST deployment of a project without git its production deployment, whatever
+   * its target (checked on the API: `staging` too), and gives it the public `*.vercel.app` aliases.
+   * The client's first preview would then be public before approval. So a new project first gets
+   * a static placeholder in production; every later deployment without target is a real preview,
+   * and a staged production one only goes public through the explicit promotion.
+   */
+  async function deployPlaceholder(project: VercelProject): Promise<VercelProject> {
+    const content = Buffer.from(PLACEHOLDER_HTML, 'utf8');
+    const digest = sha1Hex(content);
+    await call({
+      method: 'POST',
+      path: '/v2/files',
+      rawBody: { data: bytesOf(content), contentType: 'application/octet-stream' },
+      headers: { 'x-vercel-digest': digest, 'content-length': String(content.byteLength) },
+      idempotent: true,
+      allowNonJsonResponse: true,
+    });
+    const res = await call({
+      method: 'POST',
+      path: '/v13/deployments',
+      query: { skipAutoDetectionConfirmation: '1' },
+      body: {
+        name: project.name,
+        project: project.id,
+        target: 'production',
+        files: [{ file: 'index.html', sha: digest, size: content.byteLength }],
+        projectSettings: { framework: null },
+        meta: { forgePlaceholder: '1' },
+      },
+      // A replay only creates another identical static placeholder.
+      idempotent: true,
+    });
+    const placeholder = toDeployment(parseBody(DeploymentSchema, res, 'placeholder deployment'));
+    await waitForDeployment(placeholder.id, { timeoutMs: PLACEHOLDER_TIMEOUT_MS });
+    const after = await getProject(project.id);
+    if (!after?.productionDeploymentId) {
+      throw new ServiceError(
+        'vercel',
+        'unexpected',
+        `project ${project.name} still has no production deployment after the placeholder`,
+      );
+    }
+    return after;
   }
 
   async function disableGitDeployments(projectId: string): Promise<VercelProject> {

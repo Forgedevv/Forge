@@ -66,6 +66,7 @@ const projectJson = (over: Record<string, unknown> = {}) => ({
   id: 'prj_123',
   name: 'lp-moonpad',
   link: { type: 'github', org: ORG, repo: 'lp-moonpad' },
+  targets: { production: { id: 'dpl_live' } },
   ...over,
 });
 
@@ -510,6 +511,85 @@ describe('ensureProject: git-triggered deployments', () => {
 });
 
 describe('ensureProject', () => {
+  it('puts a static placeholder in production first, so the first preview is not public', async () => {
+    let production: string | null = null;
+    const { client, stub } = make([
+      {
+        method: 'GET',
+        path: '/v9/projects/lp-moonpad',
+        handler: () => json({ error: { code: 'not_found', message: 'x' } }, 404),
+      },
+      {
+        method: 'POST',
+        path: '/v10/projects',
+        handler: () => json(projectJson({ link: undefined, targets: null })),
+      },
+      {
+        method: 'PATCH',
+        path: '/v9/projects/prj_123',
+        handler: () => json(projectJson({ link: undefined, targets: null })),
+      },
+      { method: 'POST', path: '/v2/files', handler: () => json({}) },
+      {
+        method: 'POST',
+        path: '/v13/deployments',
+        handler: () => json(deploymentJson('BUILDING', { id: 'dpl_ph', target: 'production' })),
+      },
+      {
+        method: 'GET',
+        path: '/v13/deployments/dpl_ph',
+        handler: () => {
+          production = 'dpl_ph';
+          return json(deploymentJson('READY', { id: 'dpl_ph', target: 'production' }));
+        },
+      },
+      {
+        method: 'GET',
+        path: '/v9/projects/prj_123',
+        handler: () =>
+          json(
+            projectJson({
+              link: undefined,
+              targets: production ? { production: { id: production } } : null,
+            }),
+          ),
+      },
+    ]);
+    const out = await client.ensureProject({ slug: 'moonpad' });
+    expect(out.project.productionDeploymentId).toBe('dpl_ph');
+    const created = stub.find('POST', '/v13/deployments');
+    expect(created).toHaveLength(1);
+    const body = created[0]!.body as {
+      target: string;
+      files: Array<{ file: string }>;
+      projectSettings: { framework: unknown };
+    };
+    expect(body.target).toBe('production');
+    expect(body.files.map((f) => f.file)).toEqual(['index.html']);
+    expect(body.projectSettings.framework).toBeNull();
+    // Content-addressed upload of the placeholder page itself.
+    const upload = stub.find('POST', '/v2/files')[0]!;
+    expect(upload.headers['x-vercel-digest']).toMatch(/^[0-9a-f]{40}$/);
+  });
+
+  it('does not deploy a placeholder when the project already has production', async () => {
+    const { client, stub } = make([
+      {
+        method: 'GET',
+        path: '/v9/projects/lp-moonpad',
+        handler: () => json(projectJson({ link: undefined })),
+      },
+      {
+        method: 'PATCH',
+        path: '/v9/projects/prj_123',
+        handler: () => json(projectJson({ link: undefined })),
+      },
+    ]);
+    await client.ensureProject({ slug: 'moonpad' });
+    expect(stub.find('POST', '/v13/deployments')).toHaveLength(0);
+    expect(stub.find('POST', '/v2/files')).toHaveLength(0);
+  });
+
   it('creates a project without a git link and opens previews to the client', async () => {
     const { client, stub } = make([
       {

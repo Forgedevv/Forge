@@ -424,9 +424,17 @@ export async function runBuildStep(
     sha: commit.commitSha,
     target: 'preview',
   });
+  // A preview Vercel made a production deployment would serve the unapproved site publicly
+  // (vercel.ts deployPlaceholder): refused here, before the client is asked to approve it.
+  if (deployment.target !== 'preview') {
+    throw new PipelineError('Vercel created the preview as a production deployment');
+  }
   const ready = await deps.vercel.waitForDeployment(deployment.id, {
     timeoutMs: deps.config.deploymentTimeoutMs,
   });
+  if (ready.target !== 'preview') {
+    throw new PipelineError('Vercel created the preview as a production deployment');
+  }
   if (!/^https:\/\/\S+$/.test(ready.url)) throw new PipelineError('the preview has no https URL');
   return { patch: { preview_url: ready.url } };
 }
