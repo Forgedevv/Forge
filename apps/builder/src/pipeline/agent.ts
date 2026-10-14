@@ -121,12 +121,23 @@ export function interpretAgentRun(run: SandboxRunResult): AgentOutcome {
   } catch {
     parsed = undefined;
   }
+  // What the CLI said about the failure, for the operator log only (control characters removed).
+  const raw = parsed?.result ?? (parsed ? undefined : run.stderr || run.stdout);
+  const detail = raw
+    ? Array.from(raw.slice(0, 500), (c) => (c < ' ' || c === '\u007f' ? ' ' : c)).join('')
+    : undefined;
   if (!run.ok) {
     const reason = parsed?.subtype ? ` (${parsed.subtype})` : '';
-    throw new AgentFailedError(`the agent exited with code ${run.exitCode ?? 'unknown'}${reason}`);
+    throw new AgentFailedError(
+      `the agent exited with code ${run.exitCode ?? 'unknown'}${reason}`,
+      detail,
+    );
   }
   if (parsed && (parsed.is_error === true || (parsed.subtype && parsed.subtype !== 'success'))) {
-    throw new AgentFailedError(`the agent stopped with an error (${parsed.subtype ?? 'error'})`);
+    throw new AgentFailedError(
+      `the agent stopped with an error (${parsed.subtype ?? 'error'})`,
+      detail,
+    );
   }
   return {
     summary: parsed?.result?.slice(0, 2000),

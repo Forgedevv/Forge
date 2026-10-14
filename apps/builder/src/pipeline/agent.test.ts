@@ -68,6 +68,28 @@ describe('agent result', () => {
     ];
     for (const run of fails) expect(() => interpretAgentRun(run)).toThrow(AgentFailedError);
   });
+
+  it('keeps what the CLI said for the operator log, never in the client-facing message', () => {
+    const run = result({
+      ok: false,
+      exitCode: 1,
+      stdout: JSON.stringify({
+        subtype: 'success',
+        is_error: true,
+        result: 'API Error: 401\n{"error":"invalid token"}',
+      }),
+    });
+    let caught: unknown;
+    try {
+      interpretAgentRun(run);
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(AgentFailedError);
+    const err = caught as AgentFailedError;
+    expect(err.message).toBe('the agent exited with code 1 (success)');
+    expect(err.detail).toBe('API Error: 401 {"error":"invalid token"}');
+  });
 });
 
 describe('agent run', () => {

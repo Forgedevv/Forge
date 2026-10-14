@@ -44,9 +44,15 @@ export class PolicyViolationError extends Error {
 
 /** The agent run failed (non-zero exit, timeout, error result). */
 export class AgentFailedError extends Error {
-  constructor(message: string) {
+  /**
+   * Operator-only detail (the start of the CLI's own result text), for the builder log. Never part
+   * of `message`, which reaches the job record and the client.
+   */
+  readonly detail: string | undefined;
+  constructor(message: string, detail?: string) {
     super(message);
     this.name = 'AgentFailedError';
+    this.detail = detail;
   }
 }
 

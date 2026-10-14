@@ -13,6 +13,7 @@ import {
 import type { Alerter } from './alerts.js';
 import type { JobPatch, JobsDb } from './db.js';
 import { EVENT_MESSAGES, failureEventMessage, sanitizeError } from './worker/messages.js';
+import { AgentFailedError } from './pipeline/errors.js';
 
 /*
  * Builder worker: picks up jobs, runs them through a JobHandler, records every transition.
@@ -698,6 +699,9 @@ export class Worker {
       reason === 'timeout'
         ? `job exceeded the maximum duration of ${Math.round(this.o.maxJobMs / 60_000)} minutes`
         : sanitizeError(err);
+    if (err instanceof AgentFailedError && err.detail) {
+      this.logger.warn({ jobId: job.id, detail: err.detail }, 'agent failure detail');
+    }
     await this.fail(job, active, message);
   }
 
