@@ -60,6 +60,8 @@ class FakeGithub {
   generateStatus: 200 | 404 | 422 = 200;
   /** Number of GET ref calls on a freshly generated repo that answer 404 first. */
   readinessDelay = 0;
+  /** Number of repo reads (generate response included) that show no template link yet. */
+  templateLinkDelay = 0;
   protectionStatus = 200;
   stub: FetchStub;
 
@@ -117,6 +119,13 @@ class FakeGithub {
       is_template: name === 'launchpad-template',
       template_repository: r.template ? { full_name: r.template } : null,
     };
+  }
+
+  /** Like GitHub right after a generation: the template link appears a few reads later. */
+  repoJsonLagging(name: string, r: FakeRepo): unknown {
+    if (this.templateLinkDelay <= 0) return this.repoJson(name, r);
+    this.templateLinkDelay--;
+    return { ...(this.repoJson(name, r) as object), template_repository: null };
   }
 
   routes(): Route[] {
@@ -178,7 +187,7 @@ class FakeGithub {
           const body = call.body as { name: string; private: boolean };
           const repo = this.addRepo(body.name, { private: body.private });
           if (this.readinessDelay > 0) repo.refs.clear();
-          return json(this.repoJson(body.name, repo), 201);
+          return json(this.repoJsonLagging(body.name, repo), 201);
         },
       },
       {
@@ -186,7 +195,7 @@ class FakeGithub {
         path: /^\/repos\/forge-org\/lp-[a-z0-9-]+$/,
         handler: (call) => {
           const r = this.repoOf(call.path);
-          return r ? json(this.repoJson(r.name, r.repo)) : notFound();
+          return r ? json(this.repoJsonLagging(r.name, r.repo)) : notFound();
         },
       },
       {
@@ -633,6 +642,35 @@ describe('ensureRepoFromTemplate', () => {
     await expect(client.ensureRepoFromTemplate({ slug: 'foreign' })).rejects.toMatchObject({
       kind: 'conflict',
     });
+    expect(gh.stub.find('POST', /generate$/)).toHaveLength(0);
+  });
+
+  it('does not fail while GitHub has not linked a fresh repo to its template yet', async () => {
+    const gh = new FakeGithub();
+    gh.templateLinkDelay = 3;
+    const sleeps: number[] = [];
+    const client = makeClient(gh, { sleep: async (ms: number) => void sleeps.push(ms) });
+    // First call: the generate response has no template link yet.
+    expect(await client.ensureRepoFromTemplate({ slug: 'moonpad' })).toMatchObject({
+      created: true,
+    });
+    // A retry right after: the repo exists and still shows no link for two more reads.
+    const again = await client.ensureRepoFromTemplate({ slug: 'moonpad' });
+    expect(again).toMatchObject({ created: false, repo: { templateFullName: TEMPLATE } });
+    expect(sleeps.filter((ms) => ms === 1500).length).toBeGreaterThanOrEqual(2);
+    expect(gh.stub.find('POST', `/repos/${ORG}/launchpad-template/generate`)).toHaveLength(1);
+  });
+
+  it('refuses an existing repo that never shows a template link', async () => {
+    const gh = new FakeGithub();
+    gh.addRepo('lp-bare', { template: null });
+    const sleeps: number[] = [];
+    const client = makeClient(gh, { sleep: async (ms: number) => void sleeps.push(ms) });
+    await expect(client.ensureRepoFromTemplate({ slug: 'bare' })).rejects.toMatchObject({
+      kind: 'conflict',
+      message: expect.stringContaining('was not generated from'),
+    });
+    expect(sleeps).toHaveLength(20);
     expect(gh.stub.find('POST', /generate$/)).toHaveLength(0);
   });
 

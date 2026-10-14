@@ -712,7 +712,13 @@ export function createGithubClient(opts: GithubClientOptions): GithubClient {
     const name = repoNameForSlug(input.slug);
     const templateFullName = `${org}/${templateRepo}`;
 
-    const verify = (repo: RepoInfo): RepoInfo => {
+    const notFromTemplate = (repo: RepoInfo) =>
+      new ServiceError(
+        'github',
+        'conflict',
+        `repository ${repo.fullName} exists but was not generated from ${templateFullName}`,
+      );
+    const verifyPrivate = (repo: RepoInfo): RepoInfo => {
       if (!repo.private) {
         throw new ServiceError(
           'github',
@@ -720,21 +726,28 @@ export function createGithubClient(opts: GithubClientOptions): GithubClient {
           `repository ${repo.fullName} exists and is public`,
         );
       }
-      if (repo.templateFullName !== templateFullName) {
-        throw new ServiceError(
-          'github',
-          'conflict',
-          `repository ${repo.fullName} exists but was not generated from ${templateFullName}`,
-        );
-      }
       return repo;
+    };
+    /**
+     * GitHub generates a repo from a template asynchronously: for a few seconds the new repo
+     * (and the generate response) shows no `template_repository` yet. Waits for the link before
+     * judging a repo that has none; a link to another template is refused at once.
+     */
+    const verifyFromTemplate = async (repo: RepoInfo): Promise<RepoInfo> => {
+      let current = verifyPrivate(repo);
+      for (let i = 0; current.templateFullName === undefined && i < 20; i++) {
+        await sleep(1500);
+        current = verifyPrivate((await getRepo(repo.name)) ?? current);
+      }
+      if (current.templateFullName !== templateFullName) throw notFromTemplate(current);
+      return current;
     };
 
     const existing = await getRepo(name);
     if (existing) {
-      verify(existing);
-      await waitForDefaultBranch(existing);
-      return { repo: existing, created: false };
+      const repo = await verifyFromTemplate(existing);
+      await waitForDefaultBranch(repo);
+      return { repo, created: false };
     }
 
     const description = (input.description ?? `FORGE launchpad ${input.slug}`).slice(0, 200);
@@ -762,17 +775,24 @@ export function createGithubClient(opts: GithubClientOptions): GithubClient {
       // Most likely the repo appeared between our check and the call (retry or concurrent worker).
       const raced = await getRepo(name);
       if (raced) {
-        verify(raced);
-        await waitForDefaultBranch(raced);
-        return { repo: raced, created: false };
+        const repo = await verifyFromTemplate(raced);
+        await waitForDefaultBranch(repo);
+        return { repo, created: false };
       }
       throw new ServiceError('github', 'validation', `cannot create repository ${name} (422)`, {
         status: 422,
       });
     }
-    const repo = verify(toRepoInfo(parseBody(RepoSchema, res, 'generated repository')));
-    await waitForDefaultBranch(repo);
-    return { repo, created: true };
+    const generated = verifyPrivate(toRepoInfo(parseBody(RepoSchema, res, 'generated repository')));
+    if (
+      generated.templateFullName !== undefined &&
+      generated.templateFullName !== templateFullName
+    ) {
+      throw notFromTemplate(generated);
+    }
+    // This call generated the repo from the template: the link may show up later, no wait needed.
+    await waitForDefaultBranch(generated);
+    return { repo: generated, created: true };
   }
 
   async function protectDefaultBranch(repo: string, branch?: string): Promise<ProtectionResult> {
