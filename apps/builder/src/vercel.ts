@@ -43,10 +43,13 @@ import {
  * later promoted to production without a rebuild (docs/INTERFACES.md section 4: preview_ready ->
  * deploying -> live).
  *
- * Every non-API deployment is turned off on every project (`ensureProject`). A project created by
- * earlier code may still be linked to its repo (tolerated, never needed, it must be the client's
- * repo): without the policy, a push of `forge/<jobId>` would build a second, uncontrolled preview,
- * and the merge into `main` would ship to production on its own, bypassing the promotion step.
+ * Every non-API deployment is turned off on every project (`ensureProject`). A project without a
+ * git link cannot be deployed by a git webhook at all: nothing more is needed (the Hobby plan has
+ * no deployment policy, `PATCH` answers 403). A project created by earlier code may still be
+ * linked to its repo (tolerated, never needed, it must be the client's repo): without the policy,
+ * a push of `forge/<jobId>` would build a second, uncontrolled preview, and the merge into `main`
+ * would ship to production on its own, bypassing the promotion step; such a project is refused
+ * when the policy cannot be set. Every step re-checks it (`gitDeploymentsDisabled`).
  * Mechanism: the project deployment policy (`PATCH /v9/projects/{id}` with
  * `deploymentPolicy.deploymentSources`) allows only the `rest-api` source in production and
  * preview; per the Vercel API reference, `git` is "git provider webhook" and `rest-api` is "direct
@@ -473,8 +476,9 @@ export interface VercelProject {
   productionDeploymentId: string | undefined;
   paused: boolean;
   /**
-   * True when the project deployment policy only lets the REST API deploy (no git webhook
-   * deployment) in both production and preview.
+   * True when no git webhook can deploy the project: it has no git link at all (how projects are
+   * created now), or its deployment policy only lets the REST API deploy in both production and
+   * preview (required for a linked project; the Hobby plan offers no deployment policy).
    */
   gitDeploymentsDisabled: boolean;
 }
@@ -689,13 +693,17 @@ function toProject(p: z.infer<typeof ProjectSchema>): VercelProject {
     p.link?.type === 'github' && p.link.org && p.link.repo
       ? `${p.link.org}/${p.link.repo}`
       : undefined;
+  // Any link (whatever the provider, even partial) counts: only an unlinked project cannot be
+  // deployed by a git webhook without the policy.
+  const linked = p.link !== null && p.link !== undefined;
   return {
     id: p.id,
     name: p.name,
     linkedRepo,
     productionDeploymentId: p.targets?.production?.id ?? undefined,
     paused: p.paused === true,
-    gitDeploymentsDisabled: apiOnlyPolicyHolds(p.deploymentPolicy?.deploymentSources ?? []),
+    gitDeploymentsDisabled:
+      !linked || apiOnlyPolicyHolds(p.deploymentPolicy?.deploymentSources ?? []),
   };
 }
 

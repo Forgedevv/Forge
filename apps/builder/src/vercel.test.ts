@@ -547,8 +547,67 @@ describe('ensureProject', () => {
       framework: 'nextjs',
     });
     expect(stub.find('POST', /\/link$/)).toHaveLength(0);
-    expect(policyPatches(stub)).toHaveLength(1);
+    // Unlinked: no git webhook can deploy it, so no deployment policy is needed (Hobby has none).
+    expect(policyPatches(stub)).toHaveLength(0);
     expect(protectionPatch(stub)?.body).toEqual({ ssoProtection: null });
+  });
+
+  it('works on the Hobby plan, which has no deployment policy, for an unlinked project', async () => {
+    const { client, stub } = make([
+      {
+        method: 'GET',
+        path: '/v9/projects/lp-moonpad',
+        handler: () => json(projectJson({ link: undefined })),
+      },
+      {
+        method: 'PATCH',
+        path: '/v9/projects/prj_123',
+        handler: (call) =>
+          (call.body as { deploymentPolicy?: unknown }).deploymentPolicy
+            ? json(
+                {
+                  error: {
+                    code: 'forbidden',
+                    message:
+                      'Deployment policies are not available for Hobby, upgrade to Pro or Enterprise.',
+                  },
+                },
+                403,
+              )
+            : json(projectJson({ link: undefined })),
+      },
+    ]);
+    const out = await client.ensureProject({ slug: 'moonpad' });
+    expect(out.project.gitDeploymentsDisabled).toBe(true);
+    expect(policyPatches(stub)).toHaveLength(0);
+  });
+
+  it('refuses a linked project whose deployment policy cannot be set (Hobby)', async () => {
+    const { client } = make([
+      {
+        method: 'GET',
+        path: '/v9/projects/lp-moonpad',
+        handler: () => json(projectJson({ deploymentPolicy: undefined })),
+      },
+      {
+        method: 'PATCH',
+        path: '/v9/projects/prj_123',
+        handler: () =>
+          json(
+            {
+              error: {
+                code: 'forbidden',
+                message:
+                  'Deployment policies are not available for Hobby, upgrade to Pro or Enterprise.',
+              },
+            },
+            403,
+          ),
+      },
+    ]);
+    await expect(client.ensureProject({ slug: 'moonpad' })).rejects.toMatchObject({
+      kind: expect.stringMatching(/auth|forbidden|unexpected/),
+    });
   });
 
   it('can restrict previews to Vercel Authentication scopes', async () => {
