@@ -1,7 +1,7 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createMockController } from '../mocks/client';
-import { PaymentScreen } from './payment';
+import { PaymentScreen, QUOTE_TX_FRESH_MS } from './payment';
 import { WorkspaceProvider } from './provider';
 import { paymentCopy as copy } from './content/payment';
 
@@ -80,5 +80,39 @@ describe('payment already sent', () => {
     expect(screen.queryByRole('button', { name: /Pay and start/ })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: copy.fresh })).not.toBeInTheDocument();
     expect(controller.snapshot().jobs['demo-job']?.status).toBe('spec_ready');
+  });
+});
+
+describe('stale quoted transaction', () => {
+  it('pays the quote as is when the page was opened a moment ago', async () => {
+    const { getQuote, payQuote } = mount('payment:ready');
+    await advance(500);
+    fireEvent.click(screen.getByRole('button', { name: /Pay and start/ }));
+    await advance(1000);
+    expect(getQuote).toHaveBeenCalledTimes(1);
+    expect(payQuote).toHaveBeenCalledTimes(1);
+  });
+
+  it('asks for a fresh transaction before signing once its blockhash may have expired', async () => {
+    const { getQuote, payQuote } = mount('payment:ready');
+    await advance(500);
+    await advance(QUOTE_TX_FRESH_MS + 1000);
+    fireEvent.click(screen.getByRole('button', { name: /Pay and start/ }));
+    await advance(1000);
+    expect(getQuote).toHaveBeenCalledTimes(2);
+    expect(payQuote).toHaveBeenCalledTimes(1);
+    expect(payQuote.mock.calls[0]?.[0]).toEqual(await getQuote.mock.results[1]?.value);
+  });
+
+  it('does not pay an amount the owner has not seen', async () => {
+    const { getQuote, payQuote } = mount('payment:ready');
+    await advance(500);
+    const first = await getQuote.mock.results[0]?.value;
+    getQuote.mockResolvedValueOnce({ ...first, lamports: String(BigInt(first.lamports) + 1n) });
+    await advance(QUOTE_TX_FRESH_MS + 1000);
+    fireEvent.click(screen.getByRole('button', { name: /Pay and start/ }));
+    await advance(1000);
+    expect(getQuote).toHaveBeenCalledTimes(2);
+    expect(payQuote).not.toHaveBeenCalled();
   });
 });

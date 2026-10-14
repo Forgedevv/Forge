@@ -24,6 +24,9 @@ import { common } from './content/common';
 /** Statuses reached once the payment is confirmed (the job left `spec_ready`). */
 const AWAITING_PAYMENT: ReadonlySet<JobStatus> = new Set(['spec_ready']);
 
+/** A quoted transaction older than this is rebuilt before signing (its blockhash lives ~60 s). */
+export const QUOTE_TX_FRESH_MS = 20_000;
+
 /** A sent payment that is not settled: confirmation is retried, a new quote is never offered. */
 function SentPaymentNotice({
   result,
@@ -95,6 +98,8 @@ export function PaymentScreen({
     [expired, setExpired] = useState(false),
     [generation, setGeneration] = useState(0);
   const lock = useRef(false);
+  // When the quote on screen (and its transaction) was fetched.
+  const quotedAt = useRef(0);
   const hasJob = Boolean(job);
   const paid = Boolean(job && !AWAITING_PAYMENT.has(job.status));
   const kind = job?.type === 'modify_launchpad' ? 'modification' : 'creation';
@@ -143,6 +148,7 @@ export function PaymentScreen({
       .getQuote(jobId, kind)
       .then((value) => {
         if (!cancelled) {
+          quotedAt.current = Date.now();
           setQuote(value);
           setExpired(Date.parse(value.expiresAt) <= Date.now());
         }
@@ -170,7 +176,22 @@ export function PaymentScreen({
     lock.current = true;
     setError('');
     try {
-      finish(await api.payQuote(quote, setPhase));
+      let current = quote;
+      // The quoted transaction carries a blockhash that lives about 60 s: past QUOTE_TX_FRESH_MS,
+      // ask again. The server hands the same quote back with a freshly built transaction (or a
+      // new quote when little validity is left).
+      if (Date.now() - quotedAt.current > QUOTE_TX_FRESH_MS) {
+        const fresh = await api.getQuote(jobId, kind);
+        quotedAt.current = Date.now();
+        setQuote(fresh);
+        if (fresh.lamports !== quote.lamports) {
+          // Another amount than the one on screen: show it, the user pays it with a new click.
+          setExpired(Date.parse(fresh.expiresAt) <= Date.now());
+          return;
+        }
+        current = fresh;
+      }
+      finish(await api.payQuote(current, setPhase));
     } catch (e) {
       setError(readableError(e));
       setPhase('error');
