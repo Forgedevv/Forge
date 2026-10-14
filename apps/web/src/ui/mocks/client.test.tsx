@@ -83,6 +83,46 @@ describe('contract mocks', () => {
     expect(controller.snapshot().jobs['demo-job']!.status).toBe('awaiting_owner_signature');
     controller.dispose();
   });
+  it('starts a refunded draft again once, then pays and builds the new creation job', async () => {
+    const controller = createMockController('dashboard:refunded');
+    const api: WebClient = controller.client;
+    const first = api.retryLaunchpad('demo-pad');
+    await advance(500);
+    const { jobId } = await first;
+    expect(jobId).toBe('demo-restart-job');
+    expect(controller.snapshot().pads[0]).toMatchObject({
+      status: 'draft',
+      canStartAgain: false,
+      activeJobId: jobId,
+      activeJobStatus: 'spec_ready',
+    });
+    // Idempotent while the new job awaits payment.
+    const again = api.retryLaunchpad('demo-pad');
+    await advance(500);
+    expect(await again).toEqual({ jobId });
+    const quotePromise = api.getQuote(jobId, 'creation');
+    await advance(500);
+    const payment = api.payQuote(await quotePromise, () => undefined);
+    await advance(1800);
+    await payment;
+    expect(controller.snapshot().jobs[jobId]!.status).toBe('paid');
+    expect(controller.snapshot().jobs['demo-job']!.status).toBe('refunded');
+    expect(controller.snapshot().pads[0]!.activeJobStatus).toBe('paid');
+    controller.dispose();
+  });
+  it('refuses to start again a launchpad that was not refunded, or while signups are paused', async () => {
+    const live = createMockController('dashboard:one');
+    const refused = live.client.retryLaunchpad('demo-pad').catch((e: unknown) => e);
+    await advance(500);
+    expect(await refused).toBeInstanceOf(Error);
+    live.dispose();
+    const paused = createMockController('dashboard:refunded');
+    paused.snapshot().signupsPaused = true;
+    const attempt = paused.client.retryLaunchpad('demo-pad').catch((e: unknown) => e);
+    await advance(500);
+    expect(await attempt).toMatchObject({ code: 'SIGNUPS_PAUSED' });
+    paused.dispose();
+  });
   it('preserves rejected signatures without changing balances', async () => {
     const controller = createMockController('dashboard:claim-rejected');
     const phases: TxPhase[] = [];

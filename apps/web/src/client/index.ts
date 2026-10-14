@@ -10,6 +10,7 @@ import {
   reactivateLaunchpad,
   requestModification,
   resumePayment,
+  retryLaunchpad,
   signOwnerTransaction,
 } from './actions';
 import type { ForgeWebClient } from './types';
@@ -40,6 +41,7 @@ export {
   reactivateLaunchpad,
   requestModification,
   resumePayment,
+  retryLaunchpad,
   shortAddress,
   signOwnerTransaction,
   useBetaAccess,
@@ -70,6 +72,7 @@ export const realClient: ForgeWebClient = {
   useLaunchpad,
   claimPartnerFees,
   reactivateLaunchpad,
+  retryLaunchpad,
   formatSol,
   formatUsd,
   shortAddress,

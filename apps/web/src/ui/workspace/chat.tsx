@@ -1,11 +1,21 @@
 'use client';
+import Link from 'next/link';
 import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import type { LaunchpadSpec } from '@forge/shared';
+import type { LaunchpadSpec, LaunchpadSummary } from '@forge/shared';
 import { useWebClient } from './provider';
-import { Button, Card, ErrorNotice, Heading, Loading, readableError } from './components';
+import {
+  ActionLink,
+  Button,
+  Card,
+  ErrorNotice,
+  Heading,
+  Loading,
+  readableError,
+} from './components';
 import { GatingScreen } from './gating';
 import { SpecSummary } from './spec-summary';
+import { StartAgainButton, draftNext, useStartAgain } from './start-again';
 import { chatCopy as copy } from './content/chat';
 import { common } from './content/common';
 import { Muse } from '../muse';
@@ -16,6 +26,10 @@ export function NewScreen({ launchpadId }: { launchpadId?: string }) {
   const { launchpad, loading } = api.useLaunchpad(launchpadId ?? '');
   if (launchpadId && loading) return <Loading />;
   if (launchpadId && !launchpad) return <ErrorNotice message={common.missing} />;
+  // A change can only be requested for a live launchpad: say why instead of opening the chat.
+  if (launchpad && launchpad.status !== 'live') {
+    return <ChangeUnavailable launchpad={launchpad} signupsPaused={signupsPaused} />;
+  }
   return signupsPaused && !launchpadId ? (
     <ErrorNotice message={common.paused} />
   ) : (
@@ -23,6 +37,72 @@ export function NewScreen({ launchpadId }: { launchpadId?: string }) {
       <ChatScreen launchpadId={launchpadId} />
     </GatingScreen>
   );
+}
+
+/** The change chat of a launchpad that is not live: what it is waiting for, and the next step. */
+export function ChangeUnavailable({
+  launchpad,
+  signupsPaused,
+}: {
+  launchpad: LaunchpadSummary;
+  signupsPaused: boolean;
+}) {
+  const restart = useStartAgain(launchpad.id);
+  const next = draftNext(launchpad);
+  const text = copy.unavailable;
+  const [title, body] =
+    launchpad.status === 'sleeping'
+      ? [text.sleepingTitle, text.sleeping]
+      : launchpad.status === 'disabled'
+        ? [text.disabledTitle, text.disabled]
+        : [text.draftTitle, next.kind === 'start_again' ? text.refunded : text.draft];
+  const detailHref = `/launchpads/${encodeURIComponent(launchpad.id)}`;
+  return (
+    <>
+      <Link className="fw-back" href={detailHref}>
+        ← {text.details}
+      </Link>
+      <Heading eyebrow={copy.eyebrow} title={title}>
+        {body}
+      </Heading>
+      <Card>
+        <h2>{launchpad.name}</h2>
+        {next.kind === 'start_again' && signupsPaused && (
+          <p className="fw-notice" role="status">
+            {common.paused}
+          </p>
+        )}
+        <div className="fw-actions">
+          {next.kind === 'start_again' && !signupsPaused && <StartAgainButton state={restart} />}
+          {next.kind === 'continue' && <ActionLink href={next.href}>{common.continue}</ActionLink>}
+          {launchpad.status === 'sleeping' && (
+            <ActionLink href="/dashboard">{common.dashboard}</ActionLink>
+          )}
+          <ActionLink href={detailHref} secondary>
+            {text.details}
+          </ActionLink>
+        </div>
+        {restart.error && <ErrorNotice message={restart.error} />}
+      </Card>
+    </>
+  );
+}
+
+/**
+ * Why a change cannot be confirmed for this launchpad right now, or null when it can. Not loaded
+ * yet counts as "not now" (empty message): the confirmation is only offered once it is known.
+ */
+function changeBlocked(
+  launchpad: Pick<LaunchpadSummary, 'status' | 'activeJobId' | 'activeJobStatus'> | null,
+): string | null {
+  if (!launchpad) return '';
+  if (launchpad.status !== 'live') {
+    return launchpad.status === 'sleeping' ? copy.unavailable.sleeping : copy.unavailable.draft;
+  }
+  // A change awaiting payment is rewritten; one paid or further along blocks a new request.
+  const status = launchpad.activeJobStatus;
+  if (launchpad.activeJobId && status && status !== 'spec_ready') return copy.changeInProgress;
+  return null;
 }
 export function ChatScreen({
   launchpadId,
@@ -46,13 +126,18 @@ export function ChatScreen({
     end.current?.scrollIntoView?.({ block: 'nearest', behavior: 'instant' });
   }, [chat.messages]);
   const lastAssistant = chat.messages.map((m) => m.role).lastIndexOf('assistant');
+  const blocked = launchpadId ? changeBlocked(launchpad) : null;
+  // Offered only when the server can accept it: a complete blueprint, a conversation, and for a
+  // change a live launchpad with no other change in progress.
+  const canConfirm =
+    chat.validation.complete && !chat.streaming && Boolean(chat.conversationId) && blocked === null;
   const museMood = chat.streaming ? 'thinking' : text.trim() ? 'listening' : 'idle';
   const request = chat.messages
     .filter((message) => message.role === 'user')
     .map((message) => message.content)
     .join('\n');
   const confirm = async () => {
-    if (lock.current || !chat.validation.complete || !chat.conversationId || chat.streaming) return;
+    if (lock.current || !canConfirm || !chat.conversationId) return;
     lock.current = true;
     setBusy(true);
     setError('');
@@ -108,7 +193,7 @@ export function ChatScreen({
               {copy.limited}
             </p>
           )}
-          {chat.validation.complete && !chat.streaming && (
+          {canConfirm && (
             // Next to the conversation, so the owner does not scroll the blueprint to confirm.
             <div className="fw-chat-ready" role="status">
               <p>
@@ -119,6 +204,11 @@ export function ChatScreen({
                 {busy ? copy.confirming : launchpadId ? copy.confirmChange : copy.confirm} ↗
               </Button>
             </div>
+          )}
+          {blocked && chat.validation.complete && !chat.streaming && (
+            <p className="fw-notice" role="status">
+              {blocked}
+            </p>
           )}
           <form
             className="fw-composer"
@@ -173,10 +263,7 @@ export function ChatScreen({
           </details>
           <div className="fw-summary-confirm">
             <p className="fw-caption">{copy.edit}</p>
-            <Button
-              disabled={!chat.validation.complete || chat.streaming || busy}
-              onClick={confirm}
-            >
+            <Button disabled={!canConfirm || busy} onClick={confirm}>
               {busy ? copy.confirming : launchpadId ? copy.confirmChange : copy.confirm} ↗
             </Button>
           </div>

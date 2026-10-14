@@ -6,6 +6,7 @@ import { createClaimsService } from './claims';
 import { createLaunchpadsHandlers, type LaunchpadsHandlers } from './handlers';
 import { createModificationsService } from './modifications';
 import { createReactivateService } from './reactivate';
+import { createRetryService } from './retry';
 import { createLaunchpadReads } from './summary';
 
 /* Production wiring of the launchpad routes (app/api/launchpads/**, except `[id]/uploads`). */
@@ -35,6 +36,11 @@ function getLaunchpadsHandlers(): LaunchpadsHandlers {
       gating: (wallet) => getDefaultGatingCheck()(wallet),
     }),
     reactivation: createReactivateService({ store, logger }),
+    retries: createRetryService({
+      store,
+      logger,
+      gating: (wallet) => getDefaultGatingCheck()(wallet),
+    }),
     rateLimiter: runtime.rateLimiter,
     logger,
   });
@@ -78,4 +84,8 @@ export function handleRequestModification(
 
 export function handleReactivate(request: Request, context: IdRouteContext): Promise<Response> {
   return withHandlers('launchpads:reactivate', (h) => h.reactivate(request, context));
+}
+
+export function handleRetryLaunchpad(request: Request, context: IdRouteContext): Promise<Response> {
+  return withHandlers('launchpads:retry', (h) => h.retry(request, context));
 }

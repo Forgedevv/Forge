@@ -51,6 +51,14 @@ export interface LaunchpadSummary {
   claimablePartnerFeesLamports: Lamports;
   includedModificationsLeft: number;
   activeJobId: string | null;
+  /** Status of `activeJobId` (null without one). Absent from older servers. */
+  activeJobStatus?: JobStatus | null;
+  /**
+   * A draft whose creation was refunded, with nothing in progress: `retryLaunchpad` can start it
+   * again with the same blueprint. The server re-checks everything (payments, refunds, kill
+   * switches, access) when asked. Absent from older servers: then treated as false.
+   */
+  canStartAgain?: boolean;
 }
 
 export interface LaunchpadDetail extends LaunchpadSummary {
@@ -203,6 +211,8 @@ export interface WebClient {
   useLaunchpad(id: string): UseLaunchpadResult;
   claimPartnerFees(launchpadId: string, onPhase: OnTxPhase): Promise<TxResult>;
   reactivateLaunchpad(launchpadId: string): Promise<void>;
+  /** "Start again" on a refunded draft: the new (or still unpaid) creation job, to pay next. */
+  retryLaunchpad(launchpadId: string): Promise<{ jobId: string }>;
   formatSol(lamports: Lamports, opts?: FormatSolOptions): string;
   formatUsd(n: number): string;
   shortAddress(a: string): string;

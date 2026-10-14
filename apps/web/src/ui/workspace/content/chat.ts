@@ -25,6 +25,18 @@ export const chatCopy = {
   included: 'Included changes left',
   request: 'Your change request',
   confirmChange: 'Confirm this change',
+  changeInProgress: 'A change is already in progress. You can request another one once it is live.',
+  unavailable: {
+    draftTitle: 'This launchpad is not live yet.',
+    draft: 'Changes can be requested once it is live. Finish its creation first.',
+    refunded:
+      'Its last build was refunded, so there is nothing to change yet. Start again with the same blueprint and name.',
+    sleepingTitle: 'This launchpad is sleeping.',
+    sleeping: 'Reactivate it from your dashboard before requesting a change.',
+    disabledTitle: 'This launchpad has been disabled.',
+    disabled: 'It can no longer be changed.',
+    details: 'View the launchpad',
+  },
   labels: {
     name: 'Launchpad name',
     slug: 'Site address',

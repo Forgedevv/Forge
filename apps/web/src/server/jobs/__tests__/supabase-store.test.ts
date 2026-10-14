@@ -8,6 +8,7 @@ import { SupabaseRoutesStore } from '../supabase-store';
 interface Result {
   data?: unknown;
   error?: { code?: string; message?: string } | null;
+  count?: number | null;
 }
 
 /** Chainable PostgREST builder double recording every call. */
@@ -25,10 +26,11 @@ function fakeDb(results: Result[]) {
           get(_target, prop) {
             if (prop === 'then') {
               return (resolve: (v: unknown) => unknown, reject: (e: unknown) => unknown) =>
-                Promise.resolve({ data: result.data ?? null, error: result.error ?? null }).then(
-                  resolve,
-                  reject,
-                );
+                Promise.resolve({
+                  data: result.data ?? null,
+                  error: result.error ?? null,
+                  count: result.count ?? null,
+                }).then(resolve, reject);
             }
             return (...args: unknown[]) => {
               entry.ops.push([String(prop), args]);
@@ -210,6 +212,64 @@ describe('SupabaseRoutesStore owner filters', () => {
     expect(error).toBeInstanceOf(StoreError);
     expect((error as StoreError).dbCode).toBe('57014');
     expect((error as Error).message).not.toContain('secret');
+  });
+
+  it('reads the payments and open anomalies of jobs through the owner of their launchpad', async () => {
+    const payment = {
+      job_id: 'j1',
+      status: 'refunded',
+      tx_signature: 'tx',
+      refund_signature: null,
+      quote_expires_at: '2026-10-10T00:02:00Z',
+    };
+    const { store, calls } = fakeDb([{ data: [payment] }, { count: 2 }]);
+    expect(await store.listJobPayments(W, ['j1', 'j1'])).toEqual([
+      {
+        jobId: 'j1',
+        status: 'refunded',
+        txSignature: 'tx',
+        refundSignature: null,
+        quoteExpiresAt: '2026-10-10T00:02:00Z',
+      },
+    ]);
+    expect(await store.countOpenPaymentAnomalies(W, ['j1'])).toBe(2);
+    expect(calls.map((c) => c.table)).toEqual(['payments', 'payment_anomalies']);
+    for (const call of calls) {
+      const select = call.ops.find(([op]) => op === 'select')![1][0] as string;
+      expect(select).toContain('jobs!inner(launchpads!inner(owner_wallet))');
+      expect(ownerFilters(call.ops)).toContainEqual(['jobs.launchpads.owner_wallet', W]);
+      expect(call.ops).toContainEqual(['in', ['job_id', ['j1']]]);
+    }
+    expect(calls[1]!.ops).toContainEqual(['is', ['resolved_at', null]]);
+    // Payments of any payer: the filter is the owner of the launchpad, never payer_wallet.
+    expect(ownerFilters(calls[0]!.ops).map(([column]) => column)).not.toContain('payer_wallet');
+  });
+
+  it('fails closed when the anomalies cannot be counted, and skips empty lists', async () => {
+    const { store, calls } = fakeDb([{ data: null }, { error: { code: '42P01' } }]);
+    await expect(store.countOpenPaymentAnomalies(W, ['j1'])).rejects.toBeInstanceOf(StoreError);
+    const error = await store.countOpenPaymentAnomalies(W, ['j1']).catch((e: unknown) => e);
+    expect((error as StoreError).dbCode).toBe('42P01');
+    expect(await store.listJobPayments(W, [])).toEqual([]);
+    expect(await store.countOpenPaymentAnomalies(W, [])).toBe(0);
+    expect(calls).toHaveLength(2);
+  });
+
+  it('inserts a creation job in spec_ready and reports a unique violation by its code', async () => {
+    const row = { ...JOB, id: 'j9', status: 'spec_ready', owner_tx: null, attempts: 0 };
+    const { store, calls } = fakeDb([{ data: row }, { error: { code: '23505', message: 'dup' } }]);
+    expect(await store.insertCreationJob('lp1')).toMatchObject({
+      id: 'j9',
+      type: 'create_launchpad',
+      status: 'spec_ready',
+    });
+    expect(calls[0]!.ops[0]).toEqual([
+      'insert',
+      [{ launchpad_id: 'lp1', type: 'create_launchpad', status: 'spec_ready' }],
+    ]);
+    const error = await store.insertCreationJob('lp1').catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(StoreError);
+    expect((error as StoreError).dbCode).toBe('23505');
   });
 
   it('rejects unexpected rows', async () => {

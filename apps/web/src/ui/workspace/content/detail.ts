@@ -17,4 +17,6 @@ export const detailCopy = {
   openJob: 'View job',
   preview: 'View preview',
   modify: 'Request a change',
+  refunded:
+    'The last build of this launchpad was refunded. Start again: your blueprint, name and site address are kept, and you pay again once.',
 } as const;

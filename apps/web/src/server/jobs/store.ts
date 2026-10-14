@@ -1,4 +1,11 @@
-import { FailedStage, JobStatus, JobType, LaunchpadStatus, type FlagKey } from '@forge/shared';
+import {
+  FailedStage,
+  JobStatus,
+  JobType,
+  LaunchpadStatus,
+  PaymentStatus,
+  type FlagKey,
+} from '@forge/shared';
 import { z } from 'zod';
 
 /*
@@ -67,6 +74,15 @@ export interface OwnedJob {
   launchpad: LaunchpadRecord;
 }
 
+/** What "start again" needs to know about the payments of a job (any payer). */
+export interface JobPaymentRecord {
+  jobId: string;
+  status: PaymentStatus;
+  txSignature: string | null;
+  refundSignature: string | null;
+  quoteExpiresAt: string;
+}
+
 export interface RoutesStore {
   /** The job and its launchpad, only when the launchpad belongs to `wallet`. */
   getOwnedJob(jobId: string, wallet: string): Promise<OwnedJob | null>;
@@ -100,6 +116,21 @@ export interface RoutesStore {
   ): Promise<boolean>;
   /** Deletes a modification job still in `spec_ready` (lost insertion race). */
   deletePendingModificationJob(jobId: string, launchpadId: string): Promise<boolean>;
+  /**
+   * Every payment of the given jobs (whoever paid), restricted to jobs of `wallet`'s launchpads.
+   */
+  listJobPayments(wallet: string, jobIds: readonly string[]): Promise<JobPaymentRecord[]>;
+  /**
+   * Payment anomalies not resolved yet (supabase/migrations/0008: money held for a manual refund)
+   * of the given jobs, restricted to jobs of `wallet`'s launchpads.
+   */
+  countOpenPaymentAnomalies(wallet: string, jobIds: readonly string[]): Promise<number>;
+  /**
+   * New `create_launchpad` job in `spec_ready` ("start again"). The database holds at most one
+   * creation job that is not refunded per launchpad (migration 0010): a concurrent insert fails
+   * with a StoreError whose dbCode is 23505.
+   */
+  insertCreationJob(launchpadId: string): Promise<JobRecord>;
   /**
    * Conditional launchpad status change for a launchpad of `wallet`. `lastTradeAt` resets the
    * dormancy clock.
@@ -184,6 +215,14 @@ const RefundRowSchema = z.object({
   refund_signature: z.string().nullable().optional(),
 });
 
+const JobPaymentRowSchema = z.object({
+  job_id: z.string(),
+  status: PaymentStatus,
+  tx_signature: z.string().nullable().optional(),
+  refund_signature: z.string().nullable().optional(),
+  quote_expires_at: z.string(),
+});
+
 function parse<T>(schema: z.ZodType<T>, row: unknown, what: string): T {
   const parsed = schema.safeParse(row);
   if (!parsed.success) throw new StoreError(`unexpected ${what} row`);
@@ -234,6 +273,17 @@ export function parseJobEventRow(row: unknown): JobEventRecord {
 export function parseConversationRow(row: unknown): ConversationRecord {
   const r = parse(ConversationRowSchema, row, 'conversation');
   return { id: r.id, ownerWallet: r.owner_wallet, launchpadId: r.launchpad_id ?? null };
+}
+
+export function parseJobPaymentRow(row: unknown): JobPaymentRecord {
+  const r = parse(JobPaymentRowSchema, row, 'payment');
+  return {
+    jobId: r.job_id,
+    status: r.status,
+    txSignature: r.tx_signature ?? null,
+    refundSignature: r.refund_signature ?? null,
+    quoteExpiresAt: r.quote_expires_at,
+  };
 }
 
 /** Null for a refunded payment whose refund signature is not recorded yet. */

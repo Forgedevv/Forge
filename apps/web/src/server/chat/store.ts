@@ -90,6 +90,9 @@ export interface ChatStore {
  * "Unpaid" = every job of the launchpad is still `spec_ready` and no payment is confirmed or
  * carries a signature. A quote that is open, or expired less than `quoteGraceMs` ago, also keeps
  * the slug (the client may still be confirming a payment it sent in time).
+ * A draft whose creation was paid then refunded is therefore "paid" here: it keeps its slug and
+ * does not count as an unpaid draft, so its owner can start it again with the same name
+ * (POST /api/launchpads/:id/retry, launchpads/retry.ts), which reserves no new slug.
  */
 export const DRAFT_POLICY = {
   maxUnpaidDrafts: 3,
@@ -529,9 +532,11 @@ export class SupabaseChatStore implements ChatStore {
   }
 
   /**
-   * One `create_launchpad` job per launchpad, guaranteed by the unique partial index
-   * `jobs_one_create_per_launchpad_idx`: a concurrent insert fails with 23505 and the winner's
-   * row is read back.
+   * The launchpad's creation job, created when it has none. At most one creation job that is not
+   * refunded per launchpad, guaranteed by the unique partial index
+   * `jobs_one_open_create_per_launchpad_idx` (migration 0010): a concurrent insert fails with
+   * 23505 and the winner's row is read back. A refunded creation is only ever started again by
+   * POST /api/launchpads/:id/retry, never here.
    */
   private async ensureCreateJob(launchpadId: string): Promise<string> {
     const existing = await this.findCreateJob(launchpadId);
@@ -548,12 +553,14 @@ export class SupabaseChatStore implements ChatStore {
     return winner;
   }
 
+  /** The newest creation job: a launchpad started again also keeps its refunded attempts. */
   private async findCreateJob(launchpadId: string): Promise<string | null> {
     const found = await this.sb
       .from('jobs')
       .select('id')
       .eq('launchpad_id', launchpadId)
       .eq('type', 'create_launchpad')
+      .order('created_at', { ascending: false })
       .limit(1);
     if (found.error) fail('job select', found.error);
     const first = found.data?.[0];

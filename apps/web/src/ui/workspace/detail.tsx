@@ -14,12 +14,18 @@ import { SpecSummary } from './spec-summary';
 import { detailCopy as copy } from './content/detail';
 import { common } from './content/common';
 import { safeUrl } from './safe-url';
+import { StartAgainButton, draftNext, useStartAgain } from './start-again';
 
 export function DetailScreen({ launchpadId }: { launchpadId: string }) {
-  const { launchpad, loading, error, refresh } = useWebClient().useLaunchpad(launchpadId);
+  const api = useWebClient();
+  const { launchpad, loading, error, refresh } = api.useLaunchpad(launchpadId);
+  const { signupsPaused } = api.useFlags();
+  const restart = useStartAgain(launchpadId);
   if (loading) return <Loading />;
   if (!launchpad)
     return <ErrorNotice message={error ?? common.missing} onRetry={error ? refresh : undefined} />;
+  // Only a live launchpad can be changed; a draft is started again or continued instead.
+  const next = draftNext(launchpad);
   return (
     <>
       <Link className="fw-back" href="/dashboard">
@@ -29,8 +35,18 @@ export function DetailScreen({ launchpadId }: { launchpadId: string }) {
         <Heading eyebrow={copy.eyebrow} title={launchpad.name}>
           {copy.title}
         </Heading>
-        <ActionLink href={`/launchpads/${launchpad.id}/modify`}>{copy.modify}</ActionLink>
+        {launchpad.status === 'live' && (
+          <ActionLink href={`/launchpads/${launchpad.id}/modify`}>{copy.modify}</ActionLink>
+        )}
+        {next.kind === 'start_again' && !signupsPaused && <StartAgainButton state={restart} />}
+        {next.kind === 'continue' && <ActionLink href={next.href}>{common.continue}</ActionLink>}
       </div>
+      {next.kind === 'start_again' && (
+        <p className="fw-notice" role="status">
+          {signupsPaused ? common.paused : copy.refunded}
+        </p>
+      )}
+      {restart.error && <ErrorNotice message={restart.error} />}
       <div className="fw-detail-grid">
         <Card>
           <h2>{copy.settings}</h2>

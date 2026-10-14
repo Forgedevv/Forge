@@ -7,7 +7,7 @@ import { WorkspaceProvider, useWorkspace } from './provider';
 import { WorkspaceHeader } from './shell';
 import { SessionGate, LoginPanel } from './session';
 import { GatingScreen } from './gating';
-import { ChatScreen } from './chat';
+import { ChatScreen, NewScreen } from './chat';
 import { PaymentScreen } from './payment';
 import { JobScreen } from './job';
 import { LaunchScreen } from './launch';
@@ -125,6 +125,7 @@ function ScenarioContent({ scenario }: { scenario: string }) {
         </GatingScreen>
       );
     case 'chat':
+      if (state === 'refunded-draft') return <NewScreen launchpadId="demo-pad" />;
       return (
         <ChatScreen
           launchpadId={state === 'modification' ? 'demo-pad' : undefined}

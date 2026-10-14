@@ -6,11 +6,13 @@ import {
   StoreError,
   parseConversationRow,
   parseJobEventRow,
+  parseJobPaymentRow,
   parseJobRow,
   parseLaunchpadRow,
   parseRefundRow,
   type ConversationRecord,
   type JobEventRecord,
+  type JobPaymentRecord,
   type JobRecord,
   type LaunchpadRecord,
   type OwnedJob,
@@ -214,6 +216,45 @@ export class SupabaseRoutesStore implements RoutesStore {
       .select('id');
     if (res.error) fail('delete modification job', res.error);
     return (res.data ?? []).length === 1;
+  }
+
+  async listJobPayments(wallet: string, jobIds: readonly string[]): Promise<JobPaymentRecord[]> {
+    const ids = bounded(jobIds);
+    if (ids.length === 0) return [];
+    const res = await this.db
+      .from('payments')
+      .select(
+        'job_id, status, tx_signature, refund_signature, quote_expires_at, jobs!inner(launchpads!inner(owner_wallet))',
+      )
+      .in('job_id', ids)
+      .eq('jobs.launchpads.owner_wallet', wallet)
+      .limit(1000);
+    if (res.error) fail('read job payments', res.error);
+    return (res.data ?? []).map(parseJobPaymentRow);
+  }
+
+  async countOpenPaymentAnomalies(wallet: string, jobIds: readonly string[]): Promise<number> {
+    const ids = bounded(jobIds);
+    if (ids.length === 0) return 0;
+    const res = await this.db
+      .from('payment_anomalies')
+      .select('id, jobs!inner(launchpads!inner(owner_wallet))', { count: 'exact', head: true })
+      .in('job_id', ids)
+      .eq('jobs.launchpads.owner_wallet', wallet)
+      .is('resolved_at', null);
+    if (res.error) fail('read payment anomalies', res.error);
+    if (typeof res.count !== 'number') throw new StoreError('unexpected payment anomalies count');
+    return res.count;
+  }
+
+  async insertCreationJob(launchpadId: string): Promise<JobRecord> {
+    const res = await this.db
+      .from('jobs')
+      .insert({ launchpad_id: launchpadId, type: 'create_launchpad', status: 'spec_ready' })
+      .select(JOB_COLUMNS)
+      .single();
+    if (res.error) fail('insert creation job', res.error);
+    return parseJobRow(res.data);
   }
 
   async transitionLaunchpad(

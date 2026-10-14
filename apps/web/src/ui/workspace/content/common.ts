@@ -65,4 +65,7 @@ export const common = {
   no: 'No',
   pending: 'Not set yet',
   phases: ['Sign in your wallet', 'Sending…', 'Confirmed'],
+  startAgain: 'Start again',
+  startingAgain: 'Starting again…',
+  continue: 'Continue',
 } as const;

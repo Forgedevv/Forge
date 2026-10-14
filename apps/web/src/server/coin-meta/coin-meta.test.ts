@@ -281,10 +281,12 @@ describe('createSupabaseCoinMetaSource', () => {
         ['maybeSingle', []],
       ],
     });
+    // The newest creation job: a launchpad started again keeps its refunded attempts too.
     expect(calls[1]!.ops).toEqual([
       ['select', ['status, failed_stage']],
       ['eq', ['launchpad_id', 'lp1']],
       ['eq', ['type', 'create_launchpad']],
+      ['order', ['created_at', { ascending: false }]],
       ['limit', [1]],
     ]);
   });

@@ -62,6 +62,7 @@ const unavailableClient: ForgeClientInput = {
   signOwnerTransaction: unavailable,
   claimPartnerFees: unavailable,
   reactivateLaunchpad: unavailable,
+  retryLaunchpad: unavailable,
   formatSol,
   formatUsd,
   shortAddress,

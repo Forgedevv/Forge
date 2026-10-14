@@ -67,6 +67,7 @@ export const galleryCopy = {
         ['error', 'Message error'],
         ['rate-limited', 'Message limit'],
         ['modification', 'Change request'],
+        ['refunded-draft', 'Change request on a refunded draft'],
       ],
     },
     {
@@ -105,7 +106,7 @@ export const galleryCopy = {
         ['build-exhausted', 'Waiting for refund'],
         ['failed-onchain', 'On-chain failure'],
         ['deploy-failed', 'Deployment failure'],
-        ['refunded', 'Refunded'],
+        ['refunded', 'Refunded, start again'],
         ['building-modification', 'Change tracker'],
       ],
     },
@@ -134,7 +135,8 @@ export const galleryCopy = {
         ['empty', 'No launchpads'],
         ['one', 'One launchpad'],
         ['three', 'Live, sleeping, disabled'],
-        ['draft', 'Draft launchpad'],
+        ['draft', 'Draft awaiting payment'],
+        ['refunded', 'Refunded draft, start again'],
         ['active-job', 'Current job'],
         ['claim-signing', 'Claim signature'],
         ['claim-multi', 'Claim two pools, one by one'],
@@ -168,6 +170,7 @@ export const galleryCopy = {
       states: [
         ['loading', 'Loading'],
         ['ready', 'Settings and history'],
+        ['refunded', 'Refunded draft, start again'],
       ],
     },
     {

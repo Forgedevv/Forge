@@ -4,6 +4,7 @@ import {
   JobApproveResponse,
   LaunchpadModificationRequest,
   LaunchpadModificationResponse,
+  LaunchpadRetryResponse,
   OwnerTransactionGetResponse,
   PaymentsQuoteRequest,
   PaymentsQuoteResponse,
@@ -437,4 +438,18 @@ export async function reactivateLaunchpad(launchpadId: string): Promise<void> {
   await request(route(WEB_API_ROUTES.launchpadReactivate.path, { id: launchpadId }), z.unknown(), {
     method: 'POST',
   });
+}
+
+/**
+ * "Start again" on a draft whose creation was refunded (`POST /api/launchpads/:id/retry`): the new
+ * creation job (or the one still awaiting payment) with the same blueprint, to pay next.
+ */
+export async function retryLaunchpad(launchpadId: string): Promise<{ jobId: string }> {
+  return request(
+    route(WEB_API_ROUTES.launchpadRetry.path, { id: launchpadId }),
+    LaunchpadRetryResponse,
+    {
+      method: 'POST',
+    },
+  );
 }

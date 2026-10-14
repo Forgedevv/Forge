@@ -13,6 +13,7 @@ import {
   type LaunchpadQuotas,
   type WalletQuotas,
 } from './quotas';
+import { canStartAgain } from './retry';
 
 /*
  * Dashboard reads (docs/frontend/SCREENS.md A8 / A9), owner only. Database rows come from the
@@ -133,6 +134,8 @@ export function createLaunchpadReads(deps: LaunchpadReadsDeps): LaunchpadReads {
       claimablePartnerFeesLamports: figures.claimablePartnerFeesLamports.toString(),
       includedModificationsLeft: Math.max(0, launchpad.includedModificationsLeft),
       activeJobId: active?.id ?? null,
+      activeJobStatus: active?.status ?? null,
+      canStartAgain: canStartAgain(launchpad, jobs),
       onchainAvailable: figures.available,
     };
   }

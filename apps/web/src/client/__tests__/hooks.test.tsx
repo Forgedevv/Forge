@@ -499,6 +499,45 @@ describe('useLaunchpads / useLaunchpad (API)', () => {
     unmount();
   });
 
+  it('keeps what the dashboard needs to start a refunded draft again', async () => {
+    const fetchFn = vi.fn().mockResolvedValue(
+      json({
+        launchpads: [
+          summary({ status: 'draft', canStartAgain: true, activeJobStatus: null }),
+          summary({
+            id: 'lp-2',
+            status: 'draft',
+            activeJobId: JOB_ID,
+            activeJobStatus: 'spec_ready',
+          }),
+          // An older server: neither field.
+          summary({ id: 'lp-3' }),
+        ],
+      }),
+    );
+    vi.stubGlobal('fetch', fetchFn);
+    const { result, unmount } = renderHook(() => useLaunchpads());
+    await waitFor(() => expect(result.current.launchpads).toHaveLength(3));
+    expect(result.current.launchpads[0]).toMatchObject({
+      canStartAgain: true,
+      activeJobStatus: null,
+    });
+    expect(result.current.launchpads[1]).toMatchObject({ activeJobStatus: 'spec_ready' });
+    expect(result.current.launchpads[2]!.canStartAgain).toBeUndefined();
+    unmount();
+  });
+
+  it('refuses an unknown job status in a summary', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(json({ launchpads: [summary({ activeJobStatus: 'bogus' })] })),
+    );
+    const { result, unmount } = renderHook(() => useLaunchpads());
+    await waitFor(() => expect(result.current.error).toBeTruthy());
+    expect(result.current.launchpads).toEqual([]);
+    unmount();
+  });
+
   it('shares one request between components mounted together', async () => {
     const fetchFn = vi.fn().mockResolvedValue(json({ launchpads: [summary()] }));
     vi.stubGlobal('fetch', fetchFn);

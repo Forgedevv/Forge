@@ -42,11 +42,14 @@ export function createSupabaseCoinMetaSource(db: SupabaseClient): CoinMetaSource
       const launchpad = LaunchpadRow.safeParse(lp.data);
       if (!launchpad.success) throw new CoinMetaReadError('parse launchpad');
 
+      // The newest creation job: a launchpad started again (POST /api/launchpads/:id/retry)
+      // keeps its refunded attempts, which were never approved.
       const jobs = await db
         .from('jobs')
         .select('status, failed_stage')
         .eq('launchpad_id', launchpad.data.id)
         .eq('type', 'create_launchpad')
+        .order('created_at', { ascending: false })
         .limit(1);
       if (jobs.error) throw new CoinMetaReadError('job', jobs.error.code);
       const first = (jobs.data ?? [])[0];

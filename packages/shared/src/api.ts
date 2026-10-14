@@ -64,6 +64,7 @@ export const WEB_API_ROUTES = {
   launchpadGet: { method: 'GET', path: '/api/launchpads/:id' },
   claimTransaction: { method: 'GET', path: '/api/launchpads/:id/claim-transaction' },
   launchpadReactivate: { method: 'POST', path: '/api/launchpads/:id/reactivate' },
+  launchpadRetry: { method: 'POST', path: '/api/launchpads/:id/retry' },
   rpc: { method: 'POST', path: '/api/rpc' },
 } as const;
 
@@ -149,6 +150,14 @@ export const LaunchpadModificationRequest = z.strictObject({
 export type LaunchpadModificationRequest = z.infer<typeof LaunchpadModificationRequest>;
 export const LaunchpadModificationResponse = z.object({ jobId: Uuid });
 export type LaunchpadModificationResponse = z.infer<typeof LaunchpadModificationResponse>;
+
+/*
+ * POST /api/launchpads/:id/retry (no body) — "start again": a draft whose creation was refunded
+ * gets a new `create_launchpad` job in `spec_ready`, built from the launchpad's stored spec (same
+ * name and subdomain). Idempotent: while that job awaits payment, the same job id is returned.
+ */
+export const LaunchpadRetryResponse = z.object({ jobId: Uuid });
+export type LaunchpadRetryResponse = z.infer<typeof LaunchpadRetryResponse>;
 
 // POST /api/payments/quote
 export const PaymentsQuoteRequest = z.strictObject({ jobId: Uuid, kind: PaymentKind });

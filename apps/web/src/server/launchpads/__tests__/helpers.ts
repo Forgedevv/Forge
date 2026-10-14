@@ -3,6 +3,7 @@ import { createClaimsService } from '../claims';
 import { createLaunchpadsHandlers } from '../handlers';
 import { createModificationsService, type GatingResult } from '../modifications';
 import { createReactivateService } from '../reactivate';
+import { createRetryService } from '../retry';
 import { createLaunchpadReads } from '../summary';
 import { FakeClaimsChain } from './fake-chain';
 
@@ -28,6 +29,12 @@ export function launchpadsHarness(opts: { clientsDomain?: string | null } = {}) 
     reactivation: createReactivateService({
       store: base.store,
       logger: base.logger,
+      now: () => NOW,
+    }),
+    retries: createRetryService({
+      store: base.store,
+      logger: base.logger,
+      gating,
       now: () => NOW,
     }),
     rateLimiter: base.rateLimiter,

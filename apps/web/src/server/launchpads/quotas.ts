@@ -64,9 +64,11 @@ export function launchpadQuotas(
   jobs: readonly JobRecord[],
 ): LaunchpadQuotas {
   const open = openModificationJobs(jobs, launchpad.id);
-  const creation = jobs.find(
-    (j) => j.launchpadId === launchpad.id && j.type === 'create_launchpad',
-  );
+  // The newest creation job: a launchpad started again (POST /api/launchpads/:id/retry) also
+  // keeps its refunded attempts, which say nothing about the creation that went live.
+  const creation = jobs
+    .filter((j) => j.launchpadId === launchpad.id && j.type === 'create_launchpad')
+    .sort(byNewest)[0];
   let blockedReason: ModificationBlockedReason | null = null;
   if (launchpad.status === 'disabled') blockedReason = 'launchpad_disabled';
   else if (launchpad.status !== 'live') blockedReason = 'launchpad_not_live';

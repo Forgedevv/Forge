@@ -19,6 +19,7 @@ import { safeUrl } from './safe-url';
 import { jobCopy as copy } from './content/job';
 import { common } from './content/common';
 import { Muse, museMoodForJob } from '../muse';
+import { StartAgainButton, useStartAgain } from './start-again';
 
 export function JobScreen({
   jobId,
@@ -32,6 +33,8 @@ export function JobScreen({
     { toast } = useWorkspace();
   const { job, events, loading } = api.useJob(jobId);
   const { launchpad } = api.useLaunchpad(job?.launchpadId ?? '');
+  const { signupsPaused } = api.useFlags();
+  const restart = useStartAgain(job?.launchpadId ?? '');
   const [busy, setBusy] = useState(false),
     [error, setError] = useState('');
   const lock = useRef(false);
@@ -121,11 +124,14 @@ export function JobScreen({
                 <Button disabled={!preview || busy} onClick={approve}>
                   {busy ? copy.approving : copy.approve} ↗
                 </Button>
-                <ActionLink href={`/launchpads/${job.launchpadId}/modify`} secondary>
-                  {copy.change}
-                </ActionLink>
+                {/* A creation preview belongs to a draft: changes come once it is live. */}
+                {job.type === 'modify_launchpad' && (
+                  <ActionLink href={`/launchpads/${job.launchpadId}/modify`} secondary>
+                    {copy.change}
+                  </ActionLink>
+                )}
               </div>
-              <p className="fw-caption">{copy.changeNote}</p>
+              {job.type === 'modify_launchpad' && <p className="fw-caption">{copy.changeNote}</p>}
             </>
           )}
           {['approved', 'onchain_setup'].includes(job.status) && (
@@ -201,12 +207,19 @@ export function JobScreen({
                   </Link>
                 </>
               )}
+              {job.type === 'create_launchpad' && launchpad?.canStartAgain === true && (
+                <>
+                  <p>{signupsPaused ? common.paused : copy.startAgain}</p>
+                  {!signupsPaused && <StartAgainButton state={restart} />}
+                </>
+              )}
               <ActionLink href="/dashboard" secondary>
                 {common.dashboard}
               </ActionLink>
             </>
           )}
           {error && <ErrorNotice message={error} />}
+          {restart.error && <ErrorNotice message={restart.error} />}
         </Card>
         <Card className="fw-event-card">
           <h2>{copy.log}</h2>

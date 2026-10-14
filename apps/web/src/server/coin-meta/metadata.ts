@@ -31,7 +31,7 @@ export interface CoinMetaRecord {
   slug: string;
   status: LaunchpadStatus;
   spec: unknown;
-  /** The launchpad's `create_launchpad` job, if any. */
+  /** The launchpad's newest `create_launchpad` job, if any. */
   createJob: { status: JobStatus; failedStage: FailedStage | null } | null;
 }
 

@@ -3,6 +3,7 @@ import {
   LaunchpadModificationRequest,
   LaunchpadModificationResponse,
   SolanaAddress,
+  type LaunchpadRetryResponse,
   type Session,
 } from '@forge/shared';
 import { z } from 'zod';
@@ -21,6 +22,7 @@ import type { RateLimiter, RateLimitRule } from '../payments/rate-limit';
 import type { ClaimsService } from './claims';
 import type { ModificationsService } from './modifications';
 import type { ReactivateService } from './reactivate';
+import type { RetryService } from './retry';
 import type { LaunchpadReads } from './summary';
 
 /*
@@ -30,6 +32,7 @@ import type { LaunchpadReads } from './summary';
  *   GET  /api/launchpads/:id/claim-transaction   -> { transaction, summary } (?pool=<address>)
  *   POST /api/launchpads/:id/modifications       -> { jobId, ... }
  *   POST /api/launchpads/:id/reactivate          -> { status }
+ *   POST /api/launchpads/:id/retry               -> { jobId }                (start again)
  * Origin check, per-IP limit, session, per-wallet limit, strict zod body, owner-scoped service.
  */
 
@@ -39,6 +42,7 @@ export interface LaunchpadsHandlers {
   claimTransaction(request: Request, context: IdRouteContext): Promise<Response>;
   requestModification(request: Request, context: IdRouteContext): Promise<Response>;
   reactivate(request: Request, context: IdRouteContext): Promise<Response>;
+  retry(request: Request, context: IdRouteContext): Promise<Response>;
 }
 
 const MINUTE = 60_000;
@@ -53,6 +57,9 @@ export const LAUNCHPAD_RATE_LIMITS = {
   modificationWallet: { limit: 10, windowMs: 10 * MINUTE },
   reactivateIp: { limit: 20, windowMs: 10 * MINUTE },
   reactivateWallet: { limit: 5, windowMs: 10 * MINUTE },
+  // Same budget as POST /api/spec/confirm (20 per wallet per 10 minutes there).
+  retryIp: { limit: 20, windowMs: 10 * MINUTE },
+  retryWallet: { limit: 10, windowMs: 10 * MINUTE },
 } as const satisfies Record<string, RateLimitRule>;
 
 export const MODIFICATION_MAX_BODY_BYTES = 16 * 1024;
@@ -64,6 +71,7 @@ export interface LaunchpadsHandlerDeps {
   claims: ClaimsService;
   modifications: ModificationsService;
   reactivation: ReactivateService;
+  retries: RetryService;
   rateLimiter: RateLimiter;
   logger: RoutesLogger;
   requireSession?: (request: Request) => Session | Response;
@@ -174,6 +182,21 @@ export function createLaunchpadsHandlers(deps: LaunchpadsHandlerDeps): Launchpad
         request,
         context,
         async (wallet, id) => json(await deps.reactivation.reactivate({ wallet, launchpadId: id })),
+      );
+    },
+
+    retry(request, context) {
+      return run(
+        'launchpads:retry',
+        r.retryIp,
+        r.retryWallet,
+        request,
+        context,
+        async (wallet, id) => {
+          const result = await deps.retries.retry({ wallet, launchpadId: id });
+          const body: LaunchpadRetryResponse = { jobId: result.jobId };
+          return json(body, result.created ? 201 : 200);
+        },
       );
     },
   };

@@ -82,6 +82,10 @@ export function createMockController(scenario = 'journey') {
     job.status = 'refunded';
     job.refund = { lamports: '300000000', signature: 'demo-refund-confirmation' };
   }
+  // `dashboard:draft`: a draft awaiting payment. `...refunded...`: a draft whose creation was
+  // refunded, which can start again (dashboard, detail, job and change chat).
+  const refundedDraft = scenario.includes('refunded') && job.type === 'create_launchpad';
+  const draftPad = scenario === 'dashboard:draft' || refundedDraft;
   const emptyChat = (modification = false): ChatState => ({
     messages: [
       {
@@ -158,10 +162,25 @@ export function createMockController(scenario = 'journey') {
                   ].includes(scenario)
                     ? '0'
                     : fixturePad.claimablePartnerFeesLamports,
-                  activeJobId: ['dashboard:active-job', 'hero:building'].includes(scenario)
+                  activeJobId: [
+                    'dashboard:active-job',
+                    'hero:building',
+                    'dashboard:draft',
+                  ].includes(scenario)
                     ? 'demo-job'
                     : null,
-                  status: scenario === 'dashboard:draft' ? 'draft' : 'live',
+                  activeJobStatus: [
+                    'dashboard:active-job',
+                    'hero:building',
+                    'dashboard:draft',
+                  ].includes(scenario)
+                    ? job.status
+                    : null,
+                  canStartAgain: refundedDraft,
+                  status: draftPad ? 'draft' : 'live',
+                  ...(draftPad
+                    ? { siteUrl: null, coinsCount: 0, claimablePartnerFeesLamports: '0' }
+                    : {}),
                   ...(scenario === 'dashboard:onchain-unavailable'
                     ? { onchainAvailable: false, claimablePartnerFeesLamports: '0', coinsCount: 0 }
                     : {}),
@@ -220,6 +239,7 @@ export function createMockController(scenario = 'journey') {
     const next = { ...previous, ...extra, status, updatedAt: new Date().toISOString() };
     const previousEvents = state.events[id] ?? [];
     notify({
+      pads: state.pads.map((p) => (p.activeJobId === id ? { ...p, activeJobStatus: status } : p)),
       jobs: { ...state.jobs, [id]: next },
       events: {
         ...state.events,
@@ -286,6 +306,7 @@ export function createMockController(scenario = 'journey') {
     return { phase: 'confirmed', signature: 'demo-transaction-confirmation' };
   };
   let quoteSequence = 0;
+  const quoteJobs = new Map<string, string>();
   // `payment:confirming` / `payment:late`: a payment was sent before the page was opened.
   let sentPayment: PendingPayment | null =
     scenario === 'payment:confirming' || scenario === 'payment:late'
@@ -425,6 +446,8 @@ export function createMockController(scenario = 'journey') {
         slug: spec.slug,
         status: 'draft' as const,
         activeJobId: 'demo-job',
+        activeJobStatus: 'spec_ready' as const,
+        canStartAgain: false,
       };
       notify({
         pads: [pad, ...state.pads.filter((p) => p.id !== pad.id)],
@@ -451,6 +474,7 @@ export function createMockController(scenario = 'journey') {
       await wait();
       if (!state.jobs[jobId]) throw new Error('Job not found.');
       quoteSequence++;
+      quoteJobs.set(`demo-quote-${quoteSequence}`, jobId);
       const included =
         (kind === 'modification' &&
           (state.pads.find((p) => p.id === state.jobs[jobId]?.launchpadId)
@@ -479,9 +503,10 @@ export function createMockController(scenario = 'journey') {
       if (result.phase === 'confirmed') {
         if (quote.lamports === '0') onPhase('confirmed');
         const id =
-          quote.kind === 'modification' && state.jobs['demo-change-job']
+          quoteJobs.get(quote.paymentId) ??
+          (quote.kind === 'modification' && state.jobs['demo-change-job']
             ? 'demo-change-job'
-            : 'demo-job';
+            : 'demo-job');
         updateJob(id, 'paid');
         progress(id);
       }
@@ -583,6 +608,43 @@ export function createMockController(scenario = 'journey') {
         });
       }
       return { ...result, summary };
+    },
+    async retryLaunchpad(launchpadId) {
+      await wait();
+      if (state.signupsPaused)
+        throw new ClientError('SIGNUPS_PAUSED', 'New signups are temporarily paused.');
+      const pad = state.pads.find((p) => p.id === launchpadId);
+      if (!pad) throw new Error('Launchpad not found.');
+      if (pad.status !== 'draft')
+        throw new Error('Only a launchpad that never went live can be started again.');
+      const open = Object.values(state.jobs).find(
+        (j) =>
+          j.launchpadId === launchpadId &&
+          j.type === 'create_launchpad' &&
+          j.status === 'spec_ready',
+      );
+      if (open) return { jobId: open.id };
+      if (!pad.canStartAgain)
+        throw new Error('There is no refunded creation to start again for this launchpad.');
+      const at = new Date().toISOString();
+      const next: Job = {
+        ...fixtureJob,
+        id: 'demo-restart-job',
+        launchpadId,
+        attempts: 0,
+        createdAt: at,
+        updatedAt: at,
+      };
+      notify({
+        jobs: { ...state.jobs, [next.id]: next },
+        events: { ...state.events, [next.id]: [eventFor(next, 1)] },
+        pads: state.pads.map((p) =>
+          p.id === launchpadId
+            ? { ...p, canStartAgain: false, activeJobId: next.id, activeJobStatus: 'spec_ready' }
+            : p,
+        ),
+      });
+      return { jobId: next.id };
     },
     async reactivateLaunchpad(id) {
       await wait(700);

@@ -6,6 +6,7 @@ import {
   getOwnerTransactionSummary,
   reactivateLaunchpad,
   requestModification,
+  retryLaunchpad,
 } from '../actions';
 import { id, json, mockFetch, owner, setWallet, txB64 } from './helpers';
 
@@ -129,5 +130,28 @@ describe('simple actions', () => {
     expect((fetchFn.mock.calls[0] as [string])[0]).toBe(`/api/launchpads/${lp}/reactivate`);
     mockFetch(() => json({ message: 'Signups are paused', code: 'SIGNUPS_PAUSED' }, 503));
     await expect(reactivateLaunchpad(lp)).rejects.toMatchObject({ code: 'SIGNUPS_PAUSED' });
+  });
+
+  it('retryLaunchpad posts without body to the retry route and returns the job to pay', async () => {
+    const lp = id();
+    const jobId = id();
+    const fetchFn = mockFetch(() => json({ jobId }, 201));
+    await expect(retryLaunchpad(lp)).resolves.toEqual({ jobId });
+    const [url, init] = fetchFn.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(`/api/launchpads/${lp}/retry`);
+    expect(init.method).toBe('POST');
+    expect(init.body).toBeUndefined();
+  });
+
+  it('retryLaunchpad keeps the server explanation of a refusal', async () => {
+    const message = 'The refund of the last attempt is not complete yet.';
+    mockFetch(() => json({ code: 'REFUND_PENDING', message, jobId: id() }, 409));
+    const error = await retryLaunchpad(id()).catch((e: unknown) => e);
+    expect(error).toMatchObject({ code: 'NETWORK', message, serverCode: 'REFUND_PENDING' });
+    mockFetch(() => json({ code: 'SIGNUPS_PAUSED', message: 'Paused.' }, 403));
+    await expect(retryLaunchpad(id())).rejects.toMatchObject({ code: 'SIGNUPS_PAUSED' });
+    // An unexpected answer is never taken for a job to pay.
+    mockFetch(() => json({ jobId: 'not-a-uuid' }));
+    await expect(retryLaunchpad(id())).rejects.toMatchObject({ code: 'NETWORK' });
   });
 });

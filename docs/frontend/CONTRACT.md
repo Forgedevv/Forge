@@ -55,6 +55,8 @@ interface LaunchpadSummary {
   coin: { name: string; symbol: string; mint: string | null; imageUrl: string };
   coinsCount: number; claimablePartnerFeesLamports: Lamports;
   includedModificationsLeft: number; activeJobId: string | null;
+  activeJobStatus?: JobStatus | null;     // status of activeJobId
+  canStartAgain?: boolean;                // refunded draft: retryLaunchpad can start it again
 }
 
 interface LaunchpadDetail extends LaunchpadSummary {
@@ -88,6 +90,7 @@ interface TxResult { phase: TxPhase; signature?: string; error?: string }
 | `useLaunchpad(id: string): { launchpad: LaunchpadDetail \| null; loading: boolean }` | detail | A9 |
 | `claimPartnerFees(launchpadId: string, onPhase: (p: TxPhase) => void): Promise<TxResult>` | claim fees | A8 |
 | `reactivateLaunchpad(launchpadId: string): Promise<void>` | wake from sleep mode | A8 |
+| `retryLaunchpad(launchpadId: string): Promise<{ jobId: string }>` | start a refunded draft again (same blueprint), then pay `jobId` | A6, A8, A9 |
 | `formatSol(lamports: Lamports, opts?): string`, `formatUsd(n: number): string`, `shortAddress(a: string): string`, `explorerTxUrl(sig: string): string` | formatting (provided to keep the display consistent) | everywhere |
 
 All functions reject with an `Error` whose `message` is readable by the user, or a `ClientError` `{ code: 'RATE_LIMITED' | 'UNAUTHORIZED' | 'GATING_REQUIRED' | 'SIGNUPS_PAUSED' | 'QUOTE_EXPIRED' | 'WRONG_WALLET' | 'NETWORK'; message: string }`.

@@ -16,14 +16,16 @@ import {
   type SignatureState,
 } from '../chain';
 import { MemoryLogger } from '../log';
-import type {
-  ConversationRecord,
-  JobEventRecord,
-  JobRecord,
-  LaunchpadRecord,
-  OwnedJob,
-  RefundRecord,
-  RoutesStore,
+import {
+  StoreError,
+  type ConversationRecord,
+  type JobEventRecord,
+  type JobPaymentRecord,
+  type JobRecord,
+  type LaunchpadRecord,
+  type OwnedJob,
+  type RefundRecord,
+  type RoutesStore,
 } from '../store';
 
 /* In-memory doubles of the routes' store and chain, plus request helpers. No network. */
@@ -106,6 +108,10 @@ export class MemoryRoutesStore implements RoutesStore {
   events: JobEventRecord[] = [];
   conversations = new Map<string, ConversationRecord>();
   refunds: (RefundRecord & { payerWallet: string })[] = [];
+  /** Payments of jobs, read by "start again". */
+  payments: JobPaymentRecord[] = [];
+  /** Payment anomalies (`resolved: false` = still held for a manual refund). */
+  anomalies: { jobId: string; resolved: boolean }[] = [];
   flags = new Map<FlagKey, boolean>();
   failFlags = false;
   /** Called before a conditional job update applies (simulates a concurrent writer). */
@@ -114,6 +120,8 @@ export class MemoryRoutesStore implements RoutesStore {
   afterInsert: ((job: JobRecord) => void) | null = null;
   /** Called before a modification job is inserted; may throw (simulates a database refusal). */
   beforeInsert: ((launchpadId: string) => void) | null = null;
+  /** Called before a creation job is inserted (simulates a concurrent "start again"). */
+  beforeCreationInsert: ((launchpadId: string) => void) | null = null;
   private clock = 0;
 
   private stamp(): string {
@@ -261,6 +269,39 @@ export class MemoryRoutesStore implements RoutesStore {
     const job = this.jobs.get(jobId);
     if (!job || job.launchpadId !== launchpadId || job.status !== 'spec_ready') return false;
     return this.jobs.delete(jobId);
+  }
+
+  async listJobPayments(wallet: string, jobIds: readonly string[]): Promise<JobPaymentRecord[]> {
+    return this.payments
+      .filter((p) => jobIds.includes(p.jobId))
+      .filter((p) => {
+        const job = this.jobs.get(p.jobId);
+        return job !== undefined && this.owned(job.launchpadId, wallet) !== null;
+      })
+      .map((p) => ({ ...p }));
+  }
+
+  async countOpenPaymentAnomalies(wallet: string, jobIds: readonly string[]): Promise<number> {
+    return this.anomalies.filter((a) => {
+      const job = this.jobs.get(a.jobId);
+      return (
+        !a.resolved &&
+        jobIds.includes(a.jobId) &&
+        job !== undefined &&
+        this.owned(job.launchpadId, wallet) !== null
+      );
+    }).length;
+  }
+
+  /** Enforces the index of migration 0010: one creation job that is not refunded per launchpad. */
+  async insertCreationJob(launchpadId: string): Promise<JobRecord> {
+    this.beforeCreationInsert?.(launchpadId);
+    const open = [...this.jobs.values()].some(
+      (j) =>
+        j.launchpadId === launchpadId && j.type === 'create_launchpad' && j.status !== 'refunded',
+    );
+    if (open) throw new StoreError('insert creation job', '23505');
+    return { ...this.addJob(launchpadId, { type: 'create_launchpad', status: 'spec_ready' }) };
   }
 
   async transitionLaunchpad(

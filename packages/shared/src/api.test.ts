@@ -66,6 +66,7 @@ const samples: [string, z.ZodType, unknown][] = [
     { conversationId: UUID, request: 'New logo' },
   ],
   ['LaunchpadModificationResponse', api.LaunchpadModificationResponse, { jobId: UUID }],
+  ['LaunchpadRetryResponse', api.LaunchpadRetryResponse, { jobId: UUID }],
   ['PaymentsQuoteRequest', api.PaymentsQuoteRequest, { jobId: UUID, kind: 'creation' }],
   [
     'PaymentsQuoteResponse',
@@ -133,6 +134,14 @@ const samples: [string, z.ZodType, unknown][] = [
 describe('API schemas', () => {
   it.each(samples)('%s parses a valid sample', (_name, schema, sample) => {
     expect(schema.safeParse(sample).success).toBe(true);
+  });
+
+  it('routes "start again" next to the other launchpad actions', () => {
+    expect(api.WEB_API_ROUTES.launchpadRetry).toEqual({
+      method: 'POST',
+      path: '/api/launchpads/:id/retry',
+    });
+    expect(api.LaunchpadRetryResponse.safeParse({ jobId: 'not-a-uuid' }).success).toBe(false);
   });
 
   it('applies spec defaults inside SpecConfirmRequest', () => {

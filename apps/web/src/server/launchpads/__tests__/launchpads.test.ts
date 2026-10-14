@@ -62,6 +62,8 @@ describe('GET /api/launchpads', () => {
       claimablePartnerFeesLamports: '33000',
       includedModificationsLeft: 2,
       activeJobId: modification.id,
+      activeJobStatus: 'building',
+      canStartAgain: false,
       onchainAvailable: true,
     });
     expect(body.quotas).toEqual({

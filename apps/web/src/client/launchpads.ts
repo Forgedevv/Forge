@@ -38,6 +38,10 @@ export const LaunchpadSummarySchema = z.object({
   claimablePartnerFeesLamports: Lamports,
   includedModificationsLeft: z.number().int(),
   activeJobId: z.string().nullable(),
+  /** Absent from older servers (then unknown: the job page decides where to go). */
+  activeJobStatus: JobStatus.nullable().optional(),
+  /** Absent from older servers: then "start again" is not offered. */
+  canStartAgain: z.boolean().optional(),
   /** Absent from older servers: then the figures are taken as read. */
   onchainAvailable: z.boolean().optional(),
 });

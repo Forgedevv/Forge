@@ -27,6 +27,7 @@ export const jobCopy = {
   team: 'Something went wrong. Our team has been notified and is on it.',
   refundPending: 'Both build attempts failed. Waiting for the refund confirmation.',
   refunded: 'Your payment was refunded.',
+  startAgain: 'Your blueprint is kept. Start again with the same name, and pay once more.',
   live: 'You are live.',
   liveBody: 'Your launchpad is ready for its first community.',
   site: 'Visit launchpad',

@@ -19,15 +19,15 @@ interface UniqueIndex {
 
 type Filter = (row: Row, db: FakeDb, table: string) => boolean;
 
-/** The FORGE schema subset used by the chat store (supabase/migrations 0001 and 0005). */
+/** The FORGE schema subset used by the chat store (supabase/migrations 0001, 0005 and 0010). */
 const UNIQUE: Record<string, UniqueIndex[]> = {
   users: [{ name: 'users_pkey', columns: ['wallet'] }],
   launchpads: [{ name: 'launchpads_slug_key', columns: ['slug'] }],
   jobs: [
     {
-      name: 'jobs_one_create_per_launchpad_idx',
+      name: 'jobs_one_open_create_per_launchpad_idx',
       columns: ['launchpad_id'],
-      where: (row) => row.type === 'create_launchpad',
+      where: (row) => row.type === 'create_launchpad' && row.status !== 'refunded',
     },
   ],
   payments: [{ name: 'payments_tx_signature_key', columns: ['tx_signature'] }],

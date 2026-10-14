@@ -460,6 +460,74 @@ describe('SupabaseChatStore.confirmSpec', () => {
     expect(ctx.db.rows('launchpads')[0]).toMatchObject({ slug: 'moonpad', status: 'draft' });
   });
 
+  it('keeps the slug of a refunded draft, so that its owner can start it again', async () => {
+    const ctx = setup();
+    const held = draft(ctx, OTHER_WALLET, 'moonpad', 25 * HOUR);
+    held.job.status = 'refunded';
+    ctx.db.insert('payments', {
+      job_id: held.job.id,
+      status: 'refunded',
+      tx_signature: 'paid-then-refunded',
+      quote_expires_at: new Date(T0 - 24 * HOUR).toISOString(),
+    });
+    const id = await ctx.conversation();
+    expect(await ctx.store.confirmSpec({ wallet: WALLET, conversationId: id, spec })).toEqual({
+      status: 'slug_taken',
+    });
+    expect(ctx.db.rows('launchpads')[0]).toMatchObject({ slug: 'moonpad', status: 'draft' });
+  });
+
+  it('does not count a refunded draft among the unpaid ones', async () => {
+    const ctx = setup();
+    for (let i = 0; i < DRAFT_POLICY.maxUnpaidDrafts; i++) {
+      draft(ctx, WALLET, `pad${i}`, HOUR).job.status = 'refunded';
+    }
+    const id = await ctx.conversation();
+    expect((await ctx.store.confirmSpec({ wallet: WALLET, conversationId: id, spec })).status).toBe(
+      'created',
+    );
+  });
+
+  it('answers a confirmation replayed after "start again" with the newest creation job', async () => {
+    const ctx = setup();
+    const id = await ctx.conversation();
+    const first = await ctx.store.confirmSpec({ wallet: WALLET, conversationId: id, spec });
+    if (first.status !== 'created') throw new Error('not created');
+    createJobs(ctx.db)[0]!.status = 'refunded';
+    ctx.advance(HOUR);
+    // POST /api/launchpads/:id/retry inserted the next attempt (index of migration 0010).
+    const restarted = ctx.db.insert('jobs', {
+      launchpad_id: first.launchpadId,
+      type: 'create_launchpad',
+      status: 'spec_ready',
+    });
+    expect(await ctx.store.confirmSpec({ wallet: WALLET, conversationId: id, spec })).toEqual({
+      status: 'existing',
+      launchpadId: first.launchpadId,
+      jobId: restarted.id,
+    });
+    expect(createJobs(ctx.db, first.launchpadId)).toHaveLength(2);
+  });
+
+  it('never creates a second open creation job (unique index of migration 0010)', async () => {
+    const ctx = setup();
+    const id = await ctx.conversation();
+    const first = await ctx.store.confirmSpec({ wallet: WALLET, conversationId: id, spec });
+    if (first.status !== 'created') throw new Error('not created');
+    const insert = (status: string) =>
+      ctx.db.client().from('jobs').insert({
+        launchpad_id: first.launchpadId,
+        type: 'create_launchpad',
+        status,
+      });
+    expect((await insert('spec_ready')).error).toMatchObject({ code: '23505' });
+    createJobs(ctx.db)[0]!.status = 'failed';
+    expect((await insert('spec_ready')).error).toMatchObject({ code: '23505' });
+    createJobs(ctx.db)[0]!.status = 'refunded';
+    expect((await insert('spec_ready')).error).toBeNull();
+    expect((await insert('spec_ready')).error).toMatchObject({ code: '23505' });
+  });
+
   it('puts the draft back when a quote lands during the release', async () => {
     const ctx = setup();
     const held = draft(ctx, OTHER_WALLET, 'moonpad', 25 * HOUR);

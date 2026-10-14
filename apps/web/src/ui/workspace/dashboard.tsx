@@ -20,6 +20,7 @@ import { safeUrl, siteHost } from './safe-url';
 import { Muse, museColorsFor, museMoodForJob, type MuseMood } from '../muse';
 import { MuseHero, type HeroAction } from './muse-hero';
 import { LaunchpadArt } from './launchpad-art';
+import { StartAgainButton, draftNext, useStartAgain } from './start-again';
 
 type PadColors = { primary: string | null; accent: string | null };
 
@@ -190,6 +191,7 @@ export function DashboardScreen({
                         refresh={refresh}
                         claimPhase={claimPhase}
                         onColors={onColors}
+                        signupsPaused={signupsPaused}
                       />
                     ))}
                   </div>
@@ -252,11 +254,13 @@ function LaunchpadCard({
   refresh,
   claimPhase,
   onColors,
+  signupsPaused,
 }: {
   pad: LaunchpadSummaryView;
   refresh(): void;
   claimPhase?: TxPhase;
   onColors(id: string, colors: PadColors): void;
+  signupsPaused: boolean;
 }) {
   const api = useWebClient(),
     { toast } = useWorkspace();
@@ -267,6 +271,9 @@ function LaunchpadCard({
   }, [onColors, pad.id, primary, accent]);
   const [busy, setBusy] = useState(false),
     [error, setError] = useState('');
+  const restart = useStartAgain(pad.id);
+  // A draft never offers a change: it is started again (refunded) or continued (open job).
+  const next = draftNext(pad);
   const url = safeUrl(pad.siteUrl);
   const onchainKnown = pad.onchainAvailable !== false;
   const latestJob = launchpad?.jobs.reduce<Job | undefined>(
@@ -383,18 +390,33 @@ function LaunchpadCard({
         </div>
       )}
       {pad.status === 'disabled' && <p className="fw-notice fw-pad-notice">{copy.disabled}</p>}
-      {pad.activeJobId && (
-        <Link className="fw-current-job" href={`/jobs/${pad.activeJobId}`}>
-          {copy.job} ↗
+      {next.kind === 'start_again' && (
+        <div className="fw-notice fw-pad-notice">
+          <p>{copy.refunded}</p>
+          {signupsPaused ? (
+            <p>{common.paused}</p>
+          ) : (
+            <StartAgainButton state={restart} variant="secondary" />
+          )}
+        </div>
+      )}
+      {next.kind === 'continue' ? (
+        <Link className="fw-current-job" href={next.href}>
+          {common.continue} ↗
         </Link>
+      ) : (
+        pad.activeJobId && (
+          <Link className="fw-current-job" href={`/jobs/${pad.activeJobId}`}>
+            {copy.job} ↗
+          </Link>
+        )
       )}
       <div className="fw-card-links fw-pad-actions">
         <Link href={`/launchpads/${pad.id}`}>{copy.view} ↗</Link>
-        {pad.status !== 'disabled' && (
-          <Link href={`/launchpads/${pad.id}/modify`}>{copy.modify}</Link>
-        )}
+        {pad.status === 'live' && <Link href={`/launchpads/${pad.id}/modify`}>{copy.modify}</Link>}
       </div>
-      {error && <ErrorNotice message={readableError(error)} />}
+      {/* Both are already readable messages. */}
+      {(error || restart.error) && <ErrorNotice message={error || restart.error} />}
     </Card>
   );
 }

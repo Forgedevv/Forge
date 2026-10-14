@@ -40,6 +40,7 @@ export const dashboardCopy = {
   status: { draft: 'Draft', live: 'Live', sleeping: 'Sleeping', disabled: 'Disabled' },
   sleep: 'Trading is paused.',
   disabled: 'This site is unavailable.',
+  refunded: 'The last build was refunded. Start again with the same blueprint and name.',
   claimSuccess: 'Fees claimed.',
   muse: 'Your Muse',
   padMuse: (name: string) => `${name} Muse`,

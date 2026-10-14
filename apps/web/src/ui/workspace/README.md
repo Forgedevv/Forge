@@ -8,9 +8,9 @@ Screens A2 through A11 use `ForgeWebClient` (`src/client/types.ts`), the `WebCli
 - `/jobs/[id]/pay`: quote, expiry countdown, fresh quote, signing/sending/confirmation, included changes.
 - `/jobs/[id]`: creation/change trackers, live event log, preview approval, retry/refund/team intervention, live result.
 - `/jobs/[id]/launch`: transaction summary, owner-wallet check, launch phases, retry and return to tracking.
-- `/dashboard`: empty/single/multiple launchpads, claims, active jobs, remaining changes, sleeping/disabled states and reactivation.
-- `/launchpads/[id]`: read-only specification, on-chain addresses, versions, jobs and an explicit unavailable claim-history state.
-- `/launchpads/[id]/modify`: fresh access check and change chat, with immutable on-chain settings explained.
+- `/dashboard`: empty/single/multiple launchpads, claims, active jobs, remaining changes, sleeping/disabled states and reactivation. Only a live launchpad offers a change; a draft offers "Start again" once its creation was refunded, or "Continue" to its open job.
+- `/launchpads/[id]`: read-only specification, on-chain addresses, versions, jobs and an explicit unavailable claim-history state, with the same draft actions.
+- `/launchpads/[id]/modify`: fresh access check and change chat, with immutable on-chain settings explained. A launchpad that is not live gets a notice and its next step instead of the chat; the confirmation is only offered when the change can be accepted.
 - `/faq` and `/terms`: public information pages. The terms are provisional product information.
 - Global login modal: wallet choice, signing, cancellation, errors and connected state. The homepage opens the same modal with the real client or development mocks.
 
