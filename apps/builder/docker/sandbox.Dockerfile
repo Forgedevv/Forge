@@ -36,7 +36,11 @@ ENV CI=true \
     DISABLE_TELEMETRY=1 \
     DISABLE_ERROR_REPORTING=1 \
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
+    CLAUDE_CODE_MAX_OUTPUT_TOKENS=32000 \
     HOME=/home/node
+# CLAUDE_CODE_MAX_OUTPUT_TOKENS: the gateway refuses a request whose `max_tokens` exceeds its cap
+# (GATEWAY_DEFAULTS.maxOutputTokens, 64000), and the CLI asks for more by default. Set in the
+# image, not per run: the run env refuses names that look like credentials (they contain TOKEN).
 
 USER 1000:1000
 WORKDIR /workspace
