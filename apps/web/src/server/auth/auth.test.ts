@@ -13,7 +13,7 @@ import {
 import { ConsumedNonceStore, consumedNonces, type NonceStore } from './replay';
 import { createSessionToken, getSession, requireSession, SESSION_TTL_SECONDS } from './session';
 import { deriveKey, signToken } from './signed-token';
-import { buildSignInMessage, issueChallenge, verifySignIn } from './sign-in';
+import { buildSignInMessage, issueChallenge, SIGN_IN_STATEMENT, verifySignIn } from './sign-in';
 import { mintSupabaseAccessToken, SUPABASE_TOKEN_TTL_SECONDS } from './supabase-token';
 
 const SESSION_SECRET = 'test-session-secret-0123456789-abcdefghij';
@@ -106,6 +106,8 @@ describe('sign-in', () => {
     expect(message).toMatch(
       new RegExp(
         `^forge\\.app wants you to sign in with your Solana account:\\n${wallet.address}\\n\\n` +
+          'Sign in to FORGE\\. This signature is free and does not send a transaction\\.\\n\\n' +
+          'URI: https://forge\\.app\\nVersion: 1\\n' +
           'Nonce: [0-9a-f]{32}\\nIssued At: 2026-10-07T12:00:00\\.000Z\\n' +
           'Expiration Time: 2026-10-07T12:05:00\\.000Z$',
       ),
@@ -402,9 +404,21 @@ describe('nonce store', () => {
       address: wallet.address,
       nonce: issued.challenge.nonce,
       issuedAt: new Date(now * 1000).toISOString(),
+      statement: SIGN_IN_STATEMENT,
+      uri: 'https://forge.app',
+      version: '1',
       expirationTime: issued.expiresAt,
     });
-    expect(parsed?.statement).toBeUndefined();
+    // Phantom rejects a Chain ID that differs from its current network, and some non-ASCII text.
+    expect(parsed?.chainId).toBeUndefined();
+    expect(issued.message).toMatch(/^[\x20-\x7e\n]+$/);
+    const local = issueChallenge(
+      Buffer.from(SESSION_SECRET),
+      wallet.address,
+      'localhost:3000',
+      now,
+    );
+    expect(SIWS.exec(local.message)?.groups?.uri).toBe('http://localhost:3000');
   });
 });
 

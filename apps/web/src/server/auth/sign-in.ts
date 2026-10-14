@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { SolanaAddress } from '@forge/shared';
 import { base58DecodeExact } from './base58';
+import { isLocalHostname } from './config';
 import { verifyEd25519 } from './ed25519';
 import { consumedNonces, type NonceStore } from './replay';
 import { deriveKey, signToken, verifyToken } from './signed-token';
@@ -25,15 +26,26 @@ export interface SignInChallenge {
   exp: number;
 }
 
+/** Statement of the sign-in message (ASCII only: Phantom rejects some non-ASCII text). */
+export const SIGN_IN_STATEMENT =
+  'Sign in to FORGE. This signature is free and does not send a transaction.';
+
 /**
- * Sign-In With Solana (SIWS) text: the address goes on its own line, as wallets require. Phantom
- * refuses to display a message that starts like SIWS but does not follow the format.
+ * Sign-In With Solana (SIWS) text. Phantom refuses to display a message that starts like SIWS
+ * but breaks its rules: the address on its own line, a statement, then the fields. No Chain ID:
+ * Phantom rejects one that differs from the network it is set to.
  */
 export function buildSignInMessage(challenge: SignInChallenge): string {
+  const hostname = new URL(`http://${challenge.domain}`).hostname;
+  const scheme = isLocalHostname(hostname) ? 'http' : 'https';
   return (
     `${challenge.domain} wants you to sign in with your Solana account:\n` +
     `${challenge.wallet}\n` +
     `\n` +
+    `${SIGN_IN_STATEMENT}\n` +
+    `\n` +
+    `URI: ${scheme}://${challenge.domain}\n` +
+    `Version: 1\n` +
     `Nonce: ${challenge.nonce}\n` +
     `Issued At: ${new Date(challenge.iat * 1000).toISOString()}\n` +
     `Expiration Time: ${new Date(challenge.exp * 1000).toISOString()}`
