@@ -197,6 +197,17 @@ describe('screen interactions', () => {
     mount('chat:incomplete', <ChatScreen />);
     expect(screen.getByRole('button', { name: /Confirm and go to payment/ })).toBeDisabled();
     expect(screen.getByText('Add the coin symbol before confirming.')).toBeInTheDocument();
+    expect(screen.queryByText('Your blueprint is ready')).not.toBeInTheDocument();
+  });
+  it('offers to confirm next to the conversation once the blueprint is complete', async () => {
+    mount('chat:ready', <ChatScreen />);
+    const buttons = screen.getAllByRole('button', { name: /Confirm and go to payment/ });
+    expect(buttons).toHaveLength(2);
+    const inChat = buttons.find((b) => b.closest('.fw-chat'));
+    expect(inChat).toBeEnabled();
+    fireEvent.click(inChat!);
+    await advance(1000);
+    expect(navigation.push).toHaveBeenCalledWith(expect.stringMatching(/^\/jobs\/.+\/pay$/));
   });
   it('presents a rejected login neutrally and allows another attempt', async () => {
     mount('session:rejected', <LoginPanel />);

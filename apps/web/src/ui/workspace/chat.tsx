@@ -108,6 +108,18 @@ export function ChatScreen({
               {copy.limited}
             </p>
           )}
+          {chat.validation.complete && !chat.streaming && (
+            // Next to the conversation, so the owner does not scroll the blueprint to confirm.
+            <div className="fw-chat-ready" role="status">
+              <p>
+                <strong>{copy.ready}</strong>
+                {copy.readyHint}
+              </p>
+              <Button disabled={busy} onClick={confirm}>
+                {busy ? copy.confirming : launchpadId ? copy.confirmChange : copy.confirm} ↗
+              </Button>
+            </div>
+          )}
           <form
             className="fw-composer"
             onSubmit={(e) => {

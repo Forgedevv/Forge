@@ -662,6 +662,27 @@
   border-radius: 50%;
   border: 1px solid var(--fw-border);
 }
+.fw-chat-ready {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px 20px;
+  margin: 0 0 16px;
+  padding: 16px 20px;
+  border: 1px solid var(--fw-accent);
+  border-radius: 20px;
+  background: var(--fw-raised);
+}
+.fw-chat-ready p {
+  margin: 0;
+  color: var(--fw-muted);
+  flex: 1 1 240px;
+}
+.fw-chat-ready strong {
+  display: block;
+  color: var(--fw-text);
+}
 .fw-summary-confirm {
   border-top: 1px solid var(--fw-border);
   margin-top: 20px;
