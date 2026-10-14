@@ -562,11 +562,17 @@ describe('ensureProject', () => {
     const body = created[0]!.body as {
       target: string;
       files: Array<{ file: string }>;
-      projectSettings: { framework: unknown };
+      projectSettings?: unknown;
     };
     expect(body.target).toBe('production');
     expect(body.files.map((f) => f.file)).toEqual(['index.html']);
-    expect(body.projectSettings.framework).toBeNull();
+    expect(body.projectSettings).toBeUndefined();
+    // The project goes to no framework for the static page, then back to nextjs.
+    const frameworks = stub
+      .find('PATCH', '/v9/projects/prj_123')
+      .map((c) => (c.body as { framework?: unknown }).framework)
+      .filter((f) => f !== undefined);
+    expect(frameworks).toEqual([null, 'nextjs']);
     // Content-addressed upload of the placeholder page itself.
     const upload = stub.find('POST', '/v2/files')[0]!;
     expect(upload.headers['x-vercel-digest']).toMatch(/^[0-9a-f]{40}$/);

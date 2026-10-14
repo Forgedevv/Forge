@@ -938,23 +938,38 @@ export function createVercelClient(opts: VercelClientOptions): VercelClient {
       idempotent: true,
       allowNonJsonResponse: true,
     });
-    const res = await call({
-      method: 'POST',
-      path: '/v13/deployments',
-      query: { skipAutoDetectionConfirmation: '1' },
-      body: {
-        name: project.name,
-        project: project.id,
-        target: 'production',
-        files: [{ file: 'index.html', sha: digest, size: content.byteLength }],
-        projectSettings: { framework: null },
-        meta: { forgePlaceholder: '1' },
-      },
-      // A replay only creates another identical static placeholder.
-      idempotent: true,
-    });
-    const placeholder = toDeployment(parseBody(DeploymentSchema, res, 'placeholder deployment'));
-    await waitForDeployment(placeholder.id, { timeoutMs: PLACEHOLDER_TIMEOUT_MS });
+    // The project's framework (nextjs) would make Vercel build the static page as a Next.js app
+    // ("No Next.js version detected"), and a deployment's `projectSettings.framework: null` does not
+    // override it: the project is set to no framework for the placeholder, then back (checked on
+    // the API).
+    const setFramework = (framework: string | null) =>
+      call({
+        method: 'PATCH',
+        path: `/v9/projects/${seg(project.id, 'project')}`,
+        body: { framework },
+        idempotent: true,
+      });
+    await setFramework(null);
+    try {
+      const res = await call({
+        method: 'POST',
+        path: '/v13/deployments',
+        query: { skipAutoDetectionConfirmation: '1' },
+        body: {
+          name: project.name,
+          project: project.id,
+          target: 'production',
+          files: [{ file: 'index.html', sha: digest, size: content.byteLength }],
+          meta: { forgePlaceholder: '1' },
+        },
+        // A replay only creates another identical static placeholder.
+        idempotent: true,
+      });
+      const placeholder = toDeployment(parseBody(DeploymentSchema, res, 'placeholder deployment'));
+      await waitForDeployment(placeholder.id, { timeoutMs: PLACEHOLDER_TIMEOUT_MS });
+    } finally {
+      await setFramework(FRAMEWORK);
+    }
     const after = await getProject(project.id);
     if (!after?.productionDeploymentId) {
       throw new ServiceError(
