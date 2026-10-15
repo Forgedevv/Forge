@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { isSiteHost } from '@forge/shared';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import pg from 'pg';
 import { loadMigrate } from './migrate-module.js';
@@ -932,6 +933,302 @@ describeDb('jobs.owner_tx_details (0009)', () => {
       await admin.query('update jobs set owner_tx = null, owner_tx_details = null where id = $1', [
         ids.jobB,
       ]);
+    }
+  });
+});
+
+/** Runs fn as the service owner in a transaction that is always rolled back. */
+async function inRolledBackTx(fn: (c: pg.Client) => Promise<void>): Promise<void> {
+  const c = await connect();
+  try {
+    await c.query('begin');
+    await fn(c);
+  } finally {
+    await c.query('rollback').catch(() => undefined);
+    await c.end();
+  }
+}
+
+/** The Postgres error code of `query`, or null when it succeeds (inside a savepoint). */
+async function errorCode(
+  c: pg.Client,
+  sql: string,
+  params: unknown[] = [],
+): Promise<string | null> {
+  await c.query('savepoint probe');
+  try {
+    await c.query(sql, params);
+    await c.query('release savepoint probe');
+    return null;
+  } catch (error) {
+    await c.query('rollback to savepoint probe');
+    return (error as { code?: string }).code ?? 'unknown';
+  }
+}
+
+describeDb('jobs: one open creation job per launchpad (0010)', () => {
+  // Skipped (not failed) on a database where migration 0010 is not applied yet.
+  let present = false;
+  beforeAll(async () => {
+    const r = await admin.query(
+      `select count(*)::int as n from pg_indexes
+       where schemaname = 'public' and indexname = 'jobs_one_open_create_per_launchpad_idx'`,
+    );
+    present = r.rows[0].n === 1;
+  });
+
+  let seq = 0;
+  async function launchpad(c: pg.Client): Promise<string> {
+    seq += 1;
+    return q1(
+      c,
+      `insert into launchpads (owner_wallet, slug, spec) values ($1, $2, '{}') returning id`,
+      [A, `t-0010-${seq}-${run}`],
+    );
+  }
+
+  const insertJob = (launchpadId: string, status: string, type = 'create_launchpad') =>
+    [
+      `insert into jobs (launchpad_id, type, status) values ($1, $2, $3)`,
+      [launchpadId, type, status],
+    ] as const;
+
+  async function job(c: pg.Client, launchpadId: string, status: string, type?: string) {
+    const [sql, params] = insertJob(launchpadId, status, type);
+    return q1(c, `${sql} returning id`, [...params]);
+  }
+
+  it('replaces the index of 0005 with a partial unique index on open creation jobs', async (ctx) => {
+    if (!present) ctx.skip();
+    const r = await admin.query(
+      `select indexname, indexdef from pg_indexes
+       where schemaname = 'public' and tablename = 'jobs'
+         and indexname in ('jobs_one_open_create_per_launchpad_idx', 'jobs_one_create_per_launchpad_idx')`,
+    );
+    expect(r.rows.map((x) => x.indexname)).toEqual(['jobs_one_open_create_per_launchpad_idx']);
+    const def = r.rows[0].indexdef as string;
+    expect(def).toMatch(/^CREATE UNIQUE INDEX /);
+    expect(def).toMatch(/\(launchpad_id\)/);
+    expect(def).toMatch(/type = 'create_launchpad'/);
+    expect(def).toMatch(/status <> 'refunded'/);
+  });
+
+  it('refuses a second creation job while one is open, whatever its status (23505)', async (ctx) => {
+    if (!present) ctx.skip();
+    await inRolledBackTx(async (c) => {
+      for (const open of ['spec_ready', 'paid', 'building', 'failed', 'live']) {
+        const lp = await launchpad(c);
+        await job(c, lp, open);
+        for (const next of ['spec_ready', 'paid', 'refunded']) {
+          const [sql, params] = insertJob(lp, next);
+          const code = await errorCode(c, sql, [...params]);
+          // A refunded row steps aside; any other second creation job collides.
+          expect(code, `${open} then ${next}`).toBe(next === 'refunded' ? null : '23505');
+        }
+        // Modification jobs are not concerned.
+        await job(c, lp, 'spec_ready', 'modify_launchpad');
+        await job(c, lp, 'spec_ready', 'modify_launchpad');
+      }
+    });
+  });
+
+  it('accepts a new creation job once every earlier one is refunded', async (ctx) => {
+    if (!present) ctx.skip();
+    await inRolledBackTx(async (c) => {
+      const lp = await launchpad(c);
+      const first = await job(c, lp, 'spec_ready');
+      await c.query(`update jobs set status = 'refunded' where id = $1`, [first]);
+      await job(c, lp, 'refunded');
+      const again = await job(c, lp, 'spec_ready');
+      const r = await c.query(
+        `select count(*)::int as n from jobs
+         where launchpad_id = $1 and type = 'create_launchpad' and status <> 'refunded'`,
+        [lp],
+      );
+      expect(r.rows[0].n).toBe(1);
+      expect(again).not.toBe(first);
+    });
+  });
+
+  it('never moves a refunded job back while a newer one is open', async (ctx) => {
+    if (!present) ctx.skip();
+    await inRolledBackTx(async (c) => {
+      const lp = await launchpad(c);
+      const old = await job(c, lp, 'refunded');
+      const current = await job(c, lp, 'spec_ready');
+      for (const status of ['failed', 'spec_ready', 'paid', 'live']) {
+        const code = await errorCode(c, `update jobs set status = $2 where id = $1`, [old, status]);
+        expect(code, status).toBe('23505');
+      }
+      // Once the newer one is refunded too, the index no longer stands in the way.
+      await c.query(`update jobs set status = 'refunded' where id = $1`, [current]);
+      expect(
+        await errorCode(c, `update jobs set status = 'failed' where id = $1`, [old]),
+      ).toBeNull();
+    });
+  });
+});
+
+describeDb('launchpads.site_host (0011)', () => {
+  // Skipped (not failed) on a database where migration 0011 is not applied yet.
+  let present = false;
+  beforeAll(async () => {
+    const r = await admin.query(
+      `select count(*)::int as n from information_schema.columns
+       where table_schema = 'public' and table_name = 'launchpads' and column_name = 'site_host'`,
+    );
+    present = r.rows[0].n === 1;
+  });
+
+  // Every shape the reviews worried about, both sides of each limit.
+  const label63 = 'a'.repeat(63);
+  const host253 = `${label63}.${'b'.repeat(63)}.${'c'.repeat(63)}.${'d'.repeat(57)}.com`;
+  const shapes = [
+    'lp-moonpad.vercel.app',
+    'lp-moonpad-forge-team.vercel.app',
+    `${label63}.vercel.app`,
+    `${'a'.repeat(64)}.vercel.app`,
+    'moonpad.forge-sites.app',
+    'a.b.example.com',
+    `${label63}.example.com`,
+    `${'a'.repeat(64)}.example.com`,
+    host253,
+    `${host253.slice(0, -4)}d.com`,
+    'x.co',
+    'a.b.vercel.app',
+    'x.lp-moonpad.vercel.app',
+    'vercel.app',
+    'LP-moonpad.vercel.app',
+    'Moonpad.forge-sites.app',
+    'lp-moonpad.vercel.app.',
+    'lp-moonpad.vercel.app:443',
+    'lp-moonpad.vercel.app/',
+    'lp-moonpad.vercel.app\n',
+    '\nlp-moonpad.vercel.app',
+    'https://lp-moonpad.vercel.app',
+    'lp moonpad.vercel.app',
+    '-lp.vercel.app',
+    'lp-.vercel.app',
+    'lp_moonpad.vercel.app',
+    'localhost',
+    '127.0.0.1',
+    'moonpad.app1',
+    '',
+  ];
+
+  async function accepted(c: pg.Client, host: string): Promise<boolean> {
+    const code = await errorCode(c, `update launchpads set site_host = $2 where id = $1`, [
+      ids.lpA,
+      host,
+    ]);
+    if (code !== null && code !== '23514') throw new Error(`unexpected error ${code}`);
+    return code === null;
+  }
+
+  it('accepts exactly the hosts that isSiteHost accepts (packages/shared)', async (ctx) => {
+    if (!present) ctx.skip();
+    // Both sides of the parity hold valid and invalid cases.
+    expect(shapes.filter((h) => isSiteHost(h)).length).toBeGreaterThan(5);
+    expect(shapes.filter((h) => !isSiteHost(h)).length).toBeGreaterThan(15);
+    await inRolledBackTx(async (c) => {
+      for (const host of shapes) {
+        expect(await accepted(c, host), JSON.stringify(host)).toBe(isSiteHost(host));
+      }
+      // Null: no host recorded yet.
+      await c.query(`update launchpads set site_host = null where id = $1`, [ids.lpA]);
+    });
+  });
+
+  it('names its check constraint', async (ctx) => {
+    if (!present) ctx.skip();
+    await inRolledBackTx(async (c) => {
+      await expect(
+        c.query(`update launchpads set site_host = 'vercel.app' where id = $1`, [ids.lpA]),
+      ).rejects.toThrow(/launchpads_site_host_check/);
+    });
+  });
+
+  it('records one host for one launchpad only, and any number of launchpads without one', async (ctx) => {
+    if (!present) ctx.skip();
+    const host = `lp-unique-${run}.vercel.app`;
+    await inRolledBackTx(async (c) => {
+      await c.query(`update launchpads set site_host = $2 where id = $1`, [ids.lpA, host]);
+      await expect(
+        c.query(`update launchpads set site_host = $2 where id = $1`, [ids.lpB, host]),
+      ).rejects.toThrow(/launchpads_site_host_key/);
+    });
+    await inRolledBackTx(async (c) => {
+      for (const id of [ids.lpA, ids.lpB]) {
+        await c.query(`update launchpads set site_host = null where id = $1`, [id]);
+      }
+      const r = await c.query(
+        `select count(*)::int as n from launchpads where id = any($1) and site_host is null`,
+        [[ids.lpA, ids.lpB]],
+      );
+      expect(r.rows[0].n).toBe(2);
+    });
+  });
+
+  it('has exactly the privileges of slug: clients read, only the service role writes', async (ctx) => {
+    if (!present) ctx.skip();
+    const r = await admin.query(
+      `select role, privilege,
+         has_column_privilege(role, 'public.launchpads', 'slug', privilege) as slug,
+         has_column_privilege(role, 'public.launchpads', 'site_host', privilege) as site_host
+       from unnest(array['anon', 'authenticated', 'service_role']) as role,
+            unnest(array['SELECT', 'INSERT', 'UPDATE']) as privilege`,
+    );
+    for (const row of r.rows) {
+      expect(row.site_host, `${row.role} ${row.privilege}`).toBe(row.slug);
+    }
+    const allowed = (role: string, privilege: string) =>
+      r.rows.find((x) => x.role === role && x.privilege === privilege)?.site_host;
+    expect(allowed('anon', 'SELECT')).toBe(false);
+    expect(allowed('authenticated', 'SELECT')).toBe(true);
+    expect(allowed('authenticated', 'INSERT')).toBe(false);
+    expect(allowed('authenticated', 'UPDATE')).toBe(false);
+    expect(allowed('service_role', 'UPDATE')).toBe(true);
+  });
+
+  it('is read by the owner only (RLS) and never written by clients', async (ctx) => {
+    if (!present) ctx.skip();
+    const host = `lp-b-${run}.vercel.app`;
+    await admin.query(`update launchpads set site_host = $2 where id = $1`, [ids.lpB, host]);
+    try {
+      await as('authenticated', B, async (c) => {
+        const rows = await c.query('select site_host from launchpads where id = $1', [ids.lpB]);
+        expect(rows.rows).toEqual([{ site_host: host }]);
+      });
+      await as('authenticated', A, async (c) => {
+        const rows = await c.query('select site_host from launchpads where id = $1', [ids.lpB]);
+        expect(rows.rows).toEqual([]);
+        await expect(
+          c.query(`update launchpads set site_host = 'lp-evil.vercel.app' where id = $1`, [
+            ids.lpA,
+          ]),
+        ).rejects.toThrow(/permission denied/);
+      });
+      await as('anon', null, async (c) => {
+        await expect(c.query('select site_host from launchpads')).rejects.toThrow(
+          /permission denied/,
+        );
+      });
+      // The service role writes it (the builder's deploy step).
+      const c = await connect();
+      try {
+        await c.query('begin');
+        await c.query('set local role service_role');
+        const updated = await c.query(
+          'update launchpads set site_host = $2 where id = $1 returning id',
+          [ids.lpA, `lp-a-${run}.vercel.app`],
+        );
+        expect(updated.rowCount).toBe(1);
+      } finally {
+        await c.query('rollback').catch(() => undefined);
+        await c.end();
+      }
+    } finally {
+      await admin.query('update launchpads set site_host = null where id = $1', [ids.lpB]);
     }
   });
 });
