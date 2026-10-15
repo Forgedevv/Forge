@@ -1,6 +1,12 @@
 export { createSandboxRunner, parseRunOptions, resolveOutputDir, resolveWorkdir } from './run.js';
 export type { SandboxDeps, SandboxLogger, SandboxRunner } from './run.js';
-export { buildSite, buildCommands, detectPackageManager, BUILD_DEFAULTS } from './build.js';
+export {
+  assertStepTimeoutsFitJob,
+  buildSite,
+  buildCommands,
+  detectPackageManager,
+  BUILD_DEFAULTS,
+} from './build.js';
 export type {
   BuildFailedStep,
   BuildSiteOptions,

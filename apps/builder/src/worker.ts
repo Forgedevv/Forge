@@ -125,6 +125,14 @@ export interface WorkerOptions {
   now?: () => number;
 }
 
+/**
+ * Hard cap on one job when `WorkerOptions.maxJobMs` is not given: twice the stale delay. The
+ * builder checks at startup that the sandbox step timeouts fit in it.
+ */
+export function defaultMaxJobMs(staleMinutes: number = OPS.jobLockStaleMinutes): number {
+  return staleMinutes * 2 * 60_000;
+}
+
 const DEFAULT_WORKER_ENV = {
   concurrency: 1,
   pollIntervalMs: 5_000,
@@ -214,7 +222,7 @@ export class Worker {
       staleMinutes,
       staleCheckIntervalMs: opts.staleCheckIntervalMs ?? DEFAULT_WORKER_ENV.staleCheckIntervalMs,
       flagCacheMs: opts.flagCacheMs ?? DEFAULT_WORKER_ENV.flagCacheMs,
-      maxJobMs: opts.maxJobMs ?? staleMinutes * 2 * 60_000,
+      maxJobMs: opts.maxJobMs ?? defaultMaxJobMs(staleMinutes),
       shutdownGraceMs: opts.shutdownGraceMs ?? DEFAULT_WORKER_ENV.shutdownGraceMs,
       shutdownForceMs: opts.shutdownForceMs ?? DEFAULT_WORKER_ENV.shutdownForceMs,
       abandonedSettleMs: opts.abandonedSettleMs ?? DEFAULT_WORKER_ENV.abandonedSettleMs,

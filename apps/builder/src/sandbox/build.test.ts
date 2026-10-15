@@ -2,7 +2,14 @@ import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { buildCommands, buildSite, detectPackageManager, stepMinutesFromEnv } from './build.js';
+import { defaultMaxJobMs } from '../worker.js';
+import {
+  assertStepTimeoutsFitJob,
+  buildCommands,
+  buildSite,
+  detectPackageManager,
+  stepMinutesFromEnv,
+} from './build.js';
 import { resolveSandboxConfig } from './config.js';
 import type { SandboxRunner } from './run.js';
 import type { SandboxRunOptions, SandboxRunResult } from './types.js';
@@ -215,6 +222,59 @@ describe('buildSite', () => {
     expect(runs[0]!.workingDir).toBe('repo');
     await expect(buildSite(runner, dir, { jobId: 'job-7', projectDir: '../x' })).rejects.toThrow();
     await expect(buildSite(runner, dir, { jobId: 'job-7', outputDir: '/etc' })).rejects.toThrow();
+  });
+});
+
+describe('step timeouts against the cap on one job', () => {
+  const MIN = 60_000;
+
+  it('accepts the defaults within the worker default cap', () => {
+    // 2 x (10 + 15) + 30 = 80 minutes, within the default 90.
+    expect(() =>
+      assertStepTimeoutsFitJob({
+        maxJobMs: defaultMaxJobMs(),
+        agentTimeoutMs: 30 * MIN,
+        installTimeoutMs: 10 * MIN,
+        buildTimeoutMs: 15 * MIN,
+      }),
+    ).not.toThrow();
+    expect(defaultMaxJobMs()).toBe(90 * MIN);
+    // Exactly at the cap still fits.
+    expect(() =>
+      assertStepTimeoutsFitJob({
+        maxJobMs: 90 * MIN,
+        agentTimeoutMs: 30 * MIN,
+        installTimeoutMs: 10 * MIN,
+        buildTimeoutMs: 20 * MIN,
+      }),
+    ).not.toThrow();
+  });
+
+  it('refuses step timeouts that a job cannot hold, with a clear error', () => {
+    const error = (() => {
+      try {
+        assertStepTimeoutsFitJob({
+          maxJobMs: 90 * MIN,
+          agentTimeoutMs: 30 * MIN,
+          installTimeoutMs: 20 * MIN,
+          buildTimeoutMs: 15 * MIN,
+        });
+      } catch (err) {
+        return err as Error;
+      }
+      throw new Error('expected an error');
+    })();
+    expect(error.message).toBe(
+      'the sandbox step timeouts do not fit in one job: 2 x (install 20 + build 15) + agent 30 = 100 minutes, above the 90-minute limit of a job; lower FORGE_SANDBOX_INSTALL_TIMEOUT_MINUTES or FORGE_SANDBOX_BUILD_TIMEOUT_MINUTES',
+    );
+    expect(() =>
+      assertStepTimeoutsFitJob({
+        maxJobMs: 90 * MIN,
+        agentTimeoutMs: 30 * MIN,
+        installTimeoutMs: 60 * MIN,
+        buildTimeoutMs: 60 * MIN,
+      }),
+    ).toThrow(/do not fit in one job/);
   });
 });
 

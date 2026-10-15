@@ -88,6 +88,31 @@ export const BUILD_DEFAULTS = {
   maxLogChars: 256 * 1024,
 } as const;
 
+/**
+ * Refuses step timeouts that cannot fit in one job: the worker aborts any job past its cap
+ * (worker.ts `maxJobMs`), and a building step runs the agent, then the install and the build,
+ * and may run both again (the visual review's second pass; otherwise the room left covers the
+ * preview deployment wait). So 2 x (install + build) + the agent's timeout must stay within the
+ * cap. The review's own agent run is not counted: it is bounded at run time by the time left in
+ * the job (review/run-review.ts). Checked at builder startup.
+ */
+export function assertStepTimeoutsFitJob(input: {
+  maxJobMs: number;
+  agentTimeoutMs: number;
+  installTimeoutMs?: number;
+  buildTimeoutMs?: number;
+}): void {
+  const install = input.installTimeoutMs ?? BUILD_DEFAULTS.install.timeoutMs;
+  const build = input.buildTimeoutMs ?? BUILD_DEFAULTS.build.timeoutMs;
+  const needed = 2 * (install + build) + input.agentTimeoutMs;
+  if (needed > input.maxJobMs) {
+    const minutes = (ms: number) => Math.ceil(ms / 60_000);
+    throw new Error(
+      `the sandbox step timeouts do not fit in one job: 2 x (install ${minutes(install)} + build ${minutes(build)}) + agent ${minutes(input.agentTimeoutMs)} = ${minutes(needed)} minutes, above the ${minutes(input.maxJobMs)}-minute limit of a job; lower FORGE_SANDBOX_INSTALL_TIMEOUT_MINUTES or FORGE_SANDBOX_BUILD_TIMEOUT_MINUTES`,
+    );
+  }
+}
+
 /** Commands of each step. No shell; nothing from the repo runs during the install. */
 export function buildCommands(pm: PackageManager): { install: string[]; build: string[] } {
   if (pm === 'pnpm') {

@@ -332,6 +332,40 @@ describe('builder process', () => {
     expect(builder.gateway.server.listening).toBe(false);
   });
 
+  it('refuses to start when the sandbox step timeouts do not fit in one job', async () => {
+    jobsRoot = await mkdtemp(path.join(tmpdir(), 'forge-builder-start-'));
+    // The step timeouts are read once, when the sandbox module loads: a fresh module graph.
+    vi.resetModules();
+    vi.stubEnv('FORGE_SANDBOX_INSTALL_TIMEOUT_MINUTES', '30');
+    vi.stubEnv('FORGE_SANDBOX_BUILD_TIMEOUT_MINUTES', '30');
+    try {
+      const fresh = await import('./index.js');
+      const docker = fakeDocker();
+      const env = baseEnv({
+        FORGE_SANDBOX_IMAGE: `sha256:${'a'.repeat(64)}`,
+        FORGE_SANDBOX_PROXY_IMAGE: `sha256:${'b'.repeat(64)}`,
+        FORGE_SANDBOX_JOBS_ROOT: jobsRoot,
+        FORGE_SANDBOX_GATEWAY_UPSTREAM: 'host.docker.internal:8787',
+      });
+      await expect(
+        fresh.startBuilder({
+          env,
+          logger: silentLogger(),
+          handleSignals: false,
+          spawn: docker.spawn,
+          gatewayPort: 0,
+        }),
+      ).rejects.toThrow(
+        /2 x \(install 30 \+ build 30\) \+ agent 30 = 150 minutes, above the 90-minute limit/,
+      );
+      // Refused before anything runs.
+      expect(docker.calls).toEqual([]);
+    } finally {
+      vi.unstubAllEnvs();
+      vi.resetModules();
+    }
+  });
+
   it('refuses to start without the sandbox gateway upstream', async () => {
     jobsRoot = await mkdtemp(path.join(tmpdir(), 'forge-builder-start-'));
     const env = baseEnv({

@@ -21,7 +21,12 @@ import {
   type PipelineDeps,
   type VisualReviewConfig,
 } from './pipeline/index.js';
-import { buildSite, createSandboxRunner, loadSandboxConfig } from './sandbox/index.js';
+import {
+  assertStepTimeoutsFitJob,
+  buildSite,
+  createSandboxRunner,
+  loadSandboxConfig,
+} from './sandbox/index.js';
 import type { SpawnFn } from './sandbox/docker.js';
 import { scanDiff } from './scan/index.js';
 import { createSignerClient } from './signer-client.js';
@@ -29,7 +34,7 @@ import { enforceDisabledLaunchpads } from './disable.js';
 import { isRelayTokenSecret } from './relay-token.js';
 import { startSleepScheduler, type SleepScheduler } from './sleep.js';
 import { createVercelClient, pickProjectEnv, vercelOptionsFromEnv } from './vercel.js';
-import type { Worker, WorkerLogger } from './worker.js';
+import { defaultMaxJobMs, type Worker, type WorkerLogger } from './worker.js';
 import { sanitizeError } from './worker/messages.js';
 import { createWorkerLogger, runWorker } from './worker/run.js';
 
@@ -39,7 +44,8 @@ import { createWorkerLogger, runWorker } from './worker/run.js';
  *
  * Start-up checks, in order, before any job is picked up: environment (zod, names only in
  * errors), FORGE addresses (`requireAddresses` of @forge/core), public variables of client
- * projects, sandbox configuration, visual review setting, removal of sandbox containers and job
+ * projects, sandbox step timeouts against the cap on one job, sandbox configuration, visual
+ * review setting, removal of sandbox containers and job
  * folders left by a crash, then the gateway listens and the worker starts polling.
  */
 
@@ -225,6 +231,12 @@ export async function startBuilder(opts: StartBuilderOptions = {}): Promise<Buil
   const env = withoutEmpty(opts.env ?? process.env);
   const { config, projectEnv } = checkStartupConfig(env);
   const logger = opts.logger ?? createWorkerLogger(config.BUILDER_LOG_LEVEL);
+  // The worker below runs with its default cap on one job: the sandbox step timeouts in use
+  // (BUILD_DEFAULTS) and the agent's must fit in it, or a slow build would be cut mid-job.
+  assertStepTimeoutsFitJob({
+    maxJobMs: defaultMaxJobMs(),
+    agentTimeoutMs: AGENT_DEFAULTS.timeoutMs,
+  });
 
   const sandboxConfig = loadSandboxConfig(env);
   if (!sandboxConfig.gateway) {
