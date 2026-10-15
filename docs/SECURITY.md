@@ -26,6 +26,7 @@ Every protection below is **mandatory** in the MVP. Agents that touch one of the
 ## 3. Agent's GitHub access
 
 **Protections** (agent 4): organization GitHub App; temporary installation token, limited to the client's repo only, `contents:write` permission only. No access to the FORGE monorepo.
+- One read sees one more repo: whether a client repo was created from the template (`template_repository`, which GitHub only fills for a token that can see the template) is read with a metadata-only token (`metadata:read`, nothing else, no write) scoped to that client repo plus the template repo.
 
 ## 4. Sandbox network egress
 
