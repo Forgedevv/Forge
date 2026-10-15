@@ -1,4 +1,4 @@
-import { PRICING } from '@forge/shared';
+import { PRICING, type StartAgainBlockedReason } from '@forge/shared';
 import { validateConfirmedSpec } from '../chat/spec-draft';
 import { DRAFT_POLICY } from '../chat/store';
 import { NOT_FOUND_MESSAGES, RouteError } from '../jobs/http';
@@ -28,19 +28,27 @@ import { byNewest } from './quotas';
  *   beta (in the session check), `signups_paused` (fails closed), the $FORGE gate (fails closed);
  * - the launchpad is a `draft`: never a live, sleeping or disabled one;
  * - every creation job of the launchpad is `refunded`, and no on-chain setup was recorded for it
- *   (configs or coin: only a failure after approval gets there, left to the team, D18). A creation
- *   job that is still open decides instead:
+ *   (configs or coin: only a failure after approval gets there, left to the team, D18) ->
+ *   NEEDS_SUPPORT otherwise. A creation job that is still open decides instead:
  *   awaiting payment (`spec_ready`) -> its id is returned (idempotent: a retried request, or a
  *   draft that was simply never paid); paid, building ... deploying -> CREATION_IN_PROGRESS;
  *   `failed` at the build step with an automatic retry left -> CREATION_IN_PROGRESS; `failed` at
  *   the build step with no attempt left (the refund is pending) -> REFUND_PENDING; `failed` after
  *   approval (D18: neither retried nor refunded automatically, configs may exist) ->
- *   CREATION_IN_PROGRESS, for the team to handle;
+ *   NEEDS_SUPPORT, for the team to handle;
+ * - fewer than START_AGAIN_POLICY.maxRefundedCreations creation jobs were refunded: every attempt
+ *   is a full build paid back to the owner, so a blueprint that keeps failing is looked at by the
+ *   team first -> NEEDS_SUPPORT;
+ * - the stored spec still passes the confirmation checks, for this owner and this slug ->
+ *   INVALID_SPEC otherwise;
  * - no money of the refunded attempts is still in flight: a payment still `confirmed` (refund not
  *   recorded) or a payment anomaly not resolved (manual refund, D25) -> REFUND_PENDING; a quote
  *   carrying a signature but not settled, or still inside its window plus DRAFT_POLICY.quoteGraceMs
- *   -> PAYMENT_PENDING. A second payment is never asked for while one may still be owed back;
- * - the stored spec still passes the confirmation checks, for this owner and this slug.
+ *   -> PAYMENT_PENDING. A second payment is never asked for while one may still be owed back.
+ *
+ * The dashboard decides with the same function (decideStartAgain, summary.ts): `canStartAgain` is
+ * true exactly when this route would create a job (the kill switch, the gate and the session
+ * apart), and `startAgainBlocked` tells a refunded draft why it cannot be started again yet.
  *
  * Draft policy (DRAFT_POLICY, chat/store.ts): a refunded draft counts as paid there (its job left
  * `spec_ready` and its payment carries a signature), so its slug is never released to someone
@@ -50,6 +58,14 @@ import { byNewest } from './quotas';
  * The database holds at most one creation job that is not refunded per launchpad (partial unique
  * index of migration 0010): a concurrent request fails its insert with 23505 and gets the winner.
  */
+
+export const START_AGAIN_POLICY = {
+  /**
+   * Refunded creation jobs after which the owner can no longer start a draft again alone: the
+   * team looks at a blueprint that failed that many times (NEEDS_SUPPORT).
+   */
+  maxRefundedCreations: 3,
+} as const;
 
 export interface RetryServiceDeps {
   store: RoutesStore;
@@ -74,15 +90,25 @@ export type StartAgainBlock =
   | 'no_creation'
   | 'creation_in_progress'
   | 'refund_pending'
-  | 'needs_support';
+  | 'needs_support'
+  | 'attempts_exhausted';
 
 /** Where the creation of a launchpad stands, from its jobs only (no payment read). */
 export type CreationState =
-  /** Every creation job was refunded: a new one may be created (payments permitting). */
+  /** Every creation job was refunded: a new one may be created (spec and payments permitting). */
   | { kind: 'start_again' }
   /** A creation job awaits payment: that one is the answer. */
   | { kind: 'awaiting_payment'; job: JobRecord }
   | { kind: 'blocked'; reason: StartAgainBlock; job: JobRecord | null };
+
+/** Every reason "start again" is refused for: the jobs, the stored spec, then the payments. */
+export type StartAgainRefusal = StartAgainBlock | 'invalid_spec' | 'payment_pending';
+
+/** The full decision: what the route answers, and what the dashboard offers. */
+export type StartAgainDecision =
+  | { kind: 'start_again' }
+  | { kind: 'awaiting_payment'; job: JobRecord }
+  | { kind: 'blocked'; reason: StartAgainRefusal; job: JobRecord | null };
 
 /** Postgres unique violation (the open-creation index of migration 0010). */
 const UNIQUE_VIOLATION = '23505';
@@ -98,6 +124,14 @@ type CreationLaunchpad = Pick<
   'id' | 'status' | 'launchpadConfig' | 'launchpadCoinConfig' | 'launchpadCoinMint'
 >;
 
+type DecisionLaunchpad = CreationLaunchpad & Pick<LaunchpadRecord, 'spec' | 'slug' | 'ownerWallet'>;
+
+function creationJobs(launchpadId: string, jobs: readonly JobRecord[]): JobRecord[] {
+  return jobs
+    .filter((j) => j.launchpadId === launchpadId && j.type === 'create_launchpad')
+    .sort(byNewest);
+}
+
 export function creationState(
   launchpad: CreationLaunchpad,
   jobs: readonly JobRecord[],
@@ -108,9 +142,7 @@ export function creationState(
   if (launchpad.status !== 'draft') {
     return { kind: 'blocked', reason: 'launchpad_not_draft', job: null };
   }
-  const creations = jobs
-    .filter((j) => j.launchpadId === launchpad.id && j.type === 'create_launchpad')
-    .sort(byNewest);
+  const creations = creationJobs(launchpad.id, jobs);
   if (creations.length === 0) return { kind: 'blocked', reason: 'no_creation', job: null };
   const open = creations.filter((j) => j.status !== 'refunded');
   const busy = open.find((j) => j.status !== 'spec_ready');
@@ -125,12 +157,22 @@ export function creationState(
   ) {
     return { kind: 'blocked', reason: 'needs_support', job: creations[0] ?? null };
   }
+  if (creations.length >= START_AGAIN_POLICY.maxRefundedCreations) {
+    return { kind: 'blocked', reason: 'attempts_exhausted', job: creations[0] ?? null };
+  }
   return { kind: 'start_again' };
 }
 
-/** True when the dashboard may offer "start again" (the route re-checks payments). */
-export function canStartAgain(launchpad: CreationLaunchpad, jobs: readonly JobRecord[]): boolean {
-  return creationState(launchpad, jobs).kind === 'start_again';
+/** The stored spec still passes the confirmation checks, for this owner and this slug. */
+export function storedSpecValid(
+  launchpad: Pick<LaunchpadRecord, 'spec' | 'slug' | 'ownerWallet'>,
+): boolean {
+  const checked = validateConfirmedSpec(launchpad.spec);
+  return (
+    checked.ok &&
+    checked.spec.slug === launchpad.slug &&
+    checked.spec.ownerWallet === launchpad.ownerWallet
+  );
 }
 
 /**
@@ -159,11 +201,53 @@ export function unsettledPayment(
   return open ? 'payment_pending' : null;
 }
 
-function blockedError(
-  reason: StartAgainBlock | 'payment_pending',
-  job: JobRecord | null,
-  status?: string,
-) {
+/**
+ * Whether the owner may start this launchpad again now: its jobs, then its stored spec, then the
+ * money of its creation jobs (read only when the rest allows it). The kill switch, the $FORGE
+ * gate and the session are the route's alone. `now` in ms.
+ */
+export async function decideStartAgain(
+  store: Pick<RoutesStore, 'listJobPayments' | 'countOpenPaymentAnomalies'>,
+  wallet: string,
+  launchpad: DecisionLaunchpad,
+  jobs: readonly JobRecord[],
+  now: number,
+): Promise<StartAgainDecision> {
+  const state = creationState(launchpad, jobs);
+  if (state.kind !== 'start_again') return state;
+  if (!storedSpecValid(launchpad)) return { kind: 'blocked', reason: 'invalid_spec', job: null };
+  const creationIds = creationJobs(launchpad.id, jobs).map((j) => j.id);
+  const [payments, anomalies] = await Promise.all([
+    store.listJobPayments(wallet, creationIds),
+    store.countOpenPaymentAnomalies(wallet, creationIds),
+  ]);
+  const unsettled = unsettledPayment(payments, anomalies, now);
+  return unsettled ? { kind: 'blocked', reason: unsettled, job: null } : { kind: 'start_again' };
+}
+
+/**
+ * Why a refunded draft cannot be started again yet, for the dashboard. Null when it can, when the
+ * launchpad is not a refunded draft, or when a creation job is still open (its tracker explains).
+ */
+export function startAgainBlockedReason(
+  decision: StartAgainDecision,
+): StartAgainBlockedReason | null {
+  if (decision.kind !== 'blocked') return null;
+  if (decision.job !== null && decision.job.status !== 'refunded') return null;
+  switch (decision.reason) {
+    case 'refund_pending':
+    case 'payment_pending':
+    case 'needs_support':
+    case 'invalid_spec':
+      return decision.reason;
+    case 'attempts_exhausted':
+      return 'needs_support';
+    default:
+      return null;
+  }
+}
+
+function blockedError(reason: StartAgainRefusal, job: JobRecord | null, status?: string) {
   const withJob = job ? { jobId: job.id } : {};
   switch (reason) {
     case 'launchpad_disabled':
@@ -192,9 +276,22 @@ function blockedError(
     case 'needs_support':
       return new RouteError(
         409,
-        'CREATION_IN_PROGRESS',
+        'NEEDS_SUPPORT',
         'The last attempt needs a check by our team. Please contact support before starting again.',
         withJob,
+      );
+    case 'attempts_exhausted':
+      return new RouteError(
+        409,
+        'NEEDS_SUPPORT',
+        `This launchpad was refunded ${START_AGAIN_POLICY.maxRefundedCreations} times. Please contact support before starting it again.`,
+        withJob,
+      );
+    case 'invalid_spec':
+      return new RouteError(
+        409,
+        'INVALID_SPEC',
+        'This blueprint no longer passes our checks. Please design the launchpad again in a new conversation.',
       );
     case 'refund_pending':
       return new RouteError(
@@ -234,39 +331,16 @@ export function createRetryService(deps: RetryServiceDeps): RetryService {
     const launchpad = await store.getOwnedLaunchpad(input.launchpadId, wallet);
     if (!launchpad) throw new RouteError(404, 'NOT_FOUND', NOT_FOUND_MESSAGES.launchpad);
     const jobs = await store.listOwnedJobs(wallet, [launchpad.id]);
-    const state = creationState(launchpad, jobs);
-    if (state.kind === 'awaiting_payment') return { jobId: state.job.id, created: false };
-    if (state.kind === 'blocked') {
-      logger.log('info', 'retry.refused', { launchpadId: launchpad.id, reason: state.reason });
-      throw blockedError(state.reason, state.job, launchpad.status);
-    }
-
-    // The builder builds from the stored spec: it must still pass the confirmation checks.
-    const checked = validateConfirmedSpec(launchpad.spec);
-    if (
-      !checked.ok ||
-      checked.spec.slug !== launchpad.slug ||
-      checked.spec.ownerWallet !== launchpad.ownerWallet
-    ) {
-      logger.log('warn', 'retry.invalid_spec', { launchpadId: launchpad.id });
-      throw new RouteError(
-        409,
-        'INVALID_SPEC',
-        'This blueprint no longer passes our checks. Please design the launchpad again in a new conversation.',
-      );
-    }
-
-    const creationIds = jobs
-      .filter((j) => j.launchpadId === launchpad.id && j.type === 'create_launchpad')
-      .map((j) => j.id);
-    const [payments, anomalies] = await Promise.all([
-      store.listJobPayments(wallet, creationIds),
-      store.countOpenPaymentAnomalies(wallet, creationIds),
-    ]);
-    const unsettled = unsettledPayment(payments, anomalies, now());
-    if (unsettled) {
-      logger.log('info', 'retry.refused', { launchpadId: launchpad.id, reason: unsettled });
-      throw blockedError(unsettled, null);
+    const decision = await decideStartAgain(store, wallet, launchpad, jobs, now());
+    if (decision.kind === 'awaiting_payment') return { jobId: decision.job.id, created: false };
+    if (decision.kind === 'blocked') {
+      // The builder builds from the stored spec: one that no longer passes is worth a warning.
+      if (decision.reason === 'invalid_spec') {
+        logger.log('warn', 'retry.invalid_spec', { launchpadId: launchpad.id });
+      } else {
+        logger.log('info', 'retry.refused', { launchpadId: launchpad.id, reason: decision.reason });
+      }
+      throw blockedError(decision.reason, decision.job, launchpad.status);
     }
 
     let job: JobRecord;

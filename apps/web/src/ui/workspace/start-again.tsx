@@ -1,7 +1,8 @@
 'use client';
+import Link from 'next/link';
 import { useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import type { JobStatus, LaunchpadSummary } from '@forge/shared';
+import type { JobStatus, LaunchpadSummary, StartAgainBlockedReason } from '@forge/shared';
 import { useWebClient } from './provider';
 import { Button, readableError } from './components';
 import { common } from './content/common';
@@ -9,7 +10,9 @@ import { common } from './content/common';
 /*
  * What a launchpad that never went live offers instead of "request a change": "start again" when
  * its creation was refunded (same blueprint, a new creation job to pay), "continue" when a job is
- * open (pay it, or follow it). Changes are only offered for a live launchpad.
+ * open (pay it, or follow it), and why it waits when it was refunded but cannot be started again
+ * yet (refund or payment still settling, a check by the team, a blueprint to design again).
+ * Changes are only offered for a live launchpad.
  */
 
 /** Where "continue" leads for an open job: its payment while it awaits one, else its tracker. */
@@ -19,11 +22,17 @@ export function continueHref(jobId: string, status: JobStatus | null | undefined
 }
 
 export type DraftNext =
-  { kind: 'start_again' } | { kind: 'continue'; href: string } | { kind: 'none' };
+  | { kind: 'start_again' }
+  | { kind: 'continue'; href: string }
+  | { kind: 'on_hold'; reason: StartAgainBlockedReason }
+  | { kind: 'none' };
 
 /** The next step of a draft launchpad; `none` for any other status. */
 export function draftNext(
-  launchpad: Pick<LaunchpadSummary, 'status' | 'activeJobId' | 'activeJobStatus' | 'canStartAgain'>,
+  launchpad: Pick<
+    LaunchpadSummary,
+    'status' | 'activeJobId' | 'activeJobStatus' | 'canStartAgain' | 'startAgainBlocked'
+  >,
 ): DraftNext {
   if (launchpad.status !== 'draft') return { kind: 'none' };
   if (launchpad.canStartAgain === true) return { kind: 'start_again' };
@@ -33,11 +42,16 @@ export function draftNext(
       href: continueHref(launchpad.activeJobId, launchpad.activeJobStatus),
     };
   }
+  if (launchpad.startAgainBlocked) return { kind: 'on_hold', reason: launchpad.startAgainBlocked };
   return { kind: 'none' };
 }
 
-/** Starts a refunded draft again, then opens the payment of its new creation job. */
-export function useStartAgain(launchpadId: string) {
+/**
+ * Starts a refunded draft again, then opens the payment of its new creation job. When the server
+ * refuses (a refund that just became pending, a check by the team...), `onRefused` reloads the
+ * launchpad so the screen shows why instead of the button.
+ */
+export function useStartAgain(launchpadId: string, onRefused?: () => void) {
   const api = useWebClient(),
     router = useRouter();
   const [busy, setBusy] = useState(false),
@@ -54,6 +68,7 @@ export function useStartAgain(launchpadId: string) {
     } catch (e) {
       setError(readableError(e));
       setBusy(false);
+      onRefused?.();
     } finally {
       lock.current = false;
     }
@@ -73,5 +88,21 @@ export function StartAgainButton({
       {state.busy ? common.startingAgain : common.startAgain}
       <span aria-hidden="true">↗</span>
     </Button>
+  );
+}
+
+/** Why a refunded draft waits instead of "start again", with the help link when the team decides. */
+export function StartAgainHold({
+  reason,
+  className = 'fw-notice',
+}: {
+  reason: StartAgainBlockedReason;
+  className?: string;
+}) {
+  return (
+    <div className={className} role="status">
+      <p>{common.startAgainBlocked[reason]}</p>
+      {reason === 'needs_support' && <Link href="/faq">{common.support} ↗</Link>}
+    </div>
   );
 }

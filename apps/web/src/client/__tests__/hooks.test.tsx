@@ -512,18 +512,24 @@ describe('useLaunchpads / useLaunchpad (API)', () => {
           }),
           // An older server: neither field.
           summary({ id: 'lp-3' }),
+          summary({ id: 'lp-4', status: 'draft', startAgainBlocked: 'refund_pending' }),
+          // A newer server with a reason this client does not know: no reason, still listed.
+          summary({ id: 'lp-5', status: 'draft', startAgainBlocked: 'something_new' }),
         ],
       }),
     );
     vi.stubGlobal('fetch', fetchFn);
     const { result, unmount } = renderHook(() => useLaunchpads());
-    await waitFor(() => expect(result.current.launchpads).toHaveLength(3));
+    await waitFor(() => expect(result.current.launchpads).toHaveLength(5));
     expect(result.current.launchpads[0]).toMatchObject({
       canStartAgain: true,
       activeJobStatus: null,
     });
     expect(result.current.launchpads[1]).toMatchObject({ activeJobStatus: 'spec_ready' });
     expect(result.current.launchpads[2]!.canStartAgain).toBeUndefined();
+    expect(result.current.launchpads[2]!.startAgainBlocked).toBeUndefined();
+    expect(result.current.launchpads[3]!.startAgainBlocked).toBe('refund_pending');
+    expect(result.current.launchpads[4]!.startAgainBlocked).toBeNull();
     unmount();
   });
 

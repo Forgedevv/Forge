@@ -23,6 +23,7 @@ export function launchpadsHarness(opts: { clientsDomain?: string | null } = {}) 
       chain,
       logger: base.logger,
       clientsDomain: opts.clientsDomain === undefined ? 'sites.example.com' : opts.clientsDomain,
+      now: () => NOW,
     }),
     claims: createClaimsService({ store: base.store, chain, logger: base.logger }),
     modifications: createModificationsService({ store: base.store, logger: base.logger, gating }),

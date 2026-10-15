@@ -64,6 +64,7 @@ describe('GET /api/launchpads', () => {
       activeJobId: modification.id,
       activeJobStatus: 'building',
       canStartAgain: false,
+      startAgainBlocked: null,
       onchainAvailable: true,
     });
     expect(body.quotas).toEqual({

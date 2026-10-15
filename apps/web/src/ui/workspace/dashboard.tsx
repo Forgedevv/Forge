@@ -20,7 +20,7 @@ import { safeUrl, siteHost } from './safe-url';
 import { Muse, museColorsFor, museMoodForJob, type MuseMood } from '../muse';
 import { MuseHero, type HeroAction } from './muse-hero';
 import { LaunchpadArt } from './launchpad-art';
-import { StartAgainButton, draftNext, useStartAgain } from './start-again';
+import { StartAgainButton, StartAgainHold, draftNext, useStartAgain } from './start-again';
 
 type PadColors = { primary: string | null; accent: string | null };
 
@@ -271,7 +271,7 @@ function LaunchpadCard({
   }, [onColors, pad.id, primary, accent]);
   const [busy, setBusy] = useState(false),
     [error, setError] = useState('');
-  const restart = useStartAgain(pad.id);
+  const restart = useStartAgain(pad.id, refresh);
   // A draft never offers a change: it is started again (refunded) or continued (open job).
   const next = draftNext(pad);
   const url = safeUrl(pad.siteUrl);
@@ -399,6 +399,9 @@ function LaunchpadCard({
             <StartAgainButton state={restart} variant="secondary" />
           )}
         </div>
+      )}
+      {next.kind === 'on_hold' && (
+        <StartAgainHold reason={next.reason} className="fw-notice fw-pad-notice" />
       )}
       {next.kind === 'continue' ? (
         <Link className="fw-current-job" href={next.href}>

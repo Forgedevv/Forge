@@ -15,7 +15,7 @@ import {
 } from './components';
 import { GatingScreen } from './gating';
 import { SpecSummary } from './spec-summary';
-import { StartAgainButton, draftNext, useStartAgain } from './start-again';
+import { StartAgainButton, StartAgainHold, draftNext, useStartAgain } from './start-again';
 import { chatCopy as copy } from './content/chat';
 import { common } from './content/common';
 import { Muse } from '../muse';
@@ -23,12 +23,14 @@ import { Muse } from '../muse';
 export function NewScreen({ launchpadId }: { launchpadId?: string }) {
   const api = useWebClient();
   const { signupsPaused } = api.useFlags();
-  const { launchpad, loading } = api.useLaunchpad(launchpadId ?? '');
+  const { launchpad, loading, refresh } = api.useLaunchpad(launchpadId ?? '');
   if (launchpadId && loading) return <Loading />;
   if (launchpadId && !launchpad) return <ErrorNotice message={common.missing} />;
   // A change can only be requested for a live launchpad: say why instead of opening the chat.
   if (launchpad && launchpad.status !== 'live') {
-    return <ChangeUnavailable launchpad={launchpad} signupsPaused={signupsPaused} />;
+    return (
+      <ChangeUnavailable launchpad={launchpad} signupsPaused={signupsPaused} refresh={refresh} />
+    );
   }
   return signupsPaused && !launchpadId ? (
     <ErrorNotice message={common.paused} />
@@ -43,11 +45,14 @@ export function NewScreen({ launchpadId }: { launchpadId?: string }) {
 export function ChangeUnavailable({
   launchpad,
   signupsPaused,
+  refresh,
 }: {
   launchpad: LaunchpadSummary;
   signupsPaused: boolean;
+  /** Reloads the launchpad (after a refused "start again"). */
+  refresh?: () => void;
 }) {
-  const restart = useStartAgain(launchpad.id);
+  const restart = useStartAgain(launchpad.id, refresh);
   const next = draftNext(launchpad);
   const text = copy.unavailable;
   const [title, body] =
@@ -67,6 +72,7 @@ export function ChangeUnavailable({
       </Heading>
       <Card>
         <h2>{launchpad.name}</h2>
+        {next.kind === 'on_hold' && <StartAgainHold reason={next.reason} />}
         {next.kind === 'start_again' && signupsPaused && (
           <p className="fw-notice" role="status">
             {common.paused}

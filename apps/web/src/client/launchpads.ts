@@ -4,6 +4,7 @@ import {
   JobType,
   Lamports,
   LaunchpadStatus,
+  START_AGAIN_BLOCKED_REASONS,
   WEB_API_ROUTES,
   type LaunchpadSpecDraft,
 } from '@forge/shared';
@@ -42,6 +43,8 @@ export const LaunchpadSummarySchema = z.object({
   activeJobStatus: JobStatus.nullable().optional(),
   /** Absent from older servers: then "start again" is not offered. */
   canStartAgain: z.boolean().optional(),
+  /** Absent from older servers; a reason this client does not know reads as none. */
+  startAgainBlocked: z.enum(START_AGAIN_BLOCKED_REASONS).nullable().optional().catch(null),
   /** Absent from older servers: then the figures are taken as read. */
   onchainAvailable: z.boolean().optional(),
 });

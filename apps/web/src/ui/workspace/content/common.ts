@@ -67,5 +67,16 @@ export const common = {
   phases: ['Sign in your wallet', 'Sending…', 'Confirmed'],
   startAgain: 'Start again',
   startingAgain: 'Starting again…',
+  /** A refunded draft that cannot be started again yet (LaunchpadSummary.startAgainBlocked). */
+  startAgainBlocked: {
+    refund_pending:
+      'The refund of the last attempt is not complete yet. You can start again once it is.',
+    payment_pending:
+      'A payment for this launchpad is still being processed. You can start again once it settles.',
+    needs_support:
+      'This launchpad needs a check by our team before it is built again. Please contact support.',
+    invalid_spec:
+      'This blueprint no longer passes our checks. Design the launchpad again in a new conversation.',
+  },
   continue: 'Continue',
 } as const;

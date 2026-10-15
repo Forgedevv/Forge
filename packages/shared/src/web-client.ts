@@ -64,7 +64,30 @@ export interface LaunchpadSummary {
    * switches, access) when asked. Absent from older servers: then treated as false.
    */
   canStartAgain?: boolean;
+  /**
+   * A draft whose creation jobs were all refunded but that cannot be started again yet, and why
+   * (null otherwise, and whenever a job is open: its tracker explains). The same rules as the
+   * route, so "start again" is never offered and then refused. Absent from older servers.
+   */
+  startAgainBlocked?: StartAgainBlockedReason | null;
 }
+
+/**
+ * Why "start again" is not available for a refunded draft:
+ * - `refund_pending`: money of an earlier attempt is still owed back (refund not recorded, or a
+ *   payment anomaly waiting for its manual refund);
+ * - `payment_pending`: a payment for an earlier attempt may still land or be confirmed;
+ * - `needs_support`: the team has to look at it first (on-chain setup recorded, or the limit of
+ *   refunded creations reached);
+ * - `invalid_spec`: the stored blueprint no longer passes the checks (design it again).
+ */
+export const START_AGAIN_BLOCKED_REASONS = [
+  'refund_pending',
+  'payment_pending',
+  'needs_support',
+  'invalid_spec',
+] as const;
+export type StartAgainBlockedReason = (typeof START_AGAIN_BLOCKED_REASONS)[number];
 
 export interface LaunchpadDetail extends LaunchpadSummary {
   /** Complete spec. */

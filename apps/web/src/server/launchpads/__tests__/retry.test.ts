@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ctx, request, spec } from '../../jobs/__tests__/fakes';
 import { StoreError, type JobPaymentRecord, type JobRecord } from '../../jobs/store';
 import { launchpadQuotas } from '../quotas';
+import { START_AGAIN_POLICY } from '../retry';
 import { NOW, launchpadsHarness } from './helpers';
 
 const owner = Keypair.generate().publicKey.toBase58();
@@ -188,7 +189,7 @@ describe('POST /api/launchpads/:id/retry', () => {
     const onchain = h.store.addJob(manual.id, { status: 'failed', failedStage: 'onchain' });
     res = await retry(manual.id);
     expect(res.status).toBe(409);
-    expect(await body(res)).toMatchObject({ code: 'CREATION_IN_PROGRESS', jobId: onchain.id });
+    expect(await body(res)).toMatchObject({ code: 'NEEDS_SUPPORT', jobId: onchain.id });
     expect(String((await retry(manual.id).then(body)).message)).toMatch(/support/i);
 
     for (const lp of [retrying, exhausted, manual]) expect(creationJobs(lp.id)).toHaveLength(1);
@@ -205,7 +206,7 @@ describe('POST /api/launchpads/:id/retry', () => {
       const res = await retry(lp.id);
       expect(res.status, field).toBe(409);
       const answer = await body(res);
-      expect(answer.code, field).toBe('CREATION_IN_PROGRESS');
+      expect(answer.code, field).toBe('NEEDS_SUPPORT');
       expect(String(answer.message), field).toMatch(/support/i);
       expect(creationJobs(lp.id), field).toHaveLength(1);
     }
@@ -349,6 +350,32 @@ describe('POST /api/launchpads/:id/retry', () => {
     expect(await body(res)).toMatchObject({ code: 'SERVER_ERROR' });
   });
 
+  // Before: nothing ended the cycle, so a blueprint that always fails got free builds forever
+  // (each refunded) and its job ids piled up.
+  it('stops at the limit of refunded creations and sends the owner to support', async () => {
+    const { lp } = refundedDraft();
+    for (let i = 1; i < START_AGAIN_POLICY.maxRefundedCreations; i++) {
+      const res = await retry(lp.id);
+      expect(res.status).toBe(201);
+      const { jobId } = (await res.json()) as { jobId: string };
+      // That attempt failed twice too and was refunded.
+      Object.assign(h.store.jobs.get(jobId)!, {
+        status: 'refunded',
+        failedStage: 'build',
+        attempts: 2,
+      });
+      payment(jobId);
+    }
+    expect(creationJobs(lp.id)).toHaveLength(START_AGAIN_POLICY.maxRefundedCreations);
+    const res = await retry(lp.id);
+    expect(res.status).toBe(409);
+    const answer = await body(res);
+    expect(answer.code).toBe('NEEDS_SUPPORT');
+    expect(String(answer.message)).toMatch(/contact support/i);
+    expect(creationJobs(lp.id)).toHaveLength(START_AGAIN_POLICY.maxRefundedCreations);
+    expect(h.logger.events()).toContain('retry.refused');
+  });
+
   it('rate limits per wallet', async () => {
     const { lp } = refundedDraft();
     let last: Response | null = null;
@@ -372,13 +399,170 @@ describe('launchpad summaries around "start again"', () => {
       activeJobId: null,
       activeJobStatus: null,
       canStartAgain: true,
+      startAgainBlocked: null,
     });
     const { jobId } = (await (await retry(lp.id)).json()) as { jobId: string };
     expect(await summary(lp.id)).toMatchObject({
       activeJobId: jobId,
       activeJobStatus: 'spec_ready',
       canStartAgain: false,
+      startAgainBlocked: null,
     });
+  });
+
+  async function detail(id: string) {
+    const res = await h.handlers.detail(
+      request('GET', `/api/launchpads/${id}`, { wallet: owner }),
+      ctx(id),
+    );
+    return (await res.json()) as Record<string, unknown>;
+  }
+
+  // Before: the summary judged the jobs only, so "start again" was offered for a draft whose
+  // refund was still pending (or whose payment was still open), then refused by the route.
+  it('offers "start again" exactly when the route accepts it, and says why not', async () => {
+    const cases: [string, () => string, string | null, number, string | null][] = [
+      ['settled', () => refundedDraft().lp.id, null, 201, null],
+      [
+        'payment still confirmed',
+        () => {
+          const { lp, refunded } = refundedDraft();
+          payment(refunded.id, { status: 'confirmed' });
+          return lp.id;
+        },
+        'refund_pending',
+        409,
+        'REFUND_PENDING',
+      ],
+      [
+        'open anomaly',
+        () => {
+          const { lp, refunded } = refundedDraft();
+          h.store.anomalies.push({ jobId: refunded.id, resolved: false });
+          return lp.id;
+        },
+        'refund_pending',
+        409,
+        'REFUND_PENDING',
+      ],
+      [
+        'sent quote',
+        () => {
+          const { lp, refunded } = refundedDraft();
+          payment(refunded.id, { status: 'quoted', refundSignature: null });
+          return lp.id;
+        },
+        'payment_pending',
+        409,
+        'PAYMENT_PENDING',
+      ],
+      [
+        'open quote',
+        () => {
+          const { lp, refunded } = refundedDraft();
+          payment(refunded.id, {
+            status: 'quoted',
+            txSignature: null,
+            refundSignature: null,
+            quoteExpiresAt: new Date(NOW - 60_000).toISOString(),
+          });
+          return lp.id;
+        },
+        'payment_pending',
+        409,
+        'PAYMENT_PENDING',
+      ],
+      [
+        'blueprint no longer valid',
+        () => {
+          const lp = h.store.addLaunchpad(owner, { status: 'draft', slug: 'other-slug' });
+          h.store.addJob(lp.id, { status: 'refunded', failedStage: 'build', attempts: 2 });
+          return lp.id;
+        },
+        'invalid_spec',
+        409,
+        'INVALID_SPEC',
+      ],
+      [
+        'on-chain setup recorded',
+        () => {
+          const lp = h.store.addLaunchpad(owner, {
+            status: 'draft',
+            launchpadConfig: Keypair.generate().publicKey.toBase58(),
+          });
+          h.store.addJob(lp.id, { status: 'refunded', failedStage: 'onchain' });
+          return lp.id;
+        },
+        'needs_support',
+        409,
+        'NEEDS_SUPPORT',
+      ],
+      [
+        'limit of refunded creations',
+        () => {
+          const { lp } = refundedDraft();
+          for (let i = 1; i < START_AGAIN_POLICY.maxRefundedCreations; i++) {
+            const older = h.store.addJob(lp.id, {
+              status: 'refunded',
+              failedStage: 'build',
+              attempts: 2,
+            });
+            payment(older.id);
+          }
+          return lp.id;
+        },
+        'needs_support',
+        409,
+        'NEEDS_SUPPORT',
+      ],
+      [
+        // An open job: its tracker explains, the summary adds nothing.
+        'build failed twice, refund pending',
+        () => {
+          const lp = h.store.addLaunchpad(owner, { status: 'draft' });
+          h.store.addJob(lp.id, { status: 'failed', failedStage: 'build', attempts: 2 });
+          return lp.id;
+        },
+        null,
+        409,
+        'REFUND_PENDING',
+      ],
+      [
+        'creation in progress',
+        () => {
+          const { lp } = refundedDraft();
+          h.store.addJob(lp.id, { status: 'building', attempts: 1 });
+          return lp.id;
+        },
+        null,
+        409,
+        'CREATION_IN_PROGRESS',
+      ],
+    ];
+    for (const [name, setup, blocked, status, code] of cases) {
+      const id = setup();
+      const expected = { canStartAgain: status === 201, startAgainBlocked: blocked };
+      expect(await summary(id), name).toMatchObject(expected);
+      expect(await detail(id), name).toMatchObject(expected);
+      const res = await retry(id);
+      expect(res.status, name).toBe(status);
+      if (code) expect((await body(res)).code, name).toBe(code);
+    }
+  });
+
+  it('offers nothing when the payments cannot be read, and still answers', async () => {
+    const { lp } = refundedDraft();
+    h.store.listJobPayments = async () => {
+      throw new StoreError('read job payments', '57014');
+    };
+    const res = await h.handlers.list(request('GET', '/api/launchpads', { wallet: owner }));
+    expect(res.status).toBe(200);
+    const list = (await res.json()) as { launchpads: Record<string, unknown>[] };
+    expect(list.launchpads.find((l) => l.id === lp.id)).toMatchObject({
+      canStartAgain: false,
+      startAgainBlocked: null,
+    });
+    expect(h.logger.events()).toContain('start_again.check_failed');
   });
 
   it('never offers it while a refund is pending, for a live launchpad or a fresh draft', async () => {

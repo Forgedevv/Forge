@@ -79,7 +79,30 @@ describe('next step of a draft', () => {
     // An older server says nothing about the job: its tracker decides.
     expect(continueHref('a/b', undefined)).toBe('/jobs/a%2Fb');
   });
+
+  it('says why a refunded draft waits, unless a job is open or it can start again', () => {
+    const held = {
+      status: 'draft' as const,
+      activeJobId: null,
+      canStartAgain: false,
+      startAgainBlocked: 'refund_pending' as const,
+    };
+    expect(draftNext(held)).toEqual({ kind: 'on_hold', reason: 'refund_pending' });
+    expect(draftNext({ ...held, activeJobId: 'j1', activeJobStatus: 'failed' })).toEqual({
+      kind: 'continue',
+      href: '/jobs/j1',
+    });
+    expect(draftNext({ ...held, startAgainBlocked: null })).toEqual({ kind: 'none' });
+    expect(draftNext({ ...held, status: 'live' })).toEqual({ kind: 'none' });
+  });
 });
+
+/** The demo refunded draft, held for `reason` by the server. */
+function hold(reason: 'refund_pending' | 'payment_pending' | 'needs_support' | 'invalid_spec') {
+  return (c: ReturnType<typeof createMockController>) => {
+    Object.assign(c.snapshot().pads[0]!, { canStartAgain: false, startAgainBlocked: reason });
+  };
+}
 
 describe('dashboard', () => {
   it('offers "start again" on a refunded draft, never a change, and opens the new payment', async () => {
@@ -111,6 +134,45 @@ describe('dashboard', () => {
     expect(screen.getByRole('alert')).toHaveTextContent(message);
     expect(startAgain()).toBeEnabled();
     expect(navigation.push).not.toHaveBeenCalled();
+  });
+
+  // Before: "start again" was offered while the refund was still pending, then refused.
+  it('shows why a refunded draft cannot be started again yet, without the button', async () => {
+    mount('dashboard:refunded', <DashboardScreen heroFallback />, hold('refund_pending'));
+    await advance(0);
+    expect(startAgain()).not.toBeInTheDocument();
+    expect(screen.getByRole('status')).toHaveTextContent(common.startAgainBlocked.refund_pending);
+    expect(screen.queryByText(dashboardCopy.refunded)).not.toBeInTheDocument();
+  });
+
+  it('sends a draft refunded too many times to support', async () => {
+    mount('dashboard:refunded', <DashboardScreen heroFallback />, hold('needs_support'));
+    await advance(0);
+    expect(startAgain()).not.toBeInTheDocument();
+    const notice = screen.getByRole('status');
+    expect(notice).toHaveTextContent(common.startAgainBlocked.needs_support);
+    expect(within(notice).getByRole('link', { name: /Open help/ })).toHaveAttribute('href', '/faq');
+  });
+
+  it('reloads after a refusal, so the reason replaces the button', async () => {
+    const controller = mount('dashboard:refunded', <DashboardScreen heroFallback />);
+    const message = 'A payment for this launchpad is still being processed.';
+    vi.spyOn(controller.client, 'retryLaunchpad').mockImplementation(async () => {
+      // The server learned of a payment in the meantime; only a reload shows it.
+      const state = controller.snapshot();
+      state.pads = state.pads.map((p) => ({
+        ...p,
+        canStartAgain: false,
+        startAgainBlocked: 'payment_pending' as const,
+      }));
+      throw new ClientError('NETWORK', message);
+    });
+    await advance(0);
+    fireEvent.click(startAgain()!);
+    await advance(0);
+    expect(screen.getByRole('alert')).toHaveTextContent(message);
+    expect(startAgain()).not.toBeInTheDocument();
+    expect(screen.getByRole('status')).toHaveTextContent(common.startAgainBlocked.payment_pending);
   });
 
   it('does not offer it while signups are paused', async () => {
@@ -156,6 +218,14 @@ describe('launchpad page', () => {
     fireEvent.click(startAgain()!);
     await advance(500);
     expect(navigation.push).toHaveBeenCalledWith('/jobs/demo-restart-job/pay');
+  });
+
+  it('says why a refunded draft waits instead of offering "start again"', async () => {
+    mount('detail:refunded', <DetailScreen launchpadId="demo-pad" />, hold('invalid_spec'));
+    await advance(0);
+    expect(startAgain()).not.toBeInTheDocument();
+    expect(screen.getByRole('status')).toHaveTextContent(common.startAgainBlocked.invalid_spec);
+    expect(screen.queryByText(detailCopy.refunded)).not.toBeInTheDocument();
   });
 
   it('keeps "request a change" for a live launchpad', async () => {
@@ -243,6 +313,21 @@ describe('job page', () => {
     fireEvent.click(startAgain()!);
     await advance(500);
     expect(navigation.push).toHaveBeenCalledWith('/jobs/demo-restart-job/pay');
+  });
+
+  it('says why a refunded creation cannot be started again yet', async () => {
+    mount('job:refunded', <JobScreen jobId="demo-job" autoRedirect={false} />, (c) => {
+      // The pad of the demo job, held by the server.
+      const pad = c
+        .snapshot()
+        .pads.find((p) => p.id === c.snapshot().jobs['demo-job']!.launchpadId)!;
+      Object.assign(pad, { canStartAgain: false, startAgainBlocked: 'needs_support' });
+    });
+    await advance(0);
+    expect(screen.getByText(jobCopy.refunded)).toBeInTheDocument();
+    expect(startAgain()).not.toBeInTheDocument();
+    expect(screen.queryByText(jobCopy.startAgain)).not.toBeInTheDocument();
+    expect(screen.getByRole('status')).toHaveTextContent(common.startAgainBlocked.needs_support);
   });
 
   it('does not offer a change on the preview of a creation (the launchpad is a draft)', async () => {

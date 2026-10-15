@@ -14,13 +14,13 @@ import { SpecSummary } from './spec-summary';
 import { detailCopy as copy } from './content/detail';
 import { common } from './content/common';
 import { safeUrl } from './safe-url';
-import { StartAgainButton, draftNext, useStartAgain } from './start-again';
+import { StartAgainButton, StartAgainHold, draftNext, useStartAgain } from './start-again';
 
 export function DetailScreen({ launchpadId }: { launchpadId: string }) {
   const api = useWebClient();
   const { launchpad, loading, error, refresh } = api.useLaunchpad(launchpadId);
   const { signupsPaused } = api.useFlags();
-  const restart = useStartAgain(launchpadId);
+  const restart = useStartAgain(launchpadId, refresh);
   if (loading) return <Loading />;
   if (!launchpad)
     return <ErrorNotice message={error ?? common.missing} onRetry={error ? refresh : undefined} />;
@@ -46,6 +46,7 @@ export function DetailScreen({ launchpadId }: { launchpadId: string }) {
           {signupsPaused ? common.paused : copy.refunded}
         </p>
       )}
+      {next.kind === 'on_hold' && <StartAgainHold reason={next.reason} />}
       {restart.error && <ErrorNotice message={restart.error} />}
       <div className="fw-detail-grid">
         <Card>

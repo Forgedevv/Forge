@@ -13,7 +13,7 @@ import {
   type LaunchpadQuotas,
   type WalletQuotas,
 } from './quotas';
-import { canStartAgain } from './retry';
+import { decideStartAgain, startAgainBlockedReason, type StartAgainDecision } from './retry';
 
 /*
  * Dashboard reads (docs/frontend/SCREENS.md A8 / A9), owner only. Database rows come from the
@@ -46,6 +46,8 @@ export interface LaunchpadReadsDeps {
    * the exact host of the site (`launchpads.site_host`), which wins.
    */
   clientsDomain: string | null;
+  /** Clock of the "start again" payment checks, in ms. */
+  now?: () => number;
 }
 
 export interface LaunchpadReads {
@@ -86,6 +88,7 @@ function parseKey(value: string | null): PublicKey | null {
 
 export function createLaunchpadReads(deps: LaunchpadReadsDeps): LaunchpadReads {
   const { store, chain, logger, clientsDomain } = deps;
+  const now = deps.now ?? Date.now;
 
   /** Where the site really is: its recorded host, else its subdomain (live or sleeping only). */
   function siteUrl(launchpad: LaunchpadRecord): string | null {
@@ -119,10 +122,32 @@ export function createLaunchpadReads(deps: LaunchpadReadsDeps): LaunchpadReads {
     }
   }
 
+  /**
+   * The decision of the "start again" route for this launchpad (decideStartAgain), so the
+   * dashboard never offers what the route would refuse. When the payments of a refunded draft
+   * cannot be read, nothing is offered (null) and the page still loads.
+   */
+  async function startAgain(
+    wallet: string,
+    launchpad: LaunchpadRecord,
+    jobs: readonly JobRecord[],
+  ): Promise<StartAgainDecision | null> {
+    try {
+      return await decideStartAgain(store, wallet, launchpad, jobs, now());
+    } catch (error) {
+      logger.log('warn', 'start_again.check_failed', {
+        launchpadId: launchpad.id,
+        error: errorName(error),
+      });
+      return null;
+    }
+  }
+
   function summaryOf(
     launchpad: LaunchpadRecord,
     jobs: readonly JobRecord[],
     figures: OnchainFigures,
+    decision: StartAgainDecision | null,
   ): LaunchpadSummaryView {
     const spec = specRecord(launchpad.spec);
     const active = jobs
@@ -140,7 +165,8 @@ export function createLaunchpadReads(deps: LaunchpadReadsDeps): LaunchpadReads {
       includedModificationsLeft: Math.max(0, launchpad.includedModificationsLeft),
       activeJobId: active?.id ?? null,
       activeJobStatus: active?.status ?? null,
-      canStartAgain: canStartAgain(launchpad, jobs),
+      canStartAgain: decision?.kind === 'start_again',
+      startAgainBlocked: decision ? startAgainBlockedReason(decision) : null,
       onchainAvailable: figures.available,
     };
   }
@@ -151,9 +177,12 @@ export function createLaunchpadReads(deps: LaunchpadReadsDeps): LaunchpadReads {
       input.wallet,
       launchpads.map((l) => l.id),
     );
-    const figures = await Promise.all(launchpads.map(onchain));
+    const [figures, decisions] = await Promise.all([
+      Promise.all(launchpads.map(onchain)),
+      Promise.all(launchpads.map((l) => startAgain(input.wallet, l, jobs))),
+    ]);
     return {
-      launchpads: launchpads.map((l, i) => summaryOf(l, jobs, figures[i]!)),
+      launchpads: launchpads.map((l, i) => summaryOf(l, jobs, figures[i]!, decisions[i] ?? null)),
       quotas: walletQuotas(launchpads),
     };
   }
@@ -169,9 +198,12 @@ export function createLaunchpadReads(deps: LaunchpadReadsDeps): LaunchpadReads {
     const refunds =
       refundedIds.length > 0 ? await store.listRefunds(input.wallet, refundedIds) : [];
     const refundOf = new Map<string, RefundRecord>(refunds.map((r) => [r.jobId, r]));
-    const figures = await onchain(launchpad);
+    const [figures, decision] = await Promise.all([
+      onchain(launchpad),
+      startAgain(input.wallet, launchpad, jobs),
+    ]);
     return {
-      ...summaryOf(launchpad, jobs, figures),
+      ...summaryOf(launchpad, jobs, figures, decision),
       spec: specRecord(launchpad.spec) as LaunchpadSpecDraft,
       onchain: {
         launchpadConfig: launchpad.launchpadConfig,

@@ -19,7 +19,7 @@ import { safeUrl } from './safe-url';
 import { jobCopy as copy } from './content/job';
 import { common } from './content/common';
 import { Muse, museMoodForJob } from '../muse';
-import { StartAgainButton, useStartAgain } from './start-again';
+import { StartAgainButton, StartAgainHold, draftNext, useStartAgain } from './start-again';
 
 export function JobScreen({
   jobId,
@@ -32,9 +32,10 @@ export function JobScreen({
     router = useRouter(),
     { toast } = useWorkspace();
   const { job, events, loading } = api.useJob(jobId);
-  const { launchpad } = api.useLaunchpad(job?.launchpadId ?? '');
+  const { launchpad, refresh: refreshLaunchpad } = api.useLaunchpad(job?.launchpadId ?? '');
   const { signupsPaused } = api.useFlags();
-  const restart = useStartAgain(job?.launchpadId ?? '');
+  const restart = useStartAgain(job?.launchpadId ?? '', refreshLaunchpad);
+  const next = launchpad ? draftNext(launchpad) : null;
   const [busy, setBusy] = useState(false),
     [error, setError] = useState('');
   const lock = useRef(false);
@@ -212,6 +213,9 @@ export function JobScreen({
                   <p>{signupsPaused ? common.paused : copy.startAgain}</p>
                   {!signupsPaused && <StartAgainButton state={restart} />}
                 </>
+              )}
+              {job.type === 'create_launchpad' && next?.kind === 'on_hold' && (
+                <StartAgainHold reason={next.reason} />
               )}
               <ActionLink href="/dashboard" secondary>
                 {common.dashboard}

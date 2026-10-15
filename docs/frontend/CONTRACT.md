@@ -58,7 +58,13 @@ interface LaunchpadSummary {
   includedModificationsLeft: number; activeJobId: string | null;
   activeJobStatus?: JobStatus | null;     // status of activeJobId
   canStartAgain?: boolean;                // refunded draft: retryLaunchpad can start it again
+  startAgainBlocked?: StartAgainBlockedReason | null; // refunded draft that must wait (no open job): why
 }
+
+// refund_pending | payment_pending: money of an earlier attempt still settling;
+// needs_support: the team looks first (on-chain setup recorded, or 3 refunded creations);
+// invalid_spec: the stored blueprint no longer passes, design it again.
+type StartAgainBlockedReason = 'refund_pending' | 'payment_pending' | 'needs_support' | 'invalid_spec';
 
 interface LaunchpadDetail extends LaunchpadSummary {
   spec: LaunchpadSpecDraft;               // complete
