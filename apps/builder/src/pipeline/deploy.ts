@@ -7,6 +7,7 @@ import {
   jobFields,
   loadLaunchpad,
   poolConfigKeys,
+  recordVercelProject,
   safeAlert,
   say,
   syncProjectEnv,
@@ -16,7 +17,9 @@ import { PipelineError, PolicyViolationError } from './errors.js';
 import { STEP_EVENTS } from './messages.js';
 import { scanRelease } from './release-scan.js';
 import { chooseSiteHost } from './site-host.js';
+import { StoreError } from './store.js';
 import { deepEqual } from '../scan/manifest.js';
+import { isProductionNotStaged, type VercelDeployment } from '../vercel.js';
 import {
   parseSiteConfig,
   sameOnchain,
@@ -67,7 +70,7 @@ export async function runDeployStep(
   }
   if (launchpad.vercel_project_id !== project.id) {
     guard(signal);
-    await deps.store.updateLaunchpad(launchpad.id, { vercel_project_id: project.id });
+    await recordVercelProject(deps.store, launchpad, project.id);
   }
 
   // What the client approved: the commit of the preview deployment they were shown.
@@ -227,9 +230,25 @@ export async function runDeployStep(
     sha: releaseSha,
     target: 'production',
   });
-  const ready = await deps.vercel.waitForDeployment(deployment.id, {
-    timeoutMs: deps.config.deploymentTimeoutMs,
-  });
+  let ready: VercelDeployment;
+  try {
+    ready = await deps.vercel.waitForDeployment(deployment.id, {
+      timeoutMs: deps.config.deploymentTimeoutMs,
+    });
+  } catch (err) {
+    if (isProductionNotStaged(err)) {
+      // Production moved to the release before the checks below and the promotion: refused,
+      // and the team is told the release is already public.
+      await safeAlert(
+        deps,
+        'high',
+        `production_not_staged:${spec.slug}`,
+        'A production deployment went live before its checks and its promotion (Vercel did not stage it)',
+        { jobId: job.id, launchpad: spec.slug, deployment: deployment.id, sha: releaseSha },
+      );
+    }
+    throw err;
+  }
   // The build took minutes: the team may have disabled the launchpad meanwhile. Read it again
   // right before production changes (loadLaunchpad refuses a disabled launchpad).
   const current = await loadLaunchpad(deps, job);
@@ -260,7 +279,12 @@ export async function runDeployStep(
   const productionHosts = await deps.vercel.listProductionHosts(project.id, ready.id, {
     timeoutMs: domain.verified ? 0 : Math.min(SITE_HOST_WAIT_MS, deps.config.promotionTimeoutMs),
   });
-  const siteHost = chooseSiteHost({ slug: spec.slug, subdomain: domain, productionHosts });
+  const siteHost = chooseSiteHost({
+    slug: spec.slug,
+    clientsDomain: deps.config.clientsDomain,
+    subdomain: domain,
+    productionHosts,
+  });
   if (siteHost === null) {
     await safeAlert(
       deps,
@@ -271,7 +295,22 @@ export async function runDeployStep(
     );
   }
   guard(signal);
-  await deps.store.updateLaunchpad(launchpad.id, { site_host: siteHost });
+  try {
+    await deps.store.updateLaunchpad(launchpad.id, { site_host: siteHost });
+  } catch (err) {
+    if (err instanceof StoreError && err.status === 409) {
+      // `launchpads.site_host` is unique: another launchpad already holds this host. The release
+      // is in production, but the host is not recorded for this site.
+      await safeAlert(
+        deps,
+        'high',
+        `site_host_conflict:${spec.slug}`,
+        'The released site host is already recorded for another launchpad: not recorded for this one',
+        { jobId: job.id, launchpad: spec.slug, siteHost, deployment: ready.id },
+      );
+    }
+    throw err;
+  }
   if (current.launchpad.status !== 'live') {
     guard(signal);
     // Conditional: never applies to a launchpad disabled in the meantime (fails the step).
@@ -305,7 +344,10 @@ async function approvedPreviewCommit(
     throw new PipelineError('the job has no preview deployment: nothing was approved');
   }
   const preview = await deps.vercel.getDeployment(url);
-  if (preview.projectId !== undefined && preview.projectId !== projectId) {
+  if (preview.projectId === undefined) {
+    throw new PipelineError('the preview deployment does not report its Vercel project');
+  }
+  if (preview.projectId !== projectId) {
     throw new PipelineError('the preview deployment belongs to another Vercel project');
   }
   if (preview.target !== 'preview') {

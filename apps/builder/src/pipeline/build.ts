@@ -17,6 +17,7 @@ import {
   jobFields,
   loadLaunchpad,
   poolConfigKeys,
+  recordVercelProject,
   safeAlert,
   say,
   syncProjectEnv,
@@ -57,7 +58,8 @@ import {
  *   -> new sites, BUILDER_VISUAL_REVIEW=on: screenshots of the built site, a second agent pass
  *      on them, the same scan and build again; any failure keeps the first pass (review/)
  *   -> commit of the scanned bytes to forge/<jobId>
- *   -> env sync + explicit Vercel preview deployment -> preview_url
+ *   -> env sync + explicit Vercel preview deployment -> preview_url (a preview Vercel published in
+ *      production is taken back instead: placeholder in production again, else project paused)
  *
  * Re-run safe: every external call is idempotent (existing repo/project reused, env upserted,
  * branch mirrored to the new result, one deployment per commit), and each attempt starts from a
@@ -365,7 +367,7 @@ export async function runBuildStep(
   }
   if (launchpad.vercel_project_id !== project.id) {
     guard(signal);
-    await deps.store.updateLaunchpad(launchpad.id, { vercel_project_id: project.id });
+    await recordVercelProject(deps.store, launchpad, project.id);
   }
 
   // Job folder, agent, scan, local build.
@@ -425,16 +427,116 @@ export async function runBuildStep(
     target: 'preview',
   });
   // A preview Vercel made a production deployment would serve the unapproved site publicly
-  // (vercel.ts deployPlaceholder): refused here, before the client is asked to approve it.
+  // (vercel.ts installPlaceholder): taken back here, before the client is asked to approve it.
   if (deployment.target !== 'preview') {
-    throw new PipelineError('Vercel created the preview as a production deployment');
+    return containPublicPreview(deps, job, lp, project, deployment, 'target');
   }
   const ready = await deps.vercel.waitForDeployment(deployment.id, {
     timeoutMs: deps.config.deploymentTimeoutMs,
   });
   if (ready.target !== 'preview') {
-    throw new PipelineError('Vercel created the preview as a production deployment');
+    return containPublicPreview(deps, job, lp, project, ready, 'target');
+  }
+  // The target field alone is not trusted: the project itself must not serve the preview.
+  const after = await deps.vercel.getProject(project.id);
+  if (!after) throw new PipelineError('the Vercel project disappeared during the build');
+  if (after.productionDeploymentId === ready.id) {
+    return containPublicPreview(deps, job, lp, project, ready, 'production');
   }
   if (!/^https:\/\/\S+$/.test(ready.url)) throw new PipelineError('the preview has no https URL');
   return { patch: { preview_url: ready.url } };
+}
+
+/** Deployment states after which nothing more happens to a deployment. */
+const FINAL_DEPLOYMENT_STATES: ReadonlySet<string> = new Set([
+  'READY',
+  'ERROR',
+  'CANCELED',
+  'DELETED',
+]);
+
+/**
+ * Vercel published the unapproved preview in production (`target`: it said so; `production`: the
+ * project's production points at it). The site must not stay public:
+ *
+ *   1. the deployment is canceled when it is still building;
+ *   2. the static placeholder is deployed again and made production (vercel.ts
+ *      `restorePlaceholder`), then the project is read back: it must serve the placeholder;
+ *   3. failing that, the project is paused (D24): production and previews answer Vercel's pause
+ *      page until the team unpauses it;
+ *
+ * then a high alert, and the step fails (never the preview URL). Not guarded by the abort signal:
+ * whatever happened to the job, the public site is taken back. Never throws anything but the
+ * step's failure.
+ */
+async function containPublicPreview(
+  deps: PipelineDeps,
+  job: JobRow,
+  lp: LaunchpadContext,
+  project: { id: string; name: string },
+  deployment: { id: string; readyState: string },
+  seen: 'target' | 'production',
+): Promise<never> {
+  const problems: string[] = [];
+  const errorName = (err: unknown) => (err instanceof Error ? err.name : 'error');
+  let canceled = false;
+  if (!FINAL_DEPLOYMENT_STATES.has(deployment.readyState)) {
+    try {
+      await deps.vercel.cancelDeployment(deployment.id);
+      canceled = true;
+    } catch (err) {
+      problems.push(`cancel: ${errorName(err)}`);
+    }
+  }
+  let contained: 'placeholder' | 'paused' | 'none' = 'none';
+  try {
+    const restored = await deps.vercel.restorePlaceholder(project.id);
+    const check = await deps.vercel.getProject(project.id);
+    if (
+      check?.productionDeploymentId === restored.deploymentId &&
+      restored.deploymentId !== deployment.id
+    ) {
+      contained = 'placeholder';
+    } else {
+      problems.push('placeholder: production still does not serve it');
+    }
+  } catch (err) {
+    problems.push(`placeholder: ${errorName(err)}`);
+  }
+  if (contained === 'none') {
+    try {
+      await deps.vercel.pauseProject(project.id);
+      contained = 'paused';
+    } catch (err) {
+      problems.push(`pause: ${errorName(err)}`);
+    }
+  }
+  await safeAlert(
+    deps,
+    'high',
+    `preview_public:${lp.spec.slug}`,
+    contained === 'placeholder'
+      ? 'Vercel published an unapproved preview in production: the placeholder serves production again'
+      : contained === 'paused'
+        ? 'Vercel published an unapproved preview in production: the Vercel project was paused (unpause it by hand once production is safe)'
+        : 'Vercel published an unapproved preview in production and it could not be taken back: the site may be public',
+    {
+      jobId: job.id,
+      launchpad: lp.spec.slug,
+      deployment: deployment.id,
+      seen,
+      canceled,
+      contained,
+      ...(problems.length > 0 ? { problems: problems.join('; ') } : {}),
+    },
+  );
+  throw new PipelineError(
+    `Vercel published the preview as a production deployment (${seen}); ${
+      contained === 'placeholder'
+        ? 'the placeholder serves production again'
+        : contained === 'paused'
+          ? 'the Vercel project was paused'
+          : 'it could not be taken back'
+    }`,
+  );
 }

@@ -1,5 +1,5 @@
 /// <reference types="node" />
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { isSiteHost } from '@forge/shared';
 import { z } from 'zod';
 import {
@@ -81,10 +81,16 @@ import {
  *   and commit is looked up; one that is queued, building or READY (and, for production, staged)
  *   is returned instead of a new one. A failed or canceled one is never reused: a new deployment
  *   is created. The creation itself is never replayed blindly after an ambiguous failure (network
- *   error, timeout, 5xx): the lookup runs again first, then at most one more attempt. Vercel's own
- *   deduplication of similar deployments is turned off (`forceNew=1`), so a deployment always
- *   carries the commit it was asked for. The project's environment variables are not part of the
- *   rule: a reused deployment keeps the values it was built with, as with git deployments.
+ *   error, timeout, 5xx): each request carries its own nonce (`meta.forgeRequestId`), which is
+ *   looked up first (a few reads a moment apart, Vercel may list a new deployment late), then the
+ *   lookup of the commit runs again, then at most one more attempt. Vercel's own deduplication of
+ *   similar deployments is turned off (`forceNew=1`), so a deployment always carries the commit it
+ *   was asked for. The project's environment variables are not part of the rule: a reused
+ *   deployment keeps the values it was built with, as with git deployments.
+ * - Production is staged: a production deployment still building is only accepted when Vercel
+ *   echoes `autoAssignCustomDomains: false` (otherwise it is canceled and refused), and once it is
+ *   READY the project's production must not point at it yet (`waitForDeployment`): only the
+ *   explicit promotion, after the caller's checks, moves production.
  */
 
 const DEFAULT_API_URL = 'https://api.vercel.com';
@@ -484,6 +490,12 @@ export interface VercelProject {
   linkedRepo: string | undefined;
   /** Id of the deployment currently serving production, if any. */
   productionDeploymentId: string | undefined;
+  /**
+   * Framework preset of the project (`nextjs` for every client project; null when Vercel reports
+   * none). Only the placeholder deployment switches it off for a moment (`ensureProject` puts it
+   * back whenever it differs).
+   */
+  framework: string | null;
   paused: boolean;
   /**
    * True when no git webhook can deploy the project: it has no git link at all (how projects are
@@ -578,12 +590,27 @@ export interface VercelClient {
    * Deploys the exact files of one commit of the client repo (module comment). Idempotent per
    * commit: an earlier deployment of the same project, target and commit that has not failed is
    * returned instead. A production one is staged: it never takes the production domains by
-   * itself, only `promoteToProduction` does (after the caller's checks).
+   * itself, only `promoteToProduction` does (after the caller's checks). One still building that
+   * Vercel does not confirm as staged is canceled and refused; one that does not report this
+   * project is refused.
    */
   createDeployment(input: CreateDeploymentInput): Promise<VercelDeployment>;
   getDeployment(idOrUrl: string): Promise<VercelDeployment>;
-  /** Polls until READY; throws `deployment_failed` on ERROR/CANCELED and `timeout` past the deadline. */
+  /**
+   * Polls until READY; throws `deployment_failed` on ERROR/CANCELED and `timeout` past the deadline.
+   * A production deployment `createDeployment` returned while it was still building must still be
+   * staged once READY: when the project's production already points at it before any promotion,
+   * it throws (`isProductionNotStaged`).
+   */
   waitForDeployment(id: string, opts?: WaitOptions): Promise<VercelDeployment>;
+  /** Cancels a deployment that is still building; one that already ended is left as it is. */
+  cancelDeployment(id: string): Promise<void>;
+  /**
+   * Deploys the static placeholder page again and makes it the project's production deployment
+   * (promoted when Vercel does not assign it by itself), verified by reading the project back.
+   * Used when a deployment that must stay private took production.
+   */
+  restorePlaceholder(projectId: string): Promise<{ deploymentId: string }>;
   /** Promotes a READY preview to production (no rebuild) and waits until it serves production. */
   promoteToProduction(
     projectId: string,
@@ -627,6 +654,7 @@ const ProjectSchema = z.object({
     })
     .nullish(),
   targets: z.object({ production: z.object({ id: z.string().optional() }).nullish() }).nullish(),
+  framework: z.string().nullish(),
   paused: z.boolean().optional(),
   deploymentPolicy: z
     .object({
@@ -651,13 +679,15 @@ const DeploymentSchema = z.object({
   errorMessage: z.string().optional(),
   projectId: z.string().optional(),
   gitSource: z.object({ sha: z.string().optional() }).nullish(),
-  meta: z.object({ githubCommitSha: z.string().optional() }).nullish(),
+  meta: z
+    .object({ githubCommitSha: z.string().optional(), forgeRequestId: z.string().optional() })
+    .nullish(),
   /** Echo of the create option ("applies to custom domains only, defaults to `true`"). */
   autoAssignCustomDomains: z.boolean().nullish(),
 });
 type DeploymentBody = z.infer<typeof DeploymentSchema>;
 
-/** `GET /v6/deployments` (only what the idempotency lookup reads; ids are `uid` there). */
+/** `GET /v6/deployments` (only what the lookups read; ids are `uid` there). */
 const DeploymentListSchema = z.object({
   deployments: z.array(
     z.object({
@@ -665,10 +695,51 @@ const DeploymentListSchema = z.object({
       readyState: z.string().nullish(),
       state: z.string().nullish(),
       target: z.string().nullish(),
-      meta: z.object({ githubCommitSha: z.string().optional() }).nullish(),
+      meta: z
+        .object({ githubCommitSha: z.string().optional(), forgeRequestId: z.string().optional() })
+        .nullish(),
     }),
   ),
 });
+type DeploymentListItem = z.infer<typeof DeploymentListSchema>['deployments'][number];
+
+/**
+ * Nonce of one creation request (`meta.forgeRequestId`), looked up after an ambiguous failure:
+ * this many reads at most, this long apart (Vercel may list a new deployment a moment late).
+ */
+const REQUEST_LOOKUP_TRIES = 3;
+const REQUEST_LOOKUP_WAIT_MS = 2_000;
+
+/** Staged production deployments remembered until READY (oldest forgotten first). */
+const STAGED_TRACK_MAX = 1_000;
+
+/** `apiCode` of the error thrown when a staged production deployment took production by itself. */
+export const PRODUCTION_NOT_STAGED = 'forge_production_not_staged';
+
+/** True for the error `waitForDeployment` throws when production moved before the promotion. */
+export function isProductionNotStaged(err: unknown): boolean {
+  return err instanceof ServiceError && err.apiCode === PRODUCTION_NOT_STAGED;
+}
+
+/** A clean-up that failed after an earlier error, kept on that error (never thrown instead of it). */
+export interface CleanupFailure {
+  what: string;
+  error: unknown;
+}
+
+const CLEANUP_FAILURE = Symbol('forge.cleanupFailure');
+
+function attachCleanupFailure(err: unknown, failure: CleanupFailure): void {
+  if (err instanceof Error) {
+    Object.defineProperty(err, CLEANUP_FAILURE, { value: failure, configurable: true });
+  }
+}
+
+/** The clean-up failure attached to an error by this module, if any. */
+export function cleanupFailureOf(err: unknown): CleanupFailure | undefined {
+  if (!(err instanceof Error)) return undefined;
+  return (err as Error & { [CLEANUP_FAILURE]?: CleanupFailure })[CLEANUP_FAILURE];
+}
 
 /** Refused creation: `{ error: { code: 'missing_files', missing: [<sha1>...] } }`. */
 const MissingFilesSchema = z.object({
@@ -745,6 +816,7 @@ function toProject(p: z.infer<typeof ProjectSchema>): VercelProject {
     name: p.name,
     linkedRepo,
     productionDeploymentId: p.targets?.production?.id ?? undefined,
+    framework: p.framework ?? null,
     paused: p.paused === true,
     gitDeploymentsDisabled:
       !linked || apiOnlyPolicyHolds(p.deploymentPolicy?.deploymentSources ?? []),
@@ -810,6 +882,19 @@ export function createVercelClient(opts: VercelClientOptions): VercelClient {
   const uploadConcurrency = opts.uploadConcurrency ?? UPLOAD_CONCURRENCY;
   /** Git blob id -> Vercel digest (sha1) and size of its content, learned from read contents. */
   const digests = new Map<string, { digest: string; size: number }>();
+  /**
+   * Production deployments `createDeployment` returned while still building, by id -> project id.
+   * None of them can have been promoted yet (only READY deployments are): once READY, the
+   * project's production must not point at one of them (`waitForDeployment`).
+   */
+  const stagedProduction = new Map<string, string>();
+  const trackStaged = (deploymentId: string, projectId: string): void => {
+    if (stagedProduction.size >= STAGED_TRACK_MAX) {
+      const oldest = stagedProduction.keys().next();
+      if (!oldest.done) stagedProduction.delete(oldest.value);
+    }
+    stagedProduction.set(deploymentId, projectId);
+  };
 
   const http: HttpClient = createHttpClient({
     service: 'vercel',
@@ -951,8 +1036,25 @@ export function createVercelClient(opts: VercelClientOptions): VercelClient {
     // Before anything is pushed to the repo: no deployment may start from anything but the API.
     if (!project.gitDeploymentsDisabled) project = await disableGitDeployments(project.id);
     await setProtection(project.id, protection);
-    if (project.productionDeploymentId === undefined) project = await deployPlaceholder(project);
+    if (project.productionDeploymentId === undefined) {
+      project = (await installPlaceholder(project)).project;
+    }
+    // The placeholder turns the framework off for a moment: an earlier run that could not turn it
+    // back (or anything else that changed it) is repaired here, on every run.
+    if (project.framework !== FRAMEWORK) {
+      await setFramework(project.id, FRAMEWORK);
+      project = { ...project, framework: FRAMEWORK };
+    }
     return { project, created };
+  }
+
+  function setFramework(projectId: string, framework: string | null): Promise<HttpResponse> {
+    return call({
+      method: 'PATCH',
+      path: `/v9/projects/${seg(projectId, 'project')}`,
+      body: { framework },
+      idempotent: true,
+    });
   }
 
   /**
@@ -961,8 +1063,15 @@ export function createVercelClient(opts: VercelClientOptions): VercelClient {
    * The client's first preview would then be public before approval. So a new project first gets
    * a static placeholder in production; every later deployment without target is a real preview,
    * and a staged production one only goes public through the explicit promotion.
+   *
+   * The same page is deployed again by `restorePlaceholder` when a deployment that must stay
+   * private took production anyway. On a project that already has deployments, Vercel may not
+   * give production to the placeholder by itself: it is promoted explicitly when needed, and the
+   * project is read back until its production deployment is the placeholder.
    */
-  async function deployPlaceholder(project: VercelProject): Promise<VercelProject> {
+  async function installPlaceholder(
+    project: VercelProject,
+  ): Promise<{ project: VercelProject; deploymentId: string }> {
     const content = Buffer.from(PLACEHOLDER_HTML, 'utf8');
     const digest = sha1Hex(content);
     await call({
@@ -977,14 +1086,9 @@ export function createVercelClient(opts: VercelClientOptions): VercelClient {
     // ("No Next.js version detected"), and a deployment's `projectSettings.framework: null` does not
     // override it: the project is set to no framework for the placeholder, then back (checked on
     // the API).
-    const setFramework = (framework: string | null) =>
-      call({
-        method: 'PATCH',
-        path: `/v9/projects/${seg(project.id, 'project')}`,
-        body: { framework },
-        idempotent: true,
-      });
-    await setFramework(null);
+    await setFramework(project.id, null);
+    let placeholderId: string | undefined;
+    let failure: { error: unknown } | undefined;
     try {
       const res = await call({
         method: 'POST',
@@ -1002,18 +1106,43 @@ export function createVercelClient(opts: VercelClientOptions): VercelClient {
       });
       const placeholder = toDeployment(parseBody(DeploymentSchema, res, 'placeholder deployment'));
       await waitForDeployment(placeholder.id, { timeoutMs: PLACEHOLDER_TIMEOUT_MS });
-    } finally {
-      await setFramework(FRAMEWORK);
+      placeholderId = placeholder.id;
+    } catch (err) {
+      failure = { error: err };
     }
+    // Always put the framework back. When the placeholder itself failed, that failure is what
+    // the caller gets; a failed restore is attached to it, never thrown in its place (the next
+    // `ensureProject` repairs the framework).
+    try {
+      await setFramework(project.id, FRAMEWORK);
+    } catch (restoreError) {
+      if (failure === undefined) throw restoreError;
+      attachCleanupFailure(failure.error, { what: 'framework restore', error: restoreError });
+    }
+    if (failure !== undefined) throw failure.error;
+    if (placeholderId === undefined) {
+      throw new ServiceError('vercel', 'unexpected', 'the placeholder deployment has no id');
+    }
+    // No-op when Vercel already gave it production (the first deployment of a project).
+    await promoteToProduction(project.id, placeholderId, { timeoutMs: PLACEHOLDER_TIMEOUT_MS });
     const after = await getProject(project.id);
-    if (!after?.productionDeploymentId) {
+    if (!after || after.productionDeploymentId !== placeholderId) {
       throw new ServiceError(
         'vercel',
         'unexpected',
-        `project ${project.name} still has no production deployment after the placeholder`,
+        `project ${project.name} is not served by the placeholder after its deployment`,
       );
     }
-    return after;
+    return { project: after, deploymentId: placeholderId };
+  }
+
+  async function restorePlaceholder(projectId: string): Promise<{ deploymentId: string }> {
+    const project = await getProject(projectId);
+    if (!project) {
+      throw new ServiceError('vercel', 'not_found', 'project not found', { status: 404 });
+    }
+    const { deploymentId } = await installPlaceholder(project);
+    return { deploymentId };
   }
 
   async function disableGitDeployments(projectId: string): Promise<VercelProject> {
@@ -1120,10 +1249,14 @@ export function createVercelClient(opts: VercelClientOptions): VercelClient {
 
     // Idempotency rule (module comment): an earlier deployment of this commit is reused.
     const earlier = await findReusableDeployment(projectId, sha, target);
-    if (earlier) return toDeployment(earlier);
+    if (earlier) {
+      const reused = toDeployment(earlier);
+      if (production && !FINAL_STATES.has(reused.readyState)) trackStaged(reused.id, projectId);
+      return reused;
+    }
 
     const prepared = await prepareFiles(source, input.repo, sha);
-    const body = {
+    const body: DeploymentRequest = {
       name: input.project.name,
       project: projectId,
       // A staged production deployment: built for production, but the production domains are
@@ -1152,21 +1285,17 @@ export function createVercelClient(opts: VercelClientOptions): VercelClient {
     const deployment = toDeployment(created);
     if (
       production &&
-      created.autoAssignCustomDomains === true &&
+      created.autoAssignCustomDomains !== false &&
       !FINAL_STATES.has(deployment.readyState)
     ) {
-      // Vercel did not stage it: once READY it would take the production domains before the
-      // checks. Cancel it (best effort) and fail; the caller alerts.
-      await call({
-        method: 'PATCH',
-        path: `/v12/deployments/${seg(deployment.id, 'deployment')}/cancel`,
-        idempotent: true,
-        allowStatus: [400, 404, 409],
-      }).catch(() => undefined);
+      // Vercel did not confirm the staging (the echo says true, or nothing): once READY it could
+      // take the production domains before the checks. Cancel it (best effort) and fail; the
+      // caller alerts.
+      await cancelDeployment(deployment.id).catch(() => undefined);
       throw new ServiceError(
         'vercel',
         'unexpected',
-        `production deployment ${deployment.id} was not staged (domains would be assigned automatically)`,
+        `production deployment ${deployment.id} was not staged (Vercel did not confirm that the domains wait for the promotion)`,
       );
     }
     if (deployment.commitSha !== undefined && deployment.commitSha !== sha) {
@@ -1176,12 +1305,18 @@ export function createVercelClient(opts: VercelClientOptions): VercelClient {
         `deployment ${deployment.id} reports commit ${deployment.commitSha} instead of ${sha}`,
       );
     }
-    if (deployment.projectId !== undefined && deployment.projectId !== projectId) {
+    // Fails closed: a deployment that does not say which project it belongs to is not ours.
+    if (deployment.projectId !== projectId) {
       throw new ServiceError(
         'vercel',
         'unexpected',
-        `deployment ${deployment.id} belongs to another project`,
+        deployment.projectId === undefined
+          ? `deployment ${deployment.id} does not report its project`
+          : `deployment ${deployment.id} belongs to another project`,
       );
+    }
+    if (production && !FINAL_STATES.has(deployment.readyState)) {
+      trackStaged(deployment.id, projectId);
     }
     return deployment;
   }
@@ -1202,20 +1337,27 @@ export function createVercelClient(opts: VercelClientOptions): VercelClient {
 
   // --- idempotency lookup --------------------------------------------------------------------
 
-  /** Earlier deployments of the project for a target, filtered on the commit when Vercel can. */
-  async function listEarlierDeployments(
+  /**
+   * Latest deployments of the project (of one target when given), filtered on one metadata value
+   * when Vercel can.
+   */
+  async function listDeploymentsByMeta(
     projectId: string,
-    sha: string,
-    target: 'production' | 'preview',
-  ): Promise<z.infer<typeof DeploymentListSchema>['deployments']> {
-    const query = { projectId, target, limit: REUSE_LOOKUP_LIMIT };
+    target: 'production' | 'preview' | undefined,
+    meta: { key: 'githubCommitSha' | 'forgeRequestId'; value: string },
+  ): Promise<DeploymentListItem[]> {
+    const query = {
+      projectId,
+      ...(target !== undefined ? { target } : {}),
+      limit: REUSE_LOOKUP_LIMIT,
+    };
     let res: HttpResponse;
     try {
       res = await call({
         method: 'GET',
         path: '/v6/deployments',
-        // Metadata filter, as `vercel list --meta githubCommitSha=<sha>` sends it.
-        query: { ...query, 'meta-githubCommitSha': sha },
+        // Metadata filter, as `vercel list --meta <key>=<value>` sends it.
+        query: { ...query, [`meta-${meta.key}`]: meta.value },
       });
     } catch (err) {
       if (!(err instanceof ServiceError && err.kind === 'validation')) throw err;
@@ -1223,6 +1365,43 @@ export function createVercelClient(opts: VercelClientOptions): VercelClient {
       res = await call({ method: 'GET', path: '/v6/deployments', query });
     }
     return parseBody(DeploymentListSchema, res, 'deployments').deployments;
+  }
+
+  /** Earlier deployments of the project for a target, filtered on the commit when Vercel can. */
+  function listEarlierDeployments(
+    projectId: string,
+    sha: string,
+    target: 'production' | 'preview',
+  ): Promise<DeploymentListItem[]> {
+    return listDeploymentsByMeta(projectId, target, { key: 'githubCommitSha', value: sha });
+  }
+
+  /**
+   * The deployment one creation request made, found by its nonce (`meta.forgeRequestId`), read in
+   * full; undefined when the bounded lookup finds none. Any target: the first deployment of a
+   * project may come back as production whatever it asked for.
+   */
+  async function findByRequestId(
+    projectId: string,
+    requestId: string,
+  ): Promise<DeploymentBody | undefined> {
+    for (let attempt = 0; attempt < REQUEST_LOOKUP_TRIES; attempt++) {
+      if (attempt > 0) await sleep(REQUEST_LOOKUP_WAIT_MS);
+      let checked = 0;
+      const items = await listDeploymentsByMeta(projectId, undefined, {
+        key: 'forgeRequestId',
+        value: requestId,
+      });
+      for (const item of items) {
+        const listed = item.meta?.forgeRequestId;
+        if (listed !== undefined && listed !== requestId) continue;
+        if (checked >= REUSE_MAX_CHECKS) break;
+        checked++;
+        const full = await getDeploymentBody(item.uid);
+        if (full.meta?.forgeRequestId === requestId && full.projectId === projectId) return full;
+      }
+    }
+    return undefined;
   }
 
   /**
@@ -1268,12 +1447,24 @@ export function createVercelClient(opts: VercelClientOptions): VercelClient {
       view.projectId === projectId &&
       view.commitSha === sha &&
       view.target === target &&
-      // A production deployment that would take the domains by itself is never adopted.
-      !(target === 'production' && d.autoAssignCustomDomains === true && state !== 'READY')
+      // A production deployment still building is only adopted when Vercel confirms it is staged
+      // (it would otherwise take the domains by itself once READY).
+      !(target === 'production' && d.autoAssignCustomDomains !== false && state !== 'READY')
     );
   }
 
   // --- files ---------------------------------------------------------------------------------
+
+  /** Body of a file deployment request (each request adds its own `meta.forgeRequestId`). */
+  interface DeploymentRequest {
+    name: string;
+    project: string;
+    target?: 'production';
+    autoAssignCustomDomains?: false;
+    files: PreparedFiles['entries'];
+    projectSettings: { framework: string };
+    meta: Record<string, string>;
+  }
 
   interface PreparedFiles {
     /** The `files` of the deployment body. */
@@ -1431,10 +1622,12 @@ export function createVercelClient(opts: VercelClientOptions): VercelClient {
 
   /**
    * `POST /v13/deployments`; on `missing_files`, uploads those files and retries once. Never
-   * replayed blindly: after an ambiguous failure the idempotency lookup runs first.
+   * replayed blindly: every request carries its own nonce (`meta.forgeRequestId`); after an
+   * ambiguous failure the deployment of that very request is looked up (a few reads, a moment
+   * apart), then the idempotency lookup of the commit runs, and only then one more request.
    */
   async function postDeployment(
-    body: Record<string, unknown>,
+    body: DeploymentRequest,
     ctx: {
       source: DeploymentSource;
       repo: string;
@@ -1448,6 +1641,7 @@ export function createVercelClient(opts: VercelClientOptions): VercelClient {
     let uploaded = false;
     let replayed = false;
     for (;;) {
+      const requestId = randomBytes(16).toString('hex');
       let res: HttpResponse;
       try {
         res = await call({
@@ -1457,7 +1651,7 @@ export function createVercelClient(opts: VercelClientOptions): VercelClient {
           // another commit; reuse is decided by the lookup above, per commit.
           // skipAutoDetectionConfirmation: the framework is given, never asked back.
           query: { forceNew: '1', skipAutoDetectionConfirmation: '1' },
-          body,
+          body: { ...body, meta: { ...body.meta, forgeRequestId: requestId } },
           // Each accepted call creates a deployment: not replayed by the HTTP client on a 5xx.
           idempotent: false,
           allowStatus: CREATE_REFUSALS,
@@ -1465,7 +1659,10 @@ export function createVercelClient(opts: VercelClientOptions): VercelClient {
       } catch (err) {
         if (!replayed && isAmbiguous(err)) {
           replayed = true;
-          // The deployment may exist although its answer was lost.
+          // The deployment may exist although its answer was lost: this request's own first
+          // (it is what the answer would have been, checked like it by the caller).
+          const mine = await findByRequestId(ctx.projectId, requestId);
+          if (mine) return mine;
           const earlier = await findReusableDeployment(ctx.projectId, ctx.sha, ctx.target);
           if (earlier) return earlier;
           continue;
@@ -1502,14 +1699,40 @@ export function createVercelClient(opts: VercelClientOptions): VercelClient {
     return toDeployment(await getDeploymentBody(idOrUrl));
   }
 
+  /**
+   * A staged production deployment just became READY: the project's production must not point at
+   * it yet (only the explicit promotion may move it there).
+   */
+  async function checkStillStaged(d: VercelDeployment): Promise<void> {
+    const projectId = stagedProduction.get(d.id);
+    if (projectId === undefined) return;
+    const project = await getProject(projectId);
+    if (!project) {
+      throw new ServiceError('vercel', 'not_found', 'project not found', { status: 404 });
+    }
+    stagedProduction.delete(d.id);
+    if (project.productionDeploymentId === d.id) {
+      throw new ServiceError(
+        'vercel',
+        'unexpected',
+        `production deployment ${d.id} took production before its promotion (it was not staged)`,
+        { apiCode: PRODUCTION_NOT_STAGED },
+      );
+    }
+  }
+
   async function waitForDeployment(id: string, w: WaitOptions = {}): Promise<VercelDeployment> {
     const timeoutMs = w.timeoutMs ?? 15 * 60_000;
     const pollMs = w.pollMs ?? 5_000;
     const deadline = now() + timeoutMs;
     for (;;) {
       const d = await getDeployment(id);
-      if (d.readyState === 'READY') return d;
+      if (d.readyState === 'READY') {
+        await checkStillStaged(d);
+        return d;
+      }
       if (d.readyState === 'ERROR' || d.readyState === 'CANCELED' || d.readyState === 'DELETED') {
+        stagedProduction.delete(d.id);
         const detail = d.errorMessage ? `: ${d.errorMessage.slice(0, 200)}` : '';
         throw new ServiceError(
           'vercel',
@@ -1527,6 +1750,16 @@ export function createVercelClient(opts: VercelClientOptions): VercelClient {
       }
       await sleep(pollMs);
     }
+  }
+
+  async function cancelDeployment(id: string): Promise<void> {
+    await call({
+      method: 'PATCH',
+      path: `/v12/deployments/${seg(id, 'deployment')}/cancel`,
+      idempotent: true,
+      // Already finished (or gone): nothing left to cancel.
+      allowStatus: [400, 404, 409],
+    });
   }
 
   async function promoteToProduction(
@@ -1580,12 +1813,23 @@ export function createVercelClient(opts: VercelClientOptions): VercelClient {
     const domain = subdomainFor(slug, opts.clientsDomain);
     const pid = seg(projectId, 'project');
 
-    const toResult = (body: z.infer<typeof DomainSchema>, created: boolean): DomainResult => ({
-      domain: body.name,
-      verified: body.verified,
-      verification: body.verification ?? [],
-      created,
-    });
+    const toResult = (body: z.infer<typeof DomainSchema>, created: boolean): DomainResult => {
+      // The answer must be about exactly the domain asked for: its name (and verification) is
+      // recorded as the site's host, so nothing Vercel says about another name is taken.
+      if (body.name !== domain) {
+        throw new ServiceError(
+          'vercel',
+          'invalid_response',
+          `Vercel answered for another domain than ${domain}`,
+        );
+      }
+      return {
+        domain,
+        verified: body.verified,
+        verification: body.verification ?? [],
+        created,
+      };
+    };
 
     const existing = await call({
       method: 'GET',
@@ -1715,6 +1959,8 @@ export function createVercelClient(opts: VercelClientOptions): VercelClient {
     createDeployment,
     getDeployment,
     waitForDeployment,
+    cancelDeployment,
+    restorePlaceholder,
     promoteToProduction,
     attachSubdomain,
     listProductionHosts,

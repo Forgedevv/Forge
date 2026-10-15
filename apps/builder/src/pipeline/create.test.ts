@@ -9,7 +9,10 @@ import { Worker } from '../worker.js';
 import { FakeJobsDb } from '../worker/fake-db.js';
 import { createPipelineHandler } from './index.js';
 import { jobBranch, StepAbortedError } from './context.js';
+import { ServiceError } from '../http.js';
+import { PRODUCTION_NOT_STAGED } from '../vercel.js';
 import { AgentFailedError, PipelineError, PolicyViolationError, SiteBuildError } from './errors.js';
+import { StoreError, type LaunchpadPatch } from './store.js';
 import {
   CREATE_JOB_ID,
   jobContext,
@@ -347,10 +350,126 @@ describe('create: building', () => {
     expect(h.runner.stepsRun()).toEqual(['agent']);
   });
 
-  it('refuses a preview that Vercel published as production', async () => {
-    const h = harness();
-    h.vercel.firstDeploymentIsProduction = true;
-    await expect(runStep(h, building())).rejects.toThrow(/as a production deployment/);
+  describe('a preview Vercel published in production', () => {
+    const previewOf = (h: Harness) => {
+      const project = h.vercel.projectBySlug('moonpad')!;
+      return {
+        project,
+        preview: h.vercel.deploymentsOf(project.id).find((d) => d.ref === BRANCH)!,
+      };
+    };
+    const publicAlias = (h: Harness) =>
+      h.vercel.aliases.find((a) => a.alias === 'lp-moonpad.vercel.app')?.deploymentId;
+
+    it('said so: canceled, the placeholder serves production again, high alert, step failed', async () => {
+      const h = harness();
+      h.vercel.firstDeploymentIsProduction = true;
+      const error = await runStep(h, building()).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(PipelineError);
+      expect((error as Error).message).toMatch(
+        /production deployment \(target\); the placeholder serves production again/,
+      );
+      const { project, preview } = previewOf(h);
+      expect(preview).toMatchObject({ target: 'production', readyState: 'CANCELED' });
+      // Never waited for and never handed to the client as a preview.
+      expect(h.vercel.count('waitForDeployment')).toBe(0);
+      expect(h.vercel.placeholders.has(project.productionDeploymentId!)).toBe(true);
+      expect(publicAlias(h)).toBe(project.productionDeploymentId);
+      expect(project.paused).toBe(false);
+      expect(h.alerts).toContainEqual({
+        level: 'high',
+        code: 'preview_public:moonpad',
+        message: expect.stringContaining('the placeholder serves production again') as unknown,
+        details: {
+          jobId: CREATE_JOB_ID,
+          launchpad: 'moonpad',
+          deployment: preview.id,
+          seen: 'target',
+          canceled: true,
+          contained: 'placeholder',
+        },
+      });
+    });
+
+    it('did not say so: caught from the project production pointer once READY', async () => {
+      const h = harness();
+      // The answer says preview; the project's production points at it all the same.
+      h.vercel.firstDeploymentIsProduction = 'pointer';
+      await expect(runStep(h, building())).rejects.toThrow(/production deployment \(production\)/);
+      const { project, preview } = previewOf(h);
+      expect(preview).toMatchObject({ target: 'preview', readyState: 'READY' });
+      // Already READY: nothing to cancel, the placeholder takes production back.
+      expect(h.vercel.count('cancelDeployment')).toBe(0);
+      expect(h.vercel.placeholders.has(project.productionDeploymentId!)).toBe(true);
+      expect(publicAlias(h)).toBe(project.productionDeploymentId);
+      expect(h.alerts).toContainEqual(
+        expect.objectContaining({
+          level: 'high',
+          code: 'preview_public:moonpad',
+          details: expect.objectContaining({
+            seen: 'production',
+            canceled: false,
+            contained: 'placeholder',
+          }) as unknown,
+        }),
+      );
+    });
+
+    it('pauses the project (D24) when the placeholder cannot be put back', async () => {
+      for (const failure of ['throws', 'does not move production'] as const) {
+        const h = harness();
+        h.vercel.firstDeploymentIsProduction = 'pointer';
+        if (failure === 'throws') h.vercel.fail('restorePlaceholder');
+        else h.vercel.placeholderIgnored = true;
+        await expect(runStep(h, building()), failure).rejects.toThrow(
+          /the Vercel project was paused/,
+        );
+        const { project, preview } = previewOf(h);
+        expect(project.paused, failure).toBe(true);
+        expect(project.productionDeploymentId).toBe(preview.id);
+        expect(h.alerts).toContainEqual(
+          expect.objectContaining({
+            level: 'high',
+            code: 'preview_public:moonpad',
+            message: expect.stringContaining('paused') as unknown,
+            details: expect.objectContaining({ contained: 'paused' }) as unknown,
+          }),
+        );
+      }
+    });
+
+    it('says the site may be public when neither the placeholder nor the pause works', async () => {
+      const h = harness();
+      h.vercel.firstDeploymentIsProduction = true;
+      h.vercel.fail('cancelDeployment');
+      h.vercel.fail('restorePlaceholder');
+      h.vercel.fail('pauseProject');
+      await expect(runStep(h, building())).rejects.toThrow(/could not be taken back/);
+      expect(h.alerts).toContainEqual(
+        expect.objectContaining({
+          level: 'high',
+          code: 'preview_public:moonpad',
+          message: expect.stringContaining('may be public') as unknown,
+          details: expect.objectContaining({
+            canceled: false,
+            contained: 'none',
+            problems: 'cancel: Error; placeholder: Error; pause: Error',
+          }) as unknown,
+        }),
+      );
+    });
+
+    it('gives a private preview on the next attempt, the placeholder in production', async () => {
+      const h = harness();
+      h.vercel.firstDeploymentIsProduction = true;
+      await expect(runStep(h, building({ attempts: 1 }))).rejects.toThrow(/production/);
+      const { outcome } = await runStep(h, building({ attempts: 2 }));
+      const project = h.vercel.projectBySlug('moonpad')!;
+      const previews = h.vercel.deploymentsOf(project.id).filter((d) => d.target === 'preview');
+      expect(previews).toHaveLength(1);
+      expect(outcome).toEqual({ patch: { preview_url: previews[0]!.url } });
+      expect(h.vercel.placeholders.has(project.productionDeploymentId!)).toBe(true);
+    });
   });
 
   it('fails when the preview deployment fails', async () => {
@@ -762,6 +881,40 @@ describe('create: deploying', () => {
       });
     });
 
+    it('alerts on a host another launchpad already holds, then fails the step', async () => {
+      const h = harness();
+      h.vercel.domainVerified = false;
+      await prepareOnchain(h);
+      // The unique constraint of `launchpads.site_host` (migration 0011), as PostgREST answers it.
+      h.store.beforeWrite = (_id, patch) => {
+        if (typeof patch.site_host === 'string') {
+          throw new StoreError('update_launchpad: HTTP 409 duplicate key value', 409);
+        }
+      };
+      const error = await runStep(h, deployingJob()).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(StoreError);
+      expect(h.alerts).toContainEqual({
+        level: 'high',
+        code: 'site_host_conflict:moonpad',
+        message: expect.stringContaining('another launchpad') as unknown,
+        details: expect.objectContaining({
+          launchpad: 'moonpad',
+          siteHost: 'lp-moonpad.vercel.app',
+        }) as unknown,
+      });
+      expect(h.store.get(LAUNCHPAD_ID).status).toBe('draft');
+    });
+
+    it('does not call any other failed host write a conflict', async () => {
+      const h = harness();
+      await prepareOnchain(h);
+      h.store.beforeWrite = (_id, patch) => {
+        if ('site_host' in patch) throw new StoreError('update_launchpad: HTTP 503', 503);
+      };
+      await expect(runStep(h, deployingJob())).rejects.toBeInstanceOf(StoreError);
+      expect(h.alerts.map((a) => a.code)).not.toContain('site_host_conflict:moonpad');
+    });
+
     it('records the same host when the release runs again', async () => {
       const h = harness();
       h.vercel.domainVerified = false;
@@ -893,6 +1046,43 @@ describe('create: deploying', () => {
     expect(h.github.count('mergeBranch')).toBe(0);
   });
 
+  it('refuses a preview deployment that does not report its Vercel project', async () => {
+    const h = harness();
+    await prepareOnchain(h);
+    const read = h.vercel.getDeployment.bind(h.vercel);
+    h.vercel.getDeployment = async (idOrUrl) => ({
+      ...(await read(idOrUrl)),
+      projectId: undefined,
+    });
+    await expect(runStep(h, deployingJob())).rejects.toThrow(/does not report its Vercel project/);
+    expect(h.github.count('mergeBranch')).toBe(0);
+    expect(h.vercel.count('promoteToProduction')).toBe(0);
+  });
+
+  it('refuses to promote, with a high alert, a release that took production by itself', async () => {
+    const h = harness();
+    await prepareOnchain(h);
+    // vercel.ts: production pointed at the staged deployment before any promotion.
+    h.vercel.fail(
+      'waitForDeployment',
+      'before',
+      new ServiceError('vercel', 'unexpected', 'took production before its promotion', {
+        apiCode: PRODUCTION_NOT_STAGED,
+      }),
+    );
+    await expect(runStep(h, deployingJob())).rejects.toThrow(/before its promotion/);
+    expect(h.vercel.count('promoteToProduction')).toBe(0);
+    expect(h.store.get(LAUNCHPAD_ID).status).toBe('draft');
+    const project = h.vercel.projectBySlug('moonpad')!;
+    const release = h.vercel.deploymentsOf(project.id).find((d) => d.target === 'production')!;
+    expect(h.alerts).toContainEqual({
+      level: 'high',
+      code: 'production_not_staged:moonpad',
+      message: expect.stringContaining('before its checks and its promotion') as unknown,
+      details: expect.objectContaining({ deployment: release.id, sha: release.sha }) as unknown,
+    });
+  });
+
   it('refuses a release without an approved preview deployment', async () => {
     const h = harness();
     await prepareOnchain(h);
@@ -991,6 +1181,63 @@ describe('create: deploying', () => {
         });
       }
     }
+  });
+});
+
+describe('create: the launchpad moved to another Vercel project (D30)', () => {
+  /** Every patch written to the launchpad, in order. */
+  function patches(h: Harness): LaunchpadPatch[] {
+    const out: LaunchpadPatch[] = [];
+    h.store.beforeWrite = (_id, patch) => out.push({ ...patch });
+    return out;
+  }
+
+  it('building: drops the recorded host in the same write as the new project', async () => {
+    const h = harness();
+    await h.store.updateLaunchpad(LAUNCHPAD_ID, {
+      vercel_project_id: 'prj_old',
+      site_host: 'lp-moonpad.vercel.app',
+    });
+    const written = patches(h);
+    await runStep(h, building());
+    const project = h.vercel.projectBySlug('moonpad')!;
+    expect(written).toContainEqual({ vercel_project_id: project.id, site_host: null });
+    expect(written.filter((p) => 'vercel_project_id' in p)).toHaveLength(1);
+    expect(h.store.get(LAUNCHPAD_ID).vercel_project_id).toBe(project.id);
+    expect(h.store.siteHost(LAUNCHPAD_ID)).toBeNull();
+  });
+
+  it('building: a first project leaves the host alone', async () => {
+    const h = harness();
+    const written = patches(h);
+    await runStep(h, building());
+    const project = h.vercel.projectBySlug('moonpad')!;
+    expect(written).toContainEqual({ vercel_project_id: project.id });
+    expect(h.store.siteHost(LAUNCHPAD_ID)).toBeUndefined();
+  });
+
+  it('deploying: drops the old host with the new project, then records the new one', async () => {
+    const h = harness();
+    h.vercel.domainVerified = false;
+    await prepareOnchain(h);
+    // Recorded for a project that was replaced since (deleted and created again by name).
+    h.store.get(LAUNCHPAD_ID).vercel_project_id = 'prj_old';
+    await h.store.updateLaunchpad(LAUNCHPAD_ID, { site_host: 'lp-moonpad-old.vercel.app' });
+    const written = patches(h);
+    await runStep(h, deployingJob());
+    const project = h.vercel.projectBySlug('moonpad')!;
+    expect(written[0]).toEqual({ vercel_project_id: project.id, site_host: null });
+    expect(h.store.siteHost(LAUNCHPAD_ID)).toBe('lp-moonpad.vercel.app');
+  });
+
+  it('deploying: a failure after the project change leaves no host of the old project', async () => {
+    const h = harness();
+    await prepareOnchain(h);
+    h.store.get(LAUNCHPAD_ID).vercel_project_id = 'prj_old';
+    await h.store.updateLaunchpad(LAUNCHPAD_ID, { site_host: 'lp-moonpad-old.vercel.app' });
+    h.github.fail('mergeBranch');
+    await expect(runStep(h, deployingJob())).rejects.toThrow();
+    expect(h.store.siteHost(LAUNCHPAD_ID)).toBeNull();
   });
 });
 

@@ -89,6 +89,7 @@ export function makeHarness(jobsRoot: string, over: Partial<PipelineConfig> = {}
     },
     config: {
       cluster: 'devnet',
+      clientsDomain: vercel.clientsDomain,
       projectEnv: TEST_PROJECT_ENV,
       rpcRelayTokenSecret: TEST_RELAY_SECRET,
       scanOptions: { rpcRelayHost: 'forge.test', r2PublicHost: 'cdn.forge.test' },

@@ -328,6 +328,7 @@ export async function startBuilder(opts: StartBuilderOptions = {}): Promise<Buil
     alerter,
     config: {
       cluster: config.SOLANA_CLUSTER,
+      clientsDomain: config.CLIENTS_DOMAIN,
       projectEnv,
       rpcRelayTokenSecret: config.RPC_RELAY_TOKEN_SECRET,
       scanOptions: {

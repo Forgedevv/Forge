@@ -669,8 +669,16 @@ export interface FakeDeployment extends VercelDeployment {
 }
 
 export class FakeVercel extends Recorder implements PipelineVercel {
-  /** Simulates Vercel publishing a preview as production (no placeholder deployed first). */
-  firstDeploymentIsProduction = false;
+  /**
+   * What Vercel does to the first deployment of a project that has no production deployment yet
+   * (no placeholder: this fake's `ensureProject` deploys none). `false`: nothing special. `true`:
+   * like the real API, whatever its target, the deployment is answered as `production` and the
+   * project's production pointer and aliases move to it. `'pointer'`: the pointer and aliases
+   * move but the answer still says `preview` (the target field alone cannot be trusted).
+   */
+  firstDeploymentIsProduction: boolean | 'pointer' = false;
+  /** `restorePlaceholder` answers as usual but production does not move (a lying API). */
+  placeholderIgnored = false;
   readonly projects = new Map<string, FakeProject>();
   readonly deployments = new Map<string, FakeDeployment>();
   /** State the next deployments end in. */
@@ -704,6 +712,7 @@ export class FakeVercel extends Recorder implements PipelineVercel {
       name: p.name,
       linkedRepo: p.linkedRepo,
       productionDeploymentId: p.productionDeploymentId,
+      framework: 'nextjs',
       paused: p.paused,
       gitDeploymentsDisabled: true,
     };
@@ -764,8 +773,13 @@ export class FakeVercel extends Recorder implements PipelineVercel {
         throw new ServiceError('vercel', 'invalid_input', 'createDeployment needs the commit sha');
       }
       // `firstDeploymentIsProduction`: what Vercel does to the first deployment of a project
-      // without git (vercel.ts deployPlaceholder).
-      const target = this.firstDeploymentIsProduction ? 'production' : (input.target ?? 'preview');
+      // without git and without production (vercel.ts installPlaceholder).
+      const takesProduction =
+        this.firstDeploymentIsProduction !== false && p.productionDeploymentId === undefined;
+      const target =
+        takesProduction && this.firstDeploymentIsProduction === true
+          ? 'production'
+          : (input.target ?? 'preview');
       // Same idempotency rule as vercel.ts: an earlier deployment of this commit, project and
       // target is reused unless it failed.
       const existing = [...this.deployments.values()].find(
@@ -792,7 +806,53 @@ export class FakeVercel extends Recorder implements PipelineVercel {
         env: Object.fromEntries(p.env),
       };
       this.deployments.set(d.id, d);
+      if (takesProduction) this.makeProduction(p, d.id);
       return { ...d };
+    });
+  }
+
+  /** Points the project's production, its production aliases and its domains at a deployment. */
+  private makeProduction(p: FakeProject, deploymentId: string): void {
+    p.productionDeploymentId = deploymentId;
+    for (const name of [...this.productionAliasNames(p), ...p.domains]) {
+      this.pointAlias(name, p.id, deploymentId);
+    }
+  }
+
+  cancelDeployment(id: string): Promise<void> {
+    return this.around('cancelDeployment', () => {
+      const d = this.deployments.get(id);
+      if (d && (d.readyState === 'BUILDING' || d.readyState === 'QUEUED')) {
+        d.readyState = 'CANCELED';
+      }
+    });
+  }
+
+  /** Static placeholder deployments `restorePlaceholder` made, by id. */
+  readonly placeholders = new Set<string>();
+
+  /** Like vercel.ts: a new static placeholder, READY, made production (unless ignored). */
+  restorePlaceholder(projectId: string): Promise<{ deploymentId: string }> {
+    return this.around('restorePlaceholder', () => {
+      const p = this.project(projectId);
+      this.counter += 1;
+      const d: FakeDeployment = {
+        id: `dpl_${this.counter}`,
+        url: `https://${p.name}-${this.counter}.vercel.test`,
+        readyState: 'READY',
+        target: 'production',
+        errorCode: undefined,
+        errorMessage: undefined,
+        commitSha: undefined,
+        projectId: p.id,
+        ref: '',
+        sha: undefined,
+        env: {},
+      };
+      this.deployments.set(d.id, d);
+      this.placeholders.add(d.id);
+      if (!this.placeholderIgnored) this.makeProduction(p, d.id);
+      return { deploymentId: d.id };
     });
   }
 
@@ -843,10 +903,7 @@ export class FakeVercel extends Recorder implements PipelineVercel {
       if (!d || d.readyState !== 'READY') {
         throw new ServiceError('vercel', 'invalid_input', 'only READY deployments can be promoted');
       }
-      p.productionDeploymentId = deploymentId;
-      for (const name of [...this.productionAliasNames(p), ...p.domains]) {
-        this.pointAlias(name, p.id, deploymentId);
-      }
+      this.makeProduction(p, deploymentId);
       return { promoted: true };
     });
   }

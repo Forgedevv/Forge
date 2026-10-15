@@ -2,7 +2,12 @@
 import { OPS, type SiteMode } from '@forge/shared';
 import type { Alerter } from './alerts.js';
 import { repoNameForSlug, type GithubClient } from './github.js';
-import { guard, poolConfigKeys, StepAbortedError } from './pipeline/context.js';
+import {
+  guard,
+  poolConfigKeys,
+  recordVercelProject,
+  StepAbortedError,
+} from './pipeline/context.js';
 import { PipelineError } from './pipeline/errors.js';
 import {
   parseSiteConfig,
@@ -12,7 +17,12 @@ import {
   withMode,
 } from './pipeline/site-config.js';
 import type { LaunchpadRecord, SleepStore } from './pipeline/store.js';
-import { clientProjectVars, type VercelClient } from './vercel.js';
+import {
+  clientProjectVars,
+  isProductionNotStaged,
+  type VercelClient,
+  type VercelDeployment,
+} from './vercel.js';
 import type { WorkerLogger } from './worker.js';
 import { sanitizeError } from './worker/messages.js';
 
@@ -155,6 +165,11 @@ export async function setLaunchpadMode(
   if (!project.gitDeploymentsDisabled) {
     throw new PipelineError('git-triggered deployments are not disabled on the Vercel project');
   }
+  if (lp.vercel_project_id !== project.id) {
+    // Another project than the recorded one (D30): its recorded site host goes with it.
+    guard(signal);
+    await recordVercelProject(deps.store, lp, project.id);
+  }
   const vars = clientProjectVars(deps.projectEnv, {
     slug: lp.slug,
     poolKeys: poolConfigKeys(config.onchain),
@@ -173,9 +188,25 @@ export async function setLaunchpadMode(
     sha,
     target: 'production',
   });
-  const ready = await deps.vercel.waitForDeployment(deployment.id, {
-    timeoutMs: deps.deploymentTimeoutMs ?? 15 * 60_000,
-  });
+  let ready: VercelDeployment;
+  try {
+    ready = await deps.vercel.waitForDeployment(deployment.id, {
+      timeoutMs: deps.deploymentTimeoutMs ?? 15 * 60_000,
+    });
+  } catch (err) {
+    if (isProductionNotStaged(err) && deps.alerter) {
+      // Production moved before the checks below and the promotion.
+      await deps.alerter
+        .alert(
+          'high',
+          `production_not_staged:${lp.slug}`,
+          'A production deployment went live before its checks and its promotion (Vercel did not stage it)',
+          { launchpad: lp.slug, mode: target, deployment: deployment.id, sha },
+        )
+        .catch(() => undefined);
+    }
+    throw err;
+  }
   // Read the row and the switch again right before production changes: the team may have
   // disabled the launchpad or paused deploys while the deployment was building. The deployment is
   // staged (vercel.ts): production only changes with the promotion below.

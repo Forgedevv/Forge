@@ -1,5 +1,5 @@
 import { isSiteHost, isVercelAppHost } from '@forge/shared';
-import { projectNameForSlug } from '../vercel.js';
+import { projectNameForSlug, subdomainFor } from '../vercel.js';
 
 /**
  * The canonical host of a released client site (`launchpads.site_host`, migration 0011), chosen
@@ -7,7 +7,7 @@ import { projectNameForSlug } from '../vercel.js';
  * with a look-alike name, so only hosts read from the API for OUR project count.
  *
  * Order of preference:
- * 1. `<slug>.<CLIENTS_DOMAIN>` once Vercel verified it on the project (`attachSubdomain`);
+ * 1. `<slug>.<CLIENTS_DOMAIN>`, exactly, once Vercel verified it on the project (`attachSubdomain`);
  * 2. a `*.vercel.app` production alias of the project's promoted deployment
  *    (`listProductionHosts`, project and deployment checked on every alias record):
  *    `lp-<slug>.vercel.app` first (Vercel only gives it when the name is free everywhere), then
@@ -19,6 +19,8 @@ import { projectNameForSlug } from '../vercel.js';
  */
 export interface SiteHostInput {
   slug: string;
+  /** `CLIENTS_DOMAIN`: the only domain a client subdomain may live under. */
+  clientsDomain: string;
   /** Result of `attachSubdomain`: the client subdomain and whether Vercel verified it. */
   subdomain: { domain: string; verified: boolean } | null;
   /** Production hosts of the promoted deployment of the launchpad's own project. */
@@ -29,12 +31,26 @@ function byLengthThenName(a: string, b: string): number {
   return a.length - b.length || (a < b ? -1 : a > b ? 1 : 0);
 }
 
+/** `<slug>.<clientsDomain>`, or null when either part is not valid. */
+function expectedSubdomain(slug: string, clientsDomain: string): string | null {
+  try {
+    return subdomainFor(slug, clientsDomain);
+  } catch {
+    return null;
+  }
+}
+
 export function chooseSiteHost(input: SiteHostInput): string | null {
   const { slug, subdomain } = input;
+  // Exactly the subdomain FORGE asked for, under CLIENTS_DOMAIN: never another name, even one
+  // Vercel reports as verified.
+  const expected = expectedSubdomain(slug, input.clientsDomain);
   if (
+    expected !== null &&
     subdomain !== null &&
     subdomain.verified &&
-    subdomain.domain.startsWith(`${slug}.`) &&
+    subdomain.domain === expected &&
+    subdomain.domain.endsWith(`.${input.clientsDomain}`) &&
     isSiteHost(subdomain.domain) &&
     !isVercelAppHost(subdomain.domain)
   ) {

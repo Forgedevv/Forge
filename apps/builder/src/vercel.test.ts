@@ -5,11 +5,14 @@ import { gitBlobSha, type CommitTree, type TreeLimits } from './github.js';
 import { empty, json, stubFetch, type RecordedCall, type Route } from './http-mock.js';
 import {
   assertClientsDomain,
+  cleanupFailureOf,
   createVercelClient,
   API_ONLY_DEPLOYMENT_POLICY,
   clientProjectVars,
   envTypeFor,
+  isProductionNotStaged,
   pickProjectEnv,
+  PRODUCTION_NOT_STAGED,
   PROJECT_SERVER_SECRETS,
   PROJECT_ENV_ALLOWLIST,
   PROJECT_ENV_FORBIDDEN,
@@ -67,6 +70,7 @@ const projectJson = (over: Record<string, unknown> = {}) => ({
   name: 'lp-moonpad',
   link: { type: 'github', org: ORG, repo: 'lp-moonpad' },
   targets: { production: { id: 'dpl_live' } },
+  framework: 'nextjs',
   ...over,
 });
 
@@ -168,6 +172,11 @@ const createdDeployment = (over: Record<string, unknown> = {}) =>
 
 const deploymentPosts = (stub: Harness['stub']): RecordedCall[] =>
   stub.find('POST', '/v13/deployments');
+
+/** Nonce of one creation request (`meta.forgeRequestId`): 16 random bytes, hex. */
+const REQUEST_ID = expect.stringMatching(/^[0-9a-f]{32}$/) as unknown;
+const requestIdOf = (call: RecordedCall): string | undefined =>
+  (call.body as { meta?: { forgeRequestId?: string } } | undefined)?.meta?.forgeRequestId;
 
 describe('names, domain and env selection', () => {
   it('derives project names and subdomains from validated slugs', () => {
@@ -384,6 +393,102 @@ const policyPatches = (stub: Harness['stub']) =>
   stub
     .find('PATCH', '/v9/projects/prj_123')
     .filter((c) => typeof c.body === 'object' && c.body !== null && 'deploymentPolicy' in c.body);
+/** Framework values PATCHed on the project, in order. */
+const frameworkPatches = (stub: Harness['stub']): unknown[] =>
+  stub
+    .find('PATCH', '/v9/projects/prj_123')
+    .filter((c) => typeof c.body === 'object' && c.body !== null && 'framework' in c.body)
+    .map((c) => (c.body as { framework: unknown }).framework);
+
+/** A project on the Vercel side, as the placeholder routes below see and change it. */
+interface PlaceholderState {
+  exists: boolean;
+  production: string | null;
+  framework: string | null;
+  /** What the placeholder deployment ends in. */
+  placeholder: 'READY' | 'ERROR' | 'BUILDING';
+  /** The PATCH that puts `nextjs` back is refused. */
+  restoreFails: boolean;
+  /** The promotion endpoint moves production. */
+  promotes: boolean;
+}
+
+const placeholderState = (over: Partial<PlaceholderState> = {}): PlaceholderState => ({
+  exists: false,
+  production: null,
+  framework: 'nextjs',
+  placeholder: 'READY',
+  restoreFails: false,
+  promotes: true,
+  ...over,
+});
+
+/**
+ * An unlinked project and its placeholder deployment `dpl_ph`, like the API: the first deployment
+ * of a project with no production deployment takes production once READY; any later one only
+ * through the promotion.
+ */
+function placeholderRoutes(state: PlaceholderState): Route[] {
+  const project = () =>
+    projectJson({
+      link: undefined,
+      targets: state.production ? { production: { id: state.production } } : null,
+      framework: state.framework,
+    });
+  return [
+    {
+      method: 'GET',
+      path: '/v9/projects/lp-moonpad',
+      handler: () =>
+        state.exists ? json(project()) : json({ error: { code: 'not_found', message: 'x' } }, 404),
+    },
+    {
+      method: 'POST',
+      path: '/v10/projects',
+      handler: () => {
+        state.exists = true;
+        return json(project());
+      },
+    },
+    {
+      method: 'PATCH',
+      path: '/v9/projects/prj_123',
+      handler: (call) => {
+        const body = call.body as { framework?: string | null };
+        if ('framework' in body) {
+          if (body.framework === 'nextjs' && state.restoreFails) {
+            return json({ error: { code: 'bad_request', message: 'refused' } }, 400);
+          }
+          state.framework = body.framework ?? null;
+        }
+        return json(project());
+      },
+    },
+    { method: 'GET', path: '/v9/projects/prj_123', handler: () => json(project()) },
+    { method: 'POST', path: '/v2/files', handler: () => json({}) },
+    {
+      method: 'POST',
+      path: '/v13/deployments',
+      handler: () => json(deploymentJson('BUILDING', { id: 'dpl_ph', target: 'production' })),
+    },
+    {
+      method: 'GET',
+      path: '/v13/deployments/dpl_ph',
+      handler: () => {
+        if (state.placeholder === 'READY') state.production ??= 'dpl_ph';
+        return json(deploymentJson(state.placeholder, { id: 'dpl_ph', target: 'production' }));
+      },
+    },
+    {
+      method: 'POST',
+      path: '/v10/projects/prj_123/promote/dpl_ph',
+      handler: () => {
+        if (state.promotes) state.production = 'dpl_ph';
+        return empty(201);
+      },
+    },
+  ];
+}
 
 describe('ensureProject: git-triggered deployments', () => {
   it('turns them off on a new project and verifies the stored policy before protection', async () => {
@@ -576,6 +681,72 @@ describe('ensureProject', () => {
     // Content-addressed upload of the placeholder page itself.
     const upload = stub.find('POST', '/v2/files')[0]!;
     expect(upload.headers['x-vercel-digest']).toMatch(/^[0-9a-f]{40}$/);
+  });
+
+  it('puts the framework back when the placeholder ends in ERROR or never gets ready', async () => {
+    for (const placeholder of ['ERROR', 'BUILDING'] as const) {
+      const state = placeholderState({ placeholder });
+      const { client, stub } = make(placeholderRoutes(state));
+      const error = await client.ensureProject({ slug: 'moonpad' }).catch((e: unknown) => e);
+      expect(error).toMatchObject({
+        kind: placeholder === 'ERROR' ? 'deployment_failed' : 'timeout',
+      });
+      expect(frameworkPatches(stub)).toEqual([null, 'nextjs']);
+      expect(state.framework).toBe('nextjs');
+      expect(cleanupFailureOf(error)).toBeUndefined();
+    }
+  });
+
+  it('keeps the placeholder failure when putting the framework back fails too', async () => {
+    const state = placeholderState({ placeholder: 'ERROR', restoreFails: true });
+    const { client, stub } = make(placeholderRoutes(state));
+    const error = await client.ensureProject({ slug: 'moonpad' }).catch((e: unknown) => e);
+    // The original failure, not the restore's.
+    expect(error).toMatchObject({ kind: 'deployment_failed', message: /dpl_ph ended in ERROR/ });
+    expect(cleanupFailureOf(error)).toMatchObject({
+      what: 'framework restore',
+      error: { kind: 'validation', status: 400 },
+    });
+    expect(frameworkPatches(stub)).toEqual([null, 'nextjs']);
+    expect(state.framework).toBeNull();
+  });
+
+  it('repairs a framework left off by an earlier run on the next run', async () => {
+    // The placeholder went live, but putting the framework back failed.
+    const state = placeholderState({ restoreFails: true });
+    const { client, stub } = make(placeholderRoutes(state));
+    await expect(client.ensureProject({ slug: 'moonpad' })).rejects.toMatchObject({
+      kind: 'validation',
+    });
+    expect(state).toMatchObject({ production: 'dpl_ph', framework: null });
+    // Next run: the project has production, only its framework is wrong.
+    state.restoreFails = false;
+    const out = await client.ensureProject({ slug: 'moonpad' });
+    expect(out.project.framework).toBe('nextjs');
+    expect(state.framework).toBe('nextjs');
+    expect(frameworkPatches(stub)).toEqual([null, 'nextjs', 'nextjs']);
+    expect(stub.find('POST', '/v13/deployments')).toHaveLength(1);
+  });
+
+  it('puts the framework back on any project where it differs', async () => {
+    for (const framework of [null, 'vite']) {
+      const { client, stub } = make([
+        {
+          method: 'GET',
+          path: '/v9/projects/lp-moonpad',
+          handler: () => json(projectJson({ link: undefined, framework })),
+        },
+        {
+          method: 'PATCH',
+          path: '/v9/projects/prj_123',
+          handler: () => json(projectJson({ link: undefined })),
+        },
+      ]);
+      const out = await client.ensureProject({ slug: 'moonpad' });
+      expect(out.project.framework).toBe('nextjs');
+      expect(frameworkPatches(stub)).toEqual(['nextjs']);
+      expect(stub.find('POST', '/v13/deployments')).toHaveLength(0);
+    }
   });
 
   it('does not deploy a placeholder when the project already has production', async () => {
@@ -1035,10 +1206,13 @@ describe('deployments from files', () => {
         githubCommitRef: 'forge/job1',
         githubRepo: 'lp-moonpad',
         githubOrg: ORG,
+        forgeRequestId: REQUEST_ID,
       },
     };
     expect(created[0]?.body).toEqual(expectedBody);
     expect(created[1]?.body).toEqual(expectedBody);
+    // Every request carries its own nonce.
+    expect(requestIdOf(created[0]!)).not.toBe(requestIdOf(created[1]!));
     expect(created[0]?.query.get('teamId')).toBe(TEAM);
     // Reuse is decided per commit by the lookup, never by Vercel's own deduplication.
     expect(created[0]?.query.get('forceNew')).toBe('1');
@@ -1122,6 +1296,7 @@ describe('deployments from files', () => {
         githubCommitRef: 'main',
         githubRepo: 'lp-moonpad',
         githubOrg: ORG,
+        forgeRequestId: REQUEST_ID,
       },
     });
     expect(stub.find('GET', '/v6/deployments')[0]?.query.get('target')).toBe('production');
@@ -1161,6 +1336,185 @@ describe('deployments from files', () => {
       }),
     ).rejects.toMatchObject({ kind: 'unexpected', message: expect.stringMatching(/not staged/) });
     expect(stub.find('PATCH', '/v12/deployments/dpl_1/cancel')).toHaveLength(1);
+  });
+
+  it('cancels and refuses a production deployment whose staging Vercel does not confirm', async () => {
+    // No `autoAssignCustomDomains` echo: nothing says the domains wait for the promotion.
+    for (const echo of [{}, { autoAssignCustomDomains: null }]) {
+      const { source } = fakeSource();
+      const { client, stub } = make(
+        [
+          noEarlierDeployment,
+          {
+            method: 'POST',
+            path: '/v13/deployments',
+            handler: () =>
+              createdDeployment({ readyState: 'BUILDING', target: 'production', ...echo }),
+          },
+          { method: 'PATCH', path: '/v12/deployments/dpl_1/cancel', handler: () => json({}) },
+        ],
+        { source },
+      );
+      await expect(
+        client.createDeployment({
+          project: PROJECT,
+          repo: 'lp-moonpad',
+          ref: 'main',
+          sha: COMMIT,
+          target: 'production',
+        }),
+      ).rejects.toMatchObject({ kind: 'unexpected', message: expect.stringMatching(/not staged/) });
+      expect(stub.find('PATCH', '/v12/deployments/dpl_1/cancel')).toHaveLength(1);
+    }
+  });
+
+  it('refuses a staged production deployment that took production before its promotion', async () => {
+    const { source } = fakeSource();
+    let production = 'dpl_live';
+    const staged = { target: 'production', autoAssignCustomDomains: false };
+    const { client, stub } = make(
+      [
+        noEarlierDeployment,
+        {
+          method: 'POST',
+          path: '/v13/deployments',
+          handler: () => createdDeployment({ readyState: 'BUILDING', ...staged }),
+        },
+        {
+          method: 'GET',
+          path: '/v13/deployments/dpl_1',
+          handler: () => {
+            // Vercel gave it production by itself once READY.
+            production = 'dpl_1';
+            return createdDeployment({ readyState: 'READY', ...staged });
+          },
+        },
+        {
+          method: 'GET',
+          path: '/v9/projects/prj_123',
+          handler: () => json(projectJson({ targets: { production: { id: production } } })),
+        },
+      ],
+      { source },
+    );
+    const d = await client.createDeployment({
+      project: PROJECT,
+      repo: 'lp-moonpad',
+      ref: 'main',
+      sha: COMMIT,
+      target: 'production',
+    });
+    const error = await client.waitForDeployment(d.id).catch((e: unknown) => e);
+    expect(error).toMatchObject({
+      kind: 'unexpected',
+      apiCode: PRODUCTION_NOT_STAGED,
+      message: expect.stringMatching(/before its promotion/) as unknown,
+    });
+    expect(isProductionNotStaged(error)).toBe(true);
+    expect(isProductionNotStaged(new Error('other'))).toBe(false);
+    expect(stub.find('POST', /promote/)).toHaveLength(0);
+  });
+
+  it('lets a staged deployment wait for its promotion, and never re-checks a promoted one', async () => {
+    const { source } = fakeSource();
+    const staged = { target: 'production', autoAssignCustomDomains: false };
+    const { client, stub } = make(
+      [
+        noEarlierDeployment,
+        {
+          method: 'POST',
+          path: '/v13/deployments',
+          handler: () => createdDeployment({ readyState: 'QUEUED', ...staged }),
+        },
+        {
+          method: 'GET',
+          path: '/v13/deployments/dpl_1',
+          handler: () => createdDeployment({ readyState: 'READY', ...staged }),
+        },
+        {
+          method: 'GET',
+          path: '/v13/deployments/dpl_9',
+          handler: () => createdDeployment({ id: 'dpl_9', readyState: 'READY', ...staged }),
+        },
+        { method: 'GET', path: '/v9/projects/prj_123', handler: () => json(projectJson()) },
+      ],
+      { source },
+    );
+    const d = await client.createDeployment({
+      project: PROJECT,
+      repo: 'lp-moonpad',
+      ref: 'main',
+      sha: COMMIT,
+      target: 'production',
+    });
+    await expect(client.waitForDeployment(d.id)).resolves.toMatchObject({ readyState: 'READY' });
+    expect(stub.find('GET', '/v9/projects/prj_123')).toHaveLength(1);
+    // Checked once: waiting again (or for a deployment this client never saw building, which an
+    // earlier run may have promoted) reads no project.
+    await client.waitForDeployment(d.id);
+    await client.waitForDeployment('dpl_9');
+    expect(stub.find('GET', '/v9/projects/prj_123')).toHaveLength(1);
+  });
+
+  it('only reuses a production deployment still building when Vercel confirms it is staged', async () => {
+    const { source } = fakeSource();
+    const { client, stub } = make(
+      [
+        {
+          method: 'GET',
+          path: '/v6/deployments',
+          handler: () => json({ deployments: [{ uid: 'dpl_9' }] }),
+        },
+        {
+          method: 'GET',
+          path: '/v13/deployments/dpl_9',
+          // No echo on the record: not adopted.
+          handler: () =>
+            createdDeployment({ id: 'dpl_9', readyState: 'BUILDING', target: 'production' }),
+        },
+        {
+          method: 'POST',
+          path: '/v13/deployments',
+          handler: () =>
+            createdDeployment({
+              id: 'dpl_new',
+              target: 'production',
+              autoAssignCustomDomains: false,
+            }),
+        },
+      ],
+      { source },
+    );
+    const d = await client.createDeployment({
+      project: PROJECT,
+      repo: 'lp-moonpad',
+      ref: 'main',
+      sha: COMMIT,
+      target: 'production',
+    });
+    expect(d.id).toBe('dpl_new');
+    expect(deploymentPosts(stub)).toHaveLength(1);
+  });
+
+  it('refuses a deployment that does not report its project (fails closed)', async () => {
+    const { source } = fakeSource();
+    const { client } = make(
+      [
+        noEarlierDeployment,
+        {
+          method: 'POST',
+          path: '/v13/deployments',
+          handler: () => createdDeployment({ projectId: undefined }),
+        },
+      ],
+      { source },
+    );
+    await expect(
+      client.createDeployment({ project: PROJECT, repo: 'lp-moonpad', ref: 'main', sha: COMMIT }),
+    ).rejects.toMatchObject({
+      kind: 'unexpected',
+      message: expect.stringMatching(/does not report its project/) as unknown,
+    });
   });
 
   it('accepts a finished deployment Vercel returns for identical files', async () => {
@@ -1359,32 +1713,42 @@ describe('deployments from files', () => {
 
   it('does not replay a creation blindly after an ambiguous failure', async () => {
     const { source } = fakeSource();
-    let created = false;
-    const { client, stub } = make(
+    let lost: string | undefined;
+    const { client, stub, sleeps } = make(
       [
         {
           method: 'GET',
           path: '/v6/deployments',
-          handler: () =>
-            json({
-              deployments: created
-                ? [{ uid: 'dpl_1', readyState: 'QUEUED', meta: { githubCommitSha: COMMIT } }]
+          handler: (call) => {
+            const byRequest = call.query.get('meta-forgeRequestId');
+            const listed = lost !== undefined && (byRequest === null || byRequest === lost);
+            return json({
+              deployments: listed
+                ? [
+                    {
+                      uid: 'dpl_1',
+                      readyState: 'QUEUED',
+                      meta: { githubCommitSha: COMMIT, forgeRequestId: lost },
+                    },
+                  ]
                 : [],
-            }),
+            });
+          },
         },
         {
           method: 'POST',
           path: '/v13/deployments',
-          handler: () => {
+          handler: (call) => {
             // Vercel created it, but the answer was lost.
-            created = true;
+            lost = requestIdOf(call);
             return json({ error: { code: 'internal', message: 'oops' } }, 502);
           },
         },
         {
           method: 'GET',
           path: '/v13/deployments/dpl_1',
-          handler: () => createdDeployment(),
+          handler: () =>
+            createdDeployment({ meta: { githubCommitSha: COMMIT, forgeRequestId: lost } }),
         },
       ],
       { source },
@@ -1397,13 +1761,120 @@ describe('deployments from files', () => {
     });
     expect(d.id).toBe('dpl_1');
     expect(deploymentPosts(stub)).toHaveLength(1);
-    expect(stub.find('GET', '/v6/deployments')).toHaveLength(2);
+    // The lost request is looked up by its own nonce (any target), and found at once.
+    const lookups = stub.find('GET', '/v6/deployments');
+    expect(lookups.map((c) => c.query.get('meta-forgeRequestId'))).toEqual([null, lost]);
+    expect(lookups[1]?.query.get('target')).toBeNull();
+    expect(lookups[1]?.query.get('projectId')).toBe('prj_123');
+    expect(sleeps).toEqual([]);
+  });
+
+  it('finds a lost creation by its nonce when Vercel lists it a moment late', async () => {
+    const { source } = fakeSource();
+    let lost: string | undefined;
+    let nonceReads = 0;
+    const { client, stub, sleeps } = make(
+      [
+        {
+          method: 'GET',
+          path: '/v6/deployments',
+          handler: (call) => {
+            const byRequest = call.query.get('meta-forgeRequestId');
+            // The commit filter never lists it in time; the nonce lists it on its second read.
+            const listed = byRequest !== null && byRequest === lost && ++nonceReads >= 2;
+            return json({ deployments: listed ? [{ uid: 'dpl_1' }] : [] });
+          },
+        },
+        {
+          method: 'POST',
+          path: '/v13/deployments',
+          handler: (call) => {
+            lost = requestIdOf(call);
+            return json({ error: { message: 'gateway timeout' } }, 504);
+          },
+        },
+        {
+          method: 'GET',
+          path: '/v13/deployments/dpl_1',
+          handler: () =>
+            createdDeployment({ meta: { githubCommitSha: COMMIT, forgeRequestId: lost } }),
+        },
+      ],
+      { source },
+    );
+    const d = await client.createDeployment({
+      project: PROJECT,
+      repo: 'lp-moonpad',
+      ref: 'main',
+      sha: COMMIT,
+    });
+    expect(d.id).toBe('dpl_1');
+    // No second deployment: the lookup waited a moment and found the first one.
+    expect(deploymentPosts(stub)).toHaveLength(1);
+    expect(sleeps).toEqual([2_000]);
+  });
+
+  it('never adopts a deployment of another request or another project by its nonce', async () => {
+    const { source } = fakeSource();
+    let posts = 0;
+    let first: string | undefined;
+    const { client, stub } = make(
+      [
+        {
+          method: 'GET',
+          path: '/v6/deployments',
+          handler: (call) =>
+            json({
+              deployments:
+                call.query.get('meta-forgeRequestId') !== null
+                  ? [{ uid: 'dpl_other' }, { uid: 'dpl_foreign' }]
+                  : [],
+            }),
+        },
+        {
+          method: 'GET',
+          path: '/v13/deployments/dpl_other',
+          handler: () =>
+            createdDeployment({
+              id: 'dpl_other',
+              meta: { githubCommitSha: COMMIT, forgeRequestId: 'f'.repeat(32) },
+            }),
+        },
+        {
+          method: 'GET',
+          path: '/v13/deployments/dpl_foreign',
+          handler: () =>
+            createdDeployment({
+              id: 'dpl_foreign',
+              projectId: 'prj_other',
+              meta: { githubCommitSha: COMMIT, forgeRequestId: first },
+            }),
+        },
+        {
+          method: 'POST',
+          path: '/v13/deployments',
+          handler: (call) => {
+            first ??= requestIdOf(call);
+            return ++posts === 1 ? json({ error: { message: 'down' } }, 503) : createdDeployment();
+          },
+        },
+      ],
+      { source },
+    );
+    const d = await client.createDeployment({
+      project: PROJECT,
+      repo: 'lp-moonpad',
+      ref: 'main',
+      sha: COMMIT,
+    });
+    expect(d.id).toBe('dpl_1');
+    expect(deploymentPosts(stub)).toHaveLength(2);
   });
 
   it('tries once more after an ambiguous failure that created nothing', async () => {
     const { source } = fakeSource();
     let posts = 0;
-    const { client, stub } = make(
+    const { client, stub, sleeps } = make(
       [
         noEarlierDeployment,
         {
@@ -1418,7 +1889,16 @@ describe('deployments from files', () => {
     await expect(
       client.createDeployment({ project: PROJECT, repo: 'lp-moonpad', ref: 'main', sha: COMMIT }),
     ).resolves.toMatchObject({ id: 'dpl_1' });
-    expect(deploymentPosts(stub)).toHaveLength(2);
+    const created = deploymentPosts(stub);
+    expect(created).toHaveLength(2);
+    // Before the second request: the first one's nonce, read a bounded number of times a moment
+    // apart, then the commit lookup again. The second request carries a nonce of its own.
+    const nonce = requestIdOf(created[0]!);
+    expect(
+      stub.find('GET', '/v6/deployments').map((c) => c.query.get('meta-forgeRequestId')),
+    ).toEqual([null, nonce, nonce, nonce, null]);
+    expect(sleeps).toEqual([2_000, 2_000]);
+    expect(requestIdOf(created[1]!)).not.toBe(nonce);
 
     // Only once: a second ambiguous failure is reported.
     posts = 0;
@@ -1862,6 +2342,66 @@ describe('deployments', () => {
   });
 });
 
+describe('restorePlaceholder and cancelDeployment', () => {
+  it('puts the placeholder back in production, promoted when Vercel does not assign it', async () => {
+    // Another deployment took production: a new production deployment does not move it by itself.
+    const state = placeholderState({ exists: true, production: 'dpl_public' });
+    const { client, stub } = make(placeholderRoutes(state));
+    await expect(client.restorePlaceholder('prj_123')).resolves.toEqual({ deploymentId: 'dpl_ph' });
+    expect(state.production).toBe('dpl_ph');
+    expect(stub.find('POST', '/v10/projects/prj_123/promote/dpl_ph')).toHaveLength(1);
+    const body = stub.find('POST', '/v13/deployments')[0]?.body as {
+      files: Array<{ file: string }>;
+    };
+    expect(body.files.map((f) => f.file)).toEqual(['index.html']);
+    expect(frameworkPatches(stub)).toEqual([null, 'nextjs']);
+    // Verified on the project itself, after the promotion.
+    const order = stub.calls.map((c) => `${c.method} ${c.path}`);
+    expect(order.at(-1)).toBe('GET /v9/projects/prj_123');
+  });
+
+  it('fails when production never moves to the placeholder', async () => {
+    const state = placeholderState({ exists: true, production: 'dpl_public', promotes: false });
+    const { client } = make(placeholderRoutes(state));
+    await expect(client.restorePlaceholder('prj_123')).rejects.toMatchObject({ kind: 'timeout' });
+    expect(state.production).toBe('dpl_public');
+  });
+
+  it('needs an existing project', async () => {
+    const { client } = make([
+      {
+        method: 'GET',
+        path: '/v9/projects/prj_gone',
+        handler: () => json({ error: { code: 'not_found', message: 'x' } }, 404),
+      },
+    ]);
+    await expect(client.restorePlaceholder('prj_gone')).rejects.toMatchObject({
+      kind: 'not_found',
+    });
+  });
+
+  it('cancels a deployment, tolerating one that already ended or is gone', async () => {
+    const { client, stub } = make([
+      { method: 'PATCH', path: '/v12/deployments/dpl_1/cancel', handler: () => json({}) },
+      {
+        method: 'PATCH',
+        path: '/v12/deployments/dpl_2/cancel',
+        handler: () => json({ error: { code: 'bad_request', message: 'already ready' } }, 400),
+      },
+      {
+        method: 'PATCH',
+        path: '/v12/deployments/dpl_3/cancel',
+        handler: () => json({ error: { code: 'not_found', message: 'x' } }, 404),
+      },
+    ]);
+    for (const id of ['dpl_1', 'dpl_2', 'dpl_3']) {
+      await expect(client.cancelDeployment(id)).resolves.toBeUndefined();
+    }
+    expect(stub.find('PATCH', /\/cancel$/)).toHaveLength(3);
+    await expect(client.cancelDeployment('../x')).rejects.toMatchObject({ kind: 'invalid_input' });
+  });
+});
+
 describe('promoteToProduction', () => {
   it('promotes a READY preview and waits until it serves production', async () => {
     let promoted = false;
@@ -2011,6 +2551,42 @@ describe('attachSubdomain', () => {
     expect(out.verification).toEqual([
       { type: 'TXT', domain: '_vercel.forge-sites.app', value: 'vc-domain-verify=x' },
     ]);
+  });
+
+  it('refuses an answer about any other domain than the one asked for', async () => {
+    for (const name of [
+      'evil.forge-sites.app',
+      'moonpad.forge-sites.app.evil.test',
+      'Moonpad.forge-sites.app',
+      'moonpad.vercel.app',
+    ]) {
+      // Already attached (GET), or just added (POST).
+      const read = make([
+        {
+          method: 'GET',
+          path: '/v9/projects/prj_123/domains/moonpad.forge-sites.app',
+          handler: () => json({ name, verified: true }),
+        },
+      ]);
+      await expect(read.client.attachSubdomain('prj_123', 'moonpad')).rejects.toMatchObject({
+        kind: 'invalid_response',
+      });
+      const added = make([
+        {
+          method: 'GET',
+          path: '/v9/projects/prj_123/domains/moonpad.forge-sites.app',
+          handler: () => json({ error: { code: 'not_found', message: 'x' } }, 404),
+        },
+        {
+          method: 'POST',
+          path: '/v10/projects/prj_123/domains',
+          handler: () => json({ name, verified: true }),
+        },
+      ]);
+      await expect(added.client.attachSubdomain('prj_123', 'moonpad')).rejects.toMatchObject({
+        kind: 'invalid_response',
+      });
+    }
   });
 
   it('detects a domain held by another project', async () => {

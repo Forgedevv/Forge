@@ -21,7 +21,10 @@ import {
   templateFiles,
 } from './pipeline/test-fakes.js';
 import { TEST_PROJECT_ENV, TEST_RELAY_SECRET } from './pipeline/test-harness.js';
+import type { LaunchpadPatch } from './pipeline/store.js';
 import type { SiteMode } from '@forge/shared';
+import { ServiceError } from './http.js';
+import { PRODUCTION_NOT_STAGED } from './vercel.js';
 import {
   DeploysPausedError,
   runSleepCycle,
@@ -59,12 +62,13 @@ async function setup(opts: { mode?: SiteMode; lastTradeDaysAgo?: number | null }
     executable: false,
   });
   github.seedRepo('moonpad', files);
-  await vercel.ensureProject({ slug: 'moonpad' });
+  const { project } = await vercel.ensureProject({ slug: 'moonpad' });
   const days = opts.lastTradeDaysAgo === undefined ? 40 : opts.lastTradeDaysAgo;
   store.add(
     launchpadFixture({
       status: opts.mode === 'sleeping' ? 'sleeping' : 'live',
       github_repo: REPO,
+      vercel_project_id: project.id,
       last_trade_at: days === null ? null : new Date(NOW - days * DAY).toISOString(),
       created_at: new Date(NOW - 90 * DAY).toISOString(),
     }),
@@ -186,6 +190,45 @@ describe('sleep mode', () => {
     store.beforeWrite = () => store.setStatus(LAUNCHPAD_ID, 'disabled');
     await expect(sleepLaunchpad(deps, LAUNCHPAD_ID)).rejects.toThrow(/status changed/);
     expect(store.get(LAUNCHPAD_ID).status).toBe('disabled');
+  });
+
+  it('drops the recorded host, in the same write, when the Vercel project changed (D30)', async () => {
+    const { vercel, store, deps } = await setup();
+    store.get(LAUNCHPAD_ID).vercel_project_id = 'prj_old';
+    await store.updateLaunchpad(LAUNCHPAD_ID, { site_host: 'lp-moonpad-old.vercel.app' });
+    const written: LaunchpadPatch[] = [];
+    store.beforeWrite = (_id, patch) => written.push({ ...patch });
+    await sleepLaunchpad(deps, LAUNCHPAD_ID);
+    const project = vercel.projectBySlug('moonpad')!;
+    expect(written[0]).toEqual({ vercel_project_id: project.id, site_host: null });
+    expect(store.get(LAUNCHPAD_ID).vercel_project_id).toBe(project.id);
+    expect(store.siteHost(LAUNCHPAD_ID)).toBeNull();
+    expect(store.get(LAUNCHPAD_ID).status).toBe('sleeping');
+  });
+
+  it('leaves the recorded host alone on the same project', async () => {
+    const { store, deps } = await setup();
+    await store.updateLaunchpad(LAUNCHPAD_ID, { site_host: 'lp-moonpad.vercel.app' });
+    const written: LaunchpadPatch[] = [];
+    store.beforeWrite = (_id, patch) => written.push({ ...patch });
+    await sleepLaunchpad(deps, LAUNCHPAD_ID);
+    expect(written).toEqual([{ status: 'sleeping' }]);
+    expect(store.siteHost(LAUNCHPAD_ID)).toBe('lp-moonpad.vercel.app');
+  });
+
+  it('refuses to promote, with a high alert, a deployment that took production by itself', async () => {
+    const { vercel, store, deps, alerts } = await setup();
+    vercel.fail(
+      'waitForDeployment',
+      'before',
+      new ServiceError('vercel', 'unexpected', 'took production before its promotion', {
+        apiCode: PRODUCTION_NOT_STAGED,
+      }),
+    );
+    await expect(sleepLaunchpad(deps, LAUNCHPAD_ID)).rejects.toThrow(/before its promotion/);
+    expect(vercel.count('promoteToProduction')).toBe(0);
+    expect(store.get(LAUNCHPAD_ID).status).toBe('live');
+    expect(alerts).toContain('production_not_staged:moonpad');
   });
 
   it('wakes a sleeping launchpad that traded again', async () => {

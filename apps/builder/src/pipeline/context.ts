@@ -31,11 +31,15 @@ export type PipelineGithub = Pick<
 export type PipelineVercel = Pick<
   VercelClient,
   | 'ensureProject'
+  | 'getProject'
   | 'setEnv'
   | 'pruneEnv'
   | 'createDeployment'
   | 'getDeployment'
   | 'waitForDeployment'
+  | 'cancelDeployment'
+  | 'restorePlaceholder'
+  | 'pauseProject'
   | 'promoteToProduction'
   | 'attachSubdomain'
   | 'listProductionHosts'
@@ -53,6 +57,11 @@ export type BuildSiteFn = (
 
 export interface PipelineConfig {
   cluster: SolanaCluster;
+  /**
+   * Domain of client sites (`CLIENTS_DOMAIN`): a site's host is `<slug>.<clientsDomain>` once
+   * Vercel verified it (site-host.ts), never any other name Vercel reports.
+   */
+  clientsDomain: string;
   /** Public variables of every client Vercel project (`pickProjectEnv` of vercel.ts). */
   projectEnv: Readonly<Record<string, string>>;
   /** Signs the per-launchpad relay token of each project (relay-token.ts). Never sent anywhere. */
@@ -202,6 +211,23 @@ export async function safeAlert(
   } catch {
     /* alerting must never break a job */
   }
+}
+
+/**
+ * Records the launchpad's Vercel project when it differs from the stored one. A project that
+ * replaces another one (D30) also drops the recorded site host in the same write: that host was
+ * read for the old project and never speaks for the new one (the next release records its own).
+ */
+export async function recordVercelProject(
+  store: Pick<LaunchpadStore, 'updateLaunchpad'>,
+  launchpad: Pick<LaunchpadRecord, 'id' | 'vercel_project_id'>,
+  projectId: string,
+): Promise<void> {
+  if (launchpad.vercel_project_id === projectId) return;
+  await store.updateLaunchpad(launchpad.id, {
+    vercel_project_id: projectId,
+    ...(launchpad.vercel_project_id !== null ? { site_host: null } : {}),
+  });
 }
 
 /** Logger fields shared by every line of a job. */
