@@ -1025,8 +1025,8 @@ describeDb('jobs: one open creation job per launchpad (0010)', () => {
           // A refunded row steps aside; any other second creation job collides.
           expect(code, `${open} then ${next}`).toBe(next === 'refunded' ? null : '23505');
         }
-        // Modification jobs are not concerned.
-        await job(c, lp, 'spec_ready', 'modify_launchpad');
+        // Modification jobs are not concerned by this index (one open modification at a time is
+        // the separate jobs_one_open_modification_idx).
         await job(c, lp, 'spec_ready', 'modify_launchpad');
       }
     });
