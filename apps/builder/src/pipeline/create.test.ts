@@ -694,8 +694,87 @@ describe('create: deploying', () => {
     expect(production[0]!.env.POOL_CONFIG_KEY).toBe(`${LAUNCHPAD_CONFIG},${LAUNCHPAD_COIN_CONFIG}`);
     expect(project.domains.has('moonpad.clients.test')).toBe(true);
     expect(h.store.get(LAUNCHPAD_ID).status).toBe('live');
+    // The verified client subdomain is the site's host (no wait for the aliases).
+    expect(h.store.siteHost(LAUNCHPAD_ID)).toBe('moonpad.clients.test');
+    expect(h.vercel.hostWaits).toEqual([{ timeoutMs: 0 }]);
     expect(outcome).toEqual({ message: 'Your launchpad is live at https://moonpad.clients.test' });
     expect(events).toEqual(['Publishing your launchpad', 'Connecting your domain']);
+  });
+
+  describe('site host', () => {
+    it('records the vercel.app alias of its own project while the subdomain is unverified', async () => {
+      const h = harness();
+      h.vercel.domainVerified = false;
+      await prepareOnchain(h);
+      const { outcome } = await runStep(h, deployingJob());
+      const project = h.vercel.projectBySlug('moonpad')!;
+      expect(h.vercel.aliases).toContainEqual({
+        alias: 'lp-moonpad.vercel.app',
+        projectId: project.id,
+        deploymentId: project.productionDeploymentId,
+      });
+      expect(h.store.siteHost(LAUNCHPAD_ID)).toBe('lp-moonpad.vercel.app');
+      // The aliases may still be moving to the promoted deployment: a bounded wait.
+      expect(h.vercel.hostWaits).toEqual([{ timeoutMs: 1_000 }]);
+      expect(h.store.get(LAUNCHPAD_ID).status).toBe('live');
+      expect(outcome).toEqual({
+        message: 'Your launchpad is live at https://lp-moonpad.vercel.app',
+      });
+      // The domain is still attached and its alert kept.
+      expect(project.domains.has('moonpad.clients.test')).toBe(true);
+      expect(h.alerts).toContainEqual(
+        expect.objectContaining({ code: 'domain_unverified:moonpad' }),
+      );
+      expect(h.alerts.map((a) => a.code)).not.toContain('site_host_missing:moonpad');
+    });
+
+    it('never records an alias of another project, even with the expected name', async () => {
+      const h = harness();
+      h.vercel.domainVerified = false;
+      // Someone else's projects: one took `lp-moonpad.vercel.app` first, one is a look-alike.
+      h.vercel.aliases.push(
+        { alias: 'lp-moonpad.vercel.app', projectId: 'prj_someone', deploymentId: 'dpl_someone' },
+        { alias: 'lp-moonpad-evil.vercel.app', projectId: 'prj_evil', deploymentId: 'dpl_evil' },
+      );
+      h.vercel.productionAliasNames = (p) => [`${p.name}.vercel.app`, `${p.name}-forge.vercel.app`];
+      await prepareOnchain(h);
+      await runStep(h, deployingJob());
+      expect(h.store.siteHost(LAUNCHPAD_ID)).toBe('lp-moonpad-forge.vercel.app');
+      expect(h.vercel.aliases.find((a) => a.alias === 'lp-moonpad.vercel.app')?.projectId).toBe(
+        'prj_someone',
+      );
+    });
+
+    it('clears the recorded host and alerts when no verified host serves the site', async () => {
+      const h = harness();
+      h.vercel.domainVerified = false;
+      h.vercel.productionAliasNames = () => [];
+      await h.store.updateLaunchpad(LAUNCHPAD_ID, { site_host: 'lp-moonpad.vercel.app' });
+      await prepareOnchain(h);
+      const { outcome } = await runStep(h, deployingJob());
+      expect(h.store.siteHost(LAUNCHPAD_ID)).toBeNull();
+      expect(h.store.get(LAUNCHPAD_ID).status).toBe('live');
+      expect(h.alerts).toContainEqual(
+        expect.objectContaining({ level: 'high', code: 'site_host_missing:moonpad' }),
+      );
+      expect(outcome).toEqual({
+        message: 'Your launchpad is live at https://moonpad.clients.test',
+      });
+    });
+
+    it('records the same host when the release runs again', async () => {
+      const h = harness();
+      h.vercel.domainVerified = false;
+      await prepareOnchain(h);
+      await runStep(h, deployingJob());
+      const aliases = structuredClone(h.vercel.aliases);
+      const writes = h.store.count('updateLaunchpad');
+      await runStep(h, deployingJob());
+      expect(h.store.siteHost(LAUNCHPAD_ID)).toBe('lp-moonpad.vercel.app');
+      expect(h.vercel.aliases).toEqual(aliases);
+      // One more write: the same host (the status is already live).
+      expect(h.store.count('updateLaunchpad')).toBe(writes + 1);
+    });
   });
 
   it('scans the release again: a file pushed to the job branch after the preview is refused', async () => {
@@ -880,12 +959,14 @@ describe('create: deploying', () => {
       ['vercel', 'waitForDeployment'],
       ['vercel', 'promoteToProduction'],
       ['vercel', 'attachSubdomain'],
+      ['vercel', 'listProductionHosts'],
       ['store', 'updateLaunchpad'],
     ];
     for (const [fake, op] of ops) {
       for (const when of ['before', 'after'] as const) {
         it(`${fake}.${op} (${when})`, async () => {
           const h = harness();
+          h.vercel.domainVerified = false;
           await prepareOnchain(h);
           (h[fake] as unknown as { fail(op: string, when: 'before' | 'after'): void }).fail(
             op,
@@ -906,6 +987,7 @@ describe('create: deploying', () => {
           expect(project.productionDeploymentId).toBe(production[0]!.id);
           expect(project.domains.size).toBe(1);
           expect(h.store.get(LAUNCHPAD_ID).status).toBe('live');
+          expect(h.store.siteHost(LAUNCHPAD_ID)).toBe('lp-moonpad.vercel.app');
         });
       }
     }

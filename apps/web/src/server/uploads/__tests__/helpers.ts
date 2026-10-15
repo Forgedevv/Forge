@@ -51,6 +51,7 @@ export const LIVE: LaunchpadRef = {
   slug: 'moonpad',
   status: 'live',
   coinMint: null,
+  siteHost: null,
 };
 
 export interface RequestOptions {

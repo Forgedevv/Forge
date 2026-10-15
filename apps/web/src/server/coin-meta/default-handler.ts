@@ -6,7 +6,8 @@ import { CoinMetaReadError, createSupabaseCoinMetaSource } from './supabase-sour
  * Production wiring of GET /api/coin-meta/:slug, built from the environment at the first request
  * (a build without secrets succeeds):
  * - SUPABASE_URL (or NEXT_PUBLIC_SUPABASE_URL), SUPABASE_SERVICE_ROLE_KEY: launchpad reads;
- * - CLIENTS_DOMAIN (optional): `external_url` = https://<slug>.<CLIENTS_DOMAIN>.
+ * - CLIENTS_DOMAIN (optional): `external_url` = https://<slug>.<CLIENTS_DOMAIN>, unless the
+ *   launchpad has a recorded `site_host` (then https://<site_host>, with or without the variable).
  * Log lines name variables and error names, never values or database messages.
  */
 

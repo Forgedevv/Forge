@@ -52,6 +52,7 @@ interface OwnerTransactionSummary { coinName: string; coinSymbol: string; firstB
 
 interface LaunchpadSummary {
   id: string; name: string; slug: string; siteUrl: string | null; status: LaunchpadStatus;
+  // siteUrl: https://<site_host> (exact host recorded by the builder) or https://<slug>.<CLIENTS_DOMAIN>; null unless live or sleeping
   coin: { name: string; symbol: string; mint: string | null; imageUrl: string };
   coinsCount: number; claimablePartnerFeesLamports: Lamports;
   includedModificationsLeft: number; activeJobId: string | null;

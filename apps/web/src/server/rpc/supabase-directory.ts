@@ -1,12 +1,15 @@
+import { isSiteHost } from '@forge/shared';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { SnapshotLoader } from './origins';
 
 /*
  * Loads the launchpad directory snapshot from Supabase (service role: `launchpads` is not readable
  * by anon under RLS). Two bounded queries per refresh, whatever the traffic:
- * - launchpads whose site may call the relay: id + slug + status, paged. Active ones (`draft` or
- *   `live`) get every tier; sleeping ones only the browser origin of their site, for the creator
- *   fee claim (decision D29);
+ * - launchpads whose site may call the relay: id + slug + status + site_host, paged. Active ones
+ *   (`draft` or `live`) get every tier; sleeping ones only the browser origin of their site, for
+ *   the creator fee claim (decision D29). A recorded `site_host` (migration 0011, shape checked
+ *   again here) adds the exact origin `https://<site_host>` for that launchpad only; a host listed
+ *   for two launchpads is dropped for both (the column is unique: never expected);
  * - jobs waiting for the client's approval (`preview_ready`) with their preview URL (active
  *   launchpads only).
  */
@@ -38,20 +41,32 @@ export function previewOriginOf(previewUrl: unknown): string | null {
   }
 }
 
+/** `https://<site_host>` of a stored `launchpads.site_host`, or null when absent or malformed. */
+export function siteOriginOf(siteHost: unknown): string | null {
+  return isSiteHost(siteHost) ? `https://${siteHost}` : null;
+}
+
 export function createSupabaseSnapshotLoader(db: SupabaseClient): SnapshotLoader {
   return async () => {
     const slugById = new Map<string, string>();
     const sleepingSlugs = new Set<string>();
+    const siteOrigins = new Map<string, string>();
+    const ambiguous = new Set<string>();
     for (let page = 0; page < MAX_PAGES; page++) {
       const from = page * PAGE_SIZE;
       const { data, error } = await db
         .from('launchpads')
-        .select('id, slug, status')
+        .select('id, slug, status, site_host')
         .in('status', LISTED_STATUSES)
         .order('id', { ascending: true })
         .range(from, from + PAGE_SIZE - 1);
       if (error) throw new DirectoryLoadError('launchpads select');
-      const rows = (data ?? []) as { id?: unknown; slug?: unknown; status?: unknown }[];
+      const rows = (data ?? []) as {
+        id?: unknown;
+        slug?: unknown;
+        status?: unknown;
+        site_host?: unknown;
+      }[];
       for (const row of rows) {
         if (typeof row.id !== 'string' || typeof row.slug !== 'string') continue;
         if (!SLUG_RE.test(row.slug)) continue;
@@ -59,7 +74,14 @@ export function createSupabaseSnapshotLoader(db: SupabaseClient): SnapshotLoader
           slugById.set(row.id, row.slug);
         } else if (row.status === SLEEPING_STATUS) {
           sleepingSlugs.add(row.slug);
+        } else {
+          continue;
         }
+        const origin = siteOriginOf(row.site_host);
+        if (origin === null) continue;
+        const other = siteOrigins.get(origin);
+        if (other !== undefined && other !== row.slug) ambiguous.add(origin);
+        siteOrigins.set(origin, row.slug);
       }
       if (rows.length < PAGE_SIZE) break;
     }
@@ -83,6 +105,7 @@ export function createSupabaseSnapshotLoader(db: SupabaseClient): SnapshotLoader
     const activeSlugs = new Set(slugById.values());
     // Slugs are unique; should a row ever say otherwise, the active status wins.
     for (const slug of activeSlugs) sleepingSlugs.delete(slug);
-    return { activeSlugs, sleepingSlugs, previewOrigins };
+    for (const origin of ambiguous) siteOrigins.delete(origin);
+    return { activeSlugs, sleepingSlugs, siteOrigins, previewOrigins };
   };
 }

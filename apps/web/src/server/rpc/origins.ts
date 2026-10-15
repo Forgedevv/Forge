@@ -9,6 +9,12 @@
  *   site serves a static page whose one action is the creator fee claim (decision D29), so the
  *   relay serves it the claim's methods only (handler.ts, SLEEPING_SITE_METHODS). Disabled sites
  *   are cut off;
+ * - client sites at their recorded host: exactly `https://<site_host>` (default port), where
+ *   `launchpads.site_host` is the production host the builder read from the Vercel API for the
+ *   launchpad's own project (migration 0011): the verified subdomain, else a `*.vercel.app` alias of
+ *   that project. Same status rules as the slug: draft and live sites get every method, sleeping
+ *   ones the claim's methods only, disabled ones nothing; a host only ever speaks for its own
+ *   launchpad;
  * - client previews: the exact origin of `jobs.preview_url` for jobs waiting for the client's
  *   approval (`preview_ready`). Vercel URLs are never matched by pattern: anyone can create a
  *   `*.vercel.app` project with a look-alike name.
@@ -25,6 +31,12 @@ export interface DirectorySnapshot {
    * fee claim only. Never used by the server-token tier (no uploads while sleeping).
    */
   sleepingSlugs: ReadonlySet<string>;
+  /**
+   * Exact site origin `https://<site_host>` -> slug of its launchpad, for listed launchpads (active
+   * or sleeping) with a recorded host. Which tier the origin gets is decided by the slug's status
+   * (activeSlugs / sleepingSlugs), exactly as for `https://<slug>.<CLIENTS_DOMAIN>`.
+   */
+  siteOrigins: ReadonlyMap<string, string>;
   /** Exact preview origin -> slug of its launchpad. */
   previewOrigins: ReadonlyMap<string, string>;
   loadedAt: number;
@@ -159,6 +171,13 @@ export function clientSlugOf(url: URL, clientsDomain: string | null): string | n
   return SLUG_RE.test(label) ? label : null;
 }
 
+/** Draft and live: every tier of a client site; sleeping: the claim only; anything else: refused. */
+function bySlugStatus(snapshot: DirectorySnapshot, origin: string, slug: string): OriginDecision {
+  if (snapshot.activeSlugs.has(slug)) return { allowed: true, kind: 'client', origin, slug };
+  if (snapshot.sleepingSlugs.has(slug)) return { allowed: true, kind: 'sleeping', origin, slug };
+  return { allowed: false, reason: 'unknown' };
+}
+
 export async function decideOrigin(
   raw: string,
   policy: OriginPolicy,
@@ -183,11 +202,10 @@ export async function decideOrigin(
   } catch {
     return { allowed: false, reason: 'directory_unavailable' };
   }
-  if (slug !== null) {
-    if (snapshot.activeSlugs.has(slug)) return { allowed: true, kind: 'client', origin, slug };
-    if (snapshot.sleepingSlugs.has(slug)) return { allowed: true, kind: 'sleeping', origin, slug };
-    return { allowed: false, reason: 'unknown' };
-  }
+  if (slug !== null) return bySlugStatus(snapshot, origin, slug);
+  // A recorded site host (exact origin, https, default port): the status rules of its own slug.
+  const siteSlug = url.port === '' ? snapshot.siteOrigins.get(origin) : undefined;
+  if (siteSlug !== undefined) return bySlugStatus(snapshot, origin, siteSlug);
   const previewSlug = snapshot.previewOrigins.get(origin);
   return previewSlug !== undefined
     ? { allowed: true, kind: 'preview', origin, slug: previewSlug }

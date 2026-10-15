@@ -262,6 +262,21 @@ describe('modify: deploying', () => {
     expect(h.signer.count('createConfigs')).toBe(1);
   });
 
+  it('records the host serving the new production deployment', async () => {
+    const h = await liveLaunchpad();
+    h.vercel.domainVerified = false;
+    await run(h, modifyJob());
+    const { outcome } = await run(h, modifyJob({ status: 'deploying' }));
+    const project = h.vercel.projectBySlug('moonpad')!;
+    expect(h.vercel.aliases).toContainEqual({
+      alias: 'lp-moonpad.vercel.app',
+      projectId: project.id,
+      deploymentId: project.productionDeploymentId,
+    });
+    expect(h.store.siteHost(LAUNCHPAD_ID)).toBe('lp-moonpad.vercel.app');
+    expect(outcome).toEqual({ message: 'Your launchpad is live at https://lp-moonpad.vercel.app' });
+  });
+
   it('refuses a branch whose on-chain section differs from the live site', async () => {
     const h = await liveLaunchpad();
     await run(h, modifyJob());

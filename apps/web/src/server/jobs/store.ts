@@ -1,5 +1,6 @@
 import {
   FailedStage,
+  isSiteHost,
   JobStatus,
   JobType,
   LaunchpadStatus,
@@ -48,6 +49,11 @@ export interface LaunchpadRecord {
   includedModificationsLeft: number;
   status: LaunchpadStatus;
   createdAt: string;
+  /**
+   * `launchpads.site_host` (migration 0011): the exact production host of the site, recorded by
+   * the builder. Null when none is recorded (or the stored value is malformed).
+   */
+  siteHost: string | null;
 }
 
 export interface JobEventRecord {
@@ -163,7 +169,7 @@ export const JOB_COLUMNS =
   'id, launchpad_id, type, status, attempts, failed_stage, request, preview_url, owner_tx, owner_tx_details, error, created_at, updated_at';
 
 export const LAUNCHPAD_COLUMNS =
-  'id, owner_wallet, slug, spec, launchpad_config, launchpad_coin_config, launchpad_coin_mint, included_modifications_left, status, created_at';
+  'id, owner_wallet, slug, spec, launchpad_config, launchpad_coin_config, launchpad_coin_mint, included_modifications_left, status, created_at, site_host';
 
 const Timestamp = z.string().nullable().optional();
 
@@ -194,6 +200,8 @@ const LaunchpadRowSchema = z.object({
   included_modifications_left: z.number().int().nullable().optional(),
   status: LaunchpadStatus,
   created_at: Timestamp,
+  /** Shape checked when read: a malformed value is never trusted (null). */
+  site_host: z.unknown().optional(),
 });
 
 const JobEventRowSchema = z.object({
@@ -262,6 +270,7 @@ export function parseLaunchpadRow(row: unknown): LaunchpadRecord {
     includedModificationsLeft: r.included_modifications_left ?? 0,
     status: r.status,
     createdAt: r.created_at ?? '',
+    siteHost: isSiteHost(r.site_host) ? r.site_host : null,
   };
 }
 

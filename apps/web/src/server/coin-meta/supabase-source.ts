@@ -1,4 +1,4 @@
-import { FailedStage, JobStatus, LaunchpadStatus } from '@forge/shared';
+import { FailedStage, isSiteHost, JobStatus, LaunchpadStatus } from '@forge/shared';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { z } from 'zod';
 import type { CoinMetaSource } from './handler';
@@ -25,6 +25,8 @@ const LaunchpadRow = z.object({
   slug: z.string(),
   status: LaunchpadStatus,
   spec: z.unknown(),
+  /** Shape checked when read: a malformed value is never linked (null). */
+  site_host: z.unknown().optional(),
 });
 
 const JobRow = z.object({ status: JobStatus, failed_stage: FailedStage.nullable() });
@@ -34,7 +36,7 @@ export function createSupabaseCoinMetaSource(db: SupabaseClient): CoinMetaSource
     async find(slug): Promise<CoinMetaRecord | null> {
       const lp = await db
         .from('launchpads')
-        .select('id, slug, status, spec')
+        .select('id, slug, status, spec, site_host')
         .eq('slug', slug)
         .maybeSingle();
       if (lp.error) throw new CoinMetaReadError('launchpad', lp.error.code);
@@ -61,6 +63,7 @@ export function createSupabaseCoinMetaSource(db: SupabaseClient): CoinMetaSource
         status: launchpad.data.status,
         spec: launchpad.data.spec,
         createJob: job ? { status: job.data.status, failedStage: job.data.failed_stage } : null,
+        siteHost: isSiteHost(launchpad.data.site_host) ? launchpad.data.site_host : null,
       };
     },
   };

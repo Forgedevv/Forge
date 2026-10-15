@@ -1,4 +1,4 @@
-import { FailedStage, JobStatus, LaunchpadStatus } from '@forge/shared';
+import { FailedStage, isSiteHost, JobStatus, LaunchpadStatus } from '@forge/shared';
 import { z } from 'zod';
 
 /*
@@ -33,6 +33,8 @@ export interface CoinMetaRecord {
   spec: unknown;
   /** The launchpad's newest `create_launchpad` job, if any. */
   createJob: { status: JobStatus; failedStage: FailedStage | null } | null;
+  /** `launchpads.site_host`: the exact host of the site, recorded by the builder (or null). */
+  siteHost: string | null;
 }
 
 export interface CoinMetadata {
@@ -85,7 +87,8 @@ const StoredCoin = z.object({
 
 /**
  * The metadata JSON of `record`'s coin, or null when its spec does not hold a usable coin. The
- * name and symbol are exactly those of the spec, which the signer put on-chain.
+ * name and symbol are exactly those of the spec, which the signer put on-chain. `external_url` is
+ * the site: its recorded host when the builder found one, else `<slug>.<CLIENTS_DOMAIN>`.
  */
 export function buildCoinMetadata(
   record: CoinMetaRecord,
@@ -95,11 +98,16 @@ export function buildCoinMetadata(
   if (!parsed.success) return null;
   const { launchpadCoin, theme } = parsed.data;
   const image = httpsUrl(launchpadCoin.imageUrl) ?? httpsUrl(theme?.logoUrl);
+  const siteUrl = isSiteHost(record.siteHost)
+    ? `https://${record.siteHost}`
+    : clientsDomain
+      ? `https://${record.slug}.${clientsDomain}`
+      : null;
   return {
     name: launchpadCoin.name,
     symbol: launchpadCoin.symbol,
     description: launchpadCoin.description ?? '',
     ...(image ? { image } : {}),
-    ...(clientsDomain ? { external_url: `https://${record.slug}.${clientsDomain}` } : {}),
+    ...(siteUrl ? { external_url: siteUrl } : {}),
   };
 }

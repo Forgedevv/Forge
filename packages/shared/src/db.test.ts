@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { OwnerTransactionLaunch } from './api.js';
-import { JobOwnerTxDetails } from './db.js';
+import { isSiteHost, isVercelAppHost, JobOwnerTxDetails, SiteHost } from './db.js';
 
 const details = {
   config: '9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin',
@@ -44,5 +44,49 @@ describe('JobOwnerTxDetails (jobs.owner_tx_details)', () => {
       nonceAccount: details.nonceAccount,
       metadataUri: details.metadataUri,
     });
+  });
+});
+
+describe('isSiteHost (launchpads.site_host)', () => {
+  it('accepts lowercase host names and one label under vercel.app', () => {
+    for (const host of [
+      'lp-moonpad.vercel.app',
+      'lp-moonpad-forge-team.vercel.app',
+      'moonpad.forge-sites.app',
+      'a.b.example.com',
+    ]) {
+      expect(isSiteHost(host), host).toBe(true);
+      expect(SiteHost.safeParse(host).success, host).toBe(true);
+    }
+  });
+
+  it('refuses schemes, ports, paths, upper case, trailing dots and nested vercel.app names', () => {
+    for (const value of [
+      '',
+      'vercel.app',
+      'a.b.vercel.app',
+      'https://lp-moonpad.vercel.app',
+      'lp-moonpad.vercel.app:443',
+      'lp-moonpad.vercel.app/',
+      'LP-moonpad.vercel.app',
+      'lp-moonpad.vercel.app.',
+      '-lp.vercel.app',
+      'lp-.vercel.app',
+      'localhost',
+      '127.0.0.1',
+      `${'a'.repeat(64)}.vercel.app`,
+      'lp moonpad.vercel.app',
+      42,
+      null,
+    ]) {
+      expect(isSiteHost(value), String(value)).toBe(false);
+    }
+  });
+
+  it('tells vercel.app hosts apart', () => {
+    expect(isVercelAppHost('lp-moonpad.vercel.app')).toBe(true);
+    expect(isVercelAppHost('moonpad.forge-sites.app')).toBe(false);
+    expect(isVercelAppHost('a.b.vercel.app')).toBe(false);
+    expect(isVercelAppHost('lp-moonpad.vercel.app.evil.com')).toBe(false);
   });
 });

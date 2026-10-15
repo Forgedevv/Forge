@@ -44,6 +44,11 @@ export interface LaunchpadSummary {
   id: string;
   name: string;
   slug: string;
+  /**
+   * Where the live site is: `https://<site_host>` when the builder recorded its exact host
+   * (`launchpads.site_host`), else `https://<slug>.<CLIENTS_DOMAIN>`. Null unless the launchpad is
+   * live or sleeping (or when neither is known).
+   */
   siteUrl: string | null;
   status: LaunchpadStatus;
   coin: { name: string; symbol: string; mint: string | null; imageUrl: string };

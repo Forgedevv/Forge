@@ -1,5 +1,5 @@
 /// <reference types="node" />
-import { LaunchpadStatus } from '@forge/shared';
+import { isSiteHost, LaunchpadStatus } from '@forge/shared';
 import { z } from 'zod';
 
 /**
@@ -37,6 +37,11 @@ export interface LaunchpadPatch {
   launchpad_coin_config?: string;
   launchpad_coin_mint?: string;
   status?: BuilderLaunchpadStatus;
+  /**
+   * Exact production host of the released site (pipeline/site-host.ts), null when none was found.
+   * Written by the deploy step only; never read by the builder (not in `LaunchpadRecord`).
+   */
+  site_host?: string | null;
 }
 
 export interface LaunchpadWriteOptions {
@@ -62,6 +67,13 @@ export class LaunchpadStatusChangedError extends Error {
   constructor() {
     super('the launchpad status changed (disabled by FORGE?): status not written');
     this.name = 'LaunchpadStatusChangedError';
+  }
+}
+
+/** Refuses a patch the table would refuse anyway: a malformed site host is never sent. */
+export function assertLaunchpadPatch(patch: LaunchpadPatch): void {
+  if (patch.site_host !== undefined && patch.site_host !== null && !isSiteHost(patch.site_host)) {
+    throw new StoreError('invalid site host');
   }
 }
 
@@ -271,6 +283,7 @@ export function createSupabaseStore(
 
     async updateLaunchpad(id, patch, opts) {
       assertId(id, 'launchpad');
+      assertLaunchpadPatch(patch);
       const statusFilter = launchpadStatusFilter(patch, opts);
       if (Object.keys(patch).length === 0) return;
       const updated = await request(

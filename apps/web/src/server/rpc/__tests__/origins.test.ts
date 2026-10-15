@@ -10,7 +10,7 @@ import {
   type LaunchpadDirectory,
   type OriginPolicy,
 } from '../origins';
-import { createSupabaseSnapshotLoader, previewOriginOf } from '../supabase-directory';
+import { createSupabaseSnapshotLoader, previewOriginOf, siteOriginOf } from '../supabase-directory';
 
 const POLICY: OriginPolicy = {
   appOrigin: 'https://forge.example',
@@ -23,10 +23,12 @@ function staticDirectory(
   slugs: string[],
   previews: [string, string][] = [],
   sleeping: string[] = [],
+  sites: [string, string][] = [],
 ): LaunchpadDirectory {
   const snapshot: DirectorySnapshot = {
     activeSlugs: new Set(slugs),
     sleepingSlugs: new Set(sleeping),
+    siteOrigins: new Map(sites),
     previewOrigins: new Map(previews),
     loadedAt: 0,
   };
@@ -133,6 +135,113 @@ describe('decideOrigin', () => {
     });
   });
 
+  describe('client sites at their recorded host (launchpads.site_host)', () => {
+    const SITE = 'https://lp-moonpad.vercel.app';
+    const SLEEPY_SITE = 'https://lp-sleepy-pad-forge.vercel.app';
+    const sites = staticDirectory(
+      ['moonpad', 'sun-pad'],
+      [[PREVIEW, 'moonpad']],
+      ['sleepy-pad'],
+      [
+        [SITE, 'moonpad'],
+        [SLEEPY_SITE, 'sleepy-pad'],
+        // Recorded for a launchpad that is no longer listed (disabled since).
+        ['https://lp-cut-pad.vercel.app', 'cut-pad'],
+      ],
+    );
+
+    it('allows the exact recorded host with the status rules of its launchpad', async () => {
+      await expect(decideOrigin(SITE, POLICY, sites)).resolves.toEqual({
+        allowed: true,
+        kind: 'client',
+        origin: SITE,
+        slug: 'moonpad',
+      });
+      // Sleeping: the creator fee claim only (the handler narrows the methods of this kind).
+      await expect(decideOrigin(SLEEPY_SITE, POLICY, sites)).resolves.toEqual({
+        allowed: true,
+        kind: 'sleeping',
+        origin: SLEEPY_SITE,
+        slug: 'sleepy-pad',
+      });
+      // Disabled (neither active nor sleeping): cut off, whatever host it had.
+      await expect(decideOrigin('https://lp-cut-pad.vercel.app', POLICY, sites)).resolves.toEqual({
+        allowed: false,
+        reason: 'unknown',
+      });
+    });
+
+    it('speaks for its own launchpad only', async () => {
+      // The host recorded for moonpad never yields another launchpad, and sun-pad (no recorded
+      // host) gets nothing from a vercel.app name that looks like its own.
+      await expect(decideOrigin(SITE, POLICY, sites)).resolves.toMatchObject({ slug: 'moonpad' });
+      await expect(decideOrigin('https://lp-sun-pad.vercel.app', POLICY, sites)).resolves.toEqual({
+        allowed: false,
+        reason: 'unknown',
+      });
+    });
+
+    it.each([
+      'https://lp-moonpad-evil.vercel.app',
+      'https://lp-moonpad-forge.vercel.app',
+      'https://evil-lp-moonpad.vercel.app',
+      'https://x.lp-moonpad.vercel.app',
+      'https://lp-moonpad.vercel.app.evil.com',
+      'https://lp-moonpad.vercel.app:8443',
+      'https://lp-moonpad.vercel.app:443',
+      'https://lp-moonpad.vercel.app/',
+      'https://LP-moonpad.vercel.app',
+      'http://lp-moonpad.vercel.app',
+      'https://lp-moonpad.vercel.app.',
+    ])('refuses the look-alike or non-canonical %s', async (origin) => {
+      await expect(decideOrigin(origin, POLICY, sites)).resolves.toMatchObject({
+        allowed: false,
+      });
+    });
+
+    it('works without CLIENTS_DOMAIN (devnet beta) and fails closed without a directory', async () => {
+      const policy = { ...POLICY, clientsDomain: null };
+      await expect(decideOrigin(SITE, policy, sites)).resolves.toMatchObject({
+        allowed: true,
+        kind: 'client',
+        slug: 'moonpad',
+      });
+      await expect(decideOrigin(SITE, POLICY, failingDirectory)).resolves.toEqual({
+        allowed: false,
+        reason: 'directory_unavailable',
+      });
+      await expect(decideOrigin(SITE, POLICY, null)).resolves.toEqual({
+        allowed: false,
+        reason: 'directory_unavailable',
+      });
+      await expect(decideOrigin('null', POLICY, sites)).resolves.toEqual({
+        allowed: false,
+        reason: 'malformed',
+      });
+    });
+
+    it('leaves the subdomain and preview rules as they were', async () => {
+      await expect(
+        decideOrigin('https://moonpad.forge-sites.app', POLICY, sites),
+      ).resolves.toMatchObject({ allowed: true, kind: 'client', slug: 'moonpad' });
+      await expect(decideOrigin(PREVIEW, POLICY, sites)).resolves.toMatchObject({
+        allowed: true,
+        kind: 'preview',
+        slug: 'moonpad',
+      });
+      // A recorded host never overrides a subdomain decision: the subdomain's own slug decides.
+      const crossed = staticDirectory(
+        ['moonpad'],
+        [],
+        [],
+        [['https://ghost.forge-sites.app', 'moonpad']],
+      );
+      await expect(decideOrigin('https://ghost.forge-sites.app', POLICY, crossed)).resolves.toEqual(
+        { allowed: false, reason: 'unknown' },
+      );
+    });
+  });
+
   it('allows localhost only outside production', async () => {
     const dev = { ...POLICY, allowLocalhost: true };
     for (const origin of ['http://localhost:3000', 'http://127.0.0.1:3001', 'http://[::1]:3000']) {
@@ -185,6 +294,7 @@ describe('CachedLaunchpadDirectory', () => {
   const snapshot = (slugs: string[]) => ({
     activeSlugs: new Set(slugs),
     sleepingSlugs: new Set<string>(),
+    siteOrigins: new Map<string, string>(),
     previewOrigins: new Map(),
   });
 
@@ -313,6 +423,51 @@ describe('Supabase snapshot loader', () => {
     expect([...loaded.sleepingSlugs]).toEqual(['sleepy-pad']);
     // A sleeping launchpad's preview is not served (only its live site, for the claim).
     expect([...loaded.previewOrigins]).toEqual([]);
+  });
+
+  it('loads the recorded site hosts of active and sleeping launchpads only', async () => {
+    const { db, calls } = fakeDb({
+      launchpads: [
+        { id: 'l1', slug: 'moonpad', status: 'live', site_host: 'lp-moonpad.vercel.app' },
+        { id: 'l2', slug: 'sun-pad', status: 'draft', site_host: 'sun-pad.forge-sites.app' },
+        { id: 'l3', slug: 'sleepy-pad', status: 'sleeping', site_host: 'lp-sleepy-pad.vercel.app' },
+        { id: 'l4', slug: 'cut-pad', status: 'disabled', site_host: 'lp-cut-pad.vercel.app' },
+        { id: 'l5', slug: 'no-host', status: 'live', site_host: null },
+        { id: 'l6', slug: 'bad-one', status: 'live', site_host: 'https://lp-bad-one.vercel.app' },
+        { id: 'l7', slug: 'bad-two', status: 'live', site_host: 'a.b.vercel.app' },
+        { id: 'l8', slug: 'bad-three', status: 'live', site_host: 'LP-BAD.vercel.app' },
+        { id: 'l9', slug: 'bad-four', status: 'live', site_host: 42 },
+        { id: 'la', slug: 'BAD SLUG', status: 'live', site_host: 'lp-bad-slug.vercel.app' },
+      ],
+      jobs: [],
+    });
+    const loaded = await createSupabaseSnapshotLoader(db)();
+    expect(Object.fromEntries(loaded.siteOrigins)).toEqual({
+      'https://lp-moonpad.vercel.app': 'moonpad',
+      'https://sun-pad.forge-sites.app': 'sun-pad',
+      'https://lp-sleepy-pad.vercel.app': 'sleepy-pad',
+    });
+    expect(calls[0]?.filters).toContainEqual(['select', 'id, slug, status, site_host']);
+  });
+
+  it('drops a site host listed for two launchpads', async () => {
+    const { db } = fakeDb({
+      launchpads: [
+        { id: 'l1', slug: 'moonpad', status: 'live', site_host: 'lp-shared.vercel.app' },
+        { id: 'l2', slug: 'sun-pad', status: 'sleeping', site_host: 'lp-shared.vercel.app' },
+        { id: 'l3', slug: 'star-pad', status: 'live', site_host: 'lp-star-pad.vercel.app' },
+      ],
+      jobs: [],
+    });
+    const loaded = await createSupabaseSnapshotLoader(db)();
+    expect([...loaded.siteOrigins]).toEqual([['https://lp-star-pad.vercel.app', 'star-pad']]);
+  });
+
+  it('siteOriginOf keeps site-host shaped values only', () => {
+    expect(siteOriginOf('lp-moonpad.vercel.app')).toBe('https://lp-moonpad.vercel.app');
+    expect(siteOriginOf('lp-moonpad.vercel.app:443')).toBeNull();
+    expect(siteOriginOf('')).toBeNull();
+    expect(siteOriginOf(undefined)).toBeNull();
   });
 
   it('pages through launchpads', async () => {

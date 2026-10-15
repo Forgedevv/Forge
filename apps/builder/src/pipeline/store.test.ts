@@ -82,6 +82,32 @@ describe('launchpad store', () => {
     );
   });
 
+  it('writes the site host (or clears it) and never sends a malformed one', async () => {
+    const stub = stubFetch([
+      { method: 'PATCH', path: '/rest/v1/launchpads', handler: () => json([{ id: LAUNCHPAD_ID }]) },
+    ]);
+    const s = store(stub);
+    await s.updateLaunchpad(LAUNCHPAD_ID, { site_host: 'lp-moonpad.vercel.app' });
+    await s.updateLaunchpad(LAUNCHPAD_ID, { site_host: null });
+    expect(stub.calls.map((c) => c.body)).toEqual([
+      { site_host: 'lp-moonpad.vercel.app' },
+      { site_host: null },
+    ]);
+    expect(stub.calls[0]!.query.has('status')).toBe(false);
+    for (const bad of [
+      'https://lp-moonpad.vercel.app',
+      'lp-moonpad.vercel.app:443',
+      'a.b.vercel.app',
+      'LP-MOONPAD.vercel.app',
+      '',
+    ]) {
+      await expect(s.updateLaunchpad(LAUNCHPAD_ID, { site_host: bad })).rejects.toBeInstanceOf(
+        StoreError,
+      );
+    }
+    expect(stub.calls).toHaveLength(2);
+  });
+
   it('refuses to write the disabled status or to expect it', async () => {
     const stub = stubFetch([
       { method: 'PATCH', path: '/rest/v1/launchpads', handler: () => json([{ id: 'x' }]) },

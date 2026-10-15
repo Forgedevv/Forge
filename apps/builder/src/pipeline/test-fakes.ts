@@ -9,6 +9,7 @@ import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
+  isSiteHost,
   LaunchpadSpec,
   type JobOwnerTxDetails,
   type JobRow,
@@ -42,6 +43,7 @@ import {
   type DomainResult,
   type VercelDeployment,
   type VercelProject,
+  type WaitOptions,
 } from '../vercel.js';
 import type { JobContext, WorkerLogger } from '../worker.js';
 import type { AgentGateway } from './agent.js';
@@ -49,6 +51,7 @@ import type { PipelineGithub, PipelineSigner, PipelineVercel } from './context.j
 import type { RepoSnapshot, RepoSource, RepoTree, RepoTreeEntry } from './repo-snapshot.js';
 import { writeFakeCapture } from './review/test-helpers.js';
 import {
+  assertLaunchpadPatch,
   BLOCKING_FAILED_STAGES,
   launchpadStatusFilter,
   LaunchpadStatusChangedError,
@@ -650,6 +653,13 @@ interface FakeProject {
   domains: Set<string>;
 }
 
+/** An alias record as the Vercel alias API lists it. */
+export interface FakeAlias {
+  alias: string;
+  projectId: string;
+  deploymentId: string;
+}
+
 export interface FakeDeployment extends VercelDeployment {
   projectId: string;
   ref: string;
@@ -666,6 +676,20 @@ export class FakeVercel extends Recorder implements PipelineVercel {
   /** State the next deployments end in. */
   nextState: 'READY' | 'ERROR' = 'READY';
   readonly clientsDomain = 'clients.test';
+  /**
+   * Whether `attachSubdomain` reports `<slug>.clients.test` verified. False: the devnet beta,
+   * where the clients domain is a placeholder and only the `*.vercel.app` aliases serve the site.
+   */
+  domainVerified = true;
+  /**
+   * Every alias Vercel holds, of any project (globally unique names). A promotion points the
+   * production aliases of the project at the promoted deployment, as Vercel does.
+   */
+  readonly aliases: FakeAlias[] = [];
+  /** Production alias names of a project: `<name>.vercel.app` unless a test sets others. */
+  productionAliasNames: (project: { id: string; name: string }) => string[] = (p) => [
+    `${p.name}.vercel.app`,
+  ];
   private counter = 0;
 
   private project(id: string): FakeProject {
@@ -820,6 +844,9 @@ export class FakeVercel extends Recorder implements PipelineVercel {
         throw new ServiceError('vercel', 'invalid_input', 'only READY deployments can be promoted');
       }
       p.productionDeploymentId = deploymentId;
+      for (const name of [...this.productionAliasNames(p), ...p.domains]) {
+        this.pointAlias(name, p.id, deploymentId);
+      }
       return { promoted: true };
     });
   }
@@ -830,8 +857,38 @@ export class FakeVercel extends Recorder implements PipelineVercel {
       const domain = `${slug}.${this.clientsDomain}`;
       const created = !p.domains.has(domain);
       p.domains.add(domain);
-      return { domain, verified: true, verification: [], created };
+      // A project domain serves the current production deployment.
+      if (p.productionDeploymentId !== undefined) {
+        this.pointAlias(domain, p.id, p.productionDeploymentId);
+      }
+      return { domain, verified: this.domainVerified, verification: [], created };
     });
+  }
+
+  /** Wait options of every `listProductionHosts` call, in order. */
+  readonly hostWaits: Array<WaitOptions | undefined> = [];
+
+  /** Same rule as vercel.ts: aliases whose record names this project and this deployment. */
+  listProductionHosts(
+    projectId: string,
+    deploymentId: string,
+    opts?: WaitOptions,
+  ): Promise<string[]> {
+    return this.around('listProductionHosts', () => {
+      this.hostWaits.push(opts);
+      const hosts = this.aliases
+        .filter((a) => a.projectId === projectId && a.deploymentId === deploymentId)
+        .map((a) => a.alias.toLowerCase())
+        .filter((h) => isSiteHost(h));
+      return [...new Set(hosts)].sort();
+    });
+  }
+
+  /** Points `name` at a deployment of `projectId`; a name held by another project stays theirs. */
+  pointAlias(name: string, projectId: string, deploymentId: string): void {
+    const existing = this.aliases.find((a) => a.alias === name);
+    if (!existing) this.aliases.push({ alias: name, projectId, deploymentId });
+    else if (existing.projectId === projectId) existing.deploymentId = deploymentId;
   }
 
   /** Deployments of a project, in creation order. */
@@ -1058,6 +1115,7 @@ export class FakeStore extends Recorder implements SleepStore {
   updateLaunchpad(id: string, patch: LaunchpadPatch, opts?: LaunchpadWriteOptions): Promise<void> {
     return this.around('updateLaunchpad', () => {
       // Same conditions as the PostgREST store.
+      assertLaunchpadPatch(patch);
       const filter = launchpadStatusFilter(patch, opts);
       this.beforeWrite?.(id, patch);
       const lp = this.launchpads.get(id);
@@ -1135,6 +1193,11 @@ export class FakeStore extends Recorder implements SleepStore {
 
   setStatus(id: string, status: LaunchpadStatus): void {
     this.get(id).status = status;
+  }
+
+  /** `site_host` as written (the builder never reads it back): undefined when never written. */
+  siteHost(id: string): string | null | undefined {
+    return (this.get(id) as LaunchpadRecord & { site_host?: string | null }).site_host;
   }
 }
 

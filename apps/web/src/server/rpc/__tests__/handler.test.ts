@@ -23,6 +23,9 @@ import {
 const CLIENT = 'https://moonpad.forge-sites.app';
 /** Site of a sleeping launchpad (status 'sleeping' in the directory). */
 const SLEEPING = 'https://sleepy.forge-sites.app';
+/** Recorded production hosts (`launchpads.site_host`) of the same two launchpads. */
+const CLIENT_SITE_HOST = 'https://lp-moonpad.vercel.app';
+const SLEEPING_SITE_HOST = 'https://lp-sleepy.vercel.app';
 const FORGE = 'https://forge.example';
 const SECRET = Buffer.from('s'.repeat(48));
 const TX = smallTransactionBase64();
@@ -87,6 +90,10 @@ function makeRelay(options: RelayOptions = {}) {
   const snapshot: DirectorySnapshot = {
     activeSlugs: new Set(['moonpad', 'sun-pad']),
     sleepingSlugs: new Set(['sleepy']),
+    siteOrigins: new Map([
+      [CLIENT_SITE_HOST, 'moonpad'],
+      [SLEEPING_SITE_HOST, 'sleepy'],
+    ]),
     previewOrigins: new Map([['https://forge-moonpad-abc-team.vercel.app', 'moonpad']]),
     loadedAt: 0,
   };
@@ -365,6 +372,35 @@ describe('caller tiers', () => {
     expect(ok.status).toBe(204);
     expect(ok.headers.get('access-control-allow-origin')).toBe(SLEEPING);
     expect((await preflight('https://cut-pad.forge-sites.app')).status).toBe(403);
+  });
+
+  it('serves a site from its recorded host with the rules of its launchpad', async () => {
+    const relay = makeRelay();
+    const live = await send(relay, call('getSlot'), { origin: CLIENT_SITE_HOST });
+    expect(live.res.status).toBe(200);
+    expect(live.res.headers.get('access-control-allow-origin')).toBe(CLIENT_SITE_HOST);
+    expect(relay.upstreamPayloads).toHaveLength(1);
+    // Sleeping launchpad at its recorded host: the claim's methods only.
+    const sleeping = await send(relay, call('getSlot'), { origin: SLEEPING_SITE_HOST });
+    expect(sleeping.res.status).toBe(200);
+    expect(sleeping.res.headers.get('access-control-allow-origin')).toBe(SLEEPING_SITE_HOST);
+    expect((sleeping.json as { error?: { code: number } }).error?.code).toBe(-32601);
+    expect(relay.upstreamPayloads).toHaveLength(1);
+    // A look-alike project name is not the recorded host.
+    const evil = await send(relay, call('getSlot'), {
+      origin: 'https://lp-moonpad-evil.vercel.app',
+    });
+    expect(evil.res.status).toBe(403);
+    expect(evil.res.headers.get('access-control-allow-origin')).toBeNull();
+    expect(relay.upstreamPayloads).toHaveLength(1);
+    const preflight = await relay.handler.options(
+      new Request('https://forge.example/api/rpc', {
+        method: 'OPTIONS',
+        headers: { origin: CLIENT_SITE_HOST, 'access-control-request-method': 'POST' },
+      }),
+    );
+    expect(preflight.status).toBe(204);
+    expect(preflight.headers.get('access-control-allow-origin')).toBe(CLIENT_SITE_HOST);
   });
 
   it('refuses tokens when the server tier is disabled', async () => {

@@ -12,6 +12,11 @@ export interface LaunchpadRef {
   status: string;
   /** The launchpad's own coin mint, never usable for a client coin. */
   coinMint: string | null;
+  /**
+   * `launchpads.site_host` (migration 0011): the exact production host the builder recorded for
+   * this launchpad's own site, accepted as `auth.host`. Null when none is recorded, or malformed.
+   */
+  siteHost: string | null;
 }
 
 /** `expired`: never completed within the complete window (set by the sweep). */

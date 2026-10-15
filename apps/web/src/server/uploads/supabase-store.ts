@@ -1,3 +1,4 @@
+import { isSiteHost } from '@forge/shared';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { z } from 'zod';
 import { IMAGE_TYPES } from './contract';
@@ -33,6 +34,8 @@ const LaunchpadRow = z.object({
   slug: z.string(),
   status: z.string(),
   launchpad_coin_mint: z.string().nullable(),
+  /** Shape checked when read: a malformed value is never trusted (null). */
+  site_host: z.unknown().optional(),
 });
 
 const TicketRow = z.object({
@@ -141,7 +144,9 @@ export class SupabaseUploadStore implements UploadStore {
   constructor(private readonly db: SupabaseClient) {}
 
   async findLaunchpad(ref: { id: string } | { slug: string }): Promise<LaunchpadRef | null> {
-    const query = this.db.from('launchpads').select('id, slug, status, launchpad_coin_mint');
+    const query = this.db
+      .from('launchpads')
+      .select('id, slug, status, launchpad_coin_mint, site_host');
     const res = await ('id' in ref ? query.eq('id', ref.id) : query.eq('slug', ref.slug))
       .limit(1)
       .maybeSingle();
@@ -154,6 +159,7 @@ export class SupabaseUploadStore implements UploadStore {
       slug: parsed.data.slug,
       status: parsed.data.status,
       coinMint: parsed.data.launchpad_coin_mint,
+      siteHost: isSiteHost(parsed.data.site_host) ? parsed.data.site_host : null,
     };
   }
 

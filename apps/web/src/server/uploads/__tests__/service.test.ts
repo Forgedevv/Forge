@@ -261,6 +261,73 @@ describe('issue a ticket', () => {
       await h.service.issue('rugpad', signedRequest({ host: `rugpad.${CLIENTS_DOMAIN}` }));
     });
 
+    describe('recorded site host (launchpads.site_host)', () => {
+      const SITE_HOST = 'lp-moonpad.vercel.app';
+      const OTHER_ID = '00000000-0000-4000-8000-000000000002';
+
+      it('accepts the exact host recorded for this launchpad', async () => {
+        const h = harness();
+        h.store.addLaunchpad({ ...LIVE, siteHost: SITE_HOST });
+        const ticket = await h.service.issue('moonpad', signedRequest({ host: SITE_HOST }));
+        expect(ticket.uploadId).toMatch(/^[A-Za-z0-9_-]+$/);
+        expect([...h.store.tickets.values()][0]?.host).toBe(SITE_HOST);
+        // The subdomain keeps working next to it.
+        await h.service.issue('moonpad', signedRequest({ host: `moonpad.${CLIENTS_DOMAIN}` }));
+      });
+
+      it('works without CLIENTS_DOMAIN (devnet beta)', async () => {
+        const h = harness({ clientsDomain: null });
+        h.store.addLaunchpad({ ...LIVE, siteHost: SITE_HOST });
+        await h.service.issue('moonpad', signedRequest({ host: SITE_HOST }));
+        // Anything else is a mismatch, no longer "not configured".
+        const error = await issueError(
+          h.service.issue('moonpad', signedRequest({ host: `moonpad.${CLIENTS_DOMAIN}` })),
+        );
+        expect([error.status, error.code]).toEqual([403, 'HOST_MISMATCH']);
+      });
+
+      it('refuses look-alikes and a host recorded for another launchpad', async () => {
+        const h = harness();
+        h.store.addLaunchpad({ ...LIVE, siteHost: SITE_HOST });
+        h.store.addLaunchpad({
+          ...LIVE,
+          id: OTHER_ID,
+          slug: 'rugpad',
+          siteHost: 'lp-rugpad.vercel.app',
+        });
+        for (const host of [
+          'lp-moonpad-evil.vercel.app',
+          'lp-moonpad-forge.vercel.app',
+          'x.lp-moonpad.vercel.app',
+          'lp-moonpad.vercel.app.evil.com',
+          'LP-MOONPAD.vercel.app',
+          'lp-moonpad.vercel.app:443',
+          'lp-moonpad.vercel.app.',
+          'lp-rugpad.vercel.app',
+        ]) {
+          const error = await issueError(h.service.issue('moonpad', signedRequest({ host })));
+          expect([error.status, error.code, host]).toEqual([403, 'HOST_MISMATCH', host]);
+        }
+        // moonpad's host is refused for rugpad, which accepts its own.
+        const error = await issueError(
+          h.service.issue('rugpad', signedRequest({ host: SITE_HOST })),
+        );
+        expect([error.status, error.code]).toEqual([403, 'HOST_MISMATCH']);
+        await h.service.issue('rugpad', signedRequest({ host: 'lp-rugpad.vercel.app' }));
+      });
+
+      it('keeps the live rule: a sleeping or disabled launchpad gets no upload', async () => {
+        const h = harness();
+        for (const status of ['sleeping', 'disabled', 'draft']) {
+          h.store.addLaunchpad({ ...LIVE, status, siteHost: SITE_HOST });
+          const error = await issueError(
+            h.service.issue('moonpad', signedRequest({ host: SITE_HOST })),
+          );
+          expect([error.status, error.code]).toEqual([403, 'LAUNCHPAD_NOT_LIVE']);
+        }
+      });
+    });
+
     it('accepts local hosts only when allowed (development)', async () => {
       const h = harness({ allowLocalHosts: true });
       await h.service.issue('moonpad', signedRequest({ host: 'localhost:3001' }));

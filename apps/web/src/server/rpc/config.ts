@@ -23,8 +23,10 @@ import { MIN_SERVER_TOKEN_SECRET_BYTES, readServerTokenSecret } from './server-t
  *                             the cluster; the genesis hash is also checked at runtime.
  * - NEXT_PUBLIC_APP_URL       the FORGE site; its origin is always allowed.
  * - CLIENTS_DOMAIN            client sites live at https://<slug>.<CLIENTS_DOMAIN>. Optional: when
- *                             absent, only the FORGE site (and localhost outside production) may
- *                             call the relay from a browser.
+ *                             absent, a client site's browser origin is only accepted at the exact
+ *                             host recorded for it (`launchpads.site_host`, origins.ts), next to
+ *                             the FORGE site, previews awaiting approval and localhost outside
+ *                             production.
  * - SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
  *                             launchpad slug and preview lookups (cached snapshot). Optional: when
  *                             absent, client-site origins and server tokens are refused.

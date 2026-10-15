@@ -70,6 +70,7 @@ Every protection below is **mandatory** in the MVP. Agents that touch one of the
 **Protections** (agent 3): JSON-RPC method allowlist with strict params, per-IP rate limit weighted per method, bounded request and response size.
 - `getProgramAccounts` is refused in every shape but one: the creator pools query of the creator fee claim (Meteora SDK `getPoolsByCreator`): the DBC program, a pool account discriminator at offset 0 and exactly one 32-byte creator key at offset 104, base64 data, no dataSlice, dataSize, withContext or extra filter. It weighs 20 units (an account read weighs 1) and keeps the response size cap. Any other shape answers "method not allowed".
 - Callers: the FORGE site, draft and live client sites, previews awaiting approval, and sleeping client sites. A sleeping site's origin gets only the methods of the creator fee claim (D29); the server-token tier (client server routes, uploads) serves draft and live launchpads only.
+- Client site origins are exact: `https://<slug>.<CLIENTS_DOMAIN>`, or `https://<site_host>` where `launchpads.site_host` is the production host the builder read from the Vercel API for the launchpad's own project and promoted deployment (D30). A `*.vercel.app` origin is never matched by pattern (anyone can create a project with a look-alike name), and a recorded host only ever speaks for its own launchpad, with its status rules. The upload route accepts the same two hosts as the signed `auth.host`.
 
 ## 12. Scam launchpads
 

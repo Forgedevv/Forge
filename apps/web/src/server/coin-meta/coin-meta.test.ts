@@ -44,6 +44,7 @@ function record(over: Partial<CoinMetaRecord> = {}): CoinMetaRecord {
     status: 'draft',
     spec: SPEC,
     createJob: { status: 'approved', failedStage: null },
+    siteHost: null,
     ...over,
   };
 }
@@ -188,6 +189,19 @@ describe('GET /api/coin-meta/:slug', () => {
     expect(JSON.stringify(body)).not.toMatch(/ownerWallet|designNotes|firstBuy|9xQe/);
   });
 
+  it('links external_url to the recorded site host first, with or without CLIENTS_DOMAIN', async () => {
+    const site = record({ siteHost: 'lp-moonpad.vercel.app' });
+    for (const domain of ['forge-sites.app', '']) {
+      const { handler } = setup({ moonpad: site }, domain);
+      const body = (await (await handler('moonpad')).json()) as Record<string, unknown>;
+      expect(body.external_url).toBe('https://lp-moonpad.vercel.app');
+    }
+    // A malformed stored host is never linked: back to the subdomain.
+    const { handler } = setup({ moonpad: record({ siteHost: 'https://evil.example' }) });
+    const body = (await (await handler('moonpad')).json()) as Record<string, unknown>;
+    expect(body.external_url).toBe('https://moonpad.forge-sites.app');
+  });
+
   it('answers 404 (and reports it) for an approved launchpad whose spec has no usable coin', async () => {
     const { handler, errors } = setup({
       moonpad: record({ spec: { launchpadCoin: { name: '' } } }),
@@ -272,11 +286,12 @@ describe('createSupabaseCoinMetaSource', () => {
       status: 'draft',
       spec: SPEC,
       createJob: { status: 'onchain_setup', failedStage: null },
+      siteHost: null,
     });
     expect(calls[0]).toEqual({
       table: 'launchpads',
       ops: [
-        ['select', ['id, slug, status, spec']],
+        ['select', ['id, slug, status, spec, site_host']],
         ['eq', ['slug', 'moonpad']],
         ['maybeSingle', []],
       ],
@@ -289,6 +304,17 @@ describe('createSupabaseCoinMetaSource', () => {
       ['order', ['created_at', { ascending: false }]],
       ['limit', [1]],
     ]);
+  });
+
+  it('reads the recorded site host, shape checked', async () => {
+    const row = { id: 'lp1', slug: 'moonpad', status: 'live', spec: SPEC };
+    const read = (siteHost: unknown) =>
+      fakeDb([{ data: { ...row, site_host: siteHost } }, { data: [] }]).source.find('moonpad');
+    await expect(read('lp-moonpad.vercel.app')).resolves.toMatchObject({
+      siteHost: 'lp-moonpad.vercel.app',
+    });
+    await expect(read('lp-moonpad.vercel.app/x')).resolves.toMatchObject({ siteHost: null });
+    await expect(read(null)).resolves.toMatchObject({ siteHost: null });
   });
 
   it('returns null for an unknown slug and hides database messages', async () => {

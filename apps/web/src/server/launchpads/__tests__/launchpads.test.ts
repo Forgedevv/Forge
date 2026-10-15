@@ -2,7 +2,7 @@
 import { Keypair } from '@solana/web3.js';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { ctx, request, spec } from '../../jobs/__tests__/fakes';
-import { StoreError } from '../../jobs/store';
+import { parseLaunchpadRow, StoreError } from '../../jobs/store';
 import { LAUNCHPAD_QUOTAS } from '../quotas';
 import { coin } from './fake-chain';
 import { NOW, launchpadsHarness } from './helpers';
@@ -95,6 +95,55 @@ describe('GET /api/launchpads', () => {
       await bare.handlers.list(request('GET', '/api/launchpads', { wallet: owner }))
     ).json()) as { launchpads: { siteUrl: unknown }[] };
     expect(body.launchpads[0]!.siteUrl).toBeNull();
+  });
+
+  it('links to the recorded site host first (live and sleeping only)', async () => {
+    const list = async (harness: ReturnType<typeof launchpadsHarness>) =>
+      (
+        (await (
+          await harness.handlers.list(request('GET', '/api/launchpads', { wallet: owner }))
+        ).json()) as { launchpads: { slug: string; siteUrl: unknown }[] }
+      ).launchpads;
+    liveLaunchpad({ slug: 'moonpad', siteHost: 'lp-moonpad.vercel.app' });
+    h.store.addLaunchpad(owner, {
+      slug: 'sleepy-pad',
+      status: 'sleeping',
+      siteHost: 'lp-sleepy-pad.vercel.app',
+    });
+    h.store.addLaunchpad(owner, {
+      slug: 'cut-pad',
+      status: 'disabled',
+      siteHost: 'lp-cut-pad.vercel.app',
+    });
+    h.store.addLaunchpad(owner, { slug: 'new-pad', status: 'draft', siteHost: null });
+    const bySlug = Object.fromEntries((await list(h)).map((l) => [l.slug, l.siteUrl]));
+    expect(bySlug).toEqual({
+      moonpad: 'https://lp-moonpad.vercel.app',
+      'sleepy-pad': 'https://lp-sleepy-pad.vercel.app',
+      'cut-pad': null,
+      'new-pad': null,
+    });
+    // Without CLIENTS_DOMAIN (devnet beta) the recorded host is still the link.
+    const bare = launchpadsHarness({ clientsDomain: null });
+    bare.store.addLaunchpad(owner, { siteHost: 'lp-moonpad.vercel.app' });
+    expect((await list(bare))[0]!.siteUrl).toBe('https://lp-moonpad.vercel.app');
+  });
+
+  it('reads site_host from the row, shape checked (a malformed value is never linked)', () => {
+    const row = {
+      id: 'l1',
+      owner_wallet: owner,
+      slug: 'moonpad',
+      spec: {},
+      status: 'live',
+      created_at: '2026-10-10T00:00:00Z',
+    };
+    expect(parseLaunchpadRow({ ...row, site_host: 'lp-moonpad.vercel.app' }).siteHost).toBe(
+      'lp-moonpad.vercel.app',
+    );
+    for (const bad of [null, undefined, 'https://lp-moonpad.vercel.app', 'a.b.vercel.app', 7]) {
+      expect(parseLaunchpadRow({ ...row, site_host: bad }).siteHost).toBeNull();
+    }
   });
 });
 

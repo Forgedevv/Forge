@@ -137,6 +137,7 @@ function makeSleepingRelay() {
   const snapshot: DirectorySnapshot = {
     activeSlugs: new Set(['moonpad']),
     sleepingSlugs: new Set(['sleepy-pad']),
+    siteOrigins: new Map(),
     previewOrigins: new Map(),
     loadedAt: 0,
   };

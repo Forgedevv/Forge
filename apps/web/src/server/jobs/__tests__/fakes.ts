@@ -141,6 +141,7 @@ export class MemoryRoutesStore implements RoutesStore {
       includedModificationsLeft: 2,
       status: 'live',
       createdAt: this.stamp(),
+      siteHost: null,
       ...overrides,
     };
     this.launchpads.set(record.id, record);

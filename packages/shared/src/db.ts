@@ -11,6 +11,32 @@ import { SolanaAddress, type LaunchpadSpec } from './spec.js';
 export const LaunchpadStatus = z.enum(['draft', 'live', 'sleeping', 'disabled']);
 export type LaunchpadStatus = z.infer<typeof LaunchpadStatus>;
 
+/** One DNS label: lowercase letters, digits and inner dashes, 1 to 63 characters. */
+const HOST_LABEL = '[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?';
+const HOST_NAME_RE = new RegExp(`^(?=.{4,253}$)(?:${HOST_LABEL}\\.)+[a-z]{2,63}$`);
+const VERCEL_APP_HOST_RE = new RegExp(`^${HOST_LABEL}\\.vercel\\.app$`);
+
+/**
+ * Shape of `launchpads.site_host` (migration 0011 holds the same CHECK): a lowercase DNS name
+ * without scheme, port, path or trailing dot. Under `vercel.app` (Vercel's production aliases),
+ * exactly one label; `vercel.app` itself is never a site host.
+ */
+export function isSiteHost(value: unknown): value is string {
+  if (typeof value !== 'string' || value === 'vercel.app' || !HOST_NAME_RE.test(value)) {
+    return false;
+  }
+  return !value.endsWith('.vercel.app') || VERCEL_APP_HOST_RE.test(value);
+}
+
+/** A site host on `vercel.app` (`<one label>.vercel.app`). */
+export function isVercelAppHost(value: unknown): value is string {
+  return isSiteHost(value) && value.endsWith('.vercel.app');
+}
+
+export const SiteHost = z.string().refine(isSiteHost, {
+  error: 'Must be a lowercase host name (one label under vercel.app)',
+});
+
 export const PaymentStatus = z.enum(['quoted', 'confirmed', 'expired', 'refunded']);
 export type PaymentStatus = z.infer<typeof PaymentStatus>;
 
@@ -62,6 +88,13 @@ export interface LaunchpadRow {
   status: LaunchpadStatus;
   last_trade_at: Timestamptz | null;
   created_at: Timestamptz | null;
+  /**
+   * Exact production host of the client site (`SiteHost`), recorded by the builder from the Vercel
+   * API when the site goes live: the verified `<slug>.<CLIENTS_DOMAIN>`, else a `*.vercel.app`
+   * alias of the launchpad's own Vercel project. Trusted by exact match only (RPC relay origins,
+   * coin uploads, site links). Null until recorded (migration 0011).
+   */
+  site_host: string | null;
 }
 
 /**

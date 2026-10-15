@@ -15,6 +15,7 @@ import {
 import { PipelineError, PolicyViolationError } from './errors.js';
 import { STEP_EVENTS } from './messages.js';
 import { scanRelease } from './release-scan.js';
+import { chooseSiteHost } from './site-host.js';
 import { deepEqual } from '../scan/manifest.js';
 import {
   parseSiteConfig,
@@ -33,7 +34,8 @@ import type { BuildKind } from './build.js';
  *
  *   checks of forge.config.json on forge/<jobId> -> merge into the default branch
  *   -> mode `live` (builder-owned commit, only when needed) -> env sync
- *   -> production deployment of that commit -> promotion -> subdomain -> launchpad `live`
+ *   -> production deployment of that commit -> promotion -> subdomain
+ *   -> site host (`launchpads.site_host`, from the Vercel aliases) -> launchpad `live`
  *
  * Every call is idempotent, so a re-run after a crash at any point converges: the merge answers
  * "already merged", Vercel returns the existing deployment of a commit, a promoted deployment is
@@ -251,17 +253,39 @@ export async function runDeployStep(
       },
     );
   }
+  // The exact host the site is served at, as Vercel reports it for this project and this
+  // deployment (site-host.ts). Recorded on every release, so a re-run writes the same value and a
+  // host that no longer serves the site is dropped. A verified subdomain wins without waiting;
+  // otherwise the aliases get a short while to reach the promoted deployment.
+  const productionHosts = await deps.vercel.listProductionHosts(project.id, ready.id, {
+    timeoutMs: domain.verified ? 0 : Math.min(SITE_HOST_WAIT_MS, deps.config.promotionTimeoutMs),
+  });
+  const siteHost = chooseSiteHost({ slug: spec.slug, subdomain: domain, productionHosts });
+  if (siteHost === null) {
+    await safeAlert(
+      deps,
+      'high',
+      `site_host_missing:${spec.slug}`,
+      'No verified host serves the released client site: browsers cannot reach FORGE from it',
+      { jobId: job.id, domain: domain.domain, productionHosts: productionHosts.length },
+    );
+  }
+  guard(signal);
+  await deps.store.updateLaunchpad(launchpad.id, { site_host: siteHost });
   if (current.launchpad.status !== 'live') {
     guard(signal);
     // Conditional: never applies to a launchpad disabled in the meantime (fails the step).
     await deps.store.updateLaunchpad(launchpad.id, { status: 'live' });
   }
   jobCtx.logger.info(
-    jobFields(job, { deployment: ready.id, sha: releaseSha, domain: domain.domain }),
+    jobFields(job, { deployment: ready.id, sha: releaseSha, domain: domain.domain, siteHost }),
     'launchpad released',
   );
-  return { message: STEP_EVENTS.live(domain.domain) };
+  return { message: STEP_EVENTS.live(siteHost ?? domain.domain) };
 }
+
+/** Longest wait for the production aliases to point at a promoted deployment. */
+const SITE_HOST_WAIT_MS = 60_000;
 
 /** `https://<deployment host>` as stored by the build step. */
 const PREVIEW_URL_RE = /^https:\/\/[A-Za-z0-9.-]+\/?$/;

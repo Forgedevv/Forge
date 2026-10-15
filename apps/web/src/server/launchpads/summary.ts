@@ -41,7 +41,10 @@ export interface LaunchpadReadsDeps {
   store: RoutesStore;
   chain: ClaimsChain;
   logger: RoutesLogger;
-  /** CLIENTS_DOMAIN: client sites are served at https://<slug>.<domain>. */
+  /**
+   * CLIENTS_DOMAIN: client sites are served at https://<slug>.<domain>, unless the builder recorded
+   * the exact host of the site (`launchpads.site_host`), which wins.
+   */
   clientsDomain: string | null;
 }
 
@@ -84,9 +87,11 @@ function parseKey(value: string | null): PublicKey | null {
 export function createLaunchpadReads(deps: LaunchpadReadsDeps): LaunchpadReads {
   const { store, chain, logger, clientsDomain } = deps;
 
+  /** Where the site really is: its recorded host, else its subdomain (live or sleeping only). */
   function siteUrl(launchpad: LaunchpadRecord): string | null {
-    if (!clientsDomain) return null;
     if (launchpad.status !== 'live' && launchpad.status !== 'sleeping') return null;
+    if (launchpad.siteHost !== null) return `https://${launchpad.siteHost}`;
+    if (!clientsDomain) return null;
     return `https://${launchpad.slug}.${clientsDomain}`;
   }
 

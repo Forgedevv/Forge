@@ -38,6 +38,7 @@ export type PipelineVercel = Pick<
   | 'waitForDeployment'
   | 'promoteToProduction'
   | 'attachSubdomain'
+  | 'listProductionHosts'
 >;
 
 export type PipelineSigner = Pick<SignerClient, 'createConfigs' | 'prepareLaunchCoin'>;

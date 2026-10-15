@@ -10,7 +10,8 @@ import { createServiceUploadStore } from './supabase-store';
  *   R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET   write access (server only)
  *   R2_PUBLIC_URL                                                      public https base of the bucket
  *   R2_ENDPOINT (optional)       S3 endpoint, default https://<account>.r2.cloudflarestorage.com
- *   CLIENTS_DOMAIN               client sites live at <slug>.<CLIENTS_DOMAIN>
+ *   CLIENTS_DOMAIN               client sites live at <slug>.<CLIENTS_DOMAIN> (optional: a
+ *                                launchpad's recorded site_host is accepted without it)
  *   SUPABASE_URL (or NEXT_PUBLIC_SUPABASE_URL), SUPABASE_SERVICE_ROLE_KEY
  *   RPC_URL (optional)           enables the on-chain "mint is fresh" check
  */

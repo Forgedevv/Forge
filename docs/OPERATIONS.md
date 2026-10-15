@@ -14,6 +14,7 @@ Sent by `apps/signer` and `apps/builder` via `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CH
 | Daily API budget exceeded at 80% | builder (gateway) | high |
 | Creator fees unclaimed for more than 48 h | signer | normal |
 | Repeated RPC errors | signer, builder | high |
+| A released site has no verified host (`site_host_missing:<slug>`: no verified subdomain and no `*.vercel.app` alias of its own Vercel project serves the promoted deployment; browsers of that site cannot reach the relay or create coins) | builder | high |
 
 ## Kill switches (`flags` table in Supabase)
 
@@ -59,6 +60,7 @@ Also set an R2 lifecycle rule that deletes objects under `pending/` after 1 day,
 - **Payment anomalies** (late payment, wrong amount, launchpad released, duplicate payment) are recorded in the `payment_anomalies` table, never refunded automatically (D20). Check unresolved rows daily, refund from the cashbox by hand, then set `resolved_at` and a `note`. A payment counts only at the `finalized` commitment; while a job has an open quote with at least 60 s left, the web hands back that same quote instead of a new one. The row's `lamports` can be empty when the transferred amount could not be read: read it from the transaction.
 - **Failure after approval** (on-chain or deployment step, D18): the job stays `failed` with an alert. Configs may already exist on-chain; check them before any retry or refund.
 - **Revoke a prepared launch** (wrong spec, leaked transaction, client starting over): on the signer machine, `pnpm --filter @forge/signer exec tsx src/index.ts --revoke-launch <jobId>`. The creator wallet advances the launchpad's durable nonce, so the transaction already handed out can never land; the next prepare builds a new one. It works even when `deploys_paused` is set. To rebuild an unsigned launch, clear `jobs.owner_tx` and `jobs.owner_tx_details` in the same update (the database refuses one without the other).
+- **Client site host** (`launchpads.site_host`, D30): the builder records it at every release from the Vercel API; never type one by hand from a name (look-alike `*.vercel.app` projects exist). If a client's Vercel project is deleted or loses its alias, set `site_host` to null in the same operation: a released `*.vercel.app` name can be claimed by anyone, and the relay and the upload route trust the recorded host. Re-running the deploy step records it again.
 - **Signer daily cap**: `SIGNER_MAX_LAUNCHPADS_PER_DAY` limits how many launchpads the signer prepares per day; raising it needs a restart.
 
 ## Sleep mode

@@ -1,5 +1,6 @@
 /// <reference types="node" />
 import { createHash } from 'node:crypto';
+import { isSiteHost } from '@forge/shared';
 import { z } from 'zod';
 import {
   assertDeployableSlug,
@@ -591,6 +592,18 @@ export interface VercelClient {
   ): Promise<{ promoted: boolean }>;
   /** Attaches `<slug>.<clientsDomain>` to the project. Idempotent. */
   attachSubdomain(projectId: string, slug: string): Promise<DomainResult>;
+  /**
+   * Hosts at which Vercel serves `deploymentId` for `projectId`: the aliases the API lists for the
+   * project (team scope) whose own record names this very project and this very deployment, with
+   * no redirect. Lowercase, site-host shaped only (`isSiteHost`), deduplicated and sorted. Read
+   * only; never guessed from a name. With `timeoutMs`, an empty answer is read again until the
+   * deadline (aliases move to a promoted deployment shortly after the promotion).
+   */
+  listProductionHosts(
+    projectId: string,
+    deploymentId: string,
+    opts?: WaitOptions,
+  ): Promise<string[]>;
   detachDomain(projectId: string, domain: string): Promise<boolean>;
   /** Disables the site: production and previews answer with a pause page. Reversible. */
   pauseProject(projectId: string): Promise<void>;
@@ -670,6 +683,28 @@ const DomainSchema = z.object({
     .array(z.object({ type: z.string(), domain: z.string(), value: z.string() }))
     .optional(),
 });
+
+/**
+ * `GET /v4/aliases` (only what `listProductionHosts` reads). Each alias names the project and the
+ * deployment it points at; `pagination.next` is the `until` of the next page (null at the end).
+ */
+const AliasListSchema = z.object({
+  aliases: z.array(
+    z.object({
+      alias: z.string(),
+      projectId: z.string().nullish(),
+      deploymentId: z.string().nullish(),
+      redirect: z.string().nullish(),
+    }),
+  ),
+  pagination: z.object({ next: z.number().nullish() }).nullish(),
+});
+/**
+ * Aliases asked per page (the API's default page size) and pages read at most: a client project
+ * holds a handful of aliases.
+ */
+const ALIAS_PAGE_LIMIT = 20;
+const ALIAS_MAX_PAGES = 10;
 
 function parseBody<S extends z.ZodType>(schema: S, res: HttpResponse, what: string): z.infer<S> {
   const parsed = schema.safeParse(res.json);
@@ -1589,6 +1624,48 @@ export function createVercelClient(opts: VercelClientOptions): VercelClient {
     return toResult(parseBody(DomainSchema, res, 'domain'), true);
   }
 
+  async function listProductionHosts(
+    projectId: string,
+    deploymentId: string,
+    w: WaitOptions = {},
+  ): Promise<string[]> {
+    seg(projectId, 'project');
+    seg(deploymentId, 'deployment');
+    const pollMs = w.pollMs ?? 3_000;
+    const deadline = now() + (w.timeoutMs ?? 0);
+    for (;;) {
+      const hosts = await readProductionHosts(projectId, deploymentId);
+      // Right after a promotion Vercel may still be moving the aliases to the new deployment.
+      if (hosts.length > 0 || now() + pollMs > deadline) return hosts;
+      await sleep(pollMs);
+    }
+  }
+
+  async function readProductionHosts(projectId: string, deploymentId: string): Promise<string[]> {
+    const hosts = new Set<string>();
+    let until: number | undefined;
+    for (let page = 0; page < ALIAS_MAX_PAGES; page++) {
+      const res = await call({
+        method: 'GET',
+        path: '/v4/aliases',
+        query: { projectId, limit: ALIAS_PAGE_LIMIT, until },
+      });
+      const body = parseBody(AliasListSchema, res, 'aliases');
+      for (const a of body.aliases) {
+        // The `projectId` filter is Vercel's; the ownership check is ours, on every record: an
+        // alias of another project (a look-alike name) or of another deployment never counts.
+        if (a.projectId !== projectId || a.deploymentId !== deploymentId) continue;
+        if (a.redirect !== null && a.redirect !== undefined) continue;
+        const host = a.alias.toLowerCase();
+        if (isSiteHost(host)) hosts.add(host);
+      }
+      const next = body.pagination?.next;
+      if (typeof next !== 'number' || next === until) break;
+      until = next;
+    }
+    return [...hosts].sort();
+  }
+
   async function detachDomain(projectId: string, domain: string): Promise<boolean> {
     assertClientsDomain(domain);
     const res = await call({
@@ -1640,6 +1717,7 @@ export function createVercelClient(opts: VercelClientOptions): VercelClient {
     waitForDeployment,
     promoteToProduction,
     attachSubdomain,
+    listProductionHosts,
     detachDomain,
     pauseProject,
     unpauseProject,

@@ -35,6 +35,7 @@ Kept up to date by the lead session. Agents read it, do not modify it.
 | D27 | Migrated pool fee | fixed 0.25% after graduation (`FixedBps25`) |
 | D28 | Client previews | public behind an unguessable Vercel URL |
 | D29 | Claims while sleeping | coin creators can still claim their creator fees while a launchpad is sleeping: the sleeping page keeps the claim widget |
+| D30 | Client site host | until `<slug>.<CLIENTS_DOMAIN>` is verified on Vercel (none in the devnet beta), a client site is served at a production `*.vercel.app` alias of its own Vercel project. The builder records the exact host it reads from the Vercel API for that project and deployment in `launchpads.site_host` (verified subdomain preferred); the relay, the upload route, the dashboard and the coin metadata trust that exact host only, with the launchpad's status rules. Vercel URLs are never trusted by pattern (look-alike project names) |
 
 ## Open (to be decided by the team)
 

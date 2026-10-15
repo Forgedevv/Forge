@@ -39,7 +39,8 @@ import { UploadStoreError, type LaunchpadRef, type TicketRecord, type UploadStor
  *
  * Issue:    strict body -> fresh `issuedAt` -> ed25519 signature over the exact v1 message ->
  *           per-instance wallet limit -> launchpad (slug or uuid) is the token's and live ->
- *           `auth.host` is the launchpad's domain -> `(wallet, nonce)` already seen? identical
+ *           `auth.host` is the launchpad's domain (`<slug>.<CLIENTS_DOMAIN>`) or its recorded
+ *           `site_host`, exactly -> `(wallet, nonce)` already seen? identical
  *           body: same ticket, other body: 409 -> durable limits per wallet and per launchpad ->
  *           mint never used (tickets, launchpad coins, on-chain account) -> ticket stored (unique
  *           constraints decide races) -> presigned write-once PUT to the staging key, size signed.
@@ -60,7 +61,10 @@ const MAX_METADATA_BYTES = 16 * 1024;
 export interface UploadServiceDeps {
   store: UploadStore;
   storage: ObjectStorage;
-  /** Client sites are served at `<slug>.<clientsDomain>`. Null: only local hosts (if allowed). */
+  /**
+   * Client sites are served at `<slug>.<clientsDomain>` (and at their recorded `site_host`). Null:
+   * only recorded site hosts, and local hosts (if allowed).
+   */
   clientsDomain: string | null;
   /** Accept `localhost`/`127.0.0.1` hosts (never in production). */
   allowLocalHosts?: boolean;
@@ -189,13 +193,19 @@ export function createUploadService(deps: UploadServiceDeps): UploadService {
     }
   }
 
+  /**
+   * `auth.host` must be a host of THIS launchpad's site: `<slug>.<CLIENTS_DOMAIN>`, or exactly the
+   * production host the builder recorded for it (`site_host`, read from the Vercel API for its own
+   * project). Never a pattern: a look-alike `*.vercel.app` name of another project is refused.
+   */
   function checkHost(host: string, launchpad: LaunchpadRef): void {
     if (deps.allowLocalHosts && LOCAL_HOST.test(host)) return;
-    if (!deps.clientsDomain) {
+    if (launchpad.siteHost !== null && host === launchpad.siteHost) return;
+    if (!deps.clientsDomain && launchpad.siteHost === null) {
       log('uploads: CLIENTS_DOMAIN is not set, no client site host can be accepted');
       throw new UploadHttpError(503, 'NOT_CONFIGURED', 'Coin uploads are not configured yet.');
     }
-    if (host !== `${launchpad.slug}.${deps.clientsDomain}`) {
+    if (!deps.clientsDomain || host !== `${launchpad.slug}.${deps.clientsDomain}`) {
       throw new UploadHttpError(
         403,
         'HOST_MISMATCH',

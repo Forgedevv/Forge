@@ -130,21 +130,38 @@ describe('SupabaseUploadStore', () => {
       status: 'live',
       launchpad_coin_mint: null,
     };
-    const { store, calls } = fakeDb([{ data: lp }, { data: null }]);
+    const { store, calls } = fakeDb([
+      { data: lp },
+      { data: null },
+      { data: { ...lp, site_host: 'lp-moonpad.vercel.app' } },
+      { data: { ...lp, site_host: 'https://lp-moonpad.vercel.app' } },
+      { data: { ...lp, site_host: 'a.b.vercel.app' } },
+    ]);
     await expect(store.findLaunchpad({ slug: 'moonpad' })).resolves.toEqual({
       id: TICKET.launchpadId,
       slug: 'moonpad',
       status: 'live',
       coinMint: null,
+      siteHost: null,
     });
     expect(calls[0]!.ops).toEqual([
-      ['select', ['id, slug, status, launchpad_coin_mint']],
+      ['select', ['id, slug, status, launchpad_coin_mint, site_host']],
       ['eq', ['slug', 'moonpad']],
       ['limit', [1]],
       ['maybeSingle', []],
     ]);
     await expect(store.findLaunchpad({ id: TICKET.launchpadId })).resolves.toBeNull();
     expect(calls[1]!.ops[1]).toEqual(['eq', ['id', TICKET.launchpadId]]);
+    // The recorded site host, shape checked: a malformed value is never trusted.
+    await expect(store.findLaunchpad({ slug: 'moonpad' })).resolves.toMatchObject({
+      siteHost: 'lp-moonpad.vercel.app',
+    });
+    await expect(store.findLaunchpad({ slug: 'moonpad' })).resolves.toMatchObject({
+      siteHost: null,
+    });
+    await expect(store.findLaunchpad({ slug: 'moonpad' })).resolves.toMatchObject({
+      siteHost: null,
+    });
   });
 
   it('reads tickets by nonce and recent issue times for the rate limits', async () => {

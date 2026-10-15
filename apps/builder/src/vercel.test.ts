@@ -2065,6 +2065,155 @@ describe('attachSubdomain', () => {
     expect(withDomain.stub.calls).toHaveLength(0);
   });
 
+  it('lists the production hosts of one deployment of the project, team scoped', async () => {
+    const { client, stub } = make([
+      {
+        method: 'GET',
+        path: '/v4/aliases',
+        handler: () =>
+          json({
+            aliases: [
+              { alias: 'lp-moonpad.vercel.app', projectId: 'prj_123', deploymentId: 'dpl_live' },
+              {
+                alias: 'LP-Moonpad-Forge.vercel.app',
+                projectId: 'prj_123',
+                deploymentId: 'dpl_live',
+                redirect: null,
+              },
+              { alias: 'lp-moonpad.vercel.app', projectId: 'prj_123', deploymentId: 'dpl_live' },
+            ],
+            pagination: { count: 3, next: null, prev: null },
+          }),
+      },
+    ]);
+    await expect(client.listProductionHosts('prj_123', 'dpl_live')).resolves.toEqual([
+      'lp-moonpad-forge.vercel.app',
+      'lp-moonpad.vercel.app',
+    ]);
+    const [call] = stub.find('GET', '/v4/aliases');
+    expect(call?.query.get('projectId')).toBe('prj_123');
+    expect(call?.query.get('teamId')).toBe(TEAM);
+    expect(call?.query.get('limit')).toBe('20');
+    expect(call?.query.has('until')).toBe(false);
+  });
+
+  it('keeps only aliases whose record names our project and our deployment', async () => {
+    const { client } = make([
+      {
+        method: 'GET',
+        path: '/v4/aliases',
+        handler: () =>
+          json({
+            aliases: [
+              // A look-alike project of someone else (the filter is never trusted alone).
+              { alias: 'lp-moonpad-evil.vercel.app', projectId: 'prj_evil', deploymentId: 'dpl_x' },
+              {
+                alias: 'lp-moonpad-evil2.vercel.app',
+                projectId: 'prj_evil',
+                deploymentId: 'dpl_live',
+              },
+              { alias: 'lp-moonpad-nopr.vercel.app', projectId: null, deploymentId: 'dpl_live' },
+              { alias: 'lp-moonpad-nopr2.vercel.app', deploymentId: 'dpl_live' },
+              // Ours, but pointing at another (older) deployment.
+              { alias: 'lp-moonpad-old.vercel.app', projectId: 'prj_123', deploymentId: 'dpl_old' },
+              { alias: 'lp-moonpad-none.vercel.app', projectId: 'prj_123', deploymentId: null },
+              // Ours, but only a redirect.
+              {
+                alias: 'lp-moonpad-redir.vercel.app',
+                projectId: 'prj_123',
+                deploymentId: 'dpl_live',
+                redirect: 'lp-moonpad.vercel.app',
+              },
+              // Ours, but not a site host.
+              { alias: 'a.b.vercel.app', projectId: 'prj_123', deploymentId: 'dpl_live' },
+              { alias: 'https://x.vercel.app', projectId: 'prj_123', deploymentId: 'dpl_live' },
+              { alias: 'x.vercel.app:443', projectId: 'prj_123', deploymentId: 'dpl_live' },
+              { alias: 'vercel.app', projectId: 'prj_123', deploymentId: 'dpl_live' },
+              { alias: 'moonpad.forge-sites.app', projectId: 'prj_123', deploymentId: 'dpl_live' },
+            ],
+          }),
+      },
+    ]);
+    await expect(client.listProductionHosts('prj_123', 'dpl_live')).resolves.toEqual([
+      'moonpad.forge-sites.app',
+    ]);
+  });
+
+  it('follows the pages of the alias list, within a bound', async () => {
+    const page = (n: number, next: number | null) =>
+      json({
+        aliases: [
+          { alias: `lp-moonpad-${n}.vercel.app`, projectId: 'prj_123', deploymentId: 'dpl_live' },
+        ],
+        pagination: { count: 1, next, prev: null },
+      });
+    const paged = make([
+      { method: 'GET', path: '/v4/aliases', times: 1, handler: () => page(1, 1700) },
+      { method: 'GET', path: '/v4/aliases', times: 1, handler: () => page(2, null) },
+    ]);
+    await expect(paged.client.listProductionHosts('prj_123', 'dpl_live')).resolves.toEqual([
+      'lp-moonpad-1.vercel.app',
+      'lp-moonpad-2.vercel.app',
+    ]);
+    expect(paged.stub.find('GET', '/v4/aliases')[1]?.query.get('until')).toBe('1700');
+
+    let n = 0;
+    const endless = make([
+      { method: 'GET', path: '/v4/aliases', handler: () => page(++n, 1000 - n) },
+    ]);
+    await expect(endless.client.listProductionHosts('prj_123', 'dpl_live')).resolves.toHaveLength(
+      10,
+    );
+    expect(endless.stub.find('GET', '/v4/aliases')).toHaveLength(10);
+  });
+
+  it('waits, within a bound, for the aliases to reach the promoted deployment', async () => {
+    const answer = (deploymentId: string) =>
+      json({
+        aliases: [{ alias: 'lp-moonpad.vercel.app', projectId: 'prj_123', deploymentId }],
+        pagination: { count: 1, next: null, prev: null },
+      });
+    const moving = make([
+      { method: 'GET', path: '/v4/aliases', times: 2, handler: () => answer('dpl_old') },
+      { method: 'GET', path: '/v4/aliases', handler: () => answer('dpl_live') },
+    ]);
+    await expect(
+      moving.client.listProductionHosts('prj_123', 'dpl_live', {
+        timeoutMs: 60_000,
+        pollMs: 2_000,
+      }),
+    ).resolves.toEqual(['lp-moonpad.vercel.app']);
+    expect(moving.sleeps).toEqual([2_000, 2_000]);
+
+    const never = make([{ method: 'GET', path: '/v4/aliases', handler: () => answer('dpl_old') }]);
+    await expect(
+      never.client.listProductionHosts('prj_123', 'dpl_live', { timeoutMs: 10_000, pollMs: 3_000 }),
+    ).resolves.toEqual([]);
+    expect(never.stub.find('GET', '/v4/aliases')).toHaveLength(4);
+    // Without a timeout: one read, no wait.
+    const once = make([{ method: 'GET', path: '/v4/aliases', handler: () => answer('dpl_old') }]);
+    await expect(once.client.listProductionHosts('prj_123', 'dpl_live')).resolves.toEqual([]);
+    expect(once.stub.find('GET', '/v4/aliases')).toHaveLength(1);
+    expect(once.sleeps).toEqual([]);
+  });
+
+  it('refuses an unexpected alias answer and invalid ids', async () => {
+    const { client } = make([
+      { method: 'GET', path: '/v4/aliases', handler: () => json({ aliases: 'none' }) },
+    ]);
+    await expect(client.listProductionHosts('prj_123', 'dpl_live')).rejects.toMatchObject({
+      kind: 'invalid_response',
+    });
+    const none = make([]);
+    await expect(none.client.listProductionHosts('../prj', 'dpl_live')).rejects.toMatchObject({
+      kind: 'invalid_input',
+    });
+    await expect(none.client.listProductionHosts('prj_123', 'dpl/x')).rejects.toMatchObject({
+      kind: 'invalid_input',
+    });
+    expect(none.stub.calls).toHaveLength(0);
+  });
+
   it('detaches a domain, tolerating one that is already gone', async () => {
     const { client } = make([
       {
