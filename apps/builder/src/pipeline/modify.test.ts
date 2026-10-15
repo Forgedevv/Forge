@@ -22,6 +22,7 @@ import {
   designAgent,
   makeHarness,
   modifyAgent,
+  TEST_PROJECT_ENV,
   withPreviewUrl,
   type Harness,
 } from './test-harness.js';
@@ -446,6 +447,29 @@ describe('modify: deploying', () => {
     expect(production).toHaveLength(2);
     const merges = [...h.github.commits.values()].filter((c) => c.parents.length === 2);
     expect(merges).toHaveLength(2);
+  });
+
+  it('regression: a release of the same commit after the relay URL changed is rebuilt', async () => {
+    // Devnet, job 59a523e0: FORGE's public URL (so the RPC relay URL) changed and the release of
+    // an unchanged commit reused the production deployment built with the old relay URL: the job
+    // was marked live while the site pointed at a dead relay.
+    const h = await liveLaunchpad();
+    await run(h, modifyJob());
+    h.vercel.fail('createDeployment', 'after');
+    await expect(run(h, modifyJob({ status: 'deploying' }))).rejects.toThrow();
+    const relay = 'https://forge-new.test/api/rpc';
+    h.deps.config = {
+      ...h.deps.config,
+      projectEnv: { ...TEST_PROJECT_ENV, NEXT_PUBLIC_FORGE_RPC_RELAY_URL: relay },
+    };
+    await run(h, modifyJob({ status: 'deploying' }));
+    const project = h.vercel.projectBySlug('moonpad')!;
+    const production = h.vercel.deploymentsOf(project.id).filter((d) => d.target === 'production');
+    // The creation release, the crashed run's deployment, and a new one of the same commit.
+    expect(production).toHaveLength(3);
+    expect(production[2]!.sha).toBe(production[1]!.sha);
+    expect(project.productionDeploymentId).toBe(production[2]!.id);
+    expect(production[2]!.env.NEXT_PUBLIC_FORGE_RPC_RELAY_URL).toBe(relay);
   });
 
   async function setMainMode(h: Harness, mode: string, message = 'cut'): Promise<void> {

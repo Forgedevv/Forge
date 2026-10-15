@@ -17,6 +17,7 @@ import {
   PROJECT_ENV_ALLOWLIST,
   PROJECT_ENV_FORBIDDEN,
   PROJECT_ENV_REQUIRED,
+  projectEnvFingerprint,
   projectEnvProblem,
   projectNameForSlug,
   subdomainFor,
@@ -43,8 +44,60 @@ interface Harness {
   clock: { now: number };
 }
 
+/** RPC relay origin of the test project, and the one an earlier FORGE URL gave it. */
+const RELAY_URL = 'https://forge.example/api/rpc';
+const OLD_RELAY_URL = 'https://old-forge.example/api/rpc';
+
+/** Variables of the test project as `GET /v10/projects/{id}/env` lists them. */
+const projectEnvs = (relayUrl = RELAY_URL) => [
+  {
+    id: 'env_1',
+    key: 'NEXT_PUBLIC_FORGE_RPC_RELAY_URL',
+    value: relayUrl,
+    type: 'plain',
+    target: ['production', 'preview'],
+  },
+  {
+    id: 'env_2',
+    key: 'SOLANA_CLUSTER',
+    value: 'devnet',
+    type: 'plain',
+    target: ['production', 'preview'],
+  },
+  // Vercel never returns a sensitive value.
+  {
+    id: 'env_3',
+    key: 'FORGE_RPC_RELAY_TOKEN',
+    value: '',
+    type: 'sensitive',
+    target: ['production', 'preview'],
+  },
+  { id: 'env_4', key: 'LOCAL_ONLY', value: 'x', type: 'plain', target: ['development'] },
+];
+
+/** The environment fingerprint rule, computed independently of vercel.ts. */
+const envSha = (lines: string[]): string =>
+  createHash('sha256')
+    .update(['forge-env:v1', ...[...lines].sort()].join('\n'))
+    .digest('hex');
+/** Fingerprint of `projectEnvs(relayUrl)`, for either target. */
+const envShaFor = (relayUrl: string): string =>
+  envSha([
+    `NEXT_PUBLIC_FORGE_RPC_RELAY_URL=${JSON.stringify(relayUrl)}`,
+    'SOLANA_CLUSTER="devnet"',
+    'FORGE_RPC_RELAY_TOKEN=<sensitive>',
+  ]);
+const ENV_SHA = envShaFor(RELAY_URL);
+
+/** Answers the project's variables (every harness ends with it; a test's own route comes first). */
+const projectEnvRoute = (envs: unknown[] = projectEnvs()): Route => ({
+  method: 'GET',
+  path: /^\/v10\/projects\/[^/]+\/env$/,
+  handler: () => json({ envs }),
+});
+
 function make(routes: Route[], extra: Record<string, unknown> = {}): Harness {
-  const stub = stubFetch(routes);
+  const stub = stubFetch([...routes, projectEnvRoute()]);
   const sleeps: number[] = [];
   const clock = { now: 1_800_000_000_000 };
   const client = createVercelClient({
@@ -165,7 +218,7 @@ const createdDeployment = (over: Record<string, unknown> = {}) =>
   json(
     deploymentJson('QUEUED', {
       projectId: 'prj_123',
-      meta: { githubCommitSha: COMMIT },
+      meta: { githubCommitSha: COMMIT, forgeEnvSha256: ENV_SHA },
       ...over,
     }),
   );
@@ -1206,6 +1259,7 @@ describe('deployments from files', () => {
         githubCommitRef: 'forge/job1',
         githubRepo: 'lp-moonpad',
         githubOrg: ORG,
+        forgeEnvSha256: ENV_SHA,
         forgeRequestId: REQUEST_ID,
       },
     };
@@ -1230,6 +1284,7 @@ describe('deployments from files', () => {
     // Upload, then the second creation.
     const order = stub.calls.map((c) => `${c.method} ${c.path}`);
     expect(order).toEqual([
+      'GET /v10/projects/prj_123/env',
       'GET /v6/deployments',
       'POST /v13/deployments',
       'POST /v2/files',
@@ -1296,12 +1351,14 @@ describe('deployments from files', () => {
         githubCommitRef: 'main',
         githubRepo: 'lp-moonpad',
         githubOrg: ORG,
+        forgeEnvSha256: ENV_SHA,
         forgeRequestId: REQUEST_ID,
       },
     });
     expect(stub.find('GET', '/v6/deployments')[0]?.query.get('target')).toBe('production');
     // Nothing else: no alias or promotion is requested by the creation.
     expect(stub.calls.map((c) => `${c.method} ${c.path}`)).toEqual([
+      'GET /v10/projects/prj_123/env',
       'GET /v6/deployments',
       'POST /v13/deployments',
     ]);
@@ -1572,7 +1629,7 @@ describe('deployments from files', () => {
               deploymentJson('BUILDING', {
                 id: 'dpl_9',
                 projectId: 'prj_123',
-                meta: { githubCommitSha: COMMIT },
+                meta: { githubCommitSha: COMMIT, forgeEnvSha256: ENV_SHA },
               }),
             ),
         },
@@ -1595,39 +1652,44 @@ describe('deployments from files', () => {
   });
 
   it('never reuses a deployment of another project or commit, a failed one or an unstaged one', async () => {
+    // Every candidate was built with the current variables: each is refused for its own reason.
     const candidates: Record<string, Record<string, unknown>> = {
       dpl_a: deploymentJson('READY', {
         id: 'dpl_a',
         projectId: 'prj_other',
         target: 'production',
-        meta: { githubCommitSha: COMMIT },
+        meta: { githubCommitSha: COMMIT, forgeEnvSha256: ENV_SHA },
       }),
       dpl_b: deploymentJson('READY', {
         id: 'dpl_b',
         projectId: 'prj_123',
         target: 'production',
-        meta: { githubCommitSha: OTHER_COMMIT },
+        meta: { githubCommitSha: OTHER_COMMIT, forgeEnvSha256: ENV_SHA },
       }),
       dpl_c: deploymentJson('CANCELED', {
         id: 'dpl_c',
         projectId: 'prj_123',
         target: 'production',
-        meta: { githubCommitSha: COMMIT },
+        meta: { githubCommitSha: COMMIT, forgeEnvSha256: ENV_SHA },
       }),
       dpl_d: deploymentJson('BUILDING', {
         id: 'dpl_d',
         projectId: 'prj_123',
         target: 'production',
         autoAssignCustomDomains: true,
-        meta: { githubCommitSha: COMMIT },
+        meta: { githubCommitSha: COMMIT, forgeEnvSha256: ENV_SHA },
       }),
       dpl_e: deploymentJson('READY', {
         id: 'dpl_e',
         projectId: 'prj_123',
         target: null,
-        meta: { githubCommitSha: COMMIT },
+        meta: { githubCommitSha: COMMIT, forgeEnvSha256: ENV_SHA },
       }),
-      dpl_f: deploymentJson('READY', { id: 'dpl_f', target: 'production', meta: {} }),
+      dpl_f: deploymentJson('READY', {
+        id: 'dpl_f',
+        target: 'production',
+        meta: { forgeEnvSha256: ENV_SHA },
+      }),
     };
     const { source } = fakeSource();
     const { client, stub } = make(
@@ -1691,7 +1753,7 @@ describe('deployments from files', () => {
               deploymentJson('READY', {
                 id: 'dpl_9',
                 projectId: 'prj_123',
-                meta: { githubCommitSha: COMMIT },
+                meta: { githubCommitSha: COMMIT, forgeEnvSha256: ENV_SHA },
               }),
             ),
         },
@@ -1748,7 +1810,9 @@ describe('deployments from files', () => {
           method: 'GET',
           path: '/v13/deployments/dpl_1',
           handler: () =>
-            createdDeployment({ meta: { githubCommitSha: COMMIT, forgeRequestId: lost } }),
+            createdDeployment({
+              meta: { githubCommitSha: COMMIT, forgeRequestId: lost, forgeEnvSha256: ENV_SHA },
+            }),
         },
       ],
       { source },
@@ -1797,7 +1861,9 @@ describe('deployments from files', () => {
           method: 'GET',
           path: '/v13/deployments/dpl_1',
           handler: () =>
-            createdDeployment({ meta: { githubCommitSha: COMMIT, forgeRequestId: lost } }),
+            createdDeployment({
+              meta: { githubCommitSha: COMMIT, forgeRequestId: lost, forgeEnvSha256: ENV_SHA },
+            }),
         },
       ],
       { source },
@@ -1814,7 +1880,7 @@ describe('deployments from files', () => {
     expect(sleeps).toEqual([2_000]);
   });
 
-  it('never adopts a deployment of another request or another project by its nonce', async () => {
+  it('never adopts a deployment of another request, project or environment by its nonce', async () => {
     const { source } = fakeSource();
     let posts = 0;
     let first: string | undefined;
@@ -1827,8 +1893,22 @@ describe('deployments from files', () => {
             json({
               deployments:
                 call.query.get('meta-forgeRequestId') !== null
-                  ? [{ uid: 'dpl_other' }, { uid: 'dpl_foreign' }]
+                  ? [{ uid: 'dpl_other' }, { uid: 'dpl_foreign' }, { uid: 'dpl_stale' }]
                   : [],
+            }),
+        },
+        {
+          method: 'GET',
+          path: '/v13/deployments/dpl_stale',
+          // The nonce of this request, but not the variables it sent.
+          handler: () =>
+            createdDeployment({
+              id: 'dpl_stale',
+              meta: {
+                githubCommitSha: COMMIT,
+                forgeRequestId: first,
+                forgeEnvSha256: envShaFor(OLD_RELAY_URL),
+              },
             }),
         },
         {
@@ -1837,7 +1917,11 @@ describe('deployments from files', () => {
           handler: () =>
             createdDeployment({
               id: 'dpl_other',
-              meta: { githubCommitSha: COMMIT, forgeRequestId: 'f'.repeat(32) },
+              meta: {
+                githubCommitSha: COMMIT,
+                forgeRequestId: 'f'.repeat(32),
+                forgeEnvSha256: ENV_SHA,
+              },
             }),
         },
         {
@@ -1847,7 +1931,7 @@ describe('deployments from files', () => {
             createdDeployment({
               id: 'dpl_foreign',
               projectId: 'prj_other',
-              meta: { githubCommitSha: COMMIT, forgeRequestId: first },
+              meta: { githubCommitSha: COMMIT, forgeRequestId: first, forgeEnvSha256: ENV_SHA },
             }),
         },
         {
@@ -2227,6 +2311,365 @@ describe('deployments from files', () => {
     ).rejects.toMatchObject({ kind: 'invalid_input' });
     expect(stub.calls).toHaveLength(0);
     expect(calls).toEqual({ heads: [], trees: [], blobs: [] });
+  });
+});
+
+describe('projectEnvFingerprint', () => {
+  const base = [
+    `NEXT_PUBLIC_FORGE_RPC_RELAY_URL=${JSON.stringify(RELAY_URL)}`,
+    'SOLANA_CLUSTER="devnet"',
+    'FORGE_RPC_RELAY_TOKEN=<sensitive>',
+  ];
+
+  it('hashes the sorted key=value lines of the variables of the target, in any listing order', () => {
+    expect(ENV_SHA).toMatch(/^[0-9a-f]{64}$/);
+    expect(projectEnvFingerprint(projectEnvs(), 'preview')).toBe(ENV_SHA);
+    expect(projectEnvFingerprint(projectEnvs(), 'production')).toBe(ENV_SHA);
+    expect(projectEnvFingerprint([...projectEnvs()].reverse(), 'preview')).toBe(ENV_SHA);
+    // A changed value changes it.
+    expect(projectEnvFingerprint(projectEnvs(OLD_RELAY_URL), 'production')).toBe(
+      envShaFor(OLD_RELAY_URL),
+    );
+    expect(envShaFor(OLD_RELAY_URL)).not.toBe(ENV_SHA);
+  });
+
+  it('counts the variables of the target only (a single target string, or none at all)', () => {
+    const previewOnly = { key: 'PREVIEW_ONLY', value: 'p', type: 'plain', target: 'preview' };
+    const withPreview = [...projectEnvs(), previewOnly];
+    expect(projectEnvFingerprint(withPreview, 'preview')).toBe(
+      envSha([...base, 'PREVIEW_ONLY="p"']),
+    );
+    expect(projectEnvFingerprint(withPreview, 'production')).toBe(ENV_SHA);
+    const untargeted = [...projectEnvs(), { key: 'ANY', value: 'a', type: 'plain' }];
+    for (const target of ['preview', 'production'] as const) {
+      expect(projectEnvFingerprint(untargeted, target)).toBe(envSha([...base, 'ANY="a"']));
+    }
+  });
+
+  it('never reads a sensitive value: it counts by its presence only', () => {
+    const withToken = (value: string | undefined) =>
+      projectEnvs().map((e) => (e.type === 'sensitive' ? { ...e, value } : e));
+    expect(projectEnvFingerprint(withToken('v1.moonpad.secret'), 'preview')).toBe(ENV_SHA);
+    expect(projectEnvFingerprint(withToken(undefined), 'preview')).toBe(ENV_SHA);
+    const without = projectEnvs().filter((e) => e.type !== 'sensitive');
+    expect(projectEnvFingerprint(without, 'preview')).toBe(envSha(base.slice(0, 2)));
+  });
+
+  it('keeps every variable apart: encrypted, branch-scoped, and values that look like lines', () => {
+    const one = (e: Record<string, unknown>) =>
+      projectEnvFingerprint([{ key: 'A', target: ['preview'], ...e }], 'preview');
+    expect(one({ value: 'c1', type: 'encrypted' })).toBe(envSha(['A=<encrypted>"c1"']));
+    expect(one({ value: 'v', type: 'encrypted', decrypted: true })).toBe(envSha(['A="v"']));
+    expect(one({ value: 'v', type: 'plain', gitBranch: 'dev' })).toBe(envSha(['A@dev="v"']));
+    // A value holding a newline cannot pass for two variables.
+    expect(one({ value: 'x\nB="y"', type: 'plain' })).not.toBe(
+      projectEnvFingerprint(
+        [
+          { key: 'A', value: 'x', type: 'plain', target: ['preview'] },
+          { key: 'B', value: 'y', type: 'plain', target: ['preview'] },
+        ],
+        'preview',
+      ),
+    );
+  });
+});
+
+describe('deployment reuse and the project environment', () => {
+  const metaOf = (call: RecordedCall | undefined): Record<string, unknown> | undefined =>
+    (call?.body as { meta?: Record<string, unknown> } | undefined)?.meta;
+  /** The commit lookup lists one earlier deployment, read in full from `record`. */
+  const lookupOffering = (record: Record<string, unknown>): Route[] => [
+    {
+      method: 'GET',
+      path: '/v6/deployments',
+      handler: () => json({ deployments: [{ uid: String(record.id) }] }),
+    },
+    { method: 'GET', path: `/v13/deployments/${String(record.id)}`, handler: () => json(record) },
+  ];
+  const createdRoute = (over: Record<string, unknown> = {}): Route => ({
+    method: 'POST',
+    path: '/v13/deployments',
+    handler: () => createdDeployment({ id: 'dpl_new', ...over }),
+  });
+
+  it('reuses an earlier deployment of the commit built with the same variables', async () => {
+    const { source, calls } = fakeSource();
+    const { client, stub } = make(
+      lookupOffering(
+        deploymentJson('READY', {
+          id: 'dpl_9',
+          projectId: 'prj_123',
+          target: 'production',
+          meta: { githubCommitSha: COMMIT, forgeEnvSha256: ENV_SHA },
+        }),
+      ),
+      { source },
+    );
+    const d = await client.createDeployment({
+      project: PROJECT,
+      repo: 'lp-moonpad',
+      ref: 'main',
+      sha: COMMIT,
+      target: 'production',
+    });
+    expect(d).toMatchObject({ id: 'dpl_9', target: 'production', commitSha: COMMIT });
+    expect(deploymentPosts(stub)).toHaveLength(0);
+    expect(calls.trees).toEqual([]);
+    // The variables are read first, decrypted, in the team scope.
+    expect(stub.calls.map((c) => `${c.method} ${c.path}`)).toEqual([
+      'GET /v10/projects/prj_123/env',
+      'GET /v6/deployments',
+      'GET /v13/deployments/dpl_9',
+    ]);
+    const env = stub.find('GET', '/v10/projects/prj_123/env')[0]!;
+    expect(env.query.get('decrypt')).toBe('true');
+    expect(env.query.get('teamId')).toBe(TEAM);
+  });
+
+  it('regression: rebuilds a commit whose deployment was built with other variables', async () => {
+    // Devnet, job 59a523e0: FORGE's public URL (so the RPC relay URL) changed, the modification
+    // made no code change, and the release reused the production deployment of that commit built
+    // with the old relay URL: the live site pointed at a dead relay.
+    const stale = envShaFor(OLD_RELAY_URL);
+    for (const listed of [false, true]) {
+      const { source } = fakeSource();
+      let made: Record<string, unknown> | undefined;
+      const { client, stub } = make(
+        [
+          {
+            method: 'GET',
+            path: '/v6/deployments',
+            handler: () =>
+              json({
+                deployments: [
+                  ...(made ? [{ uid: 'dpl_new' }] : []),
+                  // The list may carry the fingerprint: then the record is not even read.
+                  listed
+                    ? { uid: 'dpl_old', meta: { githubCommitSha: COMMIT, forgeEnvSha256: stale } }
+                    : { uid: 'dpl_old' },
+                ],
+              }),
+          },
+          {
+            method: 'GET',
+            path: '/v13/deployments/dpl_old',
+            handler: () =>
+              json(
+                deploymentJson('READY', {
+                  id: 'dpl_old',
+                  projectId: 'prj_123',
+                  target: 'production',
+                  meta: { githubCommitSha: COMMIT, forgeEnvSha256: stale },
+                }),
+              ),
+          },
+          { method: 'GET', path: '/v13/deployments/dpl_new', handler: () => json(made) },
+          {
+            method: 'POST',
+            path: '/v13/deployments',
+            handler: (call) => {
+              made = deploymentJson('READY', {
+                id: 'dpl_new',
+                projectId: 'prj_123',
+                target: 'production',
+                autoAssignCustomDomains: false,
+                meta: metaOf(call),
+              });
+              return json(made);
+            },
+          },
+        ],
+        { source },
+      );
+      const release = () =>
+        client.createDeployment({
+          project: PROJECT,
+          repo: 'lp-moonpad',
+          ref: 'main',
+          sha: COMMIT,
+          target: 'production',
+        });
+      expect((await release()).id).toBe('dpl_new');
+      const posts = deploymentPosts(stub);
+      expect(posts).toHaveLength(1);
+      expect(metaOf(posts[0])).toMatchObject({ githubCommitSha: COMMIT, forgeEnvSha256: ENV_SHA });
+      expect(stub.find('GET', '/v13/deployments/dpl_old')).toHaveLength(listed ? 0 : 1);
+
+      // Same commit, same variables: the deployment just made is the one reused.
+      expect((await release()).id).toBe('dpl_new');
+      expect(deploymentPosts(stub)).toHaveLength(1);
+    }
+  });
+
+  it('never reuses an earlier deployment that recorded no environment fingerprint', async () => {
+    // Every deployment made before the rule: rebuilt once.
+    const { source } = fakeSource();
+    const { client, stub } = make(
+      [
+        ...lookupOffering(
+          deploymentJson('READY', {
+            id: 'dpl_legacy',
+            projectId: 'prj_123',
+            meta: { githubCommitSha: COMMIT },
+          }),
+        ),
+        createdRoute(),
+      ],
+      { source },
+    );
+    const d = await client.createDeployment({
+      project: PROJECT,
+      repo: 'lp-moonpad',
+      ref: 'forge/job1',
+      sha: COMMIT,
+    });
+    expect(d.id).toBe('dpl_new');
+    expect(stub.find('GET', '/v13/deployments/dpl_legacy')).toHaveLength(1);
+    const posts = deploymentPosts(stub);
+    expect(posts).toHaveLength(1);
+    expect(metaOf(posts[0])?.forgeEnvSha256).toBe(ENV_SHA);
+  });
+
+  it('fails closed when the variables cannot be read in full: no reuse, no fingerprint', async () => {
+    const answers: Array<[string, () => Response]> = [
+      ['server error', () => json({ error: { message: 'down' } }, 500)],
+      ['forbidden', () => json({ error: { code: 'forbidden', message: 'Not allowed' } }, 403)],
+      ['unexpected answer', () => json({ variables: [] })],
+      [
+        'another page',
+        () => json({ envs: projectEnvs(), pagination: { count: 4, next: 1_800_000_000_000 } }),
+      ],
+    ];
+    for (const [what, answer] of answers) {
+      const { source } = fakeSource();
+      const { client, stub } = make(
+        [
+          { method: 'GET', path: '/v10/projects/prj_123/env', handler: answer },
+          // A deployment of this commit built with the current variables: still not reused.
+          ...lookupOffering(
+            deploymentJson('READY', {
+              id: 'dpl_9',
+              projectId: 'prj_123',
+              meta: { githubCommitSha: COMMIT, forgeEnvSha256: ENV_SHA },
+            }),
+          ),
+          createdRoute(),
+        ],
+        { source },
+      );
+      const d = await client.createDeployment({
+        project: PROJECT,
+        repo: 'lp-moonpad',
+        ref: 'main',
+        sha: COMMIT,
+      });
+      expect(d.id, what).toBe('dpl_new');
+      expect(stub.find('GET', '/v6/deployments'), what).toHaveLength(0);
+      const posts = deploymentPosts(stub);
+      expect(posts, what).toHaveLength(1);
+      // Never reused later either.
+      expect(metaOf(posts[0]), what).toMatchObject({ githubCommitSha: COMMIT });
+      expect(metaOf(posts[0]), what).not.toHaveProperty('forgeEnvSha256');
+    }
+  });
+
+  it('after an ambiguous failure, adopts the lost creation of a request that sent no fingerprint', async () => {
+    const { source } = fakeSource();
+    let lost: string | undefined;
+    const { client, stub } = make(
+      [
+        { method: 'GET', path: '/v10/projects/prj_123/env', handler: () => json({ nope: true }) },
+        {
+          method: 'GET',
+          path: '/v6/deployments',
+          handler: (call) => {
+            const byRequest = call.query.get('meta-forgeRequestId');
+            return json({
+              deployments: lost !== undefined && byRequest === lost ? [{ uid: 'dpl_1' }] : [],
+            });
+          },
+        },
+        {
+          method: 'POST',
+          path: '/v13/deployments',
+          handler: (call) => {
+            lost = requestIdOf(call);
+            return json({ error: { message: 'oops' } }, 502);
+          },
+        },
+        {
+          method: 'GET',
+          path: '/v13/deployments/dpl_1',
+          handler: () =>
+            createdDeployment({ meta: { githubCommitSha: COMMIT, forgeRequestId: lost } }),
+        },
+      ],
+      { source },
+    );
+    const d = await client.createDeployment({
+      project: PROJECT,
+      repo: 'lp-moonpad',
+      ref: 'main',
+      sha: COMMIT,
+    });
+    expect(d.id).toBe('dpl_1');
+    expect(deploymentPosts(stub)).toHaveLength(1);
+    // Only the nonce lookup: without a fingerprint, the commit lookup never runs.
+    expect(
+      stub.find('GET', '/v6/deployments').map((c) => c.query.get('meta-forgeRequestId')),
+    ).toEqual([lost]);
+  });
+
+  it('after an ambiguous failure, the commit lookup applies the same rule', async () => {
+    const { source } = fakeSource();
+    let posts = 0;
+    const { client, stub } = make(
+      [
+        {
+          method: 'GET',
+          path: '/v6/deployments',
+          // Nothing carries the lost nonce; the commit has a deployment built with old variables.
+          handler: (call) =>
+            json({
+              deployments:
+                call.query.get('meta-forgeRequestId') === null ? [{ uid: 'dpl_old' }] : [],
+            }),
+        },
+        {
+          method: 'GET',
+          path: '/v13/deployments/dpl_old',
+          handler: () =>
+            json(
+              deploymentJson('READY', {
+                id: 'dpl_old',
+                projectId: 'prj_123',
+                meta: { githubCommitSha: COMMIT, forgeEnvSha256: envShaFor(OLD_RELAY_URL) },
+              }),
+            ),
+        },
+        {
+          method: 'POST',
+          path: '/v13/deployments',
+          handler: () =>
+            ++posts === 1
+              ? json({ error: { message: 'down' } }, 503)
+              : createdDeployment({ id: 'dpl_new' }),
+        },
+      ],
+      { source },
+    );
+    const d = await client.createDeployment({
+      project: PROJECT,
+      repo: 'lp-moonpad',
+      ref: 'main',
+      sha: COMMIT,
+    });
+    expect(d.id).toBe('dpl_new');
+    const created = deploymentPosts(stub);
+    expect(created).toHaveLength(2);
+    // Read before the first request and again after its failure; refused both times.
+    expect(stub.find('GET', '/v13/deployments/dpl_old')).toHaveLength(2);
+    expect(created.map((c) => metaOf(c)?.forgeEnvSha256)).toEqual([ENV_SHA, ENV_SHA]);
   });
 });
 

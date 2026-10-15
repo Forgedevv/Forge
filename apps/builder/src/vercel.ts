@@ -77,16 +77,28 @@ import {
  *   the same as a git deployment of that commit.
  * - Commit: recorded in `meta.githubCommitSha` (with the ref, repo and org), which `toDeployment`
  *   reports as `commitSha`, so every later check of the deployed commit keeps working.
- * - Idempotency rule: before creating anything, an earlier deployment of the same project, target
- *   and commit is looked up; one that is queued, building or READY (and, for production, staged)
- *   is returned instead of a new one. A failed or canceled one is never reused: a new deployment
- *   is created. The creation itself is never replayed blindly after an ambiguous failure (network
- *   error, timeout, 5xx): each request carries its own nonce (`meta.forgeRequestId`), which is
- *   looked up first (a few reads a moment apart, Vercel may list a new deployment late), then the
- *   lookup of the commit runs again, then at most one more attempt. Vercel's own deduplication of
- *   similar deployments is turned off (`forceNew=1`), so a deployment always carries the commit it
- *   was asked for. The project's environment variables are not part of the rule: a reused
- *   deployment keeps the values it was built with, as with git deployments.
+ * - Idempotency rule: before creating anything, an earlier deployment of the same project, target,
+ *   commit and environment is looked up; one that is queued, building or READY (and, for
+ *   production, staged) is returned instead of a new one. A failed or canceled one is never
+ *   reused: a new deployment is created. The creation itself is never replayed blindly after an
+ *   ambiguous failure (network error, timeout, 5xx): each request carries its own nonce
+ *   (`meta.forgeRequestId`), which is looked up first (a few reads a moment apart, Vercel may list
+ *   a new deployment late), then the lookup of the commit runs again (same rule), then at most one
+ *   more attempt. Vercel's own deduplication of similar deployments is turned off (`forceNew=1`),
+ *   so a deployment always carries the commit it was asked for.
+ * - Environment: a deployment keeps the project variables it was built with (`NEXT_PUBLIC_*` are
+ *   inlined in the browser bundle, and Vercel never applies a later change to an existing
+ *   deployment). A rebuild after a variable changed (for example the RPC relay URL) with no code
+ *   change has the same commit: reusing the earlier deployment would serve the old value. So the
+ *   variables that apply to the deployment's target are read first (`GET /v10/projects/{id}/env`,
+ *   decrypted) and reduced to a fingerprint (`projectEnvFingerprint`, sha256 of the sorted
+ *   `key=value` lines), recorded in `meta.forgeEnvSha256` of every new deployment. Only an earlier
+ *   deployment that recorded the same fingerprint is reused; one without it (made before this
+ *   rule) never is. Values Vercel never returns (`sensitive`: the relay token) count by their
+ *   presence only, so a rotation of the relay token secret is not seen by this rule. When the
+ *   variables cannot be read in full (any error, an unexpected answer, a second page), nothing is
+ *   reused and the new deployment records no fingerprint, so it is never reused either. The
+ *   deployment of a lost request, found by its nonce, must carry the fingerprint that request sent.
  * - Production is staged: a production deployment still building is only accepted when Vercel
  *   echoes `autoAssignCustomDomains: false` (otherwise it is canceled and refused), and once it is
  *   READY the project's production must not point at it yet (`waitForDeployment`): only the
@@ -398,6 +410,54 @@ function sameHost(a: string, b: string): boolean {
   }
 }
 
+/** One variable as `GET /v10/projects/{id}/env` lists it (only what the fingerprint reads). */
+export interface ProjectEnvEntry {
+  key: string;
+  value?: string | null | undefined;
+  type?: string | null | undefined;
+  /** Vercel answers an array, or a single target. */
+  target?: string | readonly string[] | null | undefined;
+  gitBranch?: string | null | undefined;
+  decrypted?: boolean | null | undefined;
+}
+
+/** First line of the fingerprinted text: a later change of the rule never matches this one. */
+const ENV_FINGERPRINT_VERSION = 'forge-env:v1';
+
+/**
+ * Fingerprint of the variables a deployment of `target` is built with (module comment): sha256
+ * hex of the sorted `key=value` lines of every variable whose target includes `target` (or that
+ * names no target: counting more only makes reuse rarer). The value is JSON-encoded, so no value
+ * can pass for two lines; a branch-scoped variable is `key@branch`. A `sensitive` (or legacy
+ * `secret`) value is never part of it, nor read: Vercel does not return it, it counts by its
+ * presence only (`key=<sensitive>`). A value Vercel left encrypted counts by its ciphertext.
+ * Deterministic: the order Vercel lists the variables in does not matter.
+ */
+export function projectEnvFingerprint(
+  envs: readonly ProjectEnvEntry[],
+  target: 'production' | 'preview',
+): string {
+  const lines: string[] = [];
+  for (const e of envs) {
+    const targets = typeof e.target === 'string' ? [e.target] : e.target;
+    if (targets !== null && targets !== undefined && !targets.includes(target)) continue;
+    const name = e.gitBranch ? `${e.key}@${e.gitBranch}` : e.key;
+    lines.push(`${name}=${envValueToken(e)}`);
+  }
+  // Code-unit order, independent of the locale.
+  lines.sort();
+  return createHash('sha256')
+    .update([ENV_FINGERPRINT_VERSION, ...lines].join('\n'), 'utf8')
+    .digest('hex');
+}
+
+function envValueToken(e: ProjectEnvEntry): string {
+  const type = e.type ?? 'unknown';
+  if (type === 'sensitive' || type === 'secret' || typeof e.value !== 'string') return `<${type}>`;
+  if (type === 'encrypted' && e.decrypted !== true) return `<encrypted>${JSON.stringify(e.value)}`;
+  return JSON.stringify(e.value);
+}
+
 // ---------------------------------------------------------------------------------------------
 // Public types
 // ---------------------------------------------------------------------------------------------
@@ -593,8 +653,9 @@ export interface VercelClient {
   disableGitDeployments(projectId: string): Promise<VercelProject>;
   /**
    * Deploys the exact files of one commit of the client repo (module comment). Idempotent per
-   * commit: an earlier deployment of the same project, target and commit that has not failed is
-   * returned instead. A production one is staged: it never takes the production domains by
+   * commit and environment: an earlier deployment of the same project, target and commit, built
+   * with the same project variables (`meta.forgeEnvSha256`), that has not failed is returned
+   * instead. A production one is staged: it never takes the production domains by
    * itself, only `promoteToProduction` does (after the caller's checks). One still building that
    * Vercel does not confirm as staged is canceled and refused; one that does not report this
    * project is refused.
@@ -685,7 +746,11 @@ const DeploymentSchema = z.object({
   projectId: z.string().optional(),
   gitSource: z.object({ sha: z.string().optional() }).nullish(),
   meta: z
-    .object({ githubCommitSha: z.string().optional(), forgeRequestId: z.string().optional() })
+    .object({
+      githubCommitSha: z.string().optional(),
+      forgeRequestId: z.string().optional(),
+      forgeEnvSha256: z.string().optional(),
+    })
     .nullish(),
   /** Echo of the create option ("applies to custom domains only, defaults to `true`"). */
   autoAssignCustomDomains: z.boolean().nullish(),
@@ -701,12 +766,34 @@ const DeploymentListSchema = z.object({
       state: z.string().nullish(),
       target: z.string().nullish(),
       meta: z
-        .object({ githubCommitSha: z.string().optional(), forgeRequestId: z.string().optional() })
+        .object({
+          githubCommitSha: z.string().optional(),
+          forgeRequestId: z.string().optional(),
+          forgeEnvSha256: z.string().optional(),
+        })
         .nullish(),
     }),
   ),
 });
 type DeploymentListItem = z.infer<typeof DeploymentListSchema>['deployments'][number];
+
+/**
+ * `GET /v10/projects/{id}/env` (only what the fingerprint reads). `pagination.next` set means
+ * another page: the list is then not the whole environment.
+ */
+const ProjectEnvListSchema = z.object({
+  envs: z.array(
+    z.object({
+      key: z.string(),
+      value: z.string().nullish(),
+      type: z.string().nullish(),
+      target: z.union([z.array(z.string()), z.string()]).nullish(),
+      gitBranch: z.string().nullish(),
+      decrypted: z.boolean().nullish(),
+    }),
+  ),
+  pagination: z.object({ next: z.number().nullish() }).nullish(),
+});
 
 /**
  * Nonce of one creation request (`meta.forgeRequestId`), looked up after an ambiguous failure:
@@ -1254,8 +1341,10 @@ export function createVercelClient(opts: VercelClientOptions): VercelClient {
     const production = target === 'production';
     const sha = input.sha ?? (await branchHead(source, input.repo, input.ref));
 
-    // Idempotency rule (module comment): an earlier deployment of this commit is reused.
-    const earlier = await findReusableDeployment(projectId, sha, target);
+    // Idempotency rule (module comment): an earlier deployment of this commit, built with the
+    // variables the project holds now, is reused. Unreadable variables: nothing is reused.
+    const envSha = await readEnvFingerprint(projectId, target);
+    const earlier = await findReusableDeployment(projectId, sha, target, envSha);
     if (earlier) {
       const reused = toDeployment(earlier);
       if (production && !FINAL_STATES.has(reused.readyState)) trackStaged(reused.id, projectId);
@@ -1279,6 +1368,9 @@ export function createVercelClient(opts: VercelClientOptions): VercelClient {
         githubCommitRef: input.ref,
         githubRepo: input.repo,
         githubOrg,
+        // The variables this build reads; absent when they could not be read in full, so the
+        // deployment is never reused.
+        ...(envSha !== undefined ? { forgeEnvSha256: envSha } : {}),
       },
     };
     const created = await postDeployment(body, {
@@ -1287,6 +1379,7 @@ export function createVercelClient(opts: VercelClientOptions): VercelClient {
       projectId,
       sha,
       target,
+      envSha,
       prepared,
     });
     const deployment = toDeployment(created);
@@ -1345,6 +1438,37 @@ export function createVercelClient(opts: VercelClientOptions): VercelClient {
   // --- idempotency lookup --------------------------------------------------------------------
 
   /**
+   * Fingerprint of the project variables a deployment of `target` is built with
+   * (`projectEnvFingerprint`), or undefined when they cannot be read in full: an error (after the
+   * HTTP client's retries), an unexpected answer or a list with another page. Fails closed without
+   * failing the deployment: undefined means no earlier deployment is reused and the new one
+   * records no fingerprint. Neither the values nor the list are logged or kept.
+   */
+  async function readEnvFingerprint(
+    projectId: string,
+    target: 'production' | 'preview',
+  ): Promise<string | undefined> {
+    let res: HttpResponse;
+    try {
+      res = await call({
+        method: 'GET',
+        path: `/v10/projects/${seg(projectId, 'project')}/env`,
+        // Encrypted values come back in clear (the client projects only hold public ones, plus
+        // the `sensitive` relay token, which Vercel never returns).
+        query: { decrypt: 'true' },
+      });
+    } catch (err) {
+      if (err instanceof ServiceError) return undefined;
+      throw err;
+    }
+    const parsed = ProjectEnvListSchema.safeParse(res.json);
+    if (!parsed.success) return undefined;
+    const next = parsed.data.pagination?.next;
+    if (next !== null && next !== undefined) return undefined;
+    return projectEnvFingerprint(parsed.data.envs, target);
+  }
+
+  /**
    * Latest deployments of the project (of one target when given), filtered on one metadata value
    * when Vercel can.
    */
@@ -1386,11 +1510,14 @@ export function createVercelClient(opts: VercelClientOptions): VercelClient {
   /**
    * The deployment one creation request made, found by its nonce (`meta.forgeRequestId`), read in
    * full; undefined when the bounded lookup finds none. Any target: the first deployment of a
-   * project may come back as production whatever it asked for.
+   * project may come back as production whatever it asked for. It must carry the environment
+   * fingerprint that request sent (`envSha`, absent when it sent none): always true of the
+   * deployment of that very request, checked anyway like every other field read back.
    */
   async function findByRequestId(
     projectId: string,
     requestId: string,
+    envSha: string | undefined,
   ): Promise<DeploymentBody | undefined> {
     for (let attempt = 0; attempt < REQUEST_LOOKUP_TRIES; attempt++) {
       if (attempt > 0) await sleep(REQUEST_LOOKUP_WAIT_MS);
@@ -1405,27 +1532,38 @@ export function createVercelClient(opts: VercelClientOptions): VercelClient {
         if (checked >= REUSE_MAX_CHECKS) break;
         checked++;
         const full = await getDeploymentBody(item.uid);
-        if (full.meta?.forgeRequestId === requestId && full.projectId === projectId) return full;
+        if (
+          full.meta?.forgeRequestId === requestId &&
+          full.projectId === projectId &&
+          full.meta.forgeEnvSha256 === envSha
+        ) {
+          return full;
+        }
       }
     }
     return undefined;
   }
 
   /**
-   * An earlier deployment of exactly this project, target and commit that has not failed (and,
-   * for production, that is staged or already finished), read in full; undefined when none.
+   * An earlier deployment of exactly this project, target and commit, built with the variables
+   * whose fingerprint is `envSha`, that has not failed (and, for production, that is staged or
+   * already finished), read in full; undefined when none, or when `envSha` is undefined (the
+   * variables could not be read: no earlier deployment can be vouched for, none is looked up).
    */
   async function findReusableDeployment(
     projectId: string,
     sha: string,
     target: 'production' | 'preview',
+    envSha: string | undefined,
   ): Promise<DeploymentBody | undefined> {
+    if (envSha === undefined) return undefined;
     let checked = 0;
     for (const item of await listEarlierDeployments(projectId, sha, target)) {
       // Cheap pre-checks on the list entry, when it carries the fields.
       const state = (item.readyState ?? item.state ?? '').toUpperCase();
       if (state !== '' && !REUSABLE_STATES.has(state)) continue;
       if (item.meta?.githubCommitSha !== undefined && item.meta.githubCommitSha !== sha) continue;
+      if (item.meta?.forgeEnvSha256 !== undefined && item.meta.forgeEnvSha256 !== envSha) continue;
       if (
         item.target !== undefined &&
         (item.target === 'production') !== (target === 'production')
@@ -1436,7 +1574,7 @@ export function createVercelClient(opts: VercelClientOptions): VercelClient {
       checked++;
       // The decision is made on the full record only.
       const full = await getDeploymentBody(item.uid);
-      if (isReusable(full, projectId, sha, target)) return full;
+      if (isReusable(full, projectId, sha, target, envSha)) return full;
     }
     return undefined;
   }
@@ -1446,6 +1584,7 @@ export function createVercelClient(opts: VercelClientOptions): VercelClient {
     projectId: string,
     sha: string,
     target: 'production' | 'preview',
+    envSha: string,
   ): boolean {
     const state = d.readyState.toUpperCase();
     const view = toDeployment(d);
@@ -1454,6 +1593,9 @@ export function createVercelClient(opts: VercelClientOptions): VercelClient {
       view.projectId === projectId &&
       view.commitSha === sha &&
       view.target === target &&
+      // Built with the same variables; a deployment that recorded none (made before the rule, or
+      // when the variables could not be read) never matches.
+      d.meta?.forgeEnvSha256 === envSha &&
       // A production deployment still building is only adopted when Vercel confirms it is staged
       // (it would otherwise take the domains by itself once READY).
       !(target === 'production' && d.autoAssignCustomDomains !== false && state !== 'READY')
@@ -1631,7 +1773,8 @@ export function createVercelClient(opts: VercelClientOptions): VercelClient {
    * `POST /v13/deployments`; on `missing_files`, uploads those files and retries once. Never
    * replayed blindly: every request carries its own nonce (`meta.forgeRequestId`); after an
    * ambiguous failure the deployment of that very request is looked up (a few reads, a moment
-   * apart), then the idempotency lookup of the commit runs, and only then one more request.
+   * apart), then the idempotency lookup of the commit runs (same environment fingerprint), and
+   * only then one more request.
    */
   async function postDeployment(
     body: DeploymentRequest,
@@ -1641,6 +1784,8 @@ export function createVercelClient(opts: VercelClientOptions): VercelClient {
       projectId: string;
       sha: string;
       target: 'production' | 'preview';
+      /** Fingerprint recorded in `body.meta.forgeEnvSha256` (absent there when undefined). */
+      envSha: string | undefined;
       prepared: PreparedFiles;
     },
   ): Promise<DeploymentBody> {
@@ -1668,9 +1813,14 @@ export function createVercelClient(opts: VercelClientOptions): VercelClient {
           replayed = true;
           // The deployment may exist although its answer was lost: this request's own first
           // (it is what the answer would have been, checked like it by the caller).
-          const mine = await findByRequestId(ctx.projectId, requestId);
+          const mine = await findByRequestId(ctx.projectId, requestId, ctx.envSha);
           if (mine) return mine;
-          const earlier = await findReusableDeployment(ctx.projectId, ctx.sha, ctx.target);
+          const earlier = await findReusableDeployment(
+            ctx.projectId,
+            ctx.sha,
+            ctx.target,
+            ctx.envSha,
+          );
           if (earlier) return earlier;
           continue;
         }

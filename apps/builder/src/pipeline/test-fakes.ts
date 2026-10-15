@@ -668,6 +668,12 @@ export interface FakeDeployment extends VercelDeployment {
   env: Record<string, string>;
 }
 
+/** Same variables and values (vercel.ts compares a fingerprint of them). */
+function sameEnv(a: Record<string, string>, b: Record<string, string>): boolean {
+  const keys = Object.keys(a);
+  return keys.length === Object.keys(b).length && keys.every((k) => b[k] === a[k]);
+}
+
 export class FakeVercel extends Recorder implements PipelineVercel {
   /**
    * What Vercel does to the first deployment of a project that has no production deployment yet
@@ -781,12 +787,14 @@ export class FakeVercel extends Recorder implements PipelineVercel {
           ? 'production'
           : (input.target ?? 'preview');
       // Same idempotency rule as vercel.ts: an earlier deployment of this commit, project and
-      // target is reused unless it failed.
+      // target, built with the variables the project holds now, is reused unless it failed.
+      const env = Object.fromEntries(p.env);
       const existing = [...this.deployments.values()].find(
         (d) =>
           d.projectId === p.id &&
           d.sha === input.sha &&
           d.target === target &&
+          sameEnv(d.env, env) &&
           d.readyState !== 'ERROR' &&
           d.readyState !== 'CANCELED',
       );
@@ -803,7 +811,7 @@ export class FakeVercel extends Recorder implements PipelineVercel {
         projectId: p.id,
         ref: input.ref,
         sha: input.sha,
-        env: Object.fromEntries(p.env),
+        env,
       };
       this.deployments.set(d.id, d);
       if (takesProduction) this.makeProduction(p, d.id);
