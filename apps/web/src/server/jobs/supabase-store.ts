@@ -35,11 +35,38 @@ function fail(operation: string, error: DbError | null): never {
   throw new StoreError(operation, error?.code);
 }
 
-/** Bounds the `in (...)` lists (a wallet has a handful of launchpads). */
+/** Ids per `in (...)` filter, so that every request URL stays bounded. */
 const MAX_IN_LIST = 200;
+/** Rows per read. A read that finds more fails closed (StoreError) instead of cutting the list. */
+const MAX_ROWS = 1000;
 
-function bounded(ids: readonly string[]): string[] {
-  return [...new Set(ids)].slice(0, MAX_IN_LIST);
+/**
+ * The unique ids in chunks of at most MAX_IN_LIST: a long list is read in several requests, and
+ * no id is ever dropped (a dropped job id would hide its payments or its refund).
+ */
+export function idChunks(ids: readonly string[]): string[][] {
+  const unique = [...new Set(ids)];
+  const chunks: string[][] = [];
+  for (let i = 0; i < unique.length; i += MAX_IN_LIST) {
+    chunks.push(unique.slice(i, i + MAX_IN_LIST));
+  }
+  return chunks;
+}
+
+/**
+ * The rows of a read made with `.limit(limit + 1)`. More than `limit` rows means the list would
+ * be cut: fail closed rather than answer from part of it.
+ */
+function allRows(operation: string, data: unknown, limit: number): unknown[] {
+  const rows = Array.isArray(data) ? (data as unknown[]) : [];
+  if (rows.length > limit) throw new StoreError(`${operation}: more than ${limit} rows`);
+  return rows;
+}
+
+/** Newest first, ties broken by id (the order of one read, kept across chunks). */
+function newestFirst(a: JobRecord, b: JobRecord): number {
+  if (a.createdAt !== b.createdAt) return a.createdAt < b.createdAt ? 1 : -1;
+  return a.id < b.id ? 1 : a.id > b.id ? -1 : 0;
 }
 
 export function createServiceSupabaseClient(url: string, serviceRoleKey: string): SupabaseClient {
@@ -127,36 +154,44 @@ export class SupabaseRoutesStore implements RoutesStore {
       .select(LAUNCHPAD_COLUMNS)
       .eq('owner_wallet', wallet)
       .order('created_at', { ascending: false })
-      .limit(MAX_IN_LIST);
+      .limit(MAX_IN_LIST + 1);
     if (res.error) fail('read launchpads', res.error);
-    return (res.data ?? []).map(parseLaunchpadRow);
+    return allRows('read launchpads', res.data, MAX_IN_LIST).map(parseLaunchpadRow);
   }
 
   async listOwnedJobs(wallet: string, launchpadIds: readonly string[]): Promise<JobRecord[]> {
-    const ids = bounded(launchpadIds);
-    if (ids.length === 0) return [];
-    const res = await this.db
-      .from('jobs')
-      .select(`${JOB_COLUMNS}, launchpads!inner(owner_wallet)`)
-      .in('launchpad_id', ids)
-      .eq('launchpads.owner_wallet', wallet)
-      .order('created_at', { ascending: false })
-      .limit(1000);
-    if (res.error) fail('read jobs', res.error);
-    return (res.data ?? []).map(parseJobRow);
+    const jobs: JobRecord[] = [];
+    for (const ids of idChunks(launchpadIds)) {
+      const res = await this.db
+        .from('jobs')
+        .select(`${JOB_COLUMNS}, launchpads!inner(owner_wallet)`)
+        .in('launchpad_id', ids)
+        .eq('launchpads.owner_wallet', wallet)
+        .order('created_at', { ascending: false })
+        .limit(MAX_ROWS + 1);
+      if (res.error) fail('read jobs', res.error);
+      jobs.push(...allRows('read jobs', res.data, MAX_ROWS).map(parseJobRow));
+    }
+    return jobs.sort(newestFirst);
   }
 
   async listRefunds(wallet: string, jobIds: readonly string[]): Promise<RefundRecord[]> {
-    const ids = bounded(jobIds);
-    if (ids.length === 0) return [];
-    const res = await this.db
-      .from('payments')
-      .select('job_id, lamports, refund_signature')
-      .in('job_id', ids)
-      .eq('payer_wallet', wallet)
-      .eq('status', 'refunded');
-    if (res.error) fail('read refunds', res.error);
-    return (res.data ?? []).map(parseRefundRow).filter((r): r is RefundRecord => r !== null);
+    const refunds: RefundRecord[] = [];
+    for (const ids of idChunks(jobIds)) {
+      const res = await this.db
+        .from('payments')
+        .select('job_id, lamports, refund_signature')
+        .in('job_id', ids)
+        .eq('payer_wallet', wallet)
+        .eq('status', 'refunded')
+        .limit(MAX_ROWS + 1);
+      if (res.error) fail('read refunds', res.error);
+      for (const row of allRows('read refunds', res.data, MAX_ROWS)) {
+        const refund = parseRefundRow(row);
+        if (refund !== null) refunds.push(refund);
+      }
+    }
+    return refunds;
   }
 
   async getOwnedConversation(
@@ -219,32 +254,38 @@ export class SupabaseRoutesStore implements RoutesStore {
   }
 
   async listJobPayments(wallet: string, jobIds: readonly string[]): Promise<JobPaymentRecord[]> {
-    const ids = bounded(jobIds);
-    if (ids.length === 0) return [];
-    const res = await this.db
-      .from('payments')
-      .select(
-        'job_id, status, tx_signature, refund_signature, quote_expires_at, jobs!inner(launchpads!inner(owner_wallet))',
-      )
-      .in('job_id', ids)
-      .eq('jobs.launchpads.owner_wallet', wallet)
-      .limit(1000);
-    if (res.error) fail('read job payments', res.error);
-    return (res.data ?? []).map(parseJobPaymentRow);
+    const payments: JobPaymentRecord[] = [];
+    for (const ids of idChunks(jobIds)) {
+      const res = await this.db
+        .from('payments')
+        .select(
+          'job_id, status, tx_signature, refund_signature, quote_expires_at, jobs!inner(launchpads!inner(owner_wallet))',
+        )
+        .in('job_id', ids)
+        .eq('jobs.launchpads.owner_wallet', wallet)
+        .limit(MAX_ROWS + 1);
+      if (res.error) fail('read job payments', res.error);
+      payments.push(...allRows('read job payments', res.data, MAX_ROWS).map(parseJobPaymentRow));
+    }
+    return payments;
   }
 
   async countOpenPaymentAnomalies(wallet: string, jobIds: readonly string[]): Promise<number> {
-    const ids = bounded(jobIds);
-    if (ids.length === 0) return 0;
-    const res = await this.db
-      .from('payment_anomalies')
-      .select('id, jobs!inner(launchpads!inner(owner_wallet))', { count: 'exact', head: true })
-      .in('job_id', ids)
-      .eq('jobs.launchpads.owner_wallet', wallet)
-      .is('resolved_at', null);
-    if (res.error) fail('read payment anomalies', res.error);
-    if (typeof res.count !== 'number') throw new StoreError('unexpected payment anomalies count');
-    return res.count;
+    let total = 0;
+    for (const ids of idChunks(jobIds)) {
+      const res = await this.db
+        .from('payment_anomalies')
+        .select('id, jobs!inner(launchpads!inner(owner_wallet))', { count: 'exact', head: true })
+        .in('job_id', ids)
+        .eq('jobs.launchpads.owner_wallet', wallet)
+        .is('resolved_at', null);
+      if (res.error) fail('read payment anomalies', res.error);
+      if (typeof res.count !== 'number') {
+        throw new StoreError('unexpected payment anomalies count');
+      }
+      total += res.count;
+    }
+    return total;
   }
 
   async insertCreationJob(launchpadId: string): Promise<JobRecord> {

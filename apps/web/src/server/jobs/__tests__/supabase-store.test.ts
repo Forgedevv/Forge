@@ -272,6 +272,68 @@ describe('SupabaseRoutesStore owner filters', () => {
     expect((error as StoreError).dbCode).toBe('23505');
   });
 
+  // Before: ids past the 200th were dropped silently, so the payments and anomalies of older jobs
+  // (a draft started again many times) were never read.
+  it('reads every id of a long list, in bounded chunks, never dropping one', async () => {
+    const jobIds = Array.from({ length: 450 }, (_, i) => `j${i}`);
+    const { store, calls } = fakeDb([
+      { data: [] },
+      { data: [] },
+      { data: [] },
+      { count: 1 },
+      { count: 0 },
+      { count: 2 },
+      { data: [] },
+      { data: [] },
+      { data: [] },
+    ]);
+    await store.listJobPayments(W, [...jobIds, 'j0']);
+    expect(await store.countOpenPaymentAnomalies(W, jobIds)).toBe(3);
+    await store.listRefunds(W, jobIds);
+    expect(calls).toHaveLength(9);
+    const listed = calls.map((c) => c.ops.find(([op]) => op === 'in')![1][1] as string[]);
+    for (const ids of listed) expect(ids.length).toBeLessThanOrEqual(200);
+    for (const group of [listed.slice(0, 3), listed.slice(3, 6), listed.slice(6, 9)]) {
+      expect(group.flat().sort()).toEqual([...jobIds].sort());
+    }
+  });
+
+  it('keeps the jobs of several chunks newest first', async () => {
+    const launchpadIds = Array.from({ length: 201 }, (_, i) => `lp${i}`);
+    const at = (day: number) => `2026-10-${String(day).padStart(2, '0')}T00:00:00Z`;
+    const { store } = fakeDb([
+      { data: [{ ...JOB, id: 'old', created_at: at(1) }] },
+      { data: [{ ...JOB, id: 'new', created_at: at(9) }] },
+    ]);
+    const jobs = await store.listOwnedJobs(W, launchpadIds);
+    expect(jobs.map((j) => j.id)).toEqual(['new', 'old']);
+  });
+
+  it('fails closed instead of answering from a cut list', async () => {
+    const rows = (n: number, row: Record<string, unknown>) =>
+      Array.from({ length: n }, (_, i) => ({ ...row, id: `r${i}` }));
+    const payment = {
+      job_id: 'j1',
+      status: 'expired',
+      tx_signature: null,
+      refund_signature: null,
+      quote_expires_at: '2026-10-10T00:02:00Z',
+    };
+    const { store, calls } = fakeDb([
+      { data: rows(1000, JOB) },
+      { data: rows(1001, JOB) },
+      { data: rows(1001, payment) },
+      { data: rows(201, LP) },
+    ]);
+    expect(await store.listOwnedJobs(W, ['lp1'])).toHaveLength(1000);
+    await expect(store.listOwnedJobs(W, ['lp1'])).rejects.toBeInstanceOf(StoreError);
+    await expect(store.listJobPayments(W, ['j1'])).rejects.toBeInstanceOf(StoreError);
+    await expect(store.listOwnedLaunchpads(W)).rejects.toBeInstanceOf(StoreError);
+    // One row more than the limit is asked for, to tell a full list from a cut one.
+    expect(calls[0]!.ops).toContainEqual(['limit', [1001]]);
+    expect(calls[3]!.ops).toContainEqual(['limit', [201]]);
+  });
+
   it('rejects unexpected rows', async () => {
     const { store } = fakeDb([{ data: { ...JOB, status: 'bogus', launchpads: LP } }]);
     await expect(store.getOwnedJob('j1', W)).rejects.toBeInstanceOf(StoreError);
