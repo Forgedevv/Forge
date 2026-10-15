@@ -344,6 +344,108 @@ describe('CachedLaunchpadDirectory', () => {
     await expect(dir.snapshot()).rejects.toBeInstanceOf(DirectoryUnavailableError);
   });
 
+  // Before: a stale snapshot kept a site host trusted for up to 15 minutes after it was cleared
+  // (a deleted Vercel project, whose vercel.app name anyone may then claim).
+  describe('recorded site hosts', () => {
+    const SITE = 'https://lp-moonpad.vercel.app';
+    const withSite = (hosts: [string, string][]) => ({
+      ...snapshot(['moonpad']),
+      siteOrigins: new Map(hosts),
+    });
+    const policy = {
+      appOrigin: 'https://forge.app',
+      clientsDomain: 'sites.example',
+      allowLocalhost: false,
+    };
+
+    it('stops trusting them past their shorter staleness while the database is down', async () => {
+      let t = 0;
+      let fail = false;
+      const loader = vi.fn(async () => {
+        if (fail) throw new Error('db down');
+        return withSite([[SITE, 'moonpad']]);
+      });
+      const dir = new CachedLaunchpadDirectory(loader, {
+        ttlMs: 1000,
+        maxStaleMs: 10_000,
+        failureBackoffMs: 500,
+        now: () => t,
+      });
+      await dir.snapshot();
+      fail = true;
+      // Inside twice the TTL: served stale, site hosts included.
+      t = 1500;
+      expect((await dir.snapshot()).siteOrigins.get(SITE)).toBe('moonpad');
+      expect(await decideOrigin(SITE, policy, dir)).toMatchObject({
+        allowed: true,
+        slug: 'moonpad',
+      });
+      // Older: no site host any more, the slugs still (up to maxStaleMs).
+      t = 2500;
+      const old = await dir.snapshot();
+      expect(old.siteOrigins.size).toBe(0);
+      expect([...old.activeSlugs]).toEqual(['moonpad']);
+      t = 2600; // inside the failure backoff: the same rule
+      expect(await decideOrigin(SITE, policy, dir)).toEqual({ allowed: false, reason: 'unknown' });
+      expect(await decideOrigin('https://moonpad.sites.example', policy, dir)).toMatchObject({
+        allowed: true,
+        kind: 'client',
+      });
+      // The database is back: the site host is trusted again.
+      fail = false;
+      t = 4000;
+      expect((await dir.snapshot()).siteOrigins.get(SITE)).toBe('moonpad');
+    });
+
+    it('refreshes an old snapshot before answering, so a cleared host is refused at once', async () => {
+      let t = 0;
+      let hosts: [string, string][] = [[SITE, 'moonpad']];
+      const loader = vi.fn(async () => withSite(hosts));
+      const dir = new CachedLaunchpadDirectory(loader, { ttlMs: 1000, now: () => t });
+      expect(await decideOrigin(SITE, policy, dir)).toMatchObject({ allowed: true });
+      // Cleared in the database; the next request comes after a quiet period.
+      hosts = [];
+      t = 5000;
+      expect(await decideOrigin(SITE, policy, dir)).toEqual({ allowed: false, reason: 'unknown' });
+      expect(loader).toHaveBeenCalledTimes(2);
+      // A host still recorded is never refused because of the quiet period.
+      hosts = [[SITE, 'moonpad']];
+      t = 10_000;
+      expect(await decideOrigin(SITE, policy, dir)).toMatchObject({ allowed: true });
+    });
+
+    it('defaults to twice the TTL, never above maxStaleMs', async () => {
+      let t = 0;
+      let fail = false;
+      const loader = async () => {
+        if (fail) throw new Error('db down');
+        return withSite([[SITE, 'moonpad']]);
+      };
+      const dir = new CachedLaunchpadDirectory(loader, { now: () => t, failureBackoffMs: 0 });
+      await dir.snapshot();
+      fail = true;
+      t = 119_000;
+      expect((await dir.snapshot()).siteOrigins.size).toBe(1);
+      t = 121_000;
+      expect((await dir.snapshot()).siteOrigins.size).toBe(0);
+      const capped = new CachedLaunchpadDirectory(
+        async () => {
+          if (fail) throw new Error('db down');
+          return withSite([[SITE, 'moonpad']]);
+        },
+        { ttlMs: 1000, maxStaleMs: 1500, siteOriginsMaxStaleMs: 60_000, now: () => t },
+      );
+      fail = false;
+      t = 0;
+      await capped.snapshot();
+      fail = true;
+      t = 1200;
+      expect((await capped.snapshot()).siteOrigins.size).toBe(1);
+      t = 1600;
+      await expect(capped.snapshot()).rejects.toBeInstanceOf(DirectoryUnavailableError);
+    });
+  });
+
   it('throws when nothing was ever loaded', async () => {
     const dir = new CachedLaunchpadDirectory(() => Promise.reject(new Error('no db')), {
       now: () => 0,

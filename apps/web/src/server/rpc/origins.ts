@@ -14,7 +14,8 @@
  *   launchpad's own project (migration 0011): the verified subdomain, else a `*.vercel.app` alias of
  *   that project. Same status rules as the slug: draft and live sites get every method, sleeping
  *   ones the claim's methods only, disabled ones nothing; a host only ever speaks for its own
- *   launchpad;
+ *   launchpad. A cleared host stops being trusted within 2 TTLs, even when the database cannot be
+ *   read (CachedDirectoryOptions.siteOriginsMaxStaleMs);
  * - client previews: the exact origin of `jobs.preview_url` for jobs waiting for the client's
  *   approval (`preview_ready`). Vercel URLs are never matched by pattern: anyone can create a
  *   `*.vercel.app` project with a look-alike name.
@@ -64,11 +65,21 @@ export interface CachedDirectoryOptions {
   ttlMs?: number;
   /** When refreshing fails, an older snapshot is still served up to this age. */
   maxStaleMs?: number;
+  /**
+   * Shorter limit for the recorded site hosts (`siteOrigins`): a host cleared in the database
+   * (a deleted Vercel project, whose `*.vercel.app` name anyone may then claim) must stop being
+   * trusted quickly. Past this age a snapshot is refreshed before it is served, and when that
+   * fails it is served without its site hosts (slugs and previews kept up to `maxStaleMs`).
+   * Default: twice the TTL, at most `maxStaleMs`.
+   */
+  siteOriginsMaxStaleMs?: number;
   /** After a failed load, no new attempt before this delay (protects a struggling database). */
   failureBackoffMs?: number;
   now?: () => number;
   onError?: (error: unknown) => void;
 }
+
+const NO_SITE_ORIGINS: ReadonlyMap<string, string> = new Map();
 
 /** Snapshot cache with single-flight refresh and stale-on-error. */
 export class CachedLaunchpadDirectory implements LaunchpadDirectory {
@@ -77,6 +88,7 @@ export class CachedLaunchpadDirectory implements LaunchpadDirectory {
   private lastFailureAt = Number.NEGATIVE_INFINITY;
   private readonly ttlMs: number;
   private readonly maxStaleMs: number;
+  private readonly siteOriginsMaxStaleMs: number;
   private readonly failureBackoffMs: number;
   private readonly now: () => number;
 
@@ -86,6 +98,10 @@ export class CachedLaunchpadDirectory implements LaunchpadDirectory {
   ) {
     this.ttlMs = options.ttlMs ?? 60_000;
     this.maxStaleMs = options.maxStaleMs ?? 15 * 60_000;
+    this.siteOriginsMaxStaleMs = Math.min(
+      options.siteOriginsMaxStaleMs ?? 2 * this.ttlMs,
+      this.maxStaleMs,
+    );
     this.failureBackoffMs = options.failureBackoffMs ?? 5_000;
     this.now = options.now ?? Date.now;
   }
@@ -96,20 +112,28 @@ export class CachedLaunchpadDirectory implements LaunchpadDirectory {
     if (current && now - current.loadedAt < this.ttlMs) return current;
     const usableStale = current && now - current.loadedAt < this.maxStaleMs ? current : null;
     if (now - this.lastFailureAt < this.failureBackoffMs) {
-      if (usableStale) return usableStale;
+      if (usableStale) return this.servable(usableStale, now);
       throw new DirectoryUnavailableError();
     }
-    // A stale snapshot is served while a refresh runs in the background.
     const refresh = this.refresh();
-    if (usableStale) {
+    // A stale snapshot whose site hosts are still recent enough is served while a refresh runs
+    // in the background; an older one waits for the refresh.
+    if (usableStale && now - usableStale.loadedAt < this.siteOriginsMaxStaleMs) {
       refresh.catch(() => undefined);
       return usableStale;
     }
     try {
       return await refresh;
     } catch {
+      if (usableStale) return this.servable(usableStale, this.now());
       throw new DirectoryUnavailableError();
     }
+  }
+
+  /** A stale snapshot as it may be served at `now`: without its site hosts once too old. */
+  private servable(snapshot: DirectorySnapshot, now: number): DirectorySnapshot {
+    if (now - snapshot.loadedAt < this.siteOriginsMaxStaleMs) return snapshot;
+    return { ...snapshot, siteOrigins: NO_SITE_ORIGINS };
   }
 
   private refresh(): Promise<DirectorySnapshot> {
