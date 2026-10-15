@@ -52,9 +52,38 @@ export interface BuildSiteResult {
   artifactsPath: string | null;
 }
 
+/**
+ * Step timeout in minutes from the environment (1 to 60), else `fallback`. For hosts whose bind
+ * mounts are slow (Docker Desktop on Windows writes node_modules through a shared folder: an
+ * install of the template took 6 to over 10 minutes there, against about 1 on Linux).
+ */
+export function stepMinutesFromEnv(
+  name: string,
+  fallback: number,
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): number {
+  const raw = env[name]?.trim();
+  if (!raw) return fallback;
+  const minutes = Number(raw);
+  if (!Number.isInteger(minutes) || minutes < 1 || minutes > 60) {
+    throw new Error(`${name} must be a whole number of minutes from 1 to 60`);
+  }
+  return minutes;
+}
+
 export const BUILD_DEFAULTS = {
-  install: { timeoutMs: 10 * 60 * 1000, memoryMb: 4096, cpus: 2, homeSizeMb: 3072 },
-  build: { timeoutMs: 15 * 60 * 1000, memoryMb: 4096, cpus: 2, homeSizeMb: 512 },
+  install: {
+    timeoutMs: stepMinutesFromEnv('FORGE_SANDBOX_INSTALL_TIMEOUT_MINUTES', 10) * 60 * 1000,
+    memoryMb: 4096,
+    cpus: 2,
+    homeSizeMb: 3072,
+  },
+  build: {
+    timeoutMs: stepMinutesFromEnv('FORGE_SANDBOX_BUILD_TIMEOUT_MINUTES', 15) * 60 * 1000,
+    memoryMb: 4096,
+    cpus: 2,
+    homeSizeMb: 512,
+  },
   outputDir: '.next',
   maxLogChars: 256 * 1024,
 } as const;

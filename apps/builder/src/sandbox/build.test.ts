@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { buildCommands, buildSite, detectPackageManager } from './build.js';
+import { buildCommands, buildSite, detectPackageManager, stepMinutesFromEnv } from './build.js';
 import { resolveSandboxConfig } from './config.js';
 import type { SandboxRunner } from './run.js';
 import type { SandboxRunOptions, SandboxRunResult } from './types.js';
@@ -215,5 +215,15 @@ describe('buildSite', () => {
     expect(runs[0]!.workingDir).toBe('repo');
     await expect(buildSite(runner, dir, { jobId: 'job-7', projectDir: '../x' })).rejects.toThrow();
     await expect(buildSite(runner, dir, { jobId: 'job-7', outputDir: '/etc' })).rejects.toThrow();
+  });
+});
+
+describe('step timeouts from the environment', () => {
+  it('reads whole minutes from 1 to 60 and falls back otherwise', () => {
+    expect(stepMinutesFromEnv('X', 10, {})).toBe(10);
+    expect(stepMinutesFromEnv('X', 10, { X: ' 25 ' })).toBe(25);
+    for (const bad of ['0', '61', '2.5', 'ten', '-3']) {
+      expect(() => stepMinutesFromEnv('X', 10, { X: bad }), bad).toThrow(/1 to 60/);
+    }
   });
 });
