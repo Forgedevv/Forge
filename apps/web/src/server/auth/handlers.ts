@@ -1,6 +1,6 @@
 import { AuthNonceRequest, AuthVerifyRequest } from '@forge/shared';
 import { z } from 'zod';
-import { getSessionSecret, resolveSignInDomain } from './config';
+import { getSessionSecret, resolveSignInDomain, resolveSignInScheme } from './config';
 import { NONCE_COOKIE, readCookie, serializeCookie } from './cookies';
 import {
   checkOrigin,
@@ -39,11 +39,13 @@ export async function handleNonce(request: Request): Promise<Response> {
     const parsed = AuthNonceRequest.safeParse(await readJsonBody(request));
     if (!parsed.success) return errorResponse(400, 'BAD_REQUEST', 'Invalid wallet address.');
 
+    const domain = resolveSignInDomain(request);
     const issued = issueChallenge(
       getSessionSecret(),
       parsed.data.wallet,
-      resolveSignInDomain(request),
+      domain,
       nowSeconds(),
+      resolveSignInScheme(domain),
     );
     const response = jsonResponse({
       nonce: issued.token,

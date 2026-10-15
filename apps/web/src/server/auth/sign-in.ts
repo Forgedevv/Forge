@@ -1,16 +1,16 @@
 import { randomBytes } from 'node:crypto';
 import { SolanaAddress } from '@forge/shared';
 import { base58DecodeExact } from './base58';
-import { isLocalHostname } from './config';
+import { resolveSignInScheme, type SignInScheme } from './config';
 import { verifyEd25519 } from './ed25519';
 import { consumedNonces, type NonceStore } from './replay';
 import { deriveKey, signToken, verifyToken } from './signed-token';
 
 /*
  * Stateless sign-in challenge. `POST /api/auth/nonce` returns a nonce token: the challenge
- * fields (domain, wallet, random nonce, issued-at, expiry) HMAC-signed with a key derived from
- * SESSION_SECRET. The message the wallet signs is rebuilt from the verified token, so the server
- * never parses client-supplied message text.
+ * fields (domain, URI scheme, wallet, random nonce, issued-at, expiry) HMAC-signed with a key
+ * derived from SESSION_SECRET. The message the wallet signs is rebuilt from the verified token,
+ * so the server never parses client-supplied message text.
  */
 
 export const NONCE_TTL_SECONDS = 5 * 60;
@@ -18,8 +18,11 @@ export const NONCE_TTL_SECONDS = 5 * 60;
 const CLOCK_SKEW_SECONDS = 60;
 
 export interface SignInChallenge {
-  v: 1;
+  /** 2: the URI scheme is part of the token (version 1 tokens are refused). */
+  v: 2;
   domain: string;
+  /** Scheme of the message URI, chosen when the challenge is issued (resolveSignInScheme). */
+  scheme: SignInScheme;
   wallet: string;
   nonce: string;
   iat: number;
@@ -36,15 +39,13 @@ export const SIGN_IN_STATEMENT =
  * Phantom rejects one that differs from the network it is set to.
  */
 export function buildSignInMessage(challenge: SignInChallenge): string {
-  const hostname = new URL(`http://${challenge.domain}`).hostname;
-  const scheme = isLocalHostname(hostname) ? 'http' : 'https';
   return (
     `${challenge.domain} wants you to sign in with your Solana account:\n` +
     `${challenge.wallet}\n` +
     `\n` +
     `${SIGN_IN_STATEMENT}\n` +
     `\n` +
-    `URI: ${scheme}://${challenge.domain}\n` +
+    `URI: ${challenge.scheme}://${challenge.domain}\n` +
     `Version: 1\n` +
     `Nonce: ${challenge.nonce}\n` +
     `Issued At: ${new Date(challenge.iat * 1000).toISOString()}\n` +
@@ -61,15 +62,18 @@ export interface IssuedChallenge {
   challenge: SignInChallenge;
 }
 
+/** `scheme` defaults to the one of NEXT_PUBLIC_APP_URL for its host (resolveSignInScheme). */
 export function issueChallenge(
   secret: Buffer,
   wallet: string,
   domain: string,
   nowSeconds: number,
+  scheme: SignInScheme = resolveSignInScheme(domain),
 ): IssuedChallenge {
   const challenge: SignInChallenge = {
-    v: 1,
+    v: 2,
     domain,
+    scheme,
     wallet,
     nonce: randomBytes(16).toString('hex'),
     iat: nowSeconds,
@@ -87,8 +91,9 @@ function isChallenge(value: unknown): value is SignInChallenge {
   if (typeof value !== 'object' || value === null) return false;
   const c = value as Record<string, unknown>;
   return (
-    c.v === 1 &&
+    c.v === 2 &&
     typeof c.domain === 'string' &&
+    (c.scheme === 'http' || c.scheme === 'https') &&
     typeof c.wallet === 'string' &&
     typeof c.nonce === 'string' &&
     /^[0-9a-f]{32}$/.test(c.nonce) &&

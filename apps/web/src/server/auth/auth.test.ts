@@ -2,7 +2,7 @@
 import { createHmac, generateKeyPairSync, sign, type KeyObject } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { base58Decode, base58Encode } from './base58';
-import { getSessionSecret, getSupabaseJwtSecret } from './config';
+import { getSessionSecret, getSupabaseJwtSecret, resolveSignInScheme } from './config';
 import {
   handleLogout,
   handleNonce,
@@ -173,6 +173,77 @@ describe('sign-in', () => {
     const session = response.headers.getSetCookie().find((c) => c.startsWith('forge_session='))!;
     expect(session).not.toContain('Secure');
     expect(session).toContain('HttpOnly');
+  });
+
+  // Before: the scheme was guessed from the host name, so an app served over http on a host that
+  // is not local (a LAN address) asked wallets to sign an https URI.
+  it('takes the URI scheme from NEXT_PUBLIC_APP_URL for its host', async () => {
+    const base = 'http://192.168.1.20:3000';
+    vi.stubEnv('NEXT_PUBLIC_APP_URL', base);
+    const wallet = newWallet();
+    const { nonce, message } = await requestNonce(wallet.address, base);
+    expect(message).toContain(`\nURI: ${base}\nVersion: 1\n`);
+    const response = await handleVerify(
+      post(
+        '/api/auth/verify',
+        { wallet: wallet.address, signature: signMessage(wallet, message), nonce },
+        {},
+        base,
+      ),
+    );
+    expect(response.status).toBe(200);
+  });
+
+  it('keeps http for local hosts outside production only', () => {
+    expect(resolveSignInScheme('forge.app')).toBe('https');
+    expect(resolveSignInScheme('localhost:3000')).toBe('http');
+    expect(resolveSignInScheme('127.0.0.1:3000')).toBe('http');
+    expect(resolveSignInScheme('other.example')).toBe('https');
+    vi.stubEnv('NODE_ENV', 'production');
+    expect(resolveSignInScheme('localhost:3000')).toBe('https');
+    // A production build served locally over http: the app URL says so.
+    vi.stubEnv('NEXT_PUBLIC_APP_URL', 'http://localhost:3000');
+    expect(resolveSignInScheme('localhost:3000')).toBe('http');
+    expect(resolveSignInScheme('LOCALHOST:3000')).toBe('http');
+  });
+
+  it('signs the scheme into the token: the message is rebuilt the same after a change', async () => {
+    const wallet = newWallet();
+    const now = Math.floor(T0.getTime() / 1000);
+    const issued = issueChallenge(Buffer.from(SESSION_SECRET), wallet.address, 'forge.app', now);
+    expect(issued.challenge.scheme).toBe('https');
+    vi.stubEnv('NEXT_PUBLIC_APP_URL', 'http://forge.app');
+    expect(buildSignInMessage(issued.challenge)).toBe(issued.message);
+    const result = await verifySignIn({
+      secret: Buffer.from(SESSION_SECRET),
+      token: issued.token,
+      wallet: wallet.address,
+      signature: signMessage(wallet, issued.message),
+      expectedDomain: 'forge.app',
+      nowSeconds: now,
+      store: new ConsumedNonceStore(),
+    });
+    expect(result).toEqual({ ok: true, wallet: wallet.address });
+    // A token of the previous version (no scheme) is refused: the wallet signs again.
+    const v1 = signToken(deriveKey(Buffer.from(SESSION_SECRET), 'auth-nonce'), {
+      v: 1,
+      domain: 'forge.app',
+      wallet: wallet.address,
+      nonce: 'a'.repeat(32),
+      iat: now,
+      exp: now + 5 * 60,
+    });
+    expect(
+      await verifySignIn({
+        secret: Buffer.from(SESSION_SECRET),
+        token: v1,
+        wallet: wallet.address,
+        signature: signMessage(wallet, issued.message),
+        expectedDomain: 'forge.app',
+        nowSeconds: now,
+        store: new ConsumedNonceStore(),
+      }),
+    ).toEqual({ ok: false, reason: 'invalid_token' });
   });
 
   it('rejects a signature from another wallet', async () => {

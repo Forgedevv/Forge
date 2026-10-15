@@ -82,6 +82,28 @@ export function resolveSignInDomain(request: Request): string {
   return isAllowedHost(host) ? host : getAppUrl().host.toLowerCase();
 }
 
+export type SignInScheme = 'http' | 'https';
+
+/**
+ * Scheme of the URI in the sign-in message for `domain` (a value of resolveSignInDomain): the
+ * scheme of NEXT_PUBLIC_APP_URL when `domain` is its host; http for a local host outside
+ * production (a development server); https otherwise.
+ */
+export function resolveSignInScheme(domain: string): SignInScheme {
+  const app = getAppUrl();
+  if (domain.toLowerCase() === app.host.toLowerCase()) {
+    return app.protocol === 'http:' ? 'http' : 'https';
+  }
+  if (process.env.NODE_ENV !== 'production') {
+    try {
+      if (isLocalHostname(new URL(`http://${domain}`).hostname)) return 'http';
+    } catch {
+      // Not a host: the default below.
+    }
+  }
+  return 'https';
+}
+
 /** Cookies are Secure everywhere except on local http hosts. */
 export function isSecureRequest(request: Request): boolean {
   const url = new URL(request.url);
