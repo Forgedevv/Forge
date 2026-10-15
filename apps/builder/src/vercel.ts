@@ -539,6 +539,11 @@ export type DeploymentProtection =
 
 export interface DomainResult {
   domain: string;
+  /**
+   * Verified on the project AND its DNS points at Vercel (`GET /v6/domains/{name}/config`
+   * `misconfigured: false`). Vercel's own `verified` only means ownership: a subdomain of a
+   * domain nobody configured was reported verified on devnet while it resolved nowhere.
+   */
   verified: boolean;
   /** DNS records to add when the domain is not verified yet. */
   verification: Array<{ type: string; domain: string; value: string }>;
@@ -747,6 +752,8 @@ const MissingFilesSchema = z.object({
 });
 
 const COMMIT_SHA_RE = /^[0-9a-f]{40}$/;
+const DomainConfigSchema = z.object({ misconfigured: z.boolean().optional() });
+
 const DomainSchema = z.object({
   name: z.string(),
   verified: z.boolean(),
@@ -1813,7 +1820,24 @@ export function createVercelClient(opts: VercelClientOptions): VercelClient {
     const domain = subdomainFor(slug, opts.clientsDomain);
     const pid = seg(projectId, 'project');
 
-    const toResult = (body: z.infer<typeof DomainSchema>, created: boolean): DomainResult => {
+    // Whether the name's DNS actually points at Vercel; any doubt counts as not configured.
+    const dnsConfigured = async (): Promise<boolean> => {
+      const res = await call({
+        method: 'GET',
+        path: `/v6/domains/${encodeURIComponent(domain)}/config`,
+        allowStatus: [400, 403, 404],
+      });
+      if (res.status !== 200) return false;
+      try {
+        return parseBody(DomainConfigSchema, res, 'domain config').misconfigured === false;
+      } catch {
+        return false;
+      }
+    };
+    const toResult = async (
+      body: z.infer<typeof DomainSchema>,
+      created: boolean,
+    ): Promise<DomainResult> => {
       // The answer must be about exactly the domain asked for: its name (and verification) is
       // recorded as the site's host, so nothing Vercel says about another name is taken.
       if (body.name !== domain) {
@@ -1825,7 +1849,7 @@ export function createVercelClient(opts: VercelClientOptions): VercelClient {
       }
       return {
         domain,
-        verified: body.verified,
+        verified: body.verified && (await dnsConfigured()),
         verification: body.verification ?? [],
         created,
       };

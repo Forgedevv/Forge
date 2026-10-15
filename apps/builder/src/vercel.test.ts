@@ -2487,10 +2487,18 @@ describe('promoteToProduction', () => {
 });
 
 describe('attachSubdomain', () => {
+  /** Vercel's DNS check of the subdomain: it points at Vercel. */
+  const DNS_OK: Route = {
+    method: 'GET',
+    path: '/v6/domains/moonpad.forge-sites.app/config',
+    handler: () => json({ misconfigured: false }),
+  };
+
   const domainJson = (verified = true) => ({ name: 'moonpad.forge-sites.app', verified });
 
   it('attaches <slug>.<clients domain> to the project', async () => {
     const { client, stub } = make([
+      DNS_OK,
       {
         method: 'GET',
         path: '/v9/projects/prj_123/domains/moonpad.forge-sites.app',
@@ -2511,6 +2519,7 @@ describe('attachSubdomain', () => {
 
   it('is idempotent: an already attached domain is returned without a new POST', async () => {
     const { client, stub } = make([
+      DNS_OK,
       {
         method: 'GET',
         path: '/v9/projects/prj_123/domains/moonpad.forge-sites.app',
@@ -2520,6 +2529,27 @@ describe('attachSubdomain', () => {
     const out = await client.attachSubdomain('prj_123', 'moonpad');
     expect(out.created).toBe(false);
     expect(stub.find('POST', /domains/)).toHaveLength(0);
+  });
+
+  it('does not count a verified subdomain whose DNS points nowhere (seen on devnet)', async () => {
+    for (const config of [json({ misconfigured: true }), json({}), json({ error: 'x' }, 404)]) {
+      const { client } = make([
+        {
+          method: 'GET',
+          path: '/v6/domains/moonpad.forge-sites.app/config',
+          handler: () => config.clone(),
+        },
+        {
+          method: 'GET',
+          path: '/v9/projects/prj_123/domains/moonpad.forge-sites.app',
+          handler: () => json(domainJson()),
+        },
+      ]);
+      await expect(client.attachSubdomain('prj_123', 'moonpad')).resolves.toMatchObject({
+        domain: 'moonpad.forge-sites.app',
+        verified: false,
+      });
+    }
   });
 
   it('reports DNS verification records when the domain is not verified', async () => {
@@ -2609,6 +2639,7 @@ describe('attachSubdomain', () => {
 
   it('recovers from a replayed POST that already succeeded (409 then present)', async () => {
     const { client } = make([
+      DNS_OK,
       {
         method: 'GET',
         path: /domains\/moonpad/,
