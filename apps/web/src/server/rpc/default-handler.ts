@@ -28,6 +28,7 @@ function build(): RelayHandler {
           createClient(config.supabase.url, config.supabase.serviceRoleKey, {
             auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
           }),
+          { clientsDomain: config.clientsDomain },
         ),
         {
           onError: (error) =>

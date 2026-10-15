@@ -1,4 +1,9 @@
-import type { LaunchpadDetail, LaunchpadSpecDraft, LaunchpadSummary } from '@forge/shared';
+import {
+  trustedSiteHost,
+  type LaunchpadDetail,
+  type LaunchpadSpecDraft,
+  type LaunchpadSummary,
+} from '@forge/shared';
 import { PublicKey } from '@solana/web3.js';
 import { RouteError, NOT_FOUND_MESSAGES } from '../jobs/http';
 import { errorName, type RoutesLogger } from '../jobs/log';
@@ -90,10 +95,14 @@ export function createLaunchpadReads(deps: LaunchpadReadsDeps): LaunchpadReads {
   const { store, chain, logger, clientsDomain } = deps;
   const now = deps.now ?? Date.now;
 
-  /** Where the site really is: its recorded host, else its subdomain (live or sleeping only). */
+  /**
+   * Where the site really is: its recorded host when it is one the launchpad may have
+   * (trustedSiteHost), else its subdomain (live or sleeping only).
+   */
   function siteUrl(launchpad: LaunchpadRecord): string | null {
     if (launchpad.status !== 'live' && launchpad.status !== 'sleeping') return null;
-    if (launchpad.siteHost !== null) return `https://${launchpad.siteHost}`;
+    const recorded = trustedSiteHost(launchpad.siteHost, launchpad.slug, clientsDomain);
+    if (recorded !== null) return `https://${recorded}`;
     if (!clientsDomain) return null;
     return `https://${launchpad.slug}.${clientsDomain}`;
   }

@@ -316,6 +316,35 @@ describe('issue a ticket', () => {
         await h.service.issue('rugpad', signedRequest({ host: 'lp-rugpad.vercel.app' }));
       });
 
+      // Before: any well-formed recorded host was accepted as auth.host.
+      it('ignores a recorded host the launchpad cannot have, however well formed', async () => {
+        for (const siteHost of [
+          'evil.example',
+          `rugpad.${CLIENTS_DOMAIN}`,
+          'moonpad.evil.example',
+        ]) {
+          const h = harness();
+          h.store.addLaunchpad({ ...LIVE, siteHost });
+          const error = await issueError(
+            h.service.issue('moonpad', signedRequest({ host: siteHost })),
+          );
+          expect([error.status, error.code, siteHost]).toEqual([403, 'HOST_MISMATCH', siteHost]);
+          // The launchpad's own subdomain still works.
+          await h.service.issue('moonpad', signedRequest({ host: `moonpad.${CLIENTS_DOMAIN}` }));
+        }
+        // Without CLIENTS_DOMAIN such a host does not count as configured either.
+        const h = harness({ clientsDomain: null });
+        h.store.addLaunchpad({ ...LIVE, siteHost: 'evil.example' });
+        const error = await issueError(
+          h.service.issue('moonpad', signedRequest({ host: 'evil.example' })),
+        );
+        expect([error.status, error.code]).toEqual([503, 'NOT_CONFIGURED']);
+        // The own subdomain recorded as the host is accepted (it is the subdomain anyway).
+        const own = harness();
+        own.store.addLaunchpad({ ...LIVE, siteHost: `moonpad.${CLIENTS_DOMAIN}` });
+        await own.service.issue('moonpad', signedRequest({ host: `moonpad.${CLIENTS_DOMAIN}` }));
+      });
+
       it('keeps the live rule: a sleeping or disabled launchpad gets no upload', async () => {
         const h = harness();
         for (const status of ['sleeping', 'disabled', 'draft']) {

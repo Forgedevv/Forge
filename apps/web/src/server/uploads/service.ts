@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto';
+import { trustedSiteHost } from '@forge/shared';
 import { isCanonicalPublicKey } from '../auth/base58';
 import { ChainReadError, type MintChecker } from './chain';
 import {
@@ -196,12 +197,15 @@ export function createUploadService(deps: UploadServiceDeps): UploadService {
   /**
    * `auth.host` must be a host of THIS launchpad's site: `<slug>.<CLIENTS_DOMAIN>`, or exactly the
    * production host the builder recorded for it (`site_host`, read from the Vercel API for its own
-   * project). Never a pattern: a look-alike `*.vercel.app` name of another project is refused.
+   * project), when it is one the builder records (trustedSiteHost: `<one label>.vercel.app` or the
+   * launchpad's own subdomain). Never a pattern: a look-alike `*.vercel.app` name of another
+   * project is refused.
    */
   function checkHost(host: string, launchpad: LaunchpadRef): void {
     if (deps.allowLocalHosts && LOCAL_HOST.test(host)) return;
-    if (launchpad.siteHost !== null && host === launchpad.siteHost) return;
-    if (!deps.clientsDomain && launchpad.siteHost === null) {
+    const recorded = trustedSiteHost(launchpad.siteHost, launchpad.slug, deps.clientsDomain);
+    if (recorded !== null && host === recorded) return;
+    if (!deps.clientsDomain && recorded === null) {
       log('uploads: CLIENTS_DOMAIN is not set, no client site host can be accepted');
       throw new UploadHttpError(503, 'NOT_CONFIGURED', 'Coin uploads are not configured yet.');
     }

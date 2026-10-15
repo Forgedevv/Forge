@@ -202,6 +202,18 @@ describe('GET /api/coin-meta/:slug', () => {
     expect(body.external_url).toBe('https://moonpad.forge-sites.app');
   });
 
+  // Before: any well-formed host was linked, even one of another domain or launchpad.
+  it('never links a recorded host the launchpad cannot have', async () => {
+    for (const siteHost of ['evil.example', 'other-pad.forge-sites.app']) {
+      const { handler } = setup({ moonpad: record({ siteHost }) });
+      const body = (await (await handler('moonpad')).json()) as Record<string, unknown>;
+      expect(body.external_url, siteHost).toBe('https://moonpad.forge-sites.app');
+    }
+    const { handler } = setup({ moonpad: record({ siteHost: 'moonpad.forge-sites.app' }) });
+    const body = (await (await handler('moonpad')).json()) as Record<string, unknown>;
+    expect(body.external_url).toBe('https://moonpad.forge-sites.app');
+  });
+
   it('answers 404 (and reports it) for an approved launchpad whose spec has no usable coin', async () => {
     const { handler, errors } = setup({
       moonpad: record({ spec: { launchpadCoin: { name: '' } } }),

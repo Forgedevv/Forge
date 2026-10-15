@@ -130,6 +130,25 @@ describe('GET /api/launchpads', () => {
     expect((await list(bare))[0]!.siteUrl).toBe('https://lp-moonpad.vercel.app');
   });
 
+  // Before: any well-formed recorded host was the dashboard link.
+  it('never links a recorded host the launchpad cannot have', async () => {
+    const list = async () =>
+      (
+        (await (
+          await h.handlers.list(request('GET', '/api/launchpads', { wallet: owner }))
+        ).json()) as { launchpads: { slug: string; siteUrl: unknown }[] }
+      ).launchpads;
+    liveLaunchpad({ slug: 'evil-pad', siteHost: 'evil.example' });
+    liveLaunchpad({ slug: 'thief-pad', siteHost: 'moonpad.sites.example.com' });
+    liveLaunchpad({ slug: 'own-pad', siteHost: 'own-pad.sites.example.com' });
+    const bySlug = Object.fromEntries((await list()).map((l) => [l.slug, l.siteUrl]));
+    expect(bySlug).toEqual({
+      'evil-pad': 'https://evil-pad.sites.example.com',
+      'thief-pad': 'https://thief-pad.sites.example.com',
+      'own-pad': 'https://own-pad.sites.example.com',
+    });
+  });
+
   it('reads site_host from the row, shape checked (a malformed value is never linked)', () => {
     const row = {
       id: 'l1',

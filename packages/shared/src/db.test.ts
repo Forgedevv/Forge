@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { OwnerTransactionLaunch } from './api.js';
-import { isSiteHost, isVercelAppHost, JobOwnerTxDetails, SiteHost } from './db.js';
+import { isSiteHost, isVercelAppHost, JobOwnerTxDetails, SiteHost, trustedSiteHost } from './db.js';
 
 const details = {
   config: '9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin',
@@ -88,5 +88,40 @@ describe('isSiteHost (launchpads.site_host)', () => {
     expect(isVercelAppHost('moonpad.forge-sites.app')).toBe(false);
     expect(isVercelAppHost('a.b.vercel.app')).toBe(false);
     expect(isVercelAppHost('lp-moonpad.vercel.app.evil.com')).toBe(false);
+  });
+});
+
+describe('trustedSiteHost (reading launchpads.site_host)', () => {
+  const domain = 'forge-sites.app';
+
+  it('trusts one label under vercel.app, or exactly the own subdomain', () => {
+    expect(trustedSiteHost('lp-moonpad.vercel.app', 'moonpad', domain)).toBe(
+      'lp-moonpad.vercel.app',
+    );
+    expect(trustedSiteHost('lp-moonpad.vercel.app', 'moonpad', null)).toBe('lp-moonpad.vercel.app');
+    expect(trustedSiteHost('moonpad.forge-sites.app', 'moonpad', domain)).toBe(
+      'moonpad.forge-sites.app',
+    );
+  });
+
+  // Before: any well-formed host was trusted, so a wrong row spoke for a foreign site.
+  it('ignores any other host, however well formed', () => {
+    for (const [host, clientsDomain] of [
+      ['evil.example', domain],
+      ['moonpad.evil.example', domain],
+      ['other-pad.forge-sites.app', domain],
+      ['www.moonpad.forge-sites.app', domain],
+      ['moonpad.forge-sites.app', null],
+      ['moonpad.forge-sites.app', 'other-sites.app'],
+      ['a.b.vercel.app', domain],
+      ['vercel.app', domain],
+      ['https://lp-moonpad.vercel.app', domain],
+      [null, domain],
+    ] as const) {
+      expect(
+        trustedSiteHost(host, 'moonpad', clientsDomain),
+        `${host} ${clientsDomain}`,
+      ).toBeNull();
+    }
   });
 });

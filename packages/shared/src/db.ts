@@ -33,6 +33,23 @@ export function isVercelAppHost(value: unknown): value is string {
   return isSiteHost(value) && value.endsWith('.vercel.app');
 }
 
+/**
+ * The recorded `site_host` of the launchpad `slug`, when a reader may trust it (relay origins,
+ * upload `auth.host`, links to the site): exactly `<one label>.vercel.app` (an alias of the
+ * launchpad's own Vercel project, checked by the builder before it records one), or exactly
+ * `<slug>.<clientsDomain>`. Any other host, however well formed (another domain, the subdomain of
+ * another launchpad), is ignored: null. `clientsDomain` is lowercase (readClientsDomain).
+ */
+export function trustedSiteHost(
+  siteHost: unknown,
+  slug: string,
+  clientsDomain: string | null,
+): string | null {
+  if (!isSiteHost(siteHost)) return null;
+  if (isVercelAppHost(siteHost)) return siteHost;
+  return clientsDomain !== null && siteHost === `${slug}.${clientsDomain}` ? siteHost : null;
+}
+
 export const SiteHost = z.string().refine(isSiteHost, {
   error: 'Must be a lowercase host name (one label under vercel.app)',
 });

@@ -441,13 +441,39 @@ describe('Supabase snapshot loader', () => {
       ],
       jobs: [],
     });
-    const loaded = await createSupabaseSnapshotLoader(db)();
+    const loaded = await createSupabaseSnapshotLoader(db, { clientsDomain: 'forge-sites.app' })();
     expect(Object.fromEntries(loaded.siteOrigins)).toEqual({
       'https://lp-moonpad.vercel.app': 'moonpad',
       'https://sun-pad.forge-sites.app': 'sun-pad',
       'https://lp-sleepy-pad.vercel.app': 'sleepy-pad',
     });
     expect(calls[0]?.filters).toContainEqual(['select', 'id, slug, status, site_host']);
+  });
+
+  // Before: any well-formed host was trusted, so a wrong row made a foreign site a client site.
+  it('ignores a recorded host the launchpad cannot have, however well formed', async () => {
+    const { db } = fakeDb({
+      launchpads: [
+        { id: 'l1', slug: 'evil-pad', status: 'live', site_host: 'evil.example' },
+        { id: 'l2', slug: 'thief-pad', status: 'live', site_host: 'moonpad.forge-sites.app' },
+        { id: 'l3', slug: 'deep-pad', status: 'live', site_host: 'www.deep-pad.forge-sites.app' },
+        { id: 'l4', slug: 'sun-pad', status: 'sleeping', site_host: 'sun-pad.forge-sites.app' },
+        { id: 'l5', slug: 'star-pad', status: 'live', site_host: 'lp-star-pad.vercel.app' },
+      ],
+      jobs: [],
+    });
+    const withDomain = await createSupabaseSnapshotLoader(db, {
+      clientsDomain: 'forge-sites.app',
+    })();
+    expect(Object.fromEntries(withDomain.siteOrigins)).toEqual({
+      'https://sun-pad.forge-sites.app': 'sun-pad',
+      'https://lp-star-pad.vercel.app': 'star-pad',
+    });
+    // Without CLIENTS_DOMAIN, only the vercel.app aliases are trusted.
+    const withoutDomain = await createSupabaseSnapshotLoader(db)();
+    expect([...withoutDomain.siteOrigins]).toEqual([
+      ['https://lp-star-pad.vercel.app', 'star-pad'],
+    ]);
   });
 
   it('drops a site host listed for two launchpads', async () => {
@@ -464,10 +490,16 @@ describe('Supabase snapshot loader', () => {
   });
 
   it('siteOriginOf keeps site-host shaped values only', () => {
-    expect(siteOriginOf('lp-moonpad.vercel.app')).toBe('https://lp-moonpad.vercel.app');
-    expect(siteOriginOf('lp-moonpad.vercel.app:443')).toBeNull();
-    expect(siteOriginOf('')).toBeNull();
-    expect(siteOriginOf(undefined)).toBeNull();
+    expect(siteOriginOf('lp-moonpad.vercel.app', 'moonpad', null)).toBe(
+      'https://lp-moonpad.vercel.app',
+    );
+    expect(siteOriginOf('moonpad.sites.example', 'moonpad', 'sites.example')).toBe(
+      'https://moonpad.sites.example',
+    );
+    expect(siteOriginOf('lp-moonpad.vercel.app:443', 'moonpad', null)).toBeNull();
+    expect(siteOriginOf('', 'moonpad', null)).toBeNull();
+    expect(siteOriginOf(undefined, 'moonpad', null)).toBeNull();
+    expect(siteOriginOf('other.sites.example', 'moonpad', 'sites.example')).toBeNull();
   });
 
   it('pages through launchpads', async () => {

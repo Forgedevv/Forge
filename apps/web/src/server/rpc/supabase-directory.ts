@@ -1,4 +1,4 @@
-import { isSiteHost } from '@forge/shared';
+import { trustedSiteHost } from '@forge/shared';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { SnapshotLoader } from './origins';
 
@@ -7,9 +7,11 @@ import type { SnapshotLoader } from './origins';
  * by anon under RLS). Two bounded queries per refresh, whatever the traffic:
  * - launchpads whose site may call the relay: id + slug + status + site_host, paged. Active ones
  *   (`draft` or `live`) get every tier; sleeping ones only the browser origin of their site, for
- *   the creator fee claim (decision D29). A recorded `site_host` (migration 0011, shape checked
- *   again here) adds the exact origin `https://<site_host>` for that launchpad only; a host listed
- *   for two launchpads is dropped for both (the column is unique: never expected);
+ *   the creator fee claim (decision D29). A recorded `site_host` (migration 0011) adds the exact
+ *   origin `https://<site_host>` for that launchpad only, when it is one the builder records:
+ *   `<one label>.vercel.app`, or exactly `<slug>.<CLIENTS_DOMAIN>` (trustedSiteHost); any other
+ *   value is ignored. A host listed for two launchpads is dropped for both (the column is unique:
+ *   never expected);
  * - jobs waiting for the client's approval (`preview_ready`) with their preview URL (active
  *   launchpads only).
  */
@@ -41,12 +43,29 @@ export function previewOriginOf(previewUrl: unknown): string | null {
   }
 }
 
-/** `https://<site_host>` of a stored `launchpads.site_host`, or null when absent or malformed. */
-export function siteOriginOf(siteHost: unknown): string | null {
-  return isSiteHost(siteHost) ? `https://${siteHost}` : null;
+/**
+ * `https://<site_host>` of the stored `launchpads.site_host` of launchpad `slug`, or null when
+ * absent, malformed or not a host the launchpad may have (trustedSiteHost).
+ */
+export function siteOriginOf(
+  siteHost: unknown,
+  slug: string,
+  clientsDomain: string | null,
+): string | null {
+  const host = trustedSiteHost(siteHost, slug, clientsDomain);
+  return host === null ? null : `https://${host}`;
 }
 
-export function createSupabaseSnapshotLoader(db: SupabaseClient): SnapshotLoader {
+export interface SnapshotLoaderOptions {
+  /** CLIENTS_DOMAIN: a recorded `<slug>.<domain>` host is trusted only for its own slug. */
+  clientsDomain?: string | null;
+}
+
+export function createSupabaseSnapshotLoader(
+  db: SupabaseClient,
+  options: SnapshotLoaderOptions = {},
+): SnapshotLoader {
+  const clientsDomain = options.clientsDomain ?? null;
   return async () => {
     const slugById = new Map<string, string>();
     const sleepingSlugs = new Set<string>();
@@ -77,7 +96,7 @@ export function createSupabaseSnapshotLoader(db: SupabaseClient): SnapshotLoader
         } else {
           continue;
         }
-        const origin = siteOriginOf(row.site_host);
+        const origin = siteOriginOf(row.site_host, row.slug, clientsDomain);
         if (origin === null) continue;
         const other = siteOrigins.get(origin);
         if (other !== undefined && other !== row.slug) ambiguous.add(origin);

@@ -1,4 +1,4 @@
-import { FailedStage, isSiteHost, JobStatus, LaunchpadStatus } from '@forge/shared';
+import { FailedStage, JobStatus, LaunchpadStatus, trustedSiteHost } from '@forge/shared';
 import { z } from 'zod';
 
 /*
@@ -98,8 +98,9 @@ export function buildCoinMetadata(
   if (!parsed.success) return null;
   const { launchpadCoin, theme } = parsed.data;
   const image = httpsUrl(launchpadCoin.imageUrl) ?? httpsUrl(theme?.logoUrl);
-  const siteUrl = isSiteHost(record.siteHost)
-    ? `https://${record.siteHost}`
+  const recorded = trustedSiteHost(record.siteHost, record.slug, clientsDomain);
+  const siteUrl = recorded
+    ? `https://${recorded}`
     : clientsDomain
       ? `https://${record.slug}.${clientsDomain}`
       : null;
