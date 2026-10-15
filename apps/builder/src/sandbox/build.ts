@@ -71,16 +71,36 @@ export function stepMinutesFromEnv(
   return minutes;
 }
 
+/**
+ * Memory of the install and build containers in MiB from the environment (2048 to 8192), else
+ * `fallback`. Lowered on a host the builder shares with other services.
+ */
+export function stepMemoryMbFromEnv(
+  name: string,
+  fallback: number,
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): number {
+  const raw = env[name]?.trim();
+  if (!raw) return fallback;
+  const mb = Number(raw);
+  if (!Number.isInteger(mb) || mb < 2048 || mb > 8192) {
+    throw new Error(`${name} must be a whole number of MiB from 2048 to 8192`);
+  }
+  return mb;
+}
+
+const STEP_MEMORY_MB = stepMemoryMbFromEnv('FORGE_SANDBOX_STEP_MEMORY_MB', 4096);
+
 export const BUILD_DEFAULTS = {
   install: {
     timeoutMs: stepMinutesFromEnv('FORGE_SANDBOX_INSTALL_TIMEOUT_MINUTES', 10) * 60 * 1000,
-    memoryMb: 4096,
+    memoryMb: STEP_MEMORY_MB,
     cpus: 2,
     homeSizeMb: 3072,
   },
   build: {
     timeoutMs: stepMinutesFromEnv('FORGE_SANDBOX_BUILD_TIMEOUT_MINUTES', 15) * 60 * 1000,
-    memoryMb: 4096,
+    memoryMb: STEP_MEMORY_MB,
     cpus: 2,
     homeSizeMb: 512,
   },

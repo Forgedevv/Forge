@@ -8,6 +8,7 @@ import {
   buildCommands,
   buildSite,
   detectPackageManager,
+  stepMemoryMbFromEnv,
   stepMinutesFromEnv,
 } from './build.js';
 import { resolveSandboxConfig } from './config.js';
@@ -284,6 +285,16 @@ describe('step timeouts from the environment', () => {
     expect(stepMinutesFromEnv('X', 10, { X: ' 25 ' })).toBe(25);
     for (const bad of ['0', '61', '2.5', 'ten', '-3']) {
       expect(() => stepMinutesFromEnv('X', 10, { X: bad }), bad).toThrow(/1 to 60/);
+    }
+  });
+});
+
+describe('step memory from the environment', () => {
+  it('reads whole MiB from 2048 to 8192 and falls back otherwise', () => {
+    expect(stepMemoryMbFromEnv('M', 4096, {})).toBe(4096);
+    expect(stepMemoryMbFromEnv('M', 4096, { M: '3072' })).toBe(3072);
+    for (const bad of ['1024', '9000', '3000.5', 'lots']) {
+      expect(() => stepMemoryMbFromEnv('M', 4096, { M: bad }), bad).toThrow(/2048 to 8192/);
     }
   });
 });
