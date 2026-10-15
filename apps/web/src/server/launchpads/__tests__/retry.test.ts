@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { Keypair } from '@solana/web3.js';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { ctx, request, spec } from '../../jobs/__tests__/fakes';
+import { ctx, request, sessionCookie, spec } from '../../jobs/__tests__/fakes';
 import { StoreError, type JobPaymentRecord, type JobRecord } from '../../jobs/store';
 import { launchpadQuotas } from '../quotas';
 import { START_AGAIN_POLICY } from '../retry';
@@ -93,6 +93,38 @@ describe('POST /api/launchpads/:id/retry', () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ jobId: unpaid.id });
     expect(creationJobs(lp.id)).toHaveLength(1);
+  });
+
+  // Before: a body was ignored; the route's contract has none, so one is refused.
+  it('refuses a request with a body, whatever it holds', async () => {
+    const { lp } = refundedDraft();
+    const post = (body: BodyInit, headers: Record<string, string> = {}) =>
+      h.handlers.retry(
+        new Request(`https://forge.app/api/launchpads/${lp.id}/retry`, {
+          method: 'POST',
+          headers: { origin: 'https://forge.app', cookie: sessionCookie(owner), ...headers },
+          body,
+          duplex: 'half',
+        } as RequestInit),
+        ctx(lp.id),
+      );
+    for (const sent of ['{}', '{"jobId":"x"}', ' ']) {
+      const res = await post(sent, { 'content-type': 'application/json' });
+      expect(res.status, sent).toBe(400);
+      expect(await body(res), sent).toMatchObject({ code: 'BAD_REQUEST' });
+    }
+    // Streamed without a declared length.
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(0));
+        controller.enqueue(new TextEncoder().encode('{}'));
+        controller.close();
+      },
+    });
+    expect((await post(stream)).status).toBe(400);
+    expect(creationJobs(lp.id)).toHaveLength(1);
+    // An empty body is no body.
+    expect((await post('')).status).toBe(201);
   });
 
   it("is reserved to the owner's session and same-site requests", async () => {

@@ -12,6 +12,7 @@ import {
   NOT_FOUND_MESSAGES,
   apiError,
   guard,
+  hasEmptyBody,
   json,
   parseIdParam,
   readBoundedJson,
@@ -33,7 +34,8 @@ import type { LaunchpadReads } from './summary';
  *   POST /api/launchpads/:id/modifications       -> { jobId, ... }
  *   POST /api/launchpads/:id/reactivate          -> { status }
  *   POST /api/launchpads/:id/retry               -> { jobId }                (start again)
- * Origin check, per-IP limit, session, per-wallet limit, strict zod body, owner-scoped service.
+ * Origin check, per-IP limit, session, per-wallet limit, strict zod body (none at all for the
+ * retry route: a body is refused), owner-scoped service.
  */
 
 export interface LaunchpadsHandlers {
@@ -193,6 +195,10 @@ export function createLaunchpadsHandlers(deps: LaunchpadsHandlerDeps): Launchpad
         request,
         context,
         async (wallet, id) => {
+          // Strict contract: this route takes no body, so a client sending one is refused.
+          if (!(await hasEmptyBody(request))) {
+            return apiError(400, 'BAD_REQUEST', 'This request takes no body.');
+          }
           const result = await deps.retries.retry({ wallet, launchpadId: id });
           const body: LaunchpadRetryResponse = { jobId: result.jobId };
           return json(body, result.created ? 201 : 200);

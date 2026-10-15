@@ -120,6 +120,29 @@ export async function readBoundedJson(request: Request, maxBytes: number): Promi
   }
 }
 
+/**
+ * True when the request carries no body (routes whose contract has none refuse one, 400): no
+ * declared length other than 0, and not one byte in the stream. Stops reading at the first byte.
+ */
+export async function hasEmptyBody(request: Request): Promise<boolean> {
+  const declared = request.headers.get('content-length');
+  if (declared !== null && Number(declared) !== 0) return false;
+  if (!request.body) return true;
+  const reader = request.body.getReader();
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) return true;
+      if (value.byteLength > 0) {
+        await reader.cancel().catch(() => undefined);
+        return false;
+      }
+    }
+  } catch {
+    return false;
+  }
+}
+
 /** Route params `{ id }` (a UUID); a malformed id is answered like an unknown one. */
 export async function parseIdParam(
   params: Promise<Record<string, string | string[] | undefined>> | undefined,

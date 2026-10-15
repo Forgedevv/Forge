@@ -21,7 +21,7 @@ import { byNewest } from './quotas';
  * `refunded`; the launchpad stays a `draft` and keeps its slug. This route gives the owner a NEW
  * `create_launchpad` job in `spec_ready` for that same launchpad, so the same blueprint (name,
  * subdomain, settings: the stored `launchpads.spec`, which the builder reads) can be paid for and
- * built again. The refunded job is left untouched.
+ * built again. The refunded job is left untouched. The request has no body (400 otherwise).
  *
  * Rules (same gates as POST /api/spec/confirm, which creates the first creation job):
  * - session = owner (another wallet gets 404), origin check, rate limits (handlers.ts), private
