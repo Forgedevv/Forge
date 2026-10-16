@@ -193,12 +193,36 @@ export const PARSED_SECRET_VARIABLES = [
   'SUPABASE_SERVICE_ROLE_KEY',
 ] as const;
 
-/** Deletes `PARSED_SECRET_VARIABLES` from every given environment object (process.env included). */
-export function dropParsedSecrets(...envs: ReadonlyArray<EnvSource | undefined>): void {
+/**
+ * Secrets consumed later in the startup by the component that keeps them: the HMAC server
+ * (SIGNER_HMAC_SECRET), the Telegram alerter (TELEGRAM_BOT_TOKEN) and the Jupiter clients of the
+ * buyback and conversion jobs (JUPITER_API_KEY). Dropped once those are built
+ * (`dropConsumedSecrets`): nothing reads them from the environment afterwards.
+ */
+export const CONSUMED_SECRET_VARIABLES = [
+  'SIGNER_HMAC_SECRET',
+  'TELEGRAM_BOT_TOKEN',
+  'JUPITER_API_KEY',
+] as const;
+
+function dropVariables(
+  names: readonly string[],
+  envs: ReadonlyArray<EnvSource | undefined>,
+): void {
   for (const env of envs) {
     if (!env) continue;
-    for (const name of PARSED_SECRET_VARIABLES) delete (env as Record<string, unknown>)[name];
+    for (const name of names) delete (env as Record<string, unknown>)[name];
   }
+}
+
+/** Deletes `PARSED_SECRET_VARIABLES` from every given environment object (process.env included). */
+export function dropParsedSecrets(...envs: ReadonlyArray<EnvSource | undefined>): void {
+  dropVariables(PARSED_SECRET_VARIABLES, envs);
+}
+
+/** Deletes `CONSUMED_SECRET_VARIABLES` from every given environment object (process.env included). */
+export function dropConsumedSecrets(...envs: ReadonlyArray<EnvSource | undefined>): void {
+  dropVariables(CONSUMED_SECRET_VARIABLES, envs);
 }
 
 /**

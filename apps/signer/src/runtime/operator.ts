@@ -21,7 +21,12 @@ import { openKeystore, type Keystore } from '../keystore.js';
 import { createJobLogger, requireRoleRef, rpcFromConnection } from '../jobs/shared.js';
 import { createFileRouteJournals, createForgeRouteCore } from '../routes/index.js';
 import { revokeLaunch, type RevokeResult } from '../routes/revoke.js';
-import { dropParsedSecrets, parseRuntimeEnv, type EnvSource } from './env.js';
+import {
+  dropConsumedSecrets,
+  dropParsedSecrets,
+  parseRuntimeEnv,
+  type EnvSource,
+} from './env.js';
 import { acquireInstanceLock } from './instance.js';
 
 export interface RevokeLaunchOptions {
@@ -53,6 +58,8 @@ export async function runRevokeLaunch(options: RevokeLaunchOptions): Promise<Rev
   const alerter = createAlerterFromEnv(logger.child({ module: 'alerts' }), env, {
     fetch: options.fetch ?? globalThis.fetch,
   });
+  // The alerter holds the bot token; the command has no HMAC server and no Jupiter client.
+  dropConsumedSecrets(env, options.env, process.env);
   // Never next to the running service (same journals): the lock is taken before the keystore.
   const lock = await acquireInstanceLock(config.journalDir, { command: 'revoke-launch' });
   let keystore: Keystore;

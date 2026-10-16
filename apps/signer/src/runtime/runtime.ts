@@ -60,7 +60,13 @@ import {
   loadSignerServerEnv,
   type SignerRouteHandlers,
 } from '../server.js';
-import { dropParsedSecrets, parseRuntimeEnv, type EnvSource, type RuntimeEnv } from './env.js';
+import {
+  dropConsumedSecrets,
+  dropParsedSecrets,
+  parseRuntimeEnv,
+  type EnvSource,
+  type RuntimeEnv,
+} from './env.js';
 import { acquireInstanceLock, type InstanceLock } from './instance.js';
 import {
   BUILTIN_JOB_MODULES,
@@ -315,6 +321,9 @@ export async function createSignerRuntime(options: SignerRuntimeOptions): Promis
       logger: options.serverLogger ?? createSignerLogger(),
       now,
     });
+    // Consumed: the server holds the HMAC secret, the alerter the bot token, the buyback and
+    // conversion jobs their Jupiter client. Nothing reads them from the environment any more.
+    dropConsumedSecrets(env, options.env, process.env);
 
     const stop = (): Promise<void> => {
       stopping ??= (async () => {

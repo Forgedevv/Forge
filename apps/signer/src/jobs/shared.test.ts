@@ -21,9 +21,12 @@ import { buildSolTransferTx } from '../core-adapter.js';
 import { openKeystore } from '../keystore.js';
 import {
   CP_AMM_CLAIM_POSITION_FEE_DISCRIMINATOR,
+  DEFAULT_MIN_PAYMENT_LAMPORTS,
   JobError,
+  MAX_QUOTED_SOL_USD_PRICE,
   MEMO_PROGRAM_ID,
   Mutex,
+  PAYMENT_FLOOR_MARGIN_BPS,
   assertCreatorClaimTx,
   assertCreatorPositionClaimTx,
   assertSolTransferTx,
@@ -39,6 +42,8 @@ import {
   isTransientError,
   parseAddress,
   parseLamports,
+  paymentFloorLamports,
+  paymentMinimumsFromEnv,
   scrubText,
   signWithKeystore,
   silentJobLogger,
@@ -961,5 +966,38 @@ describe('PostgREST client', () => {
       /without filter/,
     );
     await expect(client.select('payments; drop', {})).rejects.toThrow(/table/);
+  });
+});
+
+describe('payment floors', () => {
+  it('derives the defaults from the price of each kind at the highest quotable SOL price', () => {
+    // $33 / $2 000 = 0.0165 SOL, times 0.9; $5.5 / $2 000 = 0.00275 SOL, times 0.9.
+    expect(MAX_QUOTED_SOL_USD_PRICE).toBe(2_000);
+    expect(PAYMENT_FLOOR_MARGIN_BPS).toBe(9_000);
+    expect(DEFAULT_MIN_PAYMENT_LAMPORTS).toEqual({ creation: 14_850_000n, modification: 2_475_000n });
+    expect(paymentFloorLamports(33, 2_000)).toBe(14_850_000n);
+    expect(paymentFloorLamports(5.5, 2_000)).toBe(2_475_000n);
+    expect(paymentFloorLamports(33, 2_000, 10_000)).toBe(16_500_000n);
+    // A legitimate quote at the highest accepted price is above the floor (the old fixed
+    // 0.02 SOL floor refused it once SOL went past $1 650).
+    const quotedAtMax = (33n * 1_000_000_000n) / 2_000n;
+    expect(quotedAtMax).toBeGreaterThan(DEFAULT_MIN_PAYMENT_LAMPORTS.creation);
+    expect(quotedAtMax).toBeLessThan(20_000_000n);
+  });
+
+  it('keeps the environment override and refuses bad inputs', () => {
+    expect(paymentMinimumsFromEnv({})).toEqual(DEFAULT_MIN_PAYMENT_LAMPORTS);
+    expect(
+      paymentMinimumsFromEnv({
+        SIGNER_MIN_CREATION_PAYMENT_LAMPORTS: '20000000',
+        SIGNER_MIN_MODIFICATION_PAYMENT_LAMPORTS: '0',
+      }),
+    ).toEqual({ creation: 20_000_000n, modification: 0n });
+    expect(() => paymentMinimumsFromEnv({ SIGNER_MIN_CREATION_PAYMENT_LAMPORTS: '1.5' })).toThrow(
+      JobError,
+    );
+    expect(() => paymentFloorLamports(0, 2_000)).toThrow(JobError);
+    expect(() => paymentFloorLamports(33, 0)).toThrow(JobError);
+    expect(() => paymentFloorLamports(33, 1.5)).toThrow(JobError);
   });
 });

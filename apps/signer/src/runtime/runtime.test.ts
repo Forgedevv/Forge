@@ -250,9 +250,10 @@ describe('runtime environment', () => {
 
   it('reads the payment floors with safe defaults, as integers only', () => {
     const env = baseEnv();
+    // $33 and $5.5 at the web's highest quotable SOL price ($2 000), with a 10% margin.
     expect(parseRuntimeEnv(env).minPaymentLamports).toEqual({
-      creation: 20_000_000n,
-      modification: 3_000_000n,
+      creation: 14_850_000n,
+      modification: 2_475_000n,
     });
     expect(
       parseRuntimeEnv({
@@ -424,7 +425,7 @@ describe('signer runtime wiring', () => {
   });
 
   it('removes the keystore passphrase and the service role key from the process environment once parsed', async () => {
-    const env = baseEnv();
+    const env = baseEnv({ JUPITER_API_KEY: 'jupiter-key-test' });
     const previous = new Map(Object.keys(env).map((k) => [k, process.env[k]]));
     Object.assign(process.env, env);
     try {
@@ -441,10 +442,30 @@ describe('signer runtime wiring', () => {
       expect(process.env.SUPABASE_SERVICE_ROLE_KEY).toBeUndefined();
       expect(runtime.context.env.SIGNER_KEYSTORE_PASSPHRASE).toBeUndefined();
       expect(runtime.context.env.SUPABASE_SERVICE_ROLE_KEY).toBeUndefined();
+      // The secrets consumed by the server, the alerter and the Jupiter clients are gone too.
+      for (const name of ['SIGNER_HMAC_SECRET', 'TELEGRAM_BOT_TOKEN', 'JUPITER_API_KEY']) {
+        expect(process.env[name]).toBeUndefined();
+        expect(runtime.context.env[name]).toBeUndefined();
+      }
       // Behaviour kept: the keystore is open and the database client holds the key.
       expect(runtime.context.supabase.serviceRoleKey).toBe(SERVICE_KEY);
       expect(runtime.context.cashbox.publicKey.toBase58()).toBe(cashbox);
       expect(process.env.RPC_URL).toBe(env.RPC_URL);
+      // The server still authenticates with the secret it holds.
+      const { port } = await runtime.start();
+      const headers = signRequest(HMAC, { method: 'GET', path: '/v1/health' });
+      const status = await new Promise<number>((resolve, reject) => {
+        const req = request(
+          { host: '127.0.0.1', port, method: 'GET', path: '/v1/health', headers },
+          (res) => {
+            res.resume();
+            res.on('end', () => resolve(res.statusCode ?? 0));
+          },
+        );
+        req.on('error', reject);
+        req.end();
+      });
+      expect(status).toBe(200);
     } finally {
       for (const [k, v] of previous) {
         if (v === undefined) delete process.env[k];

@@ -77,7 +77,7 @@ describe('creation payment verified on-chain', () => {
   it('refuses a payment row below the floor of its kind or not at the shared price, before any key, proof or spend', async () => {
     const h = await setup(ks.keystore);
     const payment = h.store.payments[0]!;
-    payment.lamports = 19_999_999n; // one lamport under the default creation floor (0.02 SOL)
+    payment.lamports = 14_849_999n; // one lamport under the default creation floor (0.01485 SOL)
     expect(refused(await h.routes.configs({ jobId: h.jobId }))).toEqual({
       status: 409,
       error: 'payment_below_minimum',
