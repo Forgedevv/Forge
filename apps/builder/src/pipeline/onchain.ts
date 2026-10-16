@@ -27,6 +27,13 @@ import type { LaunchpadPatch } from './store.js';
  * The signer re-reads everything from Supabase and both routes are idempotent, so a re-run after a
  * crash (the team puts the job back to `approved`) creates nothing twice. A failure here is never
  * retried automatically (D18): the worker marks the job failed (stage `onchain`) and alerts.
+ *
+ * After an operator revocation of the handed-out launch (signer `--revoke-launch`, then the team
+ * clears `owner_tx` / `owner_tx_details` and puts the job back), prepare builds a new launch with
+ * a NEW mint and records it on the launchpad row itself. The row is re-read after the call: a mint
+ * the signer replaced that way is accepted, and `onchain.launchpadCoinMint` is rewritten in a
+ * builder-owned commit. Any other difference (a config address, a mint the row does not hold)
+ * stops the step.
  */
 export async function runOnchainStep(
   deps: PipelineDeps,
@@ -86,27 +93,60 @@ export async function runOnchainStep(
     launchpadCoinMint: prepared.mint,
     spec,
   });
-  const recorded: Array<[string | null, string, string]> = [
-    [launchpad.launchpad_config, onchain.launchpadConfig, 'launchpad config'],
-    [launchpad.launchpad_coin_config, onchain.launchpadCoinConfig, 'launchpad coin config'],
-    [launchpad.launchpad_coin_mint, onchain.launchpadCoinMint, 'launchpad coin mint'],
+  // The row as the signer left it: prepare records the mint it handed out (compare-and-set).
+  const current = await deps.store.getLaunchpad(launchpad.id);
+  if (!current) throw new PipelineError('launchpad not found after the launch was prepared');
+  const rebuilt = launchRebuilt(
+    launchpad.launchpad_coin_mint,
+    current.launchpad_coin_mint,
+    onchain,
+  );
+  const recorded: Array<[Array<string | null>, string, string]> = [
+    [
+      [launchpad.launchpad_config, current.launchpad_config],
+      onchain.launchpadConfig,
+      'launchpad config',
+    ],
+    [
+      [launchpad.launchpad_coin_config, current.launchpad_coin_config],
+      onchain.launchpadCoinConfig,
+      'launchpad coin config',
+    ],
+    [
+      rebuilt
+        ? [current.launchpad_coin_mint]
+        : [launchpad.launchpad_coin_mint, current.launchpad_coin_mint],
+      onchain.launchpadCoinMint,
+      'launchpad coin mint',
+    ],
   ];
   for (const [stored, fresh, what] of recorded) {
-    if (stored !== null && stored !== fresh) {
+    if (stored.some((value) => value !== null && value !== fresh)) {
       throw new PipelineError(`the signer returned a ${what} that differs from the recorded one`);
     }
   }
 
+  let message: string | null = `Record the on-chain addresses (job ${job.id})`;
   if (typed.onchain !== undefined) {
-    if (!sameOnchain(typed.onchain, onchain)) {
+    if (sameOnchain(typed.onchain, onchain)) {
+      message = null;
+    } else if (
+      rebuilt &&
+      typed.onchain.launchpadCoinMint === launchpad.launchpad_coin_mint &&
+      sameOnchain({ ...typed.onchain, launchpadCoinMint: onchain.launchpadCoinMint }, onchain)
+    ) {
+      // Only the mint of the rebuilt launch changes; any other address stays refused.
+      message = `Record the rebuilt launch coin mint (job ${job.id})`;
+    } else {
       throw new PipelineError('forge.config.json already holds different on-chain addresses');
     }
-  } else {
+  }
+  if (message !== null) {
     guard(signal);
     const commit = await deps.github.commitFiles({
       repo: repo.name,
       branch,
-      message: `Record the on-chain addresses (job ${job.id})`,
+      message,
       files: [
         { path: SITE_CONFIG_PATH, content: serializeSiteConfig(withOnchain(config, onchain)) },
       ],
@@ -116,18 +156,43 @@ export async function runOnchainStep(
       'on-chain addresses committed',
     );
   }
+  if (rebuilt) {
+    jobCtx.logger.warn(
+      jobFields(job, { mint: onchain.launchpadCoinMint }),
+      'the signer rebuilt the launch transaction with a new mint (previous one revoked)',
+    );
+  }
 
   const patch: LaunchpadPatch = {};
-  if (launchpad.launchpad_config === null) patch.launchpad_config = onchain.launchpadConfig;
-  if (launchpad.launchpad_coin_config === null) {
+  if (current.launchpad_config === null) patch.launchpad_config = onchain.launchpadConfig;
+  if (current.launchpad_coin_config === null) {
     patch.launchpad_coin_config = onchain.launchpadCoinConfig;
   }
-  if (launchpad.launchpad_coin_mint === null) patch.launchpad_coin_mint = onchain.launchpadCoinMint;
+  if (current.launchpad_coin_mint === null) patch.launchpad_coin_mint = onchain.launchpadCoinMint;
   if (Object.keys(patch).length > 0) {
     guard(signal);
     await deps.store.updateLaunchpad(launchpad.id, patch);
   }
   return { patch: { owner_tx: prepared.partiallySignedTx, owner_tx_details: details } };
+}
+
+/**
+ * True when the signer rebuilt the launch with a new mint during this prepare call: the row held
+ * mint `before` when the step started, and the signer replaced it with the mint it just returned.
+ * The signer replaces a recorded mint only after proving that the previous launch transaction can
+ * never land (its durable nonce moved without a launch, e.g. after an operator revocation with
+ * `--revoke-launch`), through a compare-and-set that accepts only the mints it replaced itself
+ * (apps/signer routes/launch.ts). The prepare answer has no rebuild field: that row write is the
+ * signer's report. The configs are never accepted as changed.
+ */
+function launchRebuilt(
+  before: string | null,
+  after: string | null,
+  onchain: { launchpadCoinMint: string },
+): boolean {
+  return (
+    before !== null && before !== onchain.launchpadCoinMint && after === onchain.launchpadCoinMint
+  );
 }
 
 /**

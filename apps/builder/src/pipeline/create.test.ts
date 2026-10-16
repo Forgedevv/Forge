@@ -14,6 +14,7 @@ import { PRODUCTION_NOT_STAGED } from '../vercel.js';
 import { AgentFailedError, PipelineError, PolicyViolationError, SiteBuildError } from './errors.js';
 import { StoreError, type LaunchpadPatch } from './store.js';
 import {
+  address,
   CREATE_JOB_ID,
   jobContext,
   jobFixture,
@@ -723,6 +724,108 @@ describe('create: onchain_setup', () => {
     // A crash before owner_tx was stored is still resumed (addresses recorded, no owner_tx).
     const { outcome } = await runStep(h, onchainJob({ owner_tx: null }));
     expect(outcome).toEqual(STORED_LAUNCH);
+  });
+
+  describe('after an operator revocation (signer --revoke-launch, owner_tx cleared)', () => {
+    // Regression (audit): the signer rebuilt the launch with a new mint and recorded it on the row,
+    // and the builder refused it ("differs from the recorded one" / "already holds different").
+    const REBUILT_MINT = address(40);
+    const REBUILT_TX = Buffer.from('rebuilt launch transaction').toString('base64');
+    const REBUILT_DETAILS = { ...OWNER_TX_DETAILS, pool: address(41) };
+
+    /** The signer prepares a new launch; `records`: it writes the new mint to the row (CAS). */
+    function rebuildingSigner(h: Harness, records = true): void {
+      h.signer.prepared = {
+        partiallySignedTx: REBUILT_TX,
+        mint: REBUILT_MINT,
+        details: { ...REBUILT_DETAILS, expectedTokensOut: '1', minimumTokensOut: '1' },
+      };
+      const prepare = h.signer.prepareLaunchCoin.bind(h.signer);
+      h.signer.prepareLaunchCoin = async () => {
+        const answer = await prepare();
+        if (records) h.store.get(LAUNCHPAD_ID).launchpad_coin_mint = answer.mint;
+        return answer;
+      };
+    }
+
+    it('accepts the mint the signer rebuilt and rewrites onchain.launchpadCoinMint', async () => {
+      const h = harness();
+      await prepareOnchain(h);
+      const before = h.github.repos.get(REPO)!.branches.get(BRANCH)!;
+      const previous = JSON.parse(h.github.text(REPO, BRANCH, 'forge.config.json')!);
+      expect(previous.onchain.launchpadCoinMint).toBe(LAUNCHPAD_COIN_MINT);
+      rebuildingSigner(h);
+
+      const { outcome } = await runStep(h, onchainJob({ owner_tx: null }));
+
+      expect(outcome).toEqual({
+        patch: { owner_tx: REBUILT_TX, owner_tx_details: REBUILT_DETAILS },
+      });
+      const config = JSON.parse(h.github.text(REPO, BRANCH, 'forge.config.json')!);
+      expect(config).toEqual({
+        ...previous,
+        onchain: { ...previous.onchain, launchpadCoinMint: REBUILT_MINT },
+      });
+      // One builder-owned commit on the job branch, forge.config.json only.
+      const head = h.github.repos.get(REPO)!.branches.get(BRANCH)!;
+      const commit = h.github.commits.get(head)!;
+      expect(commit.parents).toEqual([before]);
+      expect(commit.message).toMatch(/rebuilt launch coin mint/);
+      expect(h.store.get(LAUNCHPAD_ID)).toMatchObject({
+        launchpad_config: LAUNCHPAD_CONFIG,
+        launchpad_coin_config: LAUNCHPAD_COIN_CONFIG,
+        launchpad_coin_mint: REBUILT_MINT,
+      });
+
+      // A re-run after a crash before owner_tx was stored is idempotent: nothing committed again.
+      const commits = h.github.commits.size;
+      const again = await runStep(h, onchainJob({ owner_tx: null }));
+      expect(again.outcome).toEqual(outcome);
+      expect(h.github.commits.size).toBe(commits);
+    });
+
+    it('refuses a new mint the signer did not record on the launchpad row', async () => {
+      const h = harness();
+      await prepareOnchain(h);
+      rebuildingSigner(h, false);
+      const commits = h.github.commits.size;
+      await expect(runStep(h, onchainJob({ owner_tx: null }))).rejects.toThrow(
+        /launchpad coin mint that differs from the recorded one/,
+      );
+      expect(h.github.commits.size).toBe(commits);
+      expect(h.store.get(LAUNCHPAD_ID).launchpad_coin_mint).toBe(LAUNCHPAD_COIN_MINT);
+    });
+
+    it('never accepts a changed config address, even with a rebuilt mint', async () => {
+      const h = harness();
+      await prepareOnchain(h);
+      rebuildingSigner(h);
+      h.signer.configs = { ...h.signer.configs, launchpadConfig: address(42) };
+      const commits = h.github.commits.size;
+      await expect(runStep(h, onchainJob({ owner_tx: null }))).rejects.toThrow(
+        /launchpad config that differs from the recorded one/,
+      );
+      expect(h.github.commits.size).toBe(commits);
+    });
+
+    it('refuses when the branch holds another mint than the one replaced', async () => {
+      const h = harness();
+      await prepareOnchain(h);
+      const config = JSON.parse(h.github.text(REPO, BRANCH, 'forge.config.json')!);
+      config.onchain.launchpadCoinMint = address(43);
+      await h.github.commitFiles({
+        repo: REPO,
+        branch: BRANCH,
+        message: 'Edit the config',
+        files: [{ path: 'forge.config.json', content: `${JSON.stringify(config, null, 2)}\n` }],
+      });
+      rebuildingSigner(h);
+      const commits = h.github.commits.size;
+      await expect(runStep(h, onchainJob({ owner_tx: null }))).rejects.toThrow(
+        /already holds different on-chain addresses/,
+      );
+      expect(h.github.commits.size).toBe(commits);
+    });
   });
 
   it('fails before any signer call when the preview branch is missing', async () => {
