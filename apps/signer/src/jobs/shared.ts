@@ -1203,6 +1203,157 @@ export function assertCreatorClaimTx(tx: Transaction, expected: CreatorClaimExpe
   }
 }
 
+/**
+ * Anchor discriminator of the DAMM v2 (cp-amm) `claim_position_fee` instruction
+ * (sha256("global:claim_position_fee")[0..8]). The instruction has no arguments.
+ */
+export const CP_AMM_CLAIM_POSITION_FEE_DISCRIMINATOR = Buffer.from([
+  180, 38, 154, 17, 133, 33, 162, 211,
+]);
+
+/** Account indexes of `claim_position_fee` (cp-amm SDK 1.5.1 IDL). */
+const POSITION_CLAIM_IX = {
+  pool: 1,
+  position: 2,
+  tokenA: 3,
+  tokenB: 4,
+  tokenAMint: 7,
+  tokenBMint: 8,
+  positionNftAccount: 9,
+  owner: 10,
+  tokenAProgram: 11,
+  tokenBProgram: 12,
+} as const;
+
+export interface CreatorPositionClaimExpectation {
+  cpAmmProgramId: PublicKey;
+  /** The DAMM v2 pool the launchpad coin pool migrated to. */
+  dammPool: PublicKey;
+  /** The coin (token A of the DAMM v2 pool). */
+  baseMint: PublicKey;
+  /** Pool creator: owner of the positions, signs. */
+  creator: PublicKey;
+  /** Fee payer: the signer's payer wallet, or the creator itself. */
+  feePayer: PublicKey;
+  /** FORGE multisig vault: every claimed lamport and token must end up there. */
+  receiver: PublicKey;
+  /** The creator's positions on `dammPool`, each with the token account holding its NFT. */
+  positions: ReadonlyArray<{ position: PublicKey; positionNftAccount: PublicKey }>;
+}
+
+/**
+ * Position fee claim policy (defense in depth against a wrong transaction from core):
+ * - fee payer = expected payer; required signers within {creator, payer}; the creator signs;
+ *   the receiver is not the creator (the fees must leave the creator wallet);
+ * - programs: cp-amm (nothing but `claim_position_fee`: no remove_liquidity, close_position,
+ *   lock_position, split, merge, permanent lock...), on the expected DAMM v2 pool, base mint and
+ *   SOL quote, with the creator as owner, each expected position exactly once with its expected
+ *   NFT account, and no other position; Associated Token (create / create-idempotent, funded by
+ *   a signer, owned by the receiver or by the creator); SPL Token (exactly one CloseAccount, of
+ *   the creator's temporary WSOL account, to the receiver, by the creator, after the last claim);
+ *   bounded compute budget. No System instruction (no transfer), no Token-2022 instruction (the
+ *   position NFT never moves), no DBC instruction, no other program;
+ * - the claimed coin fees go to the receiver's ATA; the claimed SOL fees go to the creator's
+ *   temporary WSOL account, which the close hands to the receiver with its rent.
+ */
+export function assertCreatorPositionClaimTx(
+  tx: Transaction,
+  expected: CreatorPositionClaimExpectation,
+): void {
+  const signerSet = [expected.creator, expected.feePayer];
+  assertSigners(tx, expected.feePayer, signerSet);
+  if (!requiredSigners(tx).some((s) => s.equals(expected.creator))) {
+    policy('creator must sign');
+  }
+  if (expected.receiver.equals(expected.creator)) policy('receiver must not be the creator');
+  if (expected.positions.length === 0) policy('no position expected');
+  const creatorWsol = getAssociatedTokenAddressSync(
+    NATIVE_MINT,
+    expected.creator,
+    true,
+    TOKEN_PROGRAM_ID,
+  );
+  const claimed = new Set<string>();
+  let lastClaimIndex = -1;
+  const closes: number[] = [];
+
+  tx.instructions.forEach((ix, index) => {
+    const data = Buffer.from(ix.data);
+    const key = (i: number): PublicKey => {
+      const meta = ix.keys[i];
+      if (!meta) policy('instruction is missing accounts');
+      return meta.pubkey;
+    };
+    if (ix.programId.equals(expected.cpAmmProgramId)) {
+      if (data.length !== 8 || !CP_AMM_CLAIM_POSITION_FEE_DISCRIMINATOR.equals(data)) {
+        policy('DAMM v2 instruction other than a position fee claim');
+      }
+      if (!key(POSITION_CLAIM_IX.pool).equals(expected.dammPool)) {
+        policy('claim on an unexpected pool');
+      }
+      const position = key(POSITION_CLAIM_IX.position);
+      const wanted = expected.positions.find((p) => p.position.equals(position));
+      if (!wanted) policy('claim on an unexpected position');
+      if (claimed.has(position.toBase58())) policy('position claimed twice');
+      claimed.add(position.toBase58());
+      if (!key(POSITION_CLAIM_IX.positionNftAccount).equals(wanted.positionNftAccount)) {
+        policy('unexpected position NFT account');
+      }
+      if (!key(POSITION_CLAIM_IX.owner).equals(expected.creator)) {
+        policy('unexpected position owner');
+      }
+      if (!key(POSITION_CLAIM_IX.tokenAMint).equals(expected.baseMint)) policy('unexpected base mint');
+      if (!key(POSITION_CLAIM_IX.tokenBMint).equals(NATIVE_MINT)) policy('quote mint is not SOL');
+      const tokenAProgram = key(POSITION_CLAIM_IX.tokenAProgram);
+      if (
+        !isTokenProgram(tokenAProgram) ||
+        !key(POSITION_CLAIM_IX.tokenBProgram).equals(TOKEN_PROGRAM_ID)
+      ) {
+        policy('unexpected token program');
+      }
+      const receiverBase = getAssociatedTokenAddressSync(
+        expected.baseMint,
+        expected.receiver,
+        true,
+        tokenAProgram,
+      );
+      if (!key(POSITION_CLAIM_IX.tokenA).equals(receiverBase)) {
+        policy('base fees not sent to the receiver');
+      }
+      if (!key(POSITION_CLAIM_IX.tokenB).equals(creatorWsol)) {
+        policy('quote fees not sent to the temporary WSOL account');
+      }
+      lastClaimIndex = index;
+    } else if (ix.programId.equals(ASSOCIATED_TOKEN_PROGRAM_ID)) {
+      if (!(data.length === 0 || (data.length === 1 && (data[0] === 0 || data[0] === 1)))) {
+        policy('associated token instruction not allowed');
+      }
+      if (!signerSet.some((s) => s.equals(key(0)))) policy('token account funded by a non-signer');
+      const owner = key(2);
+      if (!owner.equals(expected.receiver) && !owner.equals(expected.creator)) {
+        policy('token account for an unexpected owner');
+      }
+    } else if (ix.programId.equals(TOKEN_PROGRAM_ID)) {
+      if (!(data[0] === 9 && data.length === 1)) policy('token instruction not allowed');
+      if (!key(0).equals(creatorWsol)) policy('close of an unexpected account');
+      if (!key(1).equals(expected.receiver)) policy('account closed to a non-receiver');
+      if (!key(2).equals(expected.creator)) policy('unexpected close authority');
+      closes.push(index);
+    } else if (ix.programId.equals(ComputeBudgetProgram.programId)) {
+      checkComputeBudget(ix);
+    } else {
+      policy('program not allowed in a position fee claim');
+    }
+  });
+
+  if (claimed.size === 0) policy('no claim instruction');
+  for (const p of expected.positions) {
+    if (!claimed.has(p.position.toBase58())) policy('expected position not claimed');
+  }
+  if (closes.length !== 1) policy('exactly one token account close expected');
+  if (closes[0]! < lastClaimIndex) policy('temporary WSOL account not closed after the claims');
+}
+
 export interface KeystoreSignerRef {
   ref: string;
   /** The public key the ref must decrypt to (refuses to sign otherwise). */

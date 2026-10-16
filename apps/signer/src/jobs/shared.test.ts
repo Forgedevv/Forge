@@ -1,17 +1,31 @@
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { ComputeBudgetProgram, PublicKey, SystemProgram, Transaction } from '@solana/web3.js';
+import {
+  NATIVE_MINT,
+  TOKEN_2022_PROGRAM_ID,
+  createCloseAccountInstruction,
+  getAssociatedTokenAddressSync,
+} from '@solana/spl-token';
+import {
+  ComputeBudgetProgram,
+  PublicKey,
+  SystemProgram,
+  Transaction,
+  TransactionInstruction,
+} from '@solana/web3.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { buildSolTransferTx } from '../core-adapter.js';
 import { openKeystore } from '../keystore.js';
 import {
+  CP_AMM_CLAIM_POSITION_FEE_DISCRIMINATOR,
   JobError,
   MEMO_PROGRAM_ID,
   Mutex,
   assertCreatorClaimTx,
+  assertCreatorPositionClaimTx,
   assertSolTransferTx,
   awaitSettlement,
   base58Encode,
@@ -37,6 +51,7 @@ import {
   FakeChain,
   TransientRpcError,
   buildFakeClaimTx,
+  buildFakePositionClaimTx,
   memoryFlags,
   randomAddress,
 } from './testing.js';
@@ -456,6 +471,312 @@ describe('transaction policy', () => {
     expect(() => assertCreatorClaimTx(tx, { ...expected, dbcProgramId: randomAddress() })).toThrow(
       JobError,
     );
+  });
+});
+
+describe('position fee claim policy', () => {
+  const programId = randomAddress();
+  const dbcProgramId = randomAddress();
+  const dammPool = randomAddress();
+  const baseMint = randomAddress();
+  const creator = randomAddress();
+  const payer = randomAddress();
+  const receiver = randomAddress();
+  const positions = [
+    { position: randomAddress(), positionNftAccount: randomAddress() },
+    { position: randomAddress(), positionNftAccount: randomAddress() },
+  ];
+  const blockhash = new PublicKey(randomBytes(32)).toBase58();
+  const expected = {
+    cpAmmProgramId: programId,
+    dammPool,
+    baseMint,
+    creator,
+    feePayer: payer,
+    receiver,
+    positions,
+  };
+  const build = (claimed = positions) => {
+    const tx = buildFakePositionClaimTx(
+      programId,
+      dammPool,
+      baseMint,
+      creator,
+      receiver,
+      payer,
+      claimed,
+    );
+    tx.feePayer = payer;
+    tx.recentBlockhash = blockhash;
+    return tx;
+  };
+  const CLAIM = 2; // index of the first claim instruction (after the two ATA creations)
+
+  it('pins the claim_position_fee discriminator', () => {
+    const digest = createHash('sha256').update('global:claim_position_fee').digest();
+    expect(CP_AMM_CLAIM_POSITION_FEE_DISCRIMINATOR.equals(digest.subarray(0, 8))).toBe(true);
+  });
+
+  it('accepts the core layout: one claim per position, WSOL closed to the receiver after them', () => {
+    expect(() => assertCreatorPositionClaimTx(build(), expected)).not.toThrow();
+    const single = build([positions[0]!]);
+    expect(() =>
+      assertCreatorPositionClaimTx(single, { ...expected, positions: [positions[0]!] }),
+    ).not.toThrow();
+    const budget = build()
+      .add(ComputeBudgetProgram.setComputeUnitLimit({ units: 200_000 }))
+      .add(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 1_000n }));
+    expect(() => assertCreatorPositionClaimTx(budget, expected)).not.toThrow();
+  });
+
+  it.each([
+    ['a different receiver', () => build(), { receiver: randomAddress() }],
+    ['a different creator', () => build(), { creator: randomAddress() }],
+    ['the creator as receiver', () => build(), { receiver: creator }],
+    ['a different fee payer', () => build(), { feePayer: creator }],
+    ['a different program id', () => build(), { cpAmmProgramId: randomAddress() }],
+    ['a claim on a position that is not expected', () => build(), { positions: [positions[0]!] }],
+    [
+      'an expected position left unclaimed',
+      () => build([positions[0]!]),
+      {},
+    ],
+    ['no expected position', () => build([]), { positions: [] }],
+    [
+      'an extra SOL transfer',
+      () =>
+        build().add(
+          SystemProgram.transfer({ fromPubkey: payer, toPubkey: receiver, lamports: 1n }),
+        ),
+      {},
+    ],
+    [
+      'a Token-2022 instruction (the position NFT moving)',
+      () =>
+        build().add(
+          new TransactionInstruction({
+            programId: TOKEN_2022_PROGRAM_ID,
+            keys: [{ pubkey: positions[0]!.positionNftAccount, isSigner: false, isWritable: true }],
+            data: Buffer.from([3, 1, 0, 0, 0, 0, 0, 0, 0]),
+          }),
+        ),
+      {},
+    ],
+    [
+      'a DBC instruction',
+      () =>
+        build().add(
+          new TransactionInstruction({ programId: dbcProgramId, keys: [], data: Buffer.alloc(8) }),
+        ),
+      {},
+    ],
+    [
+      'a memo',
+      () =>
+        build().add(
+          new TransactionInstruction({ programId: MEMO_PROGRAM_ID, keys: [], data: Buffer.from('x') }),
+        ),
+      {},
+    ],
+    [
+      'a huge priority fee',
+      () => build().add(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 10_000_000n })),
+      {},
+    ],
+    [
+      'a DAMM v2 instruction other than the claim (e.g. remove_liquidity)',
+      () => {
+        const tx = build();
+        const ix = tx.instructions[CLAIM]!;
+        tx.instructions[CLAIM] = new TransactionInstruction({
+          programId: ix.programId,
+          keys: ix.keys,
+          data: Buffer.from([80, 85, 209, 72, 24, 206, 177, 169, 0, 0, 0, 0, 0, 0, 0, 0]),
+        });
+        return tx;
+      },
+      {},
+    ],
+    [
+      'a claim with arguments',
+      () => {
+        const tx = build();
+        const ix = tx.instructions[CLAIM]!;
+        tx.instructions[CLAIM] = new TransactionInstruction({
+          programId: ix.programId,
+          keys: ix.keys,
+          data: Buffer.concat([CP_AMM_CLAIM_POSITION_FEE_DISCRIMINATOR, Buffer.alloc(8)]),
+        });
+        return tx;
+      },
+      {},
+    ],
+    [
+      'coin fees sent to another token account',
+      () => {
+        const tx = build();
+        tx.instructions[CLAIM]!.keys[3] = { ...tx.instructions[CLAIM]!.keys[3]!, pubkey: randomAddress() };
+        return tx;
+      },
+      {},
+    ],
+    [
+      "SOL fees sent to the receiver's own WSOL account instead of the temporary one",
+      () => {
+        const tx = build();
+        tx.instructions[CLAIM]!.keys[4] = {
+          ...tx.instructions[CLAIM]!.keys[4]!,
+          pubkey: getAssociatedTokenAddressSync(NATIVE_MINT, receiver, true),
+        };
+        return tx;
+      },
+      {},
+    ],
+    [
+      'a claim on another pool',
+      () => {
+        const tx = build();
+        tx.instructions[CLAIM]!.keys[1] = { ...tx.instructions[CLAIM]!.keys[1]!, pubkey: randomAddress() };
+        return tx;
+      },
+      {},
+    ],
+    [
+      'another position owner',
+      () => {
+        const tx = build();
+        tx.instructions[CLAIM]!.keys[10] = {
+          ...tx.instructions[CLAIM]!.keys[10]!,
+          pubkey: randomAddress(),
+        };
+        return tx;
+      },
+      {},
+    ],
+    [
+      'another NFT account',
+      () => {
+        const tx = build();
+        tx.instructions[CLAIM]!.keys[9] = { ...tx.instructions[CLAIM]!.keys[9]!, pubkey: randomAddress() };
+        return tx;
+      },
+      {},
+    ],
+    [
+      'another base mint',
+      () => {
+        const tx = build();
+        tx.instructions[CLAIM]!.keys[7] = { ...tx.instructions[CLAIM]!.keys[7]!, pubkey: randomAddress() };
+        return tx;
+      },
+      {},
+    ],
+    [
+      'a quote mint that is not SOL',
+      () => {
+        const tx = build();
+        tx.instructions[CLAIM]!.keys[8] = { ...tx.instructions[CLAIM]!.keys[8]!, pubkey: randomAddress() };
+        return tx;
+      },
+      {},
+    ],
+    [
+      'the same position claimed twice',
+      () => {
+        const tx = build();
+        const ix = tx.instructions[CLAIM]!;
+        return tx.add(new TransactionInstruction({ programId: ix.programId, keys: ix.keys, data: ix.data }));
+      },
+      {},
+    ],
+    [
+      'the temporary WSOL account left open',
+      () => {
+        const tx = build();
+        tx.instructions.pop();
+        return tx;
+      },
+      {},
+    ],
+    [
+      'the temporary WSOL account closed to another wallet',
+      () => {
+        const tx = build();
+        const close = tx.instructions.pop()!;
+        return tx.add(createCloseAccountInstruction(close.keys[0]!.pubkey, randomAddress(), creator));
+      },
+      {},
+    ],
+    [
+      'the temporary WSOL account closed by someone else',
+      () => {
+        const tx = build();
+        const close = tx.instructions.pop()!;
+        return tx.add(createCloseAccountInstruction(close.keys[0]!.pubkey, receiver, payer));
+      },
+      {},
+    ],
+    [
+      'another account closed',
+      () => {
+        const tx = build();
+        tx.instructions.pop();
+        return tx.add(createCloseAccountInstruction(randomAddress(), receiver, creator));
+      },
+      {},
+    ],
+    [
+      'the temporary WSOL account closed before the claims',
+      () => {
+        const tx = build();
+        const close = tx.instructions.pop()!;
+        tx.instructions.splice(CLAIM, 0, close);
+        return tx;
+      },
+      {},
+    ],
+    [
+      'a token account created for a stranger',
+      () => {
+        const tx = build();
+        tx.instructions[0]!.keys[2] = { ...tx.instructions[0]!.keys[2]!, pubkey: randomAddress() };
+        return tx;
+      },
+      {},
+    ],
+    [
+      'a token account funded by a non-signer',
+      () => {
+        const tx = build();
+        tx.instructions[1]!.keys[0] = {
+          ...tx.instructions[1]!.keys[0]!,
+          pubkey: randomAddress(),
+          isSigner: false,
+        };
+        return tx;
+      },
+      {},
+    ],
+    [
+      'an unknown program',
+      () =>
+        build().add(
+          new TransactionInstruction({ programId: randomAddress(), keys: [], data: Buffer.alloc(0) }),
+        ),
+      {},
+    ],
+    [
+      'a missing blockhash',
+      () => {
+        const tx = build();
+        tx.recentBlockhash = undefined;
+        return tx;
+      },
+      {},
+    ],
+  ])('rejects %s', (_name, make, over) => {
+    const tx = (make as () => Transaction)();
+    expect(() => assertCreatorPositionClaimTx(tx, { ...expected, ...over })).toThrow(JobError);
   });
 });
 

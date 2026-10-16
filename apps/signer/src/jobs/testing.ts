@@ -20,8 +20,11 @@ import type {
   ClaimTxResult,
   CreatorClaimParams,
   CreatorPoolState,
+  CreatorPositionClaimParams,
+  CreatorPositionsState,
   ExpectedPayment,
   PaymentVerification,
+  PositionClaimTxResult,
   SignerCore,
 } from '../core-adapter.js';
 import { buildSolTransferTx } from '../core-adapter.js';
@@ -35,6 +38,7 @@ import type {
   RefundStore,
 } from './refunds.js';
 import {
+  CP_AMM_CLAIM_POSITION_FEE_DISCRIMINATOR,
   DBC_CREATOR_CLAIM_DISCRIMINATORS,
   base58Encode,
   decodeSystemTransfer,
@@ -404,13 +408,28 @@ export function chainSleep(
 // ---------------------------------------------------------------------------------------
 // Fake DBC program + core
 
+/** A DAMM v2 position of the fake migrated pool, with the pending SOL fees of its owner. */
+export interface FakePosition {
+  position: PublicKey;
+  positionNftAccount: PublicKey;
+  nftMint: PublicKey;
+  owner: PublicKey;
+  pendingQuote: bigint;
+}
+
 export interface FakePool {
   config: PublicKey;
   baseMint: PublicKey;
   creator: PublicKey;
   claimableQuote: bigint;
   graduated: boolean;
+  /** The DAMM v2 pool exists (implies graduated); `dammPool` is set by `addPool`. */
+  migrated?: boolean;
+  dammPool?: PublicKey;
+  positions?: FakePosition[];
 }
+
+type StoredFakePool = FakePool & { migrated: boolean; dammPool: PublicKey; positions: FakePosition[] };
 
 /**
  * Quote-side layouts of a creator claim:
@@ -426,9 +445,13 @@ export type FakeClaimShape = 'close_to_receiver' | 'forward_from_creator' | 'exa
 
 export class FakeDbc {
   readonly programId = randomAddress();
-  readonly pools = new Map<string, FakePool>();
+  /** The fake DAMM v2 (cp-amm) program. */
+  readonly cpAmmProgramId = randomAddress();
+  readonly pools = new Map<string, StoredFakePool>();
   /** Lets a test tamper with the built transaction (policy tests). */
   tamper: ((tx: Transaction, params: CreatorClaimParams) => void) | null = null;
+  /** Same for the position fee claim. */
+  tamperPosition: ((tx: Transaction, params: CreatorPositionClaimParams) => void) | null = null;
   claimShape: FakeClaimShape = 'close_to_receiver';
 
   constructor(readonly chain: FakeChain) {
@@ -444,8 +467,38 @@ export class FakeDbc {
 
   addPool(pool: FakePool): PublicKey {
     const address = this.poolAddress(pool.config, pool.baseMint);
-    this.pools.set(address.toBase58(), { ...pool });
+    const migrated = pool.migrated ?? false;
+    this.pools.set(address.toBase58(), {
+      ...pool,
+      graduated: pool.graduated || migrated,
+      migrated,
+      dammPool: pool.dammPool ?? randomAddress(),
+      positions: [...(pool.positions ?? [])],
+    });
     return address;
+  }
+
+  /** Adds a DAMM v2 position on the (migrated) pool; owner defaults to the pool creator. */
+  addPosition(
+    pool: PublicKey,
+    options: { pendingQuote: bigint; owner?: PublicKey } = { pendingQuote: 0n },
+  ): FakePosition {
+    const p = this.pools.get(pool.toBase58());
+    if (!p) throw new Error('fake pool not found');
+    const position: FakePosition = {
+      position: randomAddress(),
+      positionNftAccount: randomAddress(),
+      nftMint: randomAddress(),
+      owner: options.owner ?? p.creator,
+      pendingQuote: options.pendingQuote,
+    };
+    p.positions.push(position);
+    return position;
+  }
+
+  private findByDammPool(dammPool: PublicKey): StoredFakePool | undefined {
+    for (const p of this.pools.values()) if (p.dammPool.equals(dammPool)) return p;
+    return undefined;
   }
 
   /** Claim: the quote fees go to the token account `tokenB` (kept in the execution scratch). */
@@ -456,6 +509,21 @@ export class FakeDbc {
       const held = ledger.scratch.get(account) ?? 0n;
       ledger.scratch.delete(account);
       if (held > 0n) ledger.credit(ix.keys[1]!.pubkey, held);
+      return;
+    }
+    if (ix.programId.equals(this.cpAmmProgramId)) {
+      // claim_position_fee: the position's pending SOL fees go to `tokenB` (key 4).
+      const pool = this.findByDammPool(ix.keys[1]!.pubkey);
+      if (!pool) throw new Error('DAMM v2 pool not found');
+      const position = pool.positions.find((p) => p.position.equals(ix.keys[2]!.pubkey));
+      if (!position) throw new Error('position not found');
+      if (!position.positionNftAccount.equals(ix.keys[9]!.pubkey)) throw new Error('wrong NFT account');
+      if (!position.owner.equals(ix.keys[10]!.pubkey)) throw new Error('not the position owner');
+      const tokenB = ix.keys[4]!.pubkey.toBase58();
+      ledger.scratch.set(tokenB, (ledger.scratch.get(tokenB) ?? 0n) + position.pendingQuote);
+      ledger.onCommit(() => {
+        position.pendingQuote = 0n;
+      });
       return;
     }
     if (!ix.programId.equals(this.programId)) return;
@@ -479,6 +547,7 @@ export class FakeDbc {
     return {
       verifications,
       dbcProgramId: this.programId,
+      cpAmmProgramId: this.cpAmmProgramId,
       coinPoolAddress: (config, baseMint) => this.poolAddress(config, baseMint),
       readCreatorPool: async (pool): Promise<CreatorPoolState | null> => {
         const p = this.pools.get(pool.toBase58());
@@ -489,9 +558,80 @@ export class FakeDbc {
           baseMint: p.baseMint,
           quoteMint: NATIVE_MINT,
           creator: p.creator,
-          graduated: p.graduated,
+          graduated: p.graduated || p.migrated,
+          migrated: p.migrated,
           creatorClaimable: { base: 0n, quote: p.claimableQuote },
         };
+      },
+      readCreatorPositions: async (pool, creator): Promise<CreatorPositionsState | null> => {
+        const p = this.pools.get(pool.toBase58());
+        if (!p) throw new Error('DBC pool not found');
+        if (!p.creator.equals(creator)) throw new Error('not_pool_creator');
+        if (!p.migrated) return null;
+        const positions = p.positions
+          .filter((x) => x.owner.equals(creator))
+          .sort((a, b) => a.position.toBase58().localeCompare(b.position.toBase58()))
+          .map((x) => ({
+            position: x.position,
+            positionNftAccount: x.positionNftAccount,
+            nftMint: x.nftMint,
+            permanentLockedLiquidity: 1n,
+            pendingFees: { base: 0n, quote: x.pendingQuote },
+          }));
+        return {
+          pool,
+          dammPool: p.dammPool,
+          creator,
+          positions,
+          claimable: { base: 0n, quote: positions.reduce((a, x) => a + x.pendingFees.quote, 0n) },
+        };
+      },
+      buildCreatorPositionClaimTx: async (params): Promise<PositionClaimTxResult> => {
+        const p = this.pools.get(params.pool.toBase58());
+        if (!p) throw new Error('DBC pool not found');
+        if (!p.creator.equals(params.creator)) throw new Error('not_pool_creator');
+        if (!p.migrated) throw new Error('not_migrated');
+        const payer = params.payer ?? params.creator;
+        const wanted = params.positions
+          ? p.positions.filter((x) => params.positions!.some((w) => w.equals(x.position)))
+          : p.positions.filter((x) => x.owner.equals(params.creator));
+        for (const x of wanted) {
+          if (!x.owner.equals(params.creator)) throw new Error('position_not_owned');
+        }
+        const positions = [...wanted].sort((a, b) =>
+          a.position.toBase58().localeCompare(b.position.toBase58()),
+        );
+        const summary = {
+          kind: 'position' as const,
+          pool: params.pool,
+          dammPool: p.dammPool,
+          baseMint: p.baseMint,
+          claimer: params.creator,
+          receiver: params.receiver,
+          payer,
+          positions: positions.map((x) => ({
+            position: x.position,
+            positionNftAccount: x.positionNftAccount,
+          })),
+          claimable: { base: 0n, quote: positions.reduce((a, x) => a + x.pendingQuote, 0n) },
+        };
+        if (positions.length === 0 || summary.claimable.quote === 0n) {
+          return { transaction: null, lastValidBlockHeight: null, summary };
+        }
+        const tx = buildFakePositionClaimTx(
+          this.cpAmmProgramId,
+          p.dammPool,
+          p.baseMint,
+          params.creator,
+          params.receiver,
+          payer,
+          summary.positions,
+        );
+        this.tamperPosition?.(tx, params);
+        const { blockhash, lastValidBlockHeight } = await chain.getLatestBlockhash();
+        tx.feePayer = payer;
+        tx.recentBlockhash = blockhash;
+        return { transaction: tx, lastValidBlockHeight, summary };
       },
       buildCreatorClaimTx: async (params): Promise<ClaimTxResult> => {
         const p = this.pools.get(params.pool.toBase58());
@@ -599,6 +739,63 @@ export function buildFakeClaimTx(
     createCloseAccountInstruction(tempWsol, closeTo, creator),
     SystemProgram.transfer({ fromPubkey: closeTo, toPubkey: receiver, lamports: forwardLamports }),
   );
+}
+
+/**
+ * Same layout as core's position fee claim (cp-amm SDK 1.5.1 `claim_position_fee` accounts):
+ * the receiver's coin ATA and the creator's temporary WSOL ATA created idempotently by the
+ * payer, one claim per position, then the WSOL account closed to the receiver by the creator.
+ */
+export function buildFakePositionClaimTx(
+  programId: PublicKey,
+  dammPool: PublicKey,
+  baseMint: PublicKey,
+  creator: PublicKey,
+  receiver: PublicKey,
+  payer: PublicKey,
+  positions: ReadonlyArray<{ position: PublicKey; positionNftAccount: PublicKey }>,
+): Transaction {
+  const receiverBase = getAssociatedTokenAddressSync(baseMint, receiver, true, TOKEN_PROGRAM_ID);
+  const tempWsol = getAssociatedTokenAddressSync(NATIVE_MINT, creator, true, TOKEN_PROGRAM_ID);
+  const poolAuthority = randomAddress();
+  const vaultA = randomAddress();
+  const vaultB = randomAddress();
+  const eventAuthority = randomAddress();
+  const tx = new Transaction().add(
+    createAssociatedTokenAccountIdempotentInstruction(payer, receiverBase, receiver, baseMint),
+    createAssociatedTokenAccountIdempotentInstruction(payer, tempWsol, creator, NATIVE_MINT),
+  );
+  for (const p of positions) {
+    const keys = [
+      poolAuthority,
+      dammPool,
+      p.position,
+      receiverBase, // token_a_account
+      tempWsol, // token_b_account
+      vaultA,
+      vaultB,
+      baseMint,
+      NATIVE_MINT,
+      p.positionNftAccount,
+      creator, // signer (owner)
+      TOKEN_PROGRAM_ID,
+      TOKEN_PROGRAM_ID,
+      eventAuthority,
+      programId,
+    ].map((pubkey, i) => ({
+      pubkey,
+      isSigner: i === 10,
+      isWritable: [2, 3, 4, 5, 6].includes(i),
+    }));
+    tx.add(
+      new TransactionInstruction({
+        programId,
+        keys,
+        data: Buffer.from(CP_AMM_CLAIM_POSITION_FEE_DISCRIMINATOR),
+      }),
+    );
+  }
+  return tx.add(createCloseAccountInstruction(tempWsol, receiver, creator));
 }
 
 // ---------------------------------------------------------------------------------------

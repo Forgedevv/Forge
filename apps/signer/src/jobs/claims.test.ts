@@ -5,6 +5,7 @@ import {
   createCloseAccountInstruction,
   getAssociatedTokenAddressSync,
   NATIVE_MINT,
+  TOKEN_2022_PROGRAM_ID,
 } from '@solana/spl-token';
 import { PublicKey, SystemProgram, TransactionInstruction } from '@solana/web3.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -302,8 +303,10 @@ describe('claims: refusals and alerts', () => {
     await t.job().runOnce();
     t.poolState().claimableQuote = 20_000_000n;
     const second = await t.job().runOnce();
-    expect(second.outcomes[0]).toMatchObject({ result: 'claimed' });
-    expect(t.alerter.codes().filter((c) => c === 'post_graduation_lp_fees')).toHaveLength(1);
+    expect(second.outcomes[0]).toMatchObject({ result: 'claimed', kind: 'dbc' });
+    expect(t.alerter.codes().filter((c) => c === 'pool_graduated')).toHaveLength(1);
+    // Curve complete but not migrated yet: no position to look at.
+    expect(second.outcomes).toHaveLength(1);
   });
 
   it('does nothing when paused (flag, env, or unreadable flags)', async () => {
@@ -556,11 +559,392 @@ describe('claims: in-flight idempotency, failures and retries', () => {
   });
 });
 
+describe('position fee claims: migrated pools', () => {
+  async function migrated(
+    options: {
+      positionQuote?: bigint;
+      dbcClaimable?: bigint;
+      config?: Partial<ClaimsConfig>;
+      noPosition?: boolean;
+    } = {},
+  ) {
+    const t = await setup({ claimable: options.dbcClaimable ?? 0n, config: options.config });
+    t.poolState().graduated = true;
+    t.poolState().migrated = true;
+    const position = options.noPosition
+      ? null
+      : t.dbc.addPosition(t.pool, { pendingQuote: options.positionQuote ?? 50_000_000n });
+    return { ...t, position };
+  }
+
+  it('claims the position fees of a migrated pool to the vault, signed by the creator and the payer', async () => {
+    const t = await migrated();
+    const signSpy = vi.spyOn(keystore, 'withSigner');
+    const report = await t.job().runOnce();
+    expect(report.status).toBe('ran');
+    expect(report.outcomes).toEqual([
+      expect.objectContaining({ kind: 'dbc', result: 'below_threshold', claimable: 0n }),
+      expect.objectContaining({
+        kind: 'position',
+        result: 'claimed',
+        lamports: 50_000_000n,
+        pool: t.pool.toBase58(),
+      }),
+    ]);
+    expect(t.chain.balanceOf(t.vault)).toBe(SOL + 50_000_000n);
+    expect(t.position!.pendingQuote).toBe(0n);
+    expect(signSpy.mock.calls.map((c) => c[0]).sort()).toEqual([t.creator.ref, t.payer.ref].sort());
+    expect(t.chain.balanceOf(t.payer.publicKey)).toBe(SOL - 10_000n);
+    const entry = await t.journal.get(t.pool.toBase58());
+    expect(entry?.inFlight).toBeNull();
+    expect(entry?.lastClaim).toBeNull();
+    expect(entry?.lastPositionClaim).toMatchObject({
+      quote: '50000000',
+      positions: [t.position!.position.toBase58()],
+    });
+    expect(entry?.positionPendingSince).toBeNull();
+    expect(t.alerter.codes()).toEqual(['pool_graduated']);
+
+    // Nothing left: the next run reads and sends nothing.
+    const sends = t.chain.sendAttempts.length;
+    const next = await t.job().runOnce();
+    expect(next.outcomes[1]).toMatchObject({
+      kind: 'position',
+      result: 'below_threshold',
+      claimable: 0n,
+    });
+    expect(t.chain.sendAttempts.length).toBe(sends);
+  });
+
+  it('claims the DBC share first and the position fees on the next run', async () => {
+    const t = await migrated({ dbcClaimable: 30_000_000n, positionQuote: 40_000_000n });
+    const first = await t.job().runOnce();
+    expect(first.outcomes).toEqual([
+      expect.objectContaining({ kind: 'dbc', result: 'claimed', lamports: 30_000_000n }),
+    ]);
+    const second = await t.job().runOnce();
+    expect(second.outcomes).toEqual([
+      expect.objectContaining({ kind: 'dbc', result: 'below_threshold' }),
+      expect.objectContaining({ kind: 'position', result: 'claimed', lamports: 40_000_000n }),
+    ]);
+    expect(t.chain.balanceOf(t.vault)).toBe(SOL + 70_000_000n);
+  });
+
+  it('respects the threshold exactly for position fees', async () => {
+    const below = await migrated({ positionQuote: MIN - 1n });
+    expect((await below.job().runOnce()).outcomes[1]).toMatchObject({
+      kind: 'position',
+      result: 'below_threshold',
+      claimable: MIN - 1n,
+    });
+    expect(below.chain.calls).not.toContain('sendRawTransaction');
+    const at = await migrated({ positionQuote: MIN });
+    expect((await at.job().runOnce()).outcomes[1]).toMatchObject({
+      kind: 'position',
+      result: 'claimed',
+      lamports: MIN,
+    });
+  });
+
+  it('lets the creator wallet pay a position claim when configured', async () => {
+    const t = await migrated({ config: { feePayer: 'creator' } });
+    const signSpy = vi.spyOn(keystore, 'withSigner');
+    expect((await t.job().runOnce()).outcomes[1]).toMatchObject({ result: 'claimed' });
+    expect(signSpy.mock.calls.map((c) => c[0])).toEqual([t.creator.ref]);
+    expect(t.chain.balanceOf(t.creator.publicKey)).toBe(10_000_000n - 5_000n);
+  });
+
+  it('never has two claims of a pool in flight, whatever their kind', async () => {
+    const t = await migrated({ config: { settle: { timeoutMs: 10_000 } } });
+    t.chain.defaultBehavior = 'drop';
+    const first = await t.job().runOnce();
+    expect(first.outcomes[1]).toMatchObject({ kind: 'position', result: 'in_flight' });
+    const signature = (first.outcomes[1] as { signature: string }).signature;
+    expect((await t.journal.get(t.pool.toBase58()))?.inFlight).toMatchObject({
+      kind: 'position',
+      signature,
+    });
+
+    // The DBC share grows meanwhile: still nothing else is sent while the claim is in flight.
+    t.poolState().claimableQuote = 30_000_000n;
+    const second = await t.job().runOnce();
+    expect(second.outcomes).toEqual([
+      expect.objectContaining({ kind: 'position', result: 'in_flight', signature }),
+    ]);
+    expect(new Set(t.chain.sendAttempts)).toEqual(new Set([signature]));
+
+    t.chain.advance(400);
+    t.chain.defaultBehavior = 'land';
+    const third = await t.job().runOnce();
+    // The expired position claim is replaced by a new one only after the DBC claim of this run.
+    expect(third.outcomes).toEqual([
+      expect.objectContaining({ kind: 'dbc', result: 'claimed', lamports: 30_000_000n }),
+    ]);
+    const fourth = await t.job().runOnce();
+    expect(fourth.outcomes[1]).toMatchObject({ kind: 'position', result: 'claimed' });
+    expect((fourth.outcomes[1] as { signature: string }).signature).not.toBe(signature);
+    expect(t.chain.balanceOf(t.vault)).toBe(SOL + 80_000_000n);
+  });
+
+  it('records on restart a position claim that landed after the process stopped waiting', async () => {
+    const t = await migrated({ config: { settle: { timeoutMs: 2_000 } } });
+    t.chain.behaviors.push('drop');
+    expect((await t.job().runOnce()).outcomes[1]).toMatchObject({ result: 'in_flight' });
+    const entry = await t.journal.get(t.pool.toBase58());
+    await t.chain.sendRawTransaction(Buffer.from(entry!.inFlight!.rawTx, 'base64'));
+    const second = await t.job().runOnce();
+    expect(second.outcomes).toEqual([
+      expect.objectContaining({
+        kind: 'position',
+        result: 'claimed',
+        signature: entry!.inFlight!.signature,
+      }),
+    ]);
+    expect(new Set(t.chain.sendAttempts).size).toBe(1);
+    expect(t.chain.balanceOf(t.vault)).toBe(SOL + 50_000_000n);
+  });
+
+  it('alerts when a migrated pool has no position held by the creator', async () => {
+    const t = await migrated({ noPosition: true });
+    const report = await t.job().runOnce();
+    expect(report.outcomes[1]).toMatchObject({
+      kind: 'position',
+      result: 'manual',
+      reason: 'creator_position_missing',
+    });
+    const alert = t.alerter.alerts.find((a) => a.code === 'creator_position_missing');
+    expect(alert?.level).toBe('high');
+    expect(t.chain.calls).not.toContain('sendRawTransaction');
+    // A position held by another wallet does not count.
+    t.dbc.addPosition(t.pool, { pendingQuote: 50_000_000n, owner: randomAddress() });
+    expect((await t.job().runOnce()).outcomes[1]).toMatchObject({
+      reason: 'creator_position_missing',
+    });
+  });
+
+  it('alerts on an on-chain failure of a position claim and retries on the next run', async () => {
+    const t = await migrated();
+    t.chain.behaviors.push('fail_onchain');
+    expect((await t.job().runOnce()).outcomes[1]).toMatchObject({
+      kind: 'position',
+      result: 'failed',
+    });
+    expect(t.alerter.codes()).toContain('position_claim_failed');
+    expect((await t.journal.get(t.pool.toBase58()))?.consecutiveFailures).toBe(1);
+    expect((await t.job().runOnce()).outcomes[1]).toMatchObject({ result: 'claimed' });
+  });
+
+  it('alerts when position fees above the threshold stay unclaimed for more than 48 h', async () => {
+    const t = await migrated({ config: { settle: { timeoutMs: 1_000 } } });
+    t.chain.defaultBehavior = 'reject';
+    expect((await t.job().runOnce()).outcomes[1]).toMatchObject({ result: 'failed' });
+    expect(t.alerter.codes()).toContain('position_claim_rejected');
+    expect(t.alerter.codes()).not.toContain('position_fees_unclaimed');
+    t.clock.advance(49 * 60 * 60_000);
+    await t.job().runOnce();
+    expect(t.alerter.codes()).toContain('position_fees_unclaimed');
+    expect(t.alerter.codes()).not.toContain('creator_fees_unclaimed');
+  });
+
+  it('re-reads the kill switch before signing a position claim', async () => {
+    const t = await migrated();
+    let reads = 0;
+    const flags = {
+      async read() {
+        reads++;
+        if (reads > 1) t.flags.values.claims_paused = true;
+        return t.flags.read();
+      },
+    };
+    const signSpy = vi.spyOn(keystore, 'withSigner');
+    const report = await t.job({ flags }).runOnce();
+    expect(report.status).toBe('paused');
+    expect(report.outcomes[1]).toMatchObject({ kind: 'position', result: 'skipped', reason: 'paused' });
+    expect(signSpy).not.toHaveBeenCalled();
+    expect(t.chain.calls).not.toContain('sendRawTransaction');
+  });
+
+  it('skips with an alert when the fee payer cannot fund the accounts of a position claim', async () => {
+    const t = await migrated();
+    t.chain.setBalance(t.payer.publicKey, 1_000_000n);
+    expect((await t.job().runOnce()).outcomes[1]).toMatchObject({
+      kind: 'position',
+      result: 'skipped',
+      reason: 'payer_low_balance',
+    });
+    expect(t.alerter.codes()).toContain('claim_payer_low_balance');
+  });
+
+  it('still parses journal entries written before position claims existed', () => {
+    const old = {
+      v: 1,
+      pool: randomAddress().toBase58(),
+      launchpadId: uuid(),
+      inFlight: {
+        signature: 'sig',
+        rawTx: 'AA==',
+        lastValidBlockHeight: 10,
+        claimableQuote: '5',
+        startedAt: '2026-10-09T00:00:00.000Z',
+      },
+      lastClaim: null,
+      pendingSince: null,
+      graduationNoticeAt: null,
+      consecutiveFailures: 0,
+      lastError: null,
+    };
+    const parsed = ClaimJournalEntry.parse(old);
+    expect(parsed.inFlight).toMatchObject({ kind: 'dbc', positions: [] });
+    expect(parsed.lastPositionClaim).toBeNull();
+    expect(parsed.positionPendingSince).toBeNull();
+  });
+});
+
+describe('position fee claims: transaction policy (core output is checked before signing)', () => {
+  const CLAIM = 2;
+  const cases: Array<[string, (tx: import('@solana/web3.js').Transaction, t: { dbc: FakeDbc }) => void]> = [
+    [
+      'an extra SOL transfer',
+      (tx) =>
+        tx.add(
+          SystemProgram.transfer({
+            fromPubkey: tx.instructions[0]!.keys[0]!.pubkey,
+            toPubkey: randomAddress(),
+            lamports: 1n,
+          }),
+        ),
+    ],
+    [
+      'the WSOL account closed to another wallet',
+      (tx) => {
+        const close = tx.instructions.pop()!;
+        tx.add(createCloseAccountInstruction(close.keys[0]!.pubkey, randomAddress(), close.keys[2]!.pubkey));
+      },
+    ],
+    [
+      'the WSOL account left open (fees stranded in the creator wallet)',
+      (tx) => {
+        tx.instructions.pop();
+      },
+    ],
+    [
+      'a DAMM v2 instruction other than the position fee claim (e.g. remove_liquidity)',
+      (tx) => {
+        const ix = tx.instructions[CLAIM]!;
+        tx.instructions[CLAIM] = new TransactionInstruction({
+          programId: ix.programId,
+          keys: ix.keys,
+          data: Buffer.from([80, 85, 209, 72, 24, 206, 177, 169, 0, 0, 0, 0, 0, 0, 0, 0]),
+        });
+      },
+    ],
+    [
+      'coin fees sent to another token account',
+      (tx) => {
+        const ix = tx.instructions[CLAIM]!;
+        ix.keys[3] = { ...ix.keys[3]!, pubkey: getAssociatedTokenAddressSync(ix.keys[7]!.pubkey, randomAddress(), true) };
+      },
+    ],
+    [
+      'SOL fees sent to another token account',
+      (tx) => {
+        const ix = tx.instructions[CLAIM]!;
+        ix.keys[4] = { ...ix.keys[4]!, pubkey: getAssociatedTokenAddressSync(NATIVE_MINT, randomAddress(), true) };
+      },
+    ],
+    [
+      'a claim on another pool',
+      (tx) => {
+        const ix = tx.instructions[CLAIM]!;
+        ix.keys[1] = { ...ix.keys[1]!, pubkey: randomAddress() };
+      },
+    ],
+    [
+      'a claim on a position that is not the creator\'s',
+      (tx) => {
+        const ix = tx.instructions[CLAIM]!;
+        ix.keys[2] = { ...ix.keys[2]!, pubkey: randomAddress() };
+      },
+    ],
+    [
+      'the position claimed twice',
+      (tx) => {
+        const ix = tx.instructions[CLAIM]!;
+        tx.instructions.splice(CLAIM, 0, new TransactionInstruction({ programId: ix.programId, keys: ix.keys, data: ix.data }));
+      },
+    ],
+    [
+      'another owner signing for the position',
+      (tx) => {
+        const ix = tx.instructions[CLAIM]!;
+        ix.keys[10] = { ...ix.keys[10]!, pubkey: randomAddress() };
+      },
+    ],
+    [
+      'a Token-2022 transfer of the position NFT',
+      (tx) =>
+        tx.add(
+          new TransactionInstruction({
+            programId: TOKEN_2022_PROGRAM_ID,
+            keys: [{ pubkey: tx.instructions[CLAIM]!.keys[9]!.pubkey, isSigner: false, isWritable: true }],
+            data: Buffer.from([3, 1, 0, 0, 0, 0, 0, 0, 0]),
+          }),
+        ),
+    ],
+    [
+      'a DBC instruction next to the claim',
+      (tx, t) =>
+        tx.add(new TransactionInstruction({ programId: t.dbc.programId, keys: [], data: Buffer.alloc(8) })),
+    ],
+    [
+      'a token account created for a stranger',
+      (tx) => {
+        const ix = tx.instructions[0]!;
+        ix.keys[2] = { ...ix.keys[2]!, pubkey: randomAddress() };
+      },
+    ],
+    [
+      'an unknown program',
+      (tx) => tx.add(new TransactionInstruction({ programId: randomAddress(), keys: [], data: Buffer.alloc(0) })),
+    ],
+  ];
+
+  for (const [name, tamper] of cases) {
+    it(`refuses ${name}`, async () => {
+      const t = await setup({ claimable: 0n });
+      t.poolState().graduated = true;
+      t.poolState().migrated = true;
+      const position = t.dbc.addPosition(t.pool, { pendingQuote: 50_000_000n });
+      t.dbc.tamperPosition = (tx) => tamper(tx, t);
+      const signSpy = vi.spyOn(keystore, 'withSigner');
+      const report = await t.job().runOnce();
+      expect(report.outcomes[0]).toMatchObject({ result: 'error' });
+      expect(t.alerter.codes()).toContain('claim_policy_violation');
+      expect(signSpy).not.toHaveBeenCalled();
+      expect(t.chain.calls).not.toContain('sendRawTransaction');
+      expect(position.pendingQuote).toBe(50_000_000n);
+      expect(t.chain.balanceOf(t.vault)).toBe(SOL);
+    });
+  }
+
+  it('accepts the untampered position claim layout (control)', async () => {
+    const t = await setup({ claimable: 0n });
+    t.poolState().graduated = true;
+    t.poolState().migrated = true;
+    t.dbc.addPosition(t.pool, { pendingQuote: 50_000_000n });
+    t.dbc.tamperPosition = () => undefined;
+    expect((await t.job().runOnce()).outcomes[1]).toMatchObject({ kind: 'position', result: 'claimed' });
+  });
+});
+
 describe('claimsConfigFromEnv', () => {
-  it('defaults to a 24 h interval, 0.01 SOL threshold and the payer wallet', () => {
+  it('defaults to a 1 h interval, 0.01 SOL threshold and the payer wallet', () => {
     const vault = randomAddress();
     const c = claimsConfigFromEnv({}, vault);
-    expect(c.intervalMs).toBe(24 * 60 * 60_000);
+    expect(c.intervalMs).toBe(60 * 60_000);
+    expect(claimsConfigFromEnv({ SIGNER_CLAIMS_INTERVAL_HOURS: '24' }, vault).intervalMs).toBe(
+      24 * 60 * 60_000,
+    );
     expect(c.config).toMatchObject({
       vault,
       minClaimLamports: 10_000_000n,

@@ -3,34 +3,40 @@
  *
  * FORGE is the pool creator of each launchpad's own coin (D6: creatorTradingFeePercentage = 25),
  * through a dedicated creator wallet per launchpad held in the keystore
- * (`launchpads.creator_wallet_ref`). Every run (default 24 h), for each such pool:
- *   1. a claim still in flight is settled first (never two claims of a pool in flight);
+ * (`launchpads.creator_wallet_ref`). Every run (default 1 h), for each such pool:
+ *   1. a claim still in flight is settled first (never two claims of a pool in flight, whatever
+ *      their kind);
  *   2. the pool is read: missing pool -> skip (launch never signed); creator changed ->
  *      IMMEDIATE alert (transferPoolCreator, SECURITY §5) and no claim;
- *   3. if the unclaimed creator share (SOL side) reaches the threshold, the claim is built by core
- *      (`claimCreatorTradingFeeToReceiver`, receiver = FORGE multisig vault), checked against the
- *      claim policy, signed by the creator wallet (+ the payer wallet when it pays the fees),
- *      journaled, sent and confirmed by polling. A claim paid by the payer wallet is checked,
- *      built, signed and sent under the payer lock shared with the signing routes.
- * The creator signs, the vault only receives: no Squads proposal is needed.
+ *   3. DBC share: if the unclaimed creator share (SOL side) reaches the threshold, the claim is
+ *      built by core (`claimCreatorTradingFeeToReceiver`, receiver = FORGE multisig vault),
+ *      checked against the claim policy, signed by the creator wallet (+ the payer wallet when it
+ *      pays the fees), journaled, sent and confirmed by polling;
+ *   4. once the pool has migrated to DAMM v2, its creator keeps a permanently locked position
+ *      that earns the migrated pool's trading fees (devnet test 2). When the DBC share had nothing
+ *      to send, the creator's positions are read (core `findCreatorDammV2Positions`) and, if their
+ *      pending SOL fees reach the same threshold, the position fee claim is built by core
+ *      (`claim_position_fee`, SOL unwrapped to the vault), checked against its own policy
+ *      (`assertCreatorPositionClaimTx`: no remove liquidity, no transfer of the position NFT, no
+ *      other program), signed, journaled, sent and confirmed the same way.
+ * A claim paid by the payer wallet is checked, built, signed and sent under the payer lock shared
+ * with the signing routes. The creator signs, the vault only receives: no Squads proposal is needed.
  * Partner fees are NOT claimed here: they belong to the client (`feeClaimer` = client wallet),
  * who claims them from the dashboard.
  *
- * Results are kept in a per-pool journal (last claim, pending-since, failures); an alert is raised
- * on any failure and when fees above the threshold stay unclaimed for more than 48 h.
- * Every launchpad is read on every run; at most `maxPerRun` claims are built per run, and the
- * next run starts where the previous one stopped, so no pool is starved. The kill switch is read
- * at the start of the run and again before each claim is signed.
- * After graduation, the DBC creator share stays claimable here; the fees of the creator's locked
- * DAMM v2 position are not claimed automatically yet (core has no builder for them): a one-time
- * alert per pool asks for a manual claim.
+ * Results are kept in a per-pool journal (claim in flight, last claims of each kind, pending
+ * since, failures); an alert is raised on any failure and when fees above the threshold stay
+ * unclaimed for more than 48 h. Every launchpad is read on every run; at most `maxPerRun` claims
+ * are built per run, and the next run starts where the previous one stopped, so no pool is
+ * starved. The kill switch (`claims_paused`) is read at the start of the run and again before
+ * each claim is signed.
  */
 import { NATIVE_MINT } from '@solana/spl-token';
-import { PublicKey } from '@solana/web3.js';
+import { PublicKey, type Transaction } from '@solana/web3.js';
 import { z } from 'zod';
-import { OPS, type LaunchpadStatus } from '@forge/shared';
+import type { LaunchpadStatus } from '@forge/shared';
 import { creatorRole } from '../keystore.js';
-import type { SignerCore } from '../core-adapter.js';
+import type { CreatorPoolState, CreatorPositionsState, SignerCore } from '../core-adapter.js';
 import {
   DEFAULT_RETRY,
   DEFAULT_SETTLE,
@@ -38,6 +44,7 @@ import {
   JobError,
   alertAbnormalPause,
   assertCreatorClaimTx,
+  assertCreatorPositionClaimTx,
   awaitSettlement,
   broadcast,
   checkPaused,
@@ -84,12 +91,26 @@ export interface ClaimsStore {
   listCreatorLaunchpads(): Promise<CreatorLaunchpad[]>;
 }
 
+/** `dbc`: the creator share of the bonding curve; `position`: the DAMM v2 position fees. */
+export const ClaimKind = z.enum(['dbc', 'position']);
+export type ClaimKind = z.infer<typeof ClaimKind>;
+
 const InFlightClaim = z.object({
+  /** Absent in journals written before position claims existed: those were DBC claims. */
+  kind: ClaimKind.default('dbc'),
   signature: z.string(),
   rawTx: z.string(),
   lastValidBlockHeight: z.number().int().nonnegative(),
   claimableQuote: z.string().regex(/^[0-9]+$/),
   startedAt: z.string(),
+  /** Positions of a position claim (addresses), empty for a DBC claim. */
+  positions: z.array(z.string()).default([]),
+});
+
+const LastClaim = z.object({
+  signature: z.string(),
+  quote: z.string().regex(/^[0-9]+$/),
+  at: z.string(),
 });
 
 export const ClaimJournalEntry = z.object({
@@ -97,19 +118,27 @@ export const ClaimJournalEntry = z.object({
   pool: z.string(),
   launchpadId: z.string(),
   inFlight: InFlightClaim.nullable(),
-  lastClaim: z
-    .object({ signature: z.string(), quote: z.string().regex(/^[0-9]+$/), at: z.string() })
-    .nullable(),
-  /** First time the claimable amount was seen above the threshold without a successful claim. */
+  /** Last DBC creator share claim. */
+  lastClaim: LastClaim.nullable(),
+  /** Last DAMM v2 position fee claim (absent in older journals). */
+  lastPositionClaim: LastClaim.extend({ positions: z.array(z.string()) })
+    .nullable()
+    .default(null),
+  /** First time the DBC share was seen above the threshold without a successful claim. */
   pendingSince: z.string().nullable(),
-  /** When the one-time "graduated: claim the DAMM v2 position fees by hand" alert was sent. */
+  /** Same for the position fees (absent in older journals). */
+  positionPendingSince: z.string().nullable().default(null),
+  /** When the one-time "graduated" notice was sent. */
   graduationNoticeAt: z.string().nullable(),
   consecutiveFailures: z.number().int().nonnegative(),
   lastError: z.string().nullable(),
 });
 export type ClaimJournalEntry = z.infer<typeof ClaimJournalEntry>;
 
-/** Accounts the payer may have to fund in one claim: the temporary WSOL ATA and the vault's ATA. */
+/**
+ * Accounts the payer may have to fund in one claim: the temporary WSOL ATA and the vault's ATA.
+ * A position claim funds the same two (its WSOL rent then reaches the vault with the fees).
+ */
 export const CLAIM_TOKEN_ACCOUNTS_FUNDED = 2n;
 export const TOKEN_ACCOUNT_SIZE = 165;
 export const CLAIM_FEE_BUFFER_LAMPORTS = 20_000n;
@@ -117,7 +146,7 @@ export const CLAIM_FEE_BUFFER_LAMPORTS = 20_000n;
 export interface ClaimsConfig {
   /** FORGE_MULTISIG_VAULT (from `requireAddresses` of @forge/core at startup). */
   vault: PublicKey;
-  /** Claim only when the unclaimed creator share (lamports) reaches this amount. */
+  /** Claim only when the unclaimed share (lamports, DBC or position fees) reaches this amount. */
   minClaimLamports: bigint;
   /** Who pays the network fee and the temporary accounts' rent: the payer wallet or the creator. */
   feePayer: 'payer' | 'creator';
@@ -136,7 +165,13 @@ export interface ClaimsDeps {
   store: ClaimsStore;
   core: Pick<
     SignerCore,
-    'dbcProgramId' | 'coinPoolAddress' | 'readCreatorPool' | 'buildCreatorClaimTx'
+    | 'dbcProgramId'
+    | 'cpAmmProgramId'
+    | 'coinPoolAddress'
+    | 'readCreatorPool'
+    | 'buildCreatorClaimTx'
+    | 'readCreatorPositions'
+    | 'buildCreatorPositionClaimTx'
   >;
   rpc: SolanaRpc;
   keystore: KeystoreLike;
@@ -165,6 +200,8 @@ export interface ClaimsDeps {
 export type ClaimOutcome = {
   launchpadId: string;
   pool?: string;
+  /** Which fees the outcome is about (absent for outcomes decided before any pool read). */
+  kind?: ClaimKind;
 } & (
   | { result: 'claimed'; signature: string; lamports: bigint }
   | { result: 'below_threshold'; claimable: bigint }
@@ -187,6 +224,9 @@ const ON_CHAIN_RESULTS = new Set<ClaimOutcome['result']>([
   'error',
 ]);
 
+/** DBC outcomes after which the position fees of a migrated pool are looked at in the same run. */
+const POSITION_PATH_AFTER = new Set<ClaimOutcome['result']>(['below_threshold', 'nothing_to_claim']);
+
 export interface ClaimsRunReport {
   status: 'ran' | 'paused' | 'busy' | 'error';
   reason?: string;
@@ -198,6 +238,16 @@ export interface ClaimsJob {
 }
 
 export const DEFAULT_UNCLAIMED_ALERT_MS = 48 * 60 * 60_000;
+
+/** What a claim path hands to the shared sign-and-send step. */
+interface BuiltClaim {
+  kind: ClaimKind;
+  transaction: Transaction;
+  lastValidBlockHeight: number;
+  /** Quote lamports the claim collects (DBC: exact; position: a lower bound). */
+  claimableQuote: bigint;
+  positions: string[];
+}
 
 export function createClaimsJob(deps: ClaimsDeps): ClaimsJob {
   const { store, core, rpc, keystore, journal, alerter, logger: log, config } = deps;
@@ -232,11 +282,17 @@ export function createClaimsJob(deps: ClaimsDeps): ClaimsJob {
     launchpadId,
     inFlight: null,
     lastClaim: null,
+    lastPositionClaim: null,
     pendingSince: null,
+    positionPendingSince: null,
     graduationNoticeAt: null,
     consecutiveFailures: 0,
     lastError: null,
   });
+
+  const label = (kind: ClaimKind) => (kind === 'dbc' ? 'creator-fee' : 'position-fee');
+  const alertCode = (kind: ClaimKind, suffix: string) =>
+    kind === 'dbc' ? `creator_claim_${suffix}` : `position_claim_${suffix}`;
 
   /** Applies a settlement to the journal entry; returns the outcome when the claim is decided. */
   async function applySettlement(
@@ -247,14 +303,20 @@ export function createClaimsJob(deps: ClaimsDeps): ClaimsJob {
   ): Promise<{ entry: ClaimJournalEntry; outcome?: ClaimOutcome }> {
     const inFlight = entry.inFlight;
     if (!inFlight) return { entry };
-    const base = { launchpadId: lp.id, pool: poolKey };
+    const kind = inFlight.kind;
+    const base = { launchpadId: lp.id, pool: poolKey, kind };
     if (s.kind === 'confirmed' || s.kind === 'finalized') {
       const lamports = BigInt(inFlight.claimableQuote);
+      const last = { signature: inFlight.signature, quote: inFlight.claimableQuote, at: iso() };
       const next: ClaimJournalEntry = {
         ...entry,
         inFlight: null,
-        lastClaim: { signature: inFlight.signature, quote: inFlight.claimableQuote, at: iso() },
-        pendingSince: null,
+        ...(kind === 'dbc'
+          ? { lastClaim: last, pendingSince: null }
+          : {
+              lastPositionClaim: { ...last, positions: inFlight.positions },
+              positionPendingSince: null,
+            }),
         consecutiveFailures: 0,
         lastError: null,
       };
@@ -263,10 +325,12 @@ export function createClaimsJob(deps: ClaimsDeps): ClaimsJob {
         {
           launchpadId: lp.id,
           pool: poolKey,
+          kind,
           signature: inFlight.signature,
           lamports: lamports.toString(),
+          ...(kind === 'position' ? { positions: inFlight.positions } : {}),
         },
-        'creator fees claimed to the vault',
+        kind === 'dbc' ? 'creator fees claimed to the vault' : 'position fees claimed to the vault',
       );
       return {
         entry: next,
@@ -283,10 +347,10 @@ export function createClaimsJob(deps: ClaimsDeps): ClaimsJob {
       await journal.put(poolKey, next);
       await alert(
         'high',
-        'creator_claim_failed',
-        'A creator-fee claim failed on-chain',
+        alertCode(kind, 'failed'),
+        `A ${label(kind)} claim failed on-chain`,
         { launchpadId: lp.id, pool: poolKey, signature: inFlight.signature, error: s.error },
-        `creator_claim_failed:${poolKey}`,
+        `${alertCode(kind, 'failed')}:${poolKey}`,
       );
       return {
         entry: next,
@@ -296,7 +360,7 @@ export function createClaimsJob(deps: ClaimsDeps): ClaimsJob {
     if (s.kind === 'expired') {
       const next: ClaimJournalEntry = { ...entry, inFlight: null };
       await journal.put(poolKey, next);
-      log.warn({ pool: poolKey, signature: inFlight.signature }, 'claim expired unsent');
+      log.warn({ pool: poolKey, kind, signature: inFlight.signature }, 'claim expired unsent');
       return { entry: next };
     }
     return {
@@ -305,113 +369,30 @@ export function createClaimsJob(deps: ClaimsDeps): ClaimsJob {
     };
   }
 
-  async function processLaunchpad(
-    lp: CreatorLaunchpad,
-    payer: { ref: string; publicKey: PublicKey } | null,
+  interface PoolContext {
+    lp: CreatorLaunchpad;
+    pool: PublicKey;
+    poolKey: string;
+    mint: PublicKey;
+    creator: PublicKey;
+    creatorRef: string;
+    payer: { ref: string; publicKey: PublicKey } | null;
+    entry: ClaimJournalEntry;
+  }
+
+  /**
+   * Fee payer funds, build (core), check (policy), sign (keystore), journal, send, confirm. When
+   * the payer wallet pays, everything up to the send runs under the payer lock (the signing
+   * routes spend from that wallet too) and the lamports reserved by their creations in flight
+   * are not counted. `build` returns the checked claim, or the outcome that replaces it.
+   */
+  async function claimAndSettle(
+    ctx: PoolContext,
+    kind: ClaimKind,
+    build: (feePayer: PublicKey) => Promise<BuiltClaim | { outcome: ClaimOutcome }>,
   ): Promise<ClaimOutcome> {
-    const manual = async (reason: string, details: Record<string, unknown> = {}) => {
-      await alert(
-        'high',
-        'creator_claim_manual',
-        'A launchpad pool cannot be claimed automatically: check it',
-        { launchpadId: lp.id, reason, ...details },
-        `creator_claim_manual:${lp.id}:${reason}`,
-      );
-      return { launchpadId: lp.id, result: 'manual', reason } as ClaimOutcome;
-    };
-    const configAddress = parseAddress(lp.coinConfig);
-    const mint = parseAddress(lp.coinMint);
-    if (!configAddress || !mint) return manual('invalid_addresses');
-
-    // The creator key must be the keystore key of THIS launchpad's creator role.
-    let role: string;
-    try {
-      role = creatorRole(lp.id);
-    } catch {
-      return manual('invalid_launchpad_id');
-    }
-    const expectedRef = await keystore.findRef(role);
-    if (!expectedRef || expectedRef !== lp.creatorWalletRef) return manual('creator_ref_mismatch');
-    const creator = await keystore.getPublicKey(expectedRef);
-
-    const pool = core.coinPoolAddress(configAddress, mint);
-    const poolKey = pool.toBase58();
-    const base = { launchpadId: lp.id, pool: poolKey };
-    let entry = (await journal.get(poolKey)) ?? freshEntry(poolKey, lp.id);
-    if (entry.launchpadId !== lp.id) return manual('journal_launchpad_mismatch', { pool: poolKey });
-
-    // 1. A claim in flight is settled first.
-    if (entry.inFlight) {
-      const s = await checkSettlement(
-        rpc,
-        entry.inFlight.signature,
-        entry.inFlight.lastValidBlockHeight,
-        retry,
-      );
-      if (s.kind === 'pending' && announce(entry.inFlight.signature)) {
-        try {
-          await rpc.sendRawTransaction(Buffer.from(entry.inFlight.rawTx, 'base64'));
-        } catch (err) {
-          log.debug({ pool: poolKey, err: describeError(err) }, 'claim rebroadcast failed');
-        }
-      }
-      const applied = await applySettlement(lp, poolKey, entry, s);
-      entry = applied.entry;
-      if (applied.outcome) return applied.outcome;
-    }
-
-    // 2. Pool state: existence, creator, quote mint.
-    const state = await withRetry(() => core.readCreatorPool(pool), retry);
-    if (!state) return { ...base, result: 'no_pool' };
-    if (!state.creator.equals(creator)) {
-      await alert(
-        'immediate',
-        'pool_creator_changed',
-        'The creator of a FORGE pool is no longer FORGE (transferPoolCreator?): investigate now',
-        {
-          launchpadId: lp.id,
-          pool: poolKey,
-          expected: creator.toBase58(),
-          actual: state.creator.toBase58(),
-        },
-        `pool_creator_changed:${poolKey}`,
-      );
-      return { ...base, result: 'manual', reason: 'pool_creator_changed' };
-    }
-    if (!state.baseMint.equals(mint) || !state.config.equals(configAddress)) {
-      return manual('pool_mismatch', { pool: poolKey });
-    }
-    if (!state.quoteMint.equals(NATIVE_MINT)) return manual('not_sol_quoted', { pool: poolKey });
-
-    if (state.graduated && entry.graduationNoticeAt === null) {
-      await alert(
-        'normal',
-        'post_graduation_lp_fees',
-        'A FORGE launchpad coin graduated: its DAMM v2 creator position fees must be claimed by hand until core supports it',
-        { launchpadId: lp.id, pool: poolKey },
-        `post_graduation_lp_fees:${poolKey}`,
-      );
-      entry = { ...entry, graduationNoticeAt: iso() };
-      await journal.put(poolKey, entry);
-    }
-
-    // 3. Threshold.
-    const claimable = state.creatorClaimable.quote;
-    if (claimable < config.minClaimLamports) {
-      if (entry.pendingSince !== null) {
-        entry = { ...entry, pendingSince: null };
-        await journal.put(poolKey, entry);
-      }
-      return { ...base, result: 'below_threshold', claimable };
-    }
-    if (entry.pendingSince === null) {
-      entry = { ...entry, pendingSince: iso() };
-      await journal.put(poolKey, entry);
-    }
-
-    // 4-5. Fee payer funds, build (core), check (policy), sign (keystore), journal, send. When the
-    // payer wallet pays, all of it runs under the payer lock (the signing routes spend from that
-    // wallet too) and the lamports reserved by their creations in flight are not counted.
+    const { lp, poolKey, creator, payer } = ctx;
+    const base = { launchpadId: lp.id, pool: poolKey, kind };
     const feePayer = payer ? payer.publicKey : creator;
     const signAndSend = async (): Promise<
       { outcome: ClaimOutcome } | { raw: Buffer; signature: string; lastValidBlockHeight: number }
@@ -441,6 +422,93 @@ export function createClaimsJob(deps: ClaimsDeps): ClaimsJob {
         return { outcome: { ...base, result: 'skipped', reason: 'payer_low_balance' } };
       }
 
+      const built = await build(feePayer);
+      if ('outcome' in built) return built;
+      // The kill switch may have been turned on since the run started: re-read it before signing.
+      const pause = await checkPaused(deps.flags, JOB_FLAGS.claims, config.paused, log);
+      if (pause.paused) {
+        stopReason = pause.reason;
+        await alertAbnormalPause(alerter, log, 'claims', JOB_FLAGS.claims, pause.reason);
+        return { outcome: { ...base, result: 'skipped', reason: 'paused' } };
+      }
+      const signers: KeystoreSignerRef[] = [{ ref: ctx.creatorRef, expected: creator }];
+      if (payer && !payer.publicKey.equals(creator)) {
+        signers.push({ ref: payer.ref, expected: payer.publicKey });
+      }
+      const { raw, signature } = await signWithKeystore(keystore, built.transaction, signers);
+      ctx.entry = {
+        ...ctx.entry,
+        inFlight: {
+          kind,
+          signature,
+          rawTx: raw.toString('base64'),
+          lastValidBlockHeight: built.lastValidBlockHeight,
+          claimableQuote: built.claimableQuote.toString(),
+          startedAt: iso(),
+          positions: built.positions,
+        },
+      };
+      await journal.put(poolKey, ctx.entry);
+
+      if (!announce(signature)) {
+        return { outcome: { ...base, result: 'in_flight', signature, state: 'not_announced' } };
+      }
+      const sent = await broadcast(rpc, raw, retry);
+      if (sent.status === 'rejected') {
+        ctx.entry = { ...ctx.entry, lastError: sent.reason };
+        await journal.put(poolKey, ctx.entry);
+        await alert(
+          'high',
+          alertCode(kind, 'rejected'),
+          `The RPC rejected a ${label(kind)} claim (simulation failed)`,
+          { launchpadId: lp.id, pool: poolKey, signature, reason: sent.reason },
+          `${alertCode(kind, 'rejected')}:${poolKey}`,
+        );
+        return { outcome: { ...base, result: 'failed', signature, error: sent.reason } };
+      }
+      return { raw, signature, lastValidBlockHeight: built.lastValidBlockHeight };
+    };
+    const step =
+      payer && deps.payerLock
+        ? await deps.payerLock.runExclusive(signAndSend)
+        : await signAndSend();
+    if ('outcome' in step) return step.outcome;
+
+    // Confirmation by polling, outside the payer lock.
+    const { raw, signature } = step;
+    const s = await awaitSettlement(rpc, signature, {
+      lastValidBlockHeight: step.lastValidBlockHeight,
+      raw,
+      until: 'confirmed',
+      ...settleTiming,
+      retry,
+      sleep,
+      now,
+      logger: log,
+    });
+    const applied = await applySettlement(lp, poolKey, ctx.entry, s);
+    ctx.entry = applied.entry;
+    if (applied.outcome) return applied.outcome;
+    return { ...base, result: 'expired', signature };
+  }
+
+  /** The DBC creator share: threshold, build, policy, sign, send. */
+  async function dbcPath(ctx: PoolContext, state: CreatorPoolState): Promise<ClaimOutcome> {
+    const { lp, pool, poolKey, mint, creator } = ctx;
+    const base = { launchpadId: lp.id, pool: poolKey, kind: 'dbc' as const };
+    const claimable = state.creatorClaimable.quote;
+    if (claimable < config.minClaimLamports) {
+      if (ctx.entry.pendingSince !== null) {
+        ctx.entry = { ...ctx.entry, pendingSince: null };
+        await journal.put(poolKey, ctx.entry);
+      }
+      return { ...base, result: 'below_threshold', claimable };
+    }
+    if (ctx.entry.pendingSince === null) {
+      ctx.entry = { ...ctx.entry, pendingSince: iso() };
+      await journal.put(poolKey, ctx.entry);
+    }
+    return claimAndSettle(ctx, 'dbc', async (feePayer) => {
       const built = await withRetry(
         () => core.buildCreatorClaimTx({ pool, creator, receiver: config.vault, payer: feePayer }),
         retry,
@@ -466,69 +534,207 @@ export function createClaimsJob(deps: ClaimsDeps): ClaimsJob {
         receiver: config.vault,
         claimedQuoteLamports: built.summary.claimable.quote,
       });
-      // The kill switch may have been turned on since the run started: re-read it before signing.
-      const pause = await checkPaused(deps.flags, JOB_FLAGS.claims, config.paused, log);
-      if (pause.paused) {
-        stopReason = pause.reason;
-        await alertAbnormalPause(alerter, log, 'claims', JOB_FLAGS.claims, pause.reason);
-        return { outcome: { ...base, result: 'skipped', reason: 'paused' } };
-      }
-      const signers: KeystoreSignerRef[] = [{ ref: expectedRef, expected: creator }];
-      if (payer && !payer.publicKey.equals(creator)) {
-        signers.push({ ref: payer.ref, expected: payer.publicKey });
-      }
-      const { raw, signature } = await signWithKeystore(keystore, tx, signers);
-      entry = {
-        ...entry,
-        inFlight: {
-          signature,
-          rawTx: raw.toString('base64'),
-          lastValidBlockHeight: built.lastValidBlockHeight,
-          claimableQuote: built.summary.claimable.quote.toString(),
-          startedAt: iso(),
-        },
+      return {
+        kind: 'dbc',
+        transaction: tx,
+        lastValidBlockHeight: built.lastValidBlockHeight,
+        claimableQuote: built.summary.claimable.quote,
+        positions: [],
       };
-      await journal.put(poolKey, entry);
-
-      if (!announce(signature)) {
-        return { outcome: { ...base, result: 'in_flight', signature, state: 'not_announced' } };
-      }
-      const sent = await broadcast(rpc, raw, retry);
-      if (sent.status === 'rejected') {
-        entry = { ...entry, lastError: sent.reason };
-        await journal.put(poolKey, entry);
-        await alert(
-          'high',
-          'creator_claim_rejected',
-          'The RPC rejected a creator-fee claim (simulation failed)',
-          { launchpadId: lp.id, pool: poolKey, signature, reason: sent.reason },
-          `creator_claim_rejected:${poolKey}`,
-        );
-        return { outcome: { ...base, result: 'failed', signature, error: sent.reason } };
-      }
-      return { raw, signature, lastValidBlockHeight: built.lastValidBlockHeight };
-    };
-    const step =
-      payer && deps.payerLock
-        ? await deps.payerLock.runExclusive(signAndSend)
-        : await signAndSend();
-    if ('outcome' in step) return step.outcome;
-
-    // Confirmation by polling, outside the payer lock.
-    const { raw, signature } = step;
-    const s = await awaitSettlement(rpc, signature, {
-      lastValidBlockHeight: step.lastValidBlockHeight,
-      raw,
-      until: 'confirmed',
-      ...settleTiming,
-      retry,
-      sleep,
-      now,
-      logger: log,
     });
-    const applied = await applySettlement(lp, poolKey, entry, s);
-    if (applied.outcome) return applied.outcome;
-    return { ...base, result: 'expired', signature };
+  }
+
+  /** The DAMM v2 position fees of a migrated pool: read, threshold, build, policy, sign, send. */
+  async function positionPath(ctx: PoolContext): Promise<ClaimOutcome> {
+    const { lp, pool, poolKey, mint, creator } = ctx;
+    const base = { launchpadId: lp.id, pool: poolKey, kind: 'position' as const };
+    const read: CreatorPositionsState | null = await withRetry(
+      () => core.readCreatorPositions(pool, creator),
+      retry,
+    );
+    if (!read) return { ...base, result: 'manual', reason: 'position_read_mismatch' };
+    if (read.positions.length === 0) {
+      // A FORGE launchpad coin always leaves the creator a locked position: a missing one means
+      // the NFT moved out of the creator wallet, or a config without creator liquidity.
+      await alert(
+        'high',
+        'creator_position_missing',
+        'A migrated FORGE pool has no DAMM v2 position held by its creator wallet: check it',
+        { launchpadId: lp.id, pool: poolKey, dammPool: read.dammPool.toBase58() },
+        `creator_position_missing:${poolKey}`,
+      );
+      return { ...base, result: 'manual', reason: 'creator_position_missing' };
+    }
+    const claimable = read.claimable.quote;
+    if (claimable < config.minClaimLamports) {
+      if (ctx.entry.positionPendingSince !== null) {
+        ctx.entry = { ...ctx.entry, positionPendingSince: null };
+        await journal.put(poolKey, ctx.entry);
+      }
+      return { ...base, result: 'below_threshold', claimable };
+    }
+    if (ctx.entry.positionPendingSince === null) {
+      ctx.entry = { ...ctx.entry, positionPendingSince: iso() };
+      await journal.put(poolKey, ctx.entry);
+    }
+    const expectedPositions = read.positions.map((p) => ({
+      position: p.position,
+      positionNftAccount: p.positionNftAccount,
+    }));
+    return claimAndSettle(ctx, 'position', async (feePayer) => {
+      const built = await withRetry(
+        () =>
+          core.buildCreatorPositionClaimTx({
+            pool,
+            creator,
+            receiver: config.vault,
+            payer: feePayer,
+            positions: expectedPositions.map((p) => p.position),
+          }),
+        retry,
+      );
+      const tx = built.transaction;
+      if (!tx || built.lastValidBlockHeight === null) {
+        return { outcome: { ...base, result: 'nothing_to_claim' } };
+      }
+      if (built.summary.claimable.quote < config.minClaimLamports) {
+        return {
+          outcome: { ...base, result: 'below_threshold', claimable: built.summary.claimable.quote },
+        };
+      }
+      if (
+        !built.summary.receiver.equals(config.vault) ||
+        !built.summary.claimer.equals(creator) ||
+        !built.summary.dammPool.equals(read.dammPool) ||
+        !built.summary.baseMint.equals(mint)
+      ) {
+        throw new JobError('TX_POLICY', 'position claim summary does not match the request');
+      }
+      assertCreatorPositionClaimTx(tx, {
+        cpAmmProgramId: core.cpAmmProgramId,
+        dammPool: read.dammPool,
+        baseMint: mint,
+        creator,
+        feePayer,
+        receiver: config.vault,
+        positions: expectedPositions,
+      });
+      return {
+        kind: 'position',
+        transaction: tx,
+        lastValidBlockHeight: built.lastValidBlockHeight,
+        claimableQuote: built.summary.claimable.quote,
+        positions: expectedPositions.map((p) => p.position.toBase58()),
+      };
+    });
+  }
+
+  async function processLaunchpad(
+    lp: CreatorLaunchpad,
+    payer: { ref: string; publicKey: PublicKey } | null,
+  ): Promise<ClaimOutcome[]> {
+    const manual = async (reason: string, details: Record<string, unknown> = {}) => {
+      await alert(
+        'high',
+        'creator_claim_manual',
+        'A launchpad pool cannot be claimed automatically: check it',
+        { launchpadId: lp.id, reason, ...details },
+        `creator_claim_manual:${lp.id}:${reason}`,
+      );
+      return [{ launchpadId: lp.id, result: 'manual', reason } as ClaimOutcome];
+    };
+    const configAddress = parseAddress(lp.coinConfig);
+    const mint = parseAddress(lp.coinMint);
+    if (!configAddress || !mint) return manual('invalid_addresses');
+
+    // The creator key must be the keystore key of THIS launchpad's creator role.
+    let role: string;
+    try {
+      role = creatorRole(lp.id);
+    } catch {
+      return manual('invalid_launchpad_id');
+    }
+    const expectedRef = await keystore.findRef(role);
+    if (!expectedRef || expectedRef !== lp.creatorWalletRef) return manual('creator_ref_mismatch');
+    const creator = await keystore.getPublicKey(expectedRef);
+
+    const pool = core.coinPoolAddress(configAddress, mint);
+    const poolKey = pool.toBase58();
+    const base = { launchpadId: lp.id, pool: poolKey };
+    const ctx: PoolContext = {
+      lp,
+      pool,
+      poolKey,
+      mint,
+      creator,
+      creatorRef: expectedRef,
+      payer,
+      entry: (await journal.get(poolKey)) ?? freshEntry(poolKey, lp.id),
+    };
+    if (ctx.entry.launchpadId !== lp.id) {
+      return manual('journal_launchpad_mismatch', { pool: poolKey });
+    }
+
+    // 1. A claim in flight (of either kind) is settled first.
+    if (ctx.entry.inFlight) {
+      const inFlight = ctx.entry.inFlight;
+      const s = await checkSettlement(rpc, inFlight.signature, inFlight.lastValidBlockHeight, retry);
+      if (s.kind === 'pending' && announce(inFlight.signature)) {
+        try {
+          await rpc.sendRawTransaction(Buffer.from(inFlight.rawTx, 'base64'));
+        } catch (err) {
+          log.debug({ pool: poolKey, err: describeError(err) }, 'claim rebroadcast failed');
+        }
+      }
+      const applied = await applySettlement(lp, poolKey, ctx.entry, s);
+      ctx.entry = applied.entry;
+      if (applied.outcome) return [applied.outcome];
+    }
+
+    // 2. Pool state: existence, creator, quote mint.
+    const state = await withRetry(() => core.readCreatorPool(pool), retry);
+    if (!state) return [{ ...base, result: 'no_pool' }];
+    if (!state.creator.equals(creator)) {
+      await alert(
+        'immediate',
+        'pool_creator_changed',
+        'The creator of a FORGE pool is no longer FORGE (transferPoolCreator?): investigate now',
+        {
+          launchpadId: lp.id,
+          pool: poolKey,
+          expected: creator.toBase58(),
+          actual: state.creator.toBase58(),
+        },
+        `pool_creator_changed:${poolKey}`,
+      );
+      return [{ ...base, result: 'manual', reason: 'pool_creator_changed' }];
+    }
+    if (!state.baseMint.equals(mint) || !state.config.equals(configAddress)) {
+      return manual('pool_mismatch', { pool: poolKey });
+    }
+    if (!state.quoteMint.equals(NATIVE_MINT)) return manual('not_sol_quoted', { pool: poolKey });
+
+    if (state.graduated && ctx.entry.graduationNoticeAt === null) {
+      await alert(
+        'normal',
+        'pool_graduated',
+        'A FORGE launchpad coin graduated: once migrated, the fees of its DAMM v2 creator position are claimed by this job',
+        { launchpadId: lp.id, pool: poolKey },
+        `pool_graduated:${poolKey}`,
+      );
+      ctx.entry = { ...ctx.entry, graduationNoticeAt: iso() };
+      await journal.put(poolKey, ctx.entry);
+    }
+
+    // 3. The DBC creator share, then (migrated pool, nothing sent for the DBC share) the
+    //    position fees. One claim at a time per pool: a DBC claim sent now leaves the position
+    //    fees to the next run.
+    const outcomes: ClaimOutcome[] = [await dbcPath(ctx, state)];
+    const dbc = outcomes[0]!;
+    if (state.migrated && POSITION_PATH_AFTER.has(dbc.result) && stopReason === null) {
+      outcomes.push(await positionPath(ctx));
+    }
+    return outcomes;
   }
 
   async function checkUnclaimed(lp: CreatorLaunchpad, poolKey: string | undefined) {
@@ -539,20 +745,24 @@ export function createClaimsJob(deps: ClaimsDeps): ClaimsJob {
     } catch {
       return;
     }
-    if (!entry?.pendingSince) return;
-    const age = now() - Date.parse(entry.pendingSince);
-    if (age > unclaimedAlertMs) {
+    if (!entry) return;
+    const pending: Array<[ClaimKind, string | null]> = [
+      ['dbc', entry.pendingSince],
+      ['position', entry.positionPendingSince],
+    ];
+    for (const [kind, since] of pending) {
+      if (!since) continue;
+      const age = now() - Date.parse(since);
+      if (age <= unclaimedAlertMs) continue;
+      const code = kind === 'dbc' ? 'creator_fees_unclaimed' : 'position_fees_unclaimed';
       await alert(
         'normal',
-        'creator_fees_unclaimed',
-        'Creator fees above the threshold have been unclaimed for more than 48 h',
-        {
-          launchpadId: lp.id,
-          pool: poolKey,
-          since: entry.pendingSince,
-          lastError: entry.lastError ?? 'none',
-        },
-        `creator_fees_unclaimed:${poolKey}`,
+        code,
+        kind === 'dbc'
+          ? 'Creator fees above the threshold have been unclaimed for more than 48 h'
+          : 'DAMM v2 position fees above the threshold have been unclaimed for more than 48 h',
+        { launchpadId: lp.id, pool: poolKey, since, lastError: entry.lastError ?? 'none' },
+        `${code}:${poolKey}`,
       );
     }
   }
@@ -579,9 +789,9 @@ export function createClaimsJob(deps: ClaimsDeps): ClaimsJob {
     for (let i = 0; i < total; i++) {
       if (attempts >= maxPerRun || stopReason !== null) break;
       const lp = launchpads[(start + i) % total]!;
-      let outcome: ClaimOutcome;
+      let results: ClaimOutcome[];
       try {
-        outcome = await processLaunchpad(lp, payer);
+        results = await processLaunchpad(lp, payer);
       } catch (err) {
         const summary = describeError(err);
         const policy =
@@ -596,13 +806,13 @@ export function createClaimsJob(deps: ClaimsDeps): ClaimsJob {
           { launchpadId: lp.id, error: summary.message },
           `creator_claim_error:${lp.id}`,
         );
-        outcome = { launchpadId: lp.id, result: 'error', error: summary.message };
+        results = [{ launchpadId: lp.id, result: 'error', error: summary.message }];
       }
-      await checkUnclaimed(lp, outcome.pool);
-      outcomes.push(outcome);
+      await checkUnclaimed(lp, results[0]?.pool);
+      outcomes.push(...results);
       // A launchpad skipped because the switch flipped is the first one of the next run.
       if (stopReason === null) processed++;
-      if (ON_CHAIN_RESULTS.has(outcome.result)) attempts++;
+      for (const outcome of results) if (ON_CHAIN_RESULTS.has(outcome.result)) attempts++;
     }
     rotation = total === 0 ? 0 : (start + processed) % total;
     if (stopReason !== null) return { status: 'paused', reason: stopReason, outcomes };
@@ -646,12 +856,18 @@ export function createClaimsJob(deps: ClaimsDeps): ClaimsJob {
 
 /** Default threshold: 0.01 SOL (a claim advances ~0.004 SOL of rent, returned to the vault). */
 export const DEFAULT_MIN_CLAIM_LAMPORTS = 10_000_000n;
-export const DEFAULT_CLAIMS_INTERVAL_MS = OPS.claimIntervalHours * 60 * 60_000;
+/**
+ * Default run interval: 1 hour. A run is read-only unless a pool's unclaimed fees (DBC share or,
+ * after migration, DAMM v2 position fees) reach the threshold, so the hourly cadence costs RPC
+ * reads only. `OPS.claimIntervalHours` of @forge/shared (24) is no longer the signer default.
+ */
+export const DEFAULT_CLAIMS_INTERVAL_HOURS = 1;
+export const DEFAULT_CLAIMS_INTERVAL_MS = DEFAULT_CLAIMS_INTERVAL_HOURS * 60 * 60_000;
 
 /**
  * SIGNER_CLAIMS_MIN_LAMPORTS (default 0.01 SOL), SIGNER_CLAIMS_FEE_PAYER (`payer` | `creator`,
- * default `payer`), SIGNER_CLAIMS_INTERVAL_HOURS (default OPS.claimIntervalHours = 24),
- * SIGNER_CLAIMS_PAUSED (default false). `vault` comes from @forge/core `requireAddresses`.
+ * default `payer`), SIGNER_CLAIMS_INTERVAL_HOURS (default 1), SIGNER_CLAIMS_PAUSED (default
+ * false). `vault` comes from @forge/core `requireAddresses`.
  */
 export function claimsConfigFromEnv(
   env: Readonly<Record<string, string | undefined>>,
@@ -676,7 +892,7 @@ export function claimsConfigFromEnv(
       parsePositiveIntEnv(
         env.SIGNER_CLAIMS_INTERVAL_HOURS,
         'SIGNER_CLAIMS_INTERVAL_HOURS',
-        OPS.claimIntervalHours,
+        DEFAULT_CLAIMS_INTERVAL_HOURS,
       ) *
       60 *
       60_000,

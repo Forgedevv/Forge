@@ -4,8 +4,13 @@
  * The jobs only see the `SignerCore` interface below, injected at startup; tests inject fakes.
  * `createForgeSignerCore` binds a connection once and forwards every call to `@forge/core`
  * (PLANEXECUTE.md rule 6: core is the single source of truth for the transactions it builds):
- *   - `readCreatorPool`      -> `getDbcPoolState` + `feeMetrics` + `isGraduated` (reads.ts);
+ *   - `readCreatorPool`      -> `getDbcPoolState` + `feeMetrics` + `isGraduated` +
+ *                               `graduationStatus` (reads.ts);
  *   - `buildCreatorClaimTx`  -> `buildCreatorClaimTx` (claims.ts), unsigned, blockhash set;
+ *   - `readCreatorPositions` -> `findCreatorDammV2Positions` (position-claims.ts): the creator's
+ *                               locked DAMM v2 positions of a migrated pool and their fees;
+ *   - `buildCreatorPositionClaimTx` -> `buildCreatorPositionFeeClaimTx` (position-claims.ts),
+ *                               unsigned, blockhash set;
  *   - `verifyPayment`        -> `verifyPayment` (payments.ts) at FINALIZED commitment, on the
  *                               configured cluster (genesis hash checked by core).
  * Two helpers are not exported by core yet and come from the pinned DBC SDK (change request):
@@ -14,10 +19,14 @@
  * client -> cashbox payment with a payer-signed memo, a different transaction).
  */
 import {
+  DAMM_V2_PROGRAM_ID,
   DbcReadError,
   buildCreatorClaimTx as coreBuildCreatorClaimTx,
+  buildCreatorPositionFeeClaimTx as coreBuildCreatorPositionFeeClaimTx,
   feeMetrics,
+  findCreatorDammV2Positions,
   getDbcPoolState,
+  graduationStatus,
   isGraduated,
   verifyPayment as coreVerifyPayment,
   type PaymentCluster,
@@ -53,8 +62,66 @@ export interface CreatorPoolState {
   creator: PublicKey;
   /** Curve complete or migrated (core `isGraduated`). */
   graduated: boolean;
+  /** The DAMM pool exists (core `graduationStatus` = `migrated`): position fees may accrue. */
+  migrated: boolean;
   /** Unclaimed creator share (core `feeMetrics(...).claimable.creator`). */
   creatorClaimable: TokenAmounts;
+}
+
+/** One DAMM v2 position of the creator on the migrated pool. */
+export interface CreatorPositionState {
+  position: PublicKey;
+  /** Token-2022 account (held by the creator) of the position NFT. */
+  positionNftAccount: PublicKey;
+  nftMint: PublicKey;
+  permanentLockedLiquidity: bigint;
+  /** Fees claimable now: `base` = the coin, `quote` = SOL (lamports). */
+  pendingFees: TokenAmounts;
+}
+
+/** The creator's positions on the DAMM v2 pool a launchpad coin pool migrated to. */
+export interface CreatorPositionsState {
+  pool: PublicKey;
+  dammPool: PublicKey;
+  creator: PublicKey;
+  /** Sorted by position address. Empty when the creator holds no position NFT. */
+  positions: CreatorPositionState[];
+  /** Sum of the positions' pending fees. */
+  claimable: TokenAmounts;
+}
+
+export interface CreatorPositionClaimParams {
+  /** The DBC pool (core derives the DAMM v2 pool). */
+  pool: PublicKey;
+  /** Pool creator and owner of the positions; signs the claim. */
+  creator: PublicKey;
+  /** Where the fees go (FORGE multisig vault). */
+  receiver: PublicKey;
+  /** Fee payer; defaults to the creator. */
+  payer?: PublicKey;
+  /** Positions to claim; defaults to every position of the creator on the pool. */
+  positions?: readonly PublicKey[];
+}
+
+export interface PositionClaimSummary {
+  kind: 'position';
+  pool: PublicKey;
+  dammPool: PublicKey;
+  baseMint: PublicKey;
+  claimer: PublicKey;
+  receiver: PublicKey;
+  payer: PublicKey;
+  /** The positions claimed, with the token account holding each one's NFT. */
+  positions: Array<{ position: PublicKey; positionNftAccount: PublicKey }>;
+  /** Sum of the pending fees when the transaction was built (a lower bound at execution). */
+  claimable: TokenAmounts;
+}
+
+export interface PositionClaimTxResult {
+  /** Unsigned claim (fee payer and recent blockhash set), or null when there is nothing to claim. */
+  transaction: Transaction | null;
+  lastValidBlockHeight: number | null;
+  summary: PositionClaimSummary;
 }
 
 export interface CreatorClaimParams {
@@ -115,11 +182,19 @@ export interface SolTransferParams {
 export interface SignerCore {
   /** DBC program id (for the claim transaction policy). */
   readonly dbcProgramId: PublicKey;
+  /** DAMM v2 (cp-amm) program id (for the position fee claim policy). */
+  readonly cpAmmProgramId: PublicKey;
   /** Address of the SOL-quoted DBC pool of `baseMint` on `config`. */
   coinPoolAddress(config: PublicKey, baseMint: PublicKey): PublicKey;
   /** Pool state, or null when the pool does not exist (launch transaction never signed). */
   readCreatorPool(pool: PublicKey): Promise<CreatorPoolState | null>;
   buildCreatorClaimTx(params: CreatorClaimParams): Promise<ClaimTxResult>;
+  /**
+   * The creator's DAMM v2 positions of a migrated pool and their fees; null when the pool has
+   * not migrated to DAMM v2. Throws when `creator` is not the pool creator.
+   */
+  readCreatorPositions(pool: PublicKey, creator: PublicKey): Promise<CreatorPositionsState | null>;
+  buildCreatorPositionClaimTx(params: CreatorPositionClaimParams): Promise<PositionClaimTxResult>;
   /** Verifies a client payment to the cashbox at FINALIZED commitment. */
   verifyPayment(signature: string, expected: ExpectedPayment): Promise<PaymentVerification>;
   /** Unsigned SOL transfer (+ memo without signer keys). The caller sets blockhash and fee payer. */
@@ -148,6 +223,7 @@ export function createForgeSignerCore(options: ForgeSignerCoreOptions): SignerCo
 
   return {
     dbcProgramId: DYNAMIC_BONDING_CURVE_PROGRAM_ID,
+    cpAmmProgramId: DAMM_V2_PROGRAM_ID,
 
     coinPoolAddress(config, baseMint) {
       return deriveDbcPoolAddress(NATIVE_MINT, baseMint, config);
@@ -171,7 +247,56 @@ export function createForgeSignerCore(options: ForgeSignerCoreOptions): SignerCo
         quoteMint: state.config.quoteMint,
         creator: p.creator,
         graduated: isGraduated(state),
+        migrated: graduationStatus(state) === 'migrated',
         creatorClaimable: { base: creator.base, quote: creator.quote },
+      };
+    },
+
+    async readCreatorPositions(pool, creator) {
+      const found = await findCreatorDammV2Positions(
+        connection,
+        { pool, creator },
+        { commitment: 'confirmed' },
+      );
+      if (!found) return null;
+      return {
+        pool: found.pool,
+        dammPool: found.dammPool,
+        creator: found.creator,
+        positions: found.positions.map((p) => ({
+          position: p.position,
+          positionNftAccount: p.positionNftAccount,
+          nftMint: p.nftMint,
+          permanentLockedLiquidity: p.liquidity.permanentLocked,
+          pendingFees: { base: p.pendingFees.base, quote: p.pendingFees.quote },
+        })),
+        claimable: { base: found.claimable.base, quote: found.claimable.quote },
+      };
+    },
+
+    async buildCreatorPositionClaimTx(params) {
+      const built = await coreBuildCreatorPositionFeeClaimTx(connection, params, {
+        commitment: 'confirmed',
+      });
+      const s = built.summary;
+      if (s.kind !== 'position') throw new Error('core returned a non-position claim');
+      return {
+        transaction: built.transaction,
+        lastValidBlockHeight: built.lastValidBlockHeight,
+        summary: {
+          kind: 'position',
+          pool: s.pool,
+          dammPool: s.dammPool,
+          baseMint: s.baseMint,
+          claimer: s.claimer,
+          receiver: s.receiver,
+          payer: s.payer,
+          positions: s.positions.map((p) => ({
+            position: p.position,
+            positionNftAccount: p.positionNftAccount,
+          })),
+          claimable: { base: s.claimable.base, quote: s.claimable.quote },
+        },
       };
     },
 
