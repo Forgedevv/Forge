@@ -34,7 +34,9 @@ import {
 import BN from 'bn.js';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { OwnerTransactionSummary, type LaunchpadSpec } from '@forge/shared';
+import { ForgeAddressError } from './addresses.js';
 import { MIGRATION_THRESHOLD_LAMPORTS, SOL_QUOTE_MINT, solToLamports } from './constants.js';
+import { platformFeeLamports } from './swap.js';
 import {
   LaunchTransactionCheckError,
   verifyLaunchCoinTransaction,
@@ -194,7 +196,10 @@ beforeAll(() => {
 });
 
 /**
- * Re-encodes the fixture with some fields changed. Anchor's `encode` uses a 1000-byte buffer and
+ * Re-encodes the fixture with some fields changed. The fixture was created when the coin config
+ * still charged the spec's creation fee (0.001 SOL); the current builder sets none
+ * (LAUNCHPAD_COIN_POOL_CREATION_FEE_SOL) and the config check requires it, so the encoded default is
+ * a fee of 0. User coin tests that need a creation fee set it explicitly. Anchor's `encode` uses a 1000-byte buffer and
  * a pool config is 1048 bytes, so the account layout is used directly.
  */
 async function encodeConfig(changes: Partial<PoolConfig> = {}): Promise<Buffer> {
@@ -204,7 +209,9 @@ async function encodeConfig(changes: Partial<PoolConfig> = {}): Promise<Buffer> 
     }
   ).accountLayouts;
   const buffer = Buffer.alloc(2048);
-  const length = layouts.get('poolConfig')!.layout.encode({ ...fixtureConfig, ...changes }, buffer);
+  const length = layouts
+    .get('poolConfig')!
+    .layout.encode({ ...fixtureConfig, poolCreationFee: new BN(0), ...changes }, buffer);
   const discriminator = Buffer.from(CONFIG_FIXTURE_BASE64, 'base64').subarray(0, 8);
   return Buffer.concat([discriminator, buffer.subarray(0, length)]);
 }
@@ -441,11 +448,17 @@ describe('buildLaunchCoinTx — signers and signing flow', () => {
     expect(summary.costs.poolCreationFeeLamports).toBe(0n);
   });
 
-  it('refuses the creator as rent payer when the config charges a pool creation fee', async () => {
-    // The fixture charges 0.001 SOL: the FORGE creator wallet would pay the client's own fee.
-    const { params } = await setup({ rentPayer: 'creator' });
-    const error = await expectLaunchError(buildLaunchCoinTx(params), 'RENT_PAYER_REFUSED');
-    expect(error.message).toContain('1000000 lamports');
+  it('refuses a coin config that charges a pool creation fee, whoever pays the rent', async () => {
+    // The fixture as created on devnet charges 0.001 SOL: no current coin config does, and the
+    // FORGE creator wallet would pay the client's own fee (RENT_PAYER_REFUSED, behind this check).
+    for (const rentPayer of ['creator', 'owner'] as const) {
+      const { params } = await setup(
+        { rentPayer },
+        { config: { poolCreationFee: new BN(1_000_000) } },
+      );
+      const error = await expectLaunchError(buildLaunchCoinTx(params), 'CONFIG_MISMATCH');
+      expect(error.message).toContain('poolCreationFee is 1000000, expected 0');
+    }
   });
 
   it('survives partial signing, base64 round trip and the owner signing last', async () => {
@@ -609,10 +622,98 @@ describe('buildLaunchCoinTx — on-chain config checks', () => {
   });
 
   it('assertLaunchCoinConfig accepts the fixture for its fee claimer', () => {
-    expect(() => assertLaunchCoinConfig(fixtureConfig, OWNER)).not.toThrow();
+    const current = { ...fixtureConfig, poolCreationFee: new BN(0) };
+    expect(() => assertLaunchCoinConfig(current, OWNER)).not.toThrow();
     expect(BigInt(fixtureConfig.migrationQuoteThreshold.toString())).toBe(
       MIGRATION_THRESHOLD_LAMPORTS,
     );
+  });
+
+  it.each<[string, (config: PoolConfig) => Partial<PoolConfig>]>([
+    ['mutable metadata', () => ({ tokenUpdateAuthority: 0 })],
+    ['a pool creation fee', () => ({ poolCreationFee: new BN(1_000_000) })],
+    [
+      'another cliff fee',
+      (c) => ({
+        poolFees: {
+          ...c.poolFees,
+          baseFee: { ...c.poolFees.baseFee, cliffFeeNumerator: new BN(500_000_000) },
+        },
+      }),
+    ],
+    [
+      'one 300 s period at 99%',
+      (c) => ({
+        poolFees: {
+          ...c.poolFees,
+          baseFee: {
+            ...c.poolFees.baseFee,
+            firstFactor: 1,
+            secondFactor: new BN(300),
+            thirdFactor: new BN(980_000_000),
+          },
+        },
+      }),
+    ],
+    [
+      'another reduction factor (ending fee 300 bps)',
+      (c) => ({
+        poolFees: {
+          ...c.poolFees,
+          baseFee: { ...c.poolFees.baseFee, thirdFactor: new BN(96_000_000) },
+        },
+      }),
+    ],
+    [
+      'the partner liquidity not permanently locked',
+      () => ({ partnerLiquidityPercentage: 75, partnerPermanentLockedLiquidityPercentage: 0 }),
+    ],
+    ['a migration fee', () => ({ migrationFeePercentage: 10 })],
+    [
+      'a creator migration fee',
+      () => ({ migrationFeePercentage: 10, creatorMigrationFeePercentage: 100 }),
+    ],
+    [
+      'locked vesting',
+      (c) => ({ lockedVestingConfig: { ...c.lockedVestingConfig, cliffUnlockAmount: new BN(5) } }),
+    ],
+    ['slot activation', () => ({ activationType: 0 })],
+    [
+      'another curve point',
+      (c) => ({
+        curve: c.curve.map((p, i) => (i === 0 ? { ...p, liquidity: p.liquidity.addn(1) } : p)),
+      }),
+    ],
+  ])('assertLaunchCoinConfig refuses a coin config with %s', (_label, change) => {
+    const current = { ...fixtureConfig, poolCreationFee: new BN(0) };
+    expect(() => assertLaunchCoinConfig({ ...current, ...change(current) }, OWNER)).toThrow(
+      LaunchCoinError,
+    );
+  });
+
+  it('assertLaunchCoinConfig compares with buildLaunchpadCoinConfig(spec) when given the spec', () => {
+    const current = { ...fixtureConfig, poolCreationFee: new BN(0) };
+    const spec = coinSpec('Moon', 'MOON');
+    expect(() => assertLaunchCoinConfig(current, OWNER, spec)).not.toThrow();
+    // A config of another trading fee, or without anti-sniper, is not this spec's.
+    expect(() => assertLaunchCoinConfig(current, OWNER, { ...spec, tradingFeeBps: 150 })).toThrow(
+      /baseFee/,
+    );
+    expect(() => assertLaunchCoinConfig(current, OWNER, { ...spec, antiSniper: false })).toThrow(
+      /baseFee/,
+    );
+    // The spec's owner must be the owner checked.
+    expect(() => assertLaunchCoinConfig(current, Keypair.generate().publicKey, spec)).toThrow(
+      LaunchCoinError,
+    );
+  });
+
+  it('buildLaunchCoinTx passes the spec to the config check', async () => {
+    const spec = coinSpec('Moon', 'MOON');
+    const { params } = await setup({ spec });
+    await expect(buildLaunchCoinTx(params)).resolves.toBeDefined();
+    const other = await setup({ spec: { ...spec, tradingFeeBps: 120 } });
+    await expectLaunchError(buildLaunchCoinTx(other.params), 'CONFIG_MISMATCH');
   });
 
   it('refuses when the pool or the mint already exist', async () => {
@@ -900,7 +1001,7 @@ describe('buildLaunchCoinTx — costs', () => {
       rent(poolSize) + rent(MINT_SIZE) + rent(METADATA_ACCOUNT_SIZE) + 2 * rent(ACCOUNT_SIZE),
     );
     expect(costs.poolAccountsRentLamports).toBe(accountsRent);
-    expect(costs.poolCreationFeeLamports).toBe(1_000_000n);
+    expect(costs.poolCreationFeeLamports).toBe(0n);
     expect(costs.metaplexFeeLamports).toBe(METAPLEX_CREATE_METADATA_FEE_LAMPORTS);
     expect(costs.ownerTokenAccountRentLamports).toBe(BigInt(rent(ACCOUNT_SIZE)));
     expect(costs.ownerTemporaryLamports).toBe(BigInt(rent(ACCOUNT_SIZE)));
@@ -911,9 +1012,9 @@ describe('buildLaunchCoinTx — costs', () => {
         costs.networkFeeLamports +
         costs.ownerTokenAccountRentLamports +
         accountsRent +
-        METAPLEX_CREATE_METADATA_FEE_LAMPORTS +
-        1_000_000n,
+        METAPLEX_CREATE_METADATA_FEE_LAMPORTS,
     );
+    expect(costs.platformFeeLamports).toBeUndefined();
     expect(costs.ownerRequiredBalanceLamports).toBe(
       costs.ownerTotalLamports + costs.ownerTemporaryLamports,
     );
@@ -1431,14 +1532,19 @@ describe('verifyLaunchCoinTransaction — refusals', () => {
 interface UserSetup {
   wallet: PublicKey;
   mint: Keypair;
+  /** FORGE_PLATFORM_FEE_WALLET of the env (a funded system account on the mocked chain). */
+  platformWallet: PublicKey;
   connection: ReturnType<typeof mockConnection>;
   params: BuildUserCoinLaunchTxParams;
 }
 
+/** Platform fee of the default 0.01 SOL first buy: ceil(10,000,000 x 30 / 10,000). */
+const USER_PLATFORM_FEE = 30_000n;
+
 /**
  * A user (not the config's fee claimer) launching a coin on the fixture config. The fixture is a
- * launchpad coin config, which the user-coin checks accept as well: they only look at the quote,
- * the token program and the first swap at the minimum fee.
+ * launchpad coin config; as a launchpad config it is the one core builds for a spec with a 25%
+ * creator share and a 0.001 SOL creation fee (encoded here), so the user-coin checks accept it.
  */
 async function userSetup(
   overrides: Partial<BuildUserCoinLaunchTxParams> = {},
@@ -1446,12 +1552,17 @@ async function userSetup(
 ): Promise<UserSetup> {
   const wallet = Keypair.generate().publicKey;
   const mint = Keypair.generate();
+  const platformWallet = Keypair.generate().publicKey;
   const accounts = new Map<string, AccountInfo<Buffer>>();
   accounts.set(
     CONFIG.toBase58(),
-    account(DYNAMIC_BONDING_CURVE_PROGRAM_ID, await encodeConfig(options.config)),
+    account(
+      DYNAMIC_BONDING_CURVE_PROGRAM_ID,
+      await encodeConfig({ poolCreationFee: new BN(1_000_000), ...options.config }),
+    ),
   );
   accounts.set(NATIVE_MINT.toBase58(), account(TOKEN_PROGRAM_ID, Buffer.alloc(MINT_SIZE)));
+  accounts.set(platformWallet.toBase58(), account(SystemProgram.programId, Buffer.alloc(0)));
   const connection = mockConnection({ accounts, feeForMessage: options.feeForMessage ?? 10_000 });
   const params: BuildUserCoinLaunchTxParams = {
     connection: connection as unknown as Connection,
@@ -1462,16 +1573,21 @@ async function userSetup(
     symbol: 'LISA',
     metadataUri: 'https://example.com/lisa.json',
     firstBuyLamports: solToLamports(0.01),
+    env: { FORGE_PLATFORM_FEE_WALLET: platformWallet.toBase58() },
     ...overrides,
   };
-  return { wallet, mint, connection, params };
+  return { wallet, mint, platformWallet, connection, params };
 }
 
 const dbcInstructions = (instructions: TransactionInstruction[]) =>
   instructions.filter((ix) => ix.programId.equals(DYNAMIC_BONDING_CURVE_PROGRAM_ID));
 
-/** Size of a user coin launch with short metadata (4-byte name and symbol, 29-byte URI). */
-const USER_COIN_STANDARD_TX_BYTES = 950;
+/**
+ * Size of a user coin launch with short metadata (4-byte name and symbol, 29-byte URI): 950 bytes
+ * without the platform fee transfer, 999 with it (one more account key and one instruction).
+ */
+const USER_COIN_STANDARD_TX_BYTES = 999;
+const USER_COIN_WITHOUT_PLATFORM_FEE_TX_BYTES = 950;
 
 describe('buildUserCoinLaunchTx — signers and accounts', () => {
   it('needs exactly the wallet (fee payer, first) and the mint', async () => {
@@ -1534,10 +1650,11 @@ describe('buildUserCoinLaunchTx — signers and accounts', () => {
 
   it('never puts a referral on the first buy, whatever env says', async () => {
     const referral = Keypair.generate().publicKey;
-    const { params } = await userSetup({
-      env: { FORGE_METEORA_REFERRAL_ACCOUNT: referral.toBase58() },
+    const { params } = await userSetup();
+    const { transaction } = await buildUserCoinLaunchTx({
+      ...params,
+      env: { ...params.env, FORGE_METEORA_REFERRAL_ACCOUNT: referral.toBase58() },
     });
-    const { transaction } = await buildUserCoinLaunchTx(params);
     const swap = dbcInstructions(transaction.instructions)[1]!;
     expect(swap.keys[12]!.pubkey.equals(DYNAMIC_BONDING_CURVE_PROGRAM_ID)).toBe(true);
     expect(transaction.compileMessage().accountKeys.some((k) => k.equals(referral))).toBe(false);
@@ -1592,8 +1709,10 @@ describe('buildUserCoinLaunchTx — first buy and costs', () => {
         BigInt(rent(ACCOUNT_SIZE)) +
         accountsRent +
         METAPLEX_CREATE_METADATA_FEE_LAMPORTS +
-        1_000_000n,
+        1_000_000n +
+        USER_PLATFORM_FEE,
     );
+    expect(costs.platformFeeLamports).toBe(USER_PLATFORM_FEE);
     expect(costs.ownerRequiredBalanceLamports).toBe(
       costs.ownerTotalLamports + costs.ownerTemporaryLamports,
     );
@@ -1647,6 +1766,8 @@ describe('buildUserCoinLaunchTx — first buy and costs', () => {
     // The launchpad coin launch of the same metadata is 1,120 bytes (nonce held by the creator).
     expect(summary.txBytes).toBe(USER_COIN_STANDARD_TX_BYTES);
     expect(summary.txBytes).toBeLessThan(1120);
+    const without = await buildUserCoinLaunchTx({ ...params, chargePlatformFee: false });
+    expect(without.summary.txBytes).toBe(USER_COIN_WITHOUT_PLATFORM_FEE_TX_BYTES);
   });
 
   it('fits the largest metadata (32-byte name, 10-character symbol, 200-byte URI)', async () => {
@@ -1662,6 +1783,77 @@ describe('buildUserCoinLaunchTx — first buy and costs', () => {
   });
 });
 
+describe('buildUserCoinLaunchTx — FORGE platform fee on the first buy', () => {
+  const systemTransfers = (instructions: TransactionInstruction[]) =>
+    instructions
+      .filter(
+        (ix) =>
+          ix.programId.equals(SystemProgram.programId) &&
+          SystemInstruction.decodeInstructionType(ix) === 'Transfer',
+      )
+      .map((ix) => SystemInstruction.decodeTransfer(ix));
+
+  it('transfers 0.3% of the first buy to FORGE_PLATFORM_FEE_WALLET, as the last instruction', async () => {
+    const { params, wallet, platformWallet } = await userSetup();
+    const { transaction, summary } = await buildUserCoinLaunchTx(params);
+    const last = transaction.instructions[transaction.instructions.length - 1]!;
+    expect(last.programId.equals(SystemProgram.programId)).toBe(true);
+    const fee = SystemInstruction.decodeTransfer(last);
+    expect(fee.fromPubkey.equals(wallet)).toBe(true);
+    expect(fee.toPubkey.equals(platformWallet)).toBe(true);
+    expect(fee.lamports).toBe(USER_PLATFORM_FEE);
+    expect(USER_PLATFORM_FEE).toBe(platformFeeLamports(solToLamports(0.01)));
+    // Exactly one transfer to the fee wallet; the other one wraps the first buy.
+    const transfers = systemTransfers(transaction.instructions);
+    expect(transfers.filter((t) => t.toPubkey.equals(platformWallet))).toHaveLength(1);
+    expect(transfers).toHaveLength(2);
+    expect(summary.platformFeeLamports).toBe(USER_PLATFORM_FEE);
+    expect(summary.platformFeeWallet!.equals(platformWallet)).toBe(true);
+    expect(summary.costs.platformFeeLamports).toBe(USER_PLATFORM_FEE);
+  });
+
+  it('rounds the fee up to the lamport', async () => {
+    const { params } = await userSetup({ firstBuyLamports: 1_000_001n });
+    const { summary } = await buildUserCoinLaunchTx(params);
+    expect(summary.platformFeeLamports).toBe(3_001n);
+  });
+
+  it('adds nothing without a first buy, and needs no fee wallet then', async () => {
+    const { params } = await userSetup({ firstBuyLamports: 0n, env: {} });
+    const { transaction, summary } = await buildUserCoinLaunchTx(params);
+    expect(systemTransfers(transaction.instructions)).toHaveLength(0);
+    expect(summary.platformFeeLamports).toBe(0n);
+    expect(summary.platformFeeWallet).toBeNull();
+    expect(summary.costs.platformFeeLamports).toBe(0n);
+  });
+
+  it('can be turned off explicitly', async () => {
+    const { params, platformWallet } = await userSetup({ chargePlatformFee: false });
+    const { transaction, summary } = await buildUserCoinLaunchTx(params);
+    expect(
+      systemTransfers(transaction.instructions).some((t) => t.toPubkey.equals(platformWallet)),
+    ).toBe(false);
+    expect(summary.platformFeeLamports).toBe(0n);
+  });
+
+  it('refuses a missing fee wallet address, before any network call', async () => {
+    const { params, connection } = await userSetup({ env: {} });
+    await expect(buildUserCoinLaunchTx(params)).rejects.toBeInstanceOf(ForgeAddressError);
+    expect(connection.calls).toEqual([]);
+  });
+
+  it('refuses a fee wallet that does not exist or is not rent-exempt', async () => {
+    const { params, connection, platformWallet } = await userSetup();
+    connection.accounts.delete(platformWallet.toBase58());
+    await expectLaunchError(buildUserCoinLaunchTx(params), 'PLATFORM_FEE_WALLET_NOT_READY');
+    connection.accounts.set(
+      platformWallet.toBase58(),
+      account(SystemProgram.programId, Buffer.alloc(0), rent(0) - 1),
+    );
+    await expectLaunchError(buildUserCoinLaunchTx(params), 'PLATFORM_FEE_WALLET_NOT_READY');
+  });
+});
+
 describe('buildUserCoinLaunchTx — refusals', () => {
   it.each<[string, Partial<PoolConfig>]>([
     ['first swap at minimum fee disabled', { enableFirstSwapWithMinFee: 0 }],
@@ -1673,19 +1865,122 @@ describe('buildUserCoinLaunchTx — refusals', () => {
     await expectLaunchError(buildUserCoinLaunchTx(params), 'CONFIG_MISMATCH');
   });
 
-  it('accepts any owner, creator share and locked liquidity (no ownership checks)', async () => {
+  it('accepts a launchpad config core builds, for any owner and client values', () => {
+    const owner = Keypair.generate().publicKey;
+    // Fixture as a launchpad config: 25% creator share, 75 / 25 locked, 0.001 SOL creation fee.
+    expect(() =>
+      assertUserCoinConfig({ ...fixtureConfig, feeClaimer: owner, leftoverReceiver: owner }),
+    ).not.toThrow();
+    // A 10% creator share with the liquidity split that follows it, and no creation fee.
     expect(() =>
       assertUserCoinConfig({
         ...fixtureConfig,
-        feeClaimer: Keypair.generate().publicKey,
-        leftoverReceiver: Keypair.generate().publicKey,
-        creatorTradingFeePercentage: 0,
-        creatorPermanentLockedLiquidityPercentage: 0,
+        creatorTradingFeePercentage: 10,
+        creatorPermanentLockedLiquidityPercentage: 10,
+        partnerPermanentLockedLiquidityPercentage: 90,
+        poolCreationFee: new BN(0),
       }),
     ).not.toThrow();
-    expect(() => assertUserCoinConfig({ ...fixtureConfig, enableFirstSwapWithMinFee: 0 })).toThrow(
+  });
+
+  it.each<[string, (config: PoolConfig) => Partial<PoolConfig>]>([
+    ['first swap at minimum fee disabled', () => ({ enableFirstSwapWithMinFee: 0 })],
+    [
+      'a leftover receiver other than the fee claimer',
+      () => ({ leftoverReceiver: Keypair.generate().publicKey }),
+    ],
+    ['mutable metadata', () => ({ tokenUpdateAuthority: 0 })],
+    [
+      'a creator share above the client bound',
+      () => ({
+        creatorTradingFeePercentage: 60,
+        creatorPermanentLockedLiquidityPercentage: 60,
+        partnerPermanentLockedLiquidityPercentage: 40,
+      }),
+    ],
+    [
+      'a liquidity split that does not follow the creator share',
+      () => ({ creatorTradingFeePercentage: 10 }),
+    ],
+    [
+      'partner liquidity left unlocked',
+      () => ({ partnerLiquidityPercentage: 75, partnerPermanentLockedLiquidityPercentage: 0 }),
+    ],
+    ['a creation fee above the client bound', () => ({ poolCreationFee: new BN(2_000_000_000) })],
+    ['a migration fee', () => ({ migrationFeePercentage: 5 })],
+    [
+      'a creator migration fee',
+      () => ({ migrationFeePercentage: 5, creatorMigrationFeePercentage: 50 }),
+    ],
+    [
+      'locked vesting',
+      (c) => ({ lockedVestingConfig: { ...c.lockedVestingConfig, amountPerPeriod: new BN(1) } }),
+    ],
+    [
+      'another token supply',
+      () => ({ preMigrationTokenSupply: new BN(1), postMigrationTokenSupply: new BN(1) }),
+    ],
+    ['slot activation', () => ({ activationType: 0 })],
+    ['another migrated pool fee option', () => ({ migrationFeeOption: 1 })],
+    ['another start price', () => ({ sqrtStartPrice: new BN(1) })],
+    [
+      'a dynamic fee',
+      (c) => ({
+        poolFees: { ...c.poolFees, dynamicFee: { ...c.poolFees.dynamicFee, initialized: 1 } },
+      }),
+    ],
+  ])('refuses a launchpad config with %s', (_label, change) => {
+    expect(() => assertUserCoinConfig({ ...fixtureConfig, ...change(fixtureConfig) })).toThrow(
       LaunchCoinError,
     );
+  });
+
+  it('refuses another fee schedule: cliff, periods, period, reduction, ending fee', () => {
+    const base = fixtureConfig.poolFees.baseFee;
+    const changes: Partial<typeof base>[] = [
+      { cliffFeeNumerator: base.cliffFeeNumerator.subn(100_000) },
+      { firstFactor: 1, secondFactor: new BN(300), thirdFactor: new BN(980_000_000) },
+      { secondFactor: new BN(30) },
+      { thirdFactor: base.thirdFactor.subn(1) },
+      // Ending fee 300 bps: outside the client bounds.
+      { thirdFactor: new BN(96_000_000) },
+      { baseFeeMode: 1 },
+    ];
+    for (const change of changes) {
+      const config = {
+        ...fixtureConfig,
+        poolFees: { ...fixtureConfig.poolFees, baseFee: { ...base, ...change } },
+      };
+      expect(() => assertUserCoinConfig(config)).toThrow(LaunchCoinError);
+    }
+  });
+
+  it('pins the owner, the creation fee or the whole spec when given', () => {
+    const spec = coinSpec('Moon', 'MOON');
+    expect(() => assertUserCoinConfig(fixtureConfig, { owner: OWNER })).not.toThrow();
+    expect(() =>
+      assertUserCoinConfig(fixtureConfig, { owner: Keypair.generate().publicKey }),
+    ).toThrow(/feeClaimer is/);
+    expect(() =>
+      assertUserCoinConfig(fixtureConfig, { owner: OWNER, poolCreationFeeLamports: 1_000_000n }),
+    ).not.toThrow();
+    expect(() =>
+      assertUserCoinConfig(fixtureConfig, { owner: OWNER, poolCreationFeeLamports: 0n }),
+    ).toThrow(/poolCreationFee is 1000000, expected 0/);
+    expect(() => assertUserCoinConfig(fixtureConfig, { spec })).not.toThrow();
+    expect(() =>
+      assertUserCoinConfig(fixtureConfig, { spec: { ...spec, tradingFeeBps: 150 } }),
+    ).toThrow(/baseFee/);
+    expect(() =>
+      assertUserCoinConfig(fixtureConfig, { spec: { ...spec, coinCreatorSharePct: 30 } }),
+    ).toThrow(/creatorTradingFeePercentage is 25, expected 30/);
+  });
+
+  it('builds with expectedConfig and refuses a config that does not match it', async () => {
+    const { params } = await userSetup({ expectedConfig: { owner: OWNER } });
+    await expect(buildUserCoinLaunchTx(params)).resolves.toBeDefined();
+    const other = await userSetup({ expectedConfig: { owner: Keypair.generate().publicKey } });
+    await expectLaunchError(buildUserCoinLaunchTx(other.params), 'CONFIG_MISMATCH');
   });
 
   it('refuses a missing config, or one not owned by the DBC program', async () => {

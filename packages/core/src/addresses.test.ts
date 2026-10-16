@@ -10,6 +10,7 @@ import {
   getMeteoraReferralAccount,
   getMultisigVault,
   getPlatformFeeWallet,
+  readOptionalAddress,
   requireAddresses,
   type ForgeAddressName,
 } from './addresses.js';
@@ -164,5 +165,21 @@ describe('typed getters', () => {
     expect(() => getJupiterReferralAccount({})).toThrow(ForgeAddressError);
     expect(() => getCashboxWallet({})).toThrow(ForgeAddressError);
     expect(getForgeMint({})).toBeNull();
+  });
+});
+
+describe('readOptionalAddress', () => {
+  it('returns the address when set, null when absent or empty, and refuses an invalid one', () => {
+    const env = fullEnv();
+    expect(readOptionalAddress('FORGE_MULTISIG_VAULT', env)?.toBase58()).toBe(
+      env.FORGE_MULTISIG_VAULT,
+    );
+    expect(readOptionalAddress('FORGE_MULTISIG_VAULT', {})).toBeNull();
+    expect(readOptionalAddress('FORGE_MULTISIG_VAULT', { FORGE_MULTISIG_VAULT: '' })).toBeNull();
+    const error = catchError(() =>
+      readOptionalAddress('FORGE_MULTISIG_VAULT', { FORGE_MULTISIG_VAULT: 'not-a-key' }),
+    );
+    expect(error.invalid).toEqual(['FORGE_MULTISIG_VAULT']);
+    expect(error.message).not.toContain('not-a-key');
   });
 });

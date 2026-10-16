@@ -26,15 +26,11 @@
  * passes `validate.ts` before it is returned; otherwise a `ValidationError` is thrown.
  */
 import {
-  ActivationType,
-  BaseFeeMode,
   CollectFeeMode,
   DynamicBondingCurveClient,
-  MigrationFeeOption,
-  MigrationOption,
-  TokenAuthorityOption,
-  TokenDecimal,
-  TokenType,
+  FEE_DENOMINATOR,
+  MAX_BASIS_POINT,
+  MAX_CURVE_POINT,
   buildCurve,
   getMigrationThresholdPrice,
   swapQuoteExactIn,
@@ -49,13 +45,20 @@ import BN from 'bn.js';
 import { LaunchpadSpec } from '@forge/shared';
 import {
   CLIENT_BOUNDS,
+  CLIENT_POOL_CREATION_FEE_LAMPORTS,
   FEES,
-  MAX_ANTI_SNIPER_STARTING_FEE_BPS,
-  SOL_DECIMALS,
+  LAMPORTS_PER_SOL_BIGINT,
   SOL_QUOTE_MINT,
   solToLamports,
 } from './constants.js';
 import { LaunchCoinError, assertSpecLaunchable } from './launch-metadata.js';
+import {
+  ANTI_SNIPER_FEE_SCHEDULE,
+  FORGE_ACTIVATION_TYPE,
+  FORGE_MIGRATION_SETTINGS,
+  FORGE_TOKEN_SETTINGS,
+  forgeFeeSchedulerParam,
+} from './settings.js';
 import { computeBudgetInstructions } from './tx.js';
 import {
   ValidationError,
@@ -69,38 +72,18 @@ import {
 // Settings
 // ---------------------------------------------------------------------------------------------
 
-/** Token of every coin: SPL token, 1,000,000,000 tokens with 6 decimals, immutable metadata. */
-export const FORGE_TOKEN_SETTINGS = {
-  tokenType: TokenType.SPLToken,
-  tokenBaseDecimal: TokenDecimal.SIX,
-  tokenQuoteDecimal: SOL_DECIMALS,
-  tokenAuthorityOption: TokenAuthorityOption.Immutable,
-  totalTokenSupply: 1_000_000_000,
-  leftover: 0,
-} as const;
-
-/**
- * Anti-sniper fee schedule (`spec.antiSniper`): the fee starts at `startingFeeBps` and decreases
- * linearly, in `numberOfPeriod` equal steps over `totalDurationSeconds`, to `spec.tradingFeeBps`.
- * Within the validate.ts bounds (starting fee <= 9900 bps, duration <= 300 s).
- */
-export const ANTI_SNIPER_FEE_SCHEDULE = {
-  baseFeeMode: BaseFeeMode.FeeSchedulerLinear,
-  startingFeeBps: MAX_ANTI_SNIPER_STARTING_FEE_BPS,
-  numberOfPeriod: 10,
-  totalDurationSeconds: 60,
-} as const;
-
-/** Migration: DAMM v2, migrated pool fee 0.25%, no migration fee, 20% of the supply migrated. */
-export const FORGE_MIGRATION_SETTINGS = {
-  migrationOption: MigrationOption.MET_DAMM_V2,
-  migrationFeeOption: MigrationFeeOption.FixedBps25,
-  migrationFee: { feePercentage: 0, creatorFeePercentage: 0 },
-  percentageSupplyOnMigration: 20,
-} as const;
-
-/** Fee scheduler periods are counted in seconds. */
-export const FORGE_ACTIVATION_TYPE = ActivationType.Timestamp;
+// The fixed settings live in settings.ts (shared with validate.ts) and stay exported from here.
+export {
+  ANTI_SNIPER_FEE_SCHEDULE,
+  FORGE_ACTIVATION_TYPE,
+  FORGE_MIGRATION_SETTINGS,
+  FORGE_TOKEN_SETTINGS,
+  FORGE_TOKEN_SUPPLY_RAW,
+  forgeBaseFee,
+  forgeFeeSchedulerParam,
+  forgeReferenceCurve,
+  type ForgeReferenceCurve,
+} from './settings.js';
 
 /**
  * Pool creation fee of the launchpad coin config: none. The only pool ever created on it is the
@@ -112,12 +95,24 @@ export const FORGE_ACTIVATION_TYPE = ActivationType.Timestamp;
 export const LAUNCHPAD_COIN_POOL_CREATION_FEE_SOL = 0;
 
 /** Pool creation fee of a config kind, in SOL. */
-export function poolCreationFeeSolFor(spec: LaunchpadSpec, kind: ConfigKind): number {
+export function poolCreationFeeSolFor(
+  spec: Pick<LaunchpadSpec, 'poolCreationFeeSol'>,
+  kind: ConfigKind,
+): number {
   return kind === 'launchpadCoin' ? LAUNCHPAD_COIN_POOL_CREATION_FEE_SOL : spec.poolCreationFeeSol;
 }
 
 /** Which of the two configs. */
 export type ConfigKind = 'launchpad' | 'launchpadCoin';
+
+/**
+ * The spec fields a config depends on, besides the owner wallet (a full `LaunchpadSpec` fits).
+ * Everything else in a FORGE config is a fixed setting (settings.ts).
+ */
+export type ConfigSpecFields = Pick<
+  LaunchpadSpec,
+  'tradingFeeBps' | 'antiSniper' | 'coinCreatorSharePct' | 'poolCreationFeeSol'
+>;
 
 /**
  * What `createConfig` needs besides the config keypair and the payer: the SDK
@@ -184,32 +179,22 @@ function ownerKeyOf(spec: LaunchpadSpec): PublicKey {
 }
 
 /** Creator share of the trading fees for each config kind. */
-export function creatorTradingFeePercentageFor(spec: LaunchpadSpec, kind: ConfigKind): number {
+export function creatorTradingFeePercentageFor(
+  spec: Pick<LaunchpadSpec, 'coinCreatorSharePct'>,
+  kind: ConfigKind,
+): number {
   return kind === 'launchpadCoin' ? FEES.forgeCreatorSharePct : spec.coinCreatorSharePct;
 }
 
-/** The `buildCurve` input for a spec and a config kind (pure). */
-export function curveParamsFor(spec: LaunchpadSpec, kind: ConfigKind): BuildCurveParams {
+/** The `buildCurve` input for a spec (or just its config fields) and a config kind (pure). */
+export function curveParamsFor(spec: ConfigSpecFields, kind: ConfigKind): BuildCurveParams {
   const creatorShare = creatorTradingFeePercentageFor(spec, kind);
-  const schedule = ANTI_SNIPER_FEE_SCHEDULE;
   return {
     token: { ...FORGE_TOKEN_SETTINGS },
     fee: {
       baseFeeParams: {
-        baseFeeMode: schedule.baseFeeMode,
-        feeSchedulerParam: spec.antiSniper
-          ? {
-              startingFeeBps: schedule.startingFeeBps,
-              endingFeeBps: spec.tradingFeeBps,
-              numberOfPeriod: schedule.numberOfPeriod,
-              totalDuration: schedule.totalDurationSeconds,
-            }
-          : {
-              startingFeeBps: spec.tradingFeeBps,
-              endingFeeBps: spec.tradingFeeBps,
-              numberOfPeriod: 0,
-              totalDuration: 0,
-            },
+        baseFeeMode: ANTI_SNIPER_FEE_SCHEDULE.baseFeeMode,
+        feeSchedulerParam: forgeFeeSchedulerParam(spec.tradingFeeBps, spec.antiSniper),
       },
       dynamicFeeEnabled: false,
       collectFeeMode: CollectFeeMode.QuoteToken,
@@ -340,6 +325,354 @@ export function buildLaunchpadConfig(spec: LaunchpadSpec): LaunchpadConfigParams
 /** Launchpad coin config: the launchpad's own coin, FORGE is the creator (25%). */
 export function buildLaunchpadCoinConfig(spec: LaunchpadSpec): LaunchpadConfigParams {
   return buildConfigParams(spec, 'launchpadCoin');
+}
+
+// ---------------------------------------------------------------------------------------------
+// On-chain config check
+// ---------------------------------------------------------------------------------------------
+
+/** What an on-chain config is expected to be, besides its kind. */
+export interface OnchainConfigExpectation {
+  /**
+   * The spec the config was built from. Every field is then compared with
+   * `buildConfigParams(spec, kind)`, exactly what `buildCreateConfigTx` sent.
+   */
+  spec?: LaunchpadSpec;
+  /** Fee claimer and leftover receiver (`spec.ownerWallet` when a spec is given). */
+  owner?: PublicKey;
+  /** Pool creation fee in lamports (launchpad config; the coin config never has one). */
+  poolCreationFeeLamports?: bigint;
+}
+
+const FEE_NUMERATOR_PER_BPS = BigInt(FEE_DENOMINATOR / MAX_BASIS_POINT);
+
+/** An integer field (BN, number, bigint or boolean) as a bigint, or null. */
+function integerOf(value: unknown): bigint | null {
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'boolean') return value ? 1n : 0n;
+  if (typeof value === 'number') return Number.isSafeInteger(value) ? BigInt(value) : null;
+  if (BN.isBN(value)) return BigInt((value as BN).toString());
+  return null;
+}
+
+/**
+ * The spec fields of a config read from the chain, when no spec is given. They must be values a
+ * FORGE spec can hold: a linear fee schedule ending on a whole client fee (50..200 bps), a creator
+ * share within the client bounds and a client pool creation fee. Problems are pushed to
+ * `problems`; a placeholder is returned for an impossible field so that every other field is still
+ * compared.
+ */
+function inferSpecFields(
+  config: PoolConfig,
+  kind: ConfigKind,
+  expectedFeeLamports: bigint | undefined,
+  problems: string[],
+): { fields: ConfigSpecFields; poolCreationFeeLamports: bigint } {
+  const { tradingFeeBps: feeBounds, coinCreatorSharePct: shareBounds } = CLIENT_BOUNDS;
+  const baseFee = config.poolFees?.baseFee;
+  const cliff = integerOf(baseFee?.cliffFeeNumerator);
+  const periods = integerOf(baseFee?.firstFactor);
+  const reduction = integerOf(baseFee?.thirdFactor);
+  let tradingFeeBps: number = feeBounds.min;
+  let antiSniper = false;
+  if (
+    baseFee?.baseFeeMode !== ANTI_SNIPER_FEE_SCHEDULE.baseFeeMode ||
+    cliff === null ||
+    periods === null ||
+    reduction === null
+  ) {
+    problems.push('base fee is not a linear fee scheduler');
+  } else {
+    antiSniper = periods > 0n;
+    const ending = cliff - periods * reduction;
+    const bps = ending / FEE_NUMERATOR_PER_BPS;
+    if (
+      ending % FEE_NUMERATOR_PER_BPS !== 0n ||
+      bps < BigInt(feeBounds.min) ||
+      bps > BigInt(feeBounds.max)
+    ) {
+      problems.push(
+        `trading fee (fee numerator ${ending}) is not a whole fee between ${feeBounds.min} and ${feeBounds.max} bps`,
+      );
+    } else {
+      tradingFeeBps = Number(bps);
+    }
+  }
+
+  let coinCreatorSharePct: number = shareBounds.default;
+  if (kind === 'launchpad') {
+    const share = config.creatorTradingFeePercentage;
+    if (Number.isInteger(share) && share >= shareBounds.min && share <= shareBounds.max) {
+      coinCreatorSharePct = share;
+    } else {
+      problems.push(
+        `creator trading fee ${share}% is not between ${shareBounds.min}% and ${shareBounds.max}%`,
+      );
+    }
+  }
+
+  let poolCreationFeeLamports = 0n;
+  if (kind === 'launchpad') {
+    const onchain = integerOf(config.poolCreationFee);
+    const { min, max, allowZero } = CLIENT_POOL_CREATION_FEE_LAMPORTS;
+    if (expectedFeeLamports !== undefined) {
+      poolCreationFeeLamports = expectedFeeLamports;
+    } else if (
+      onchain !== null &&
+      ((onchain === 0n && allowZero) || (onchain >= min && onchain <= max))
+    ) {
+      poolCreationFeeLamports = onchain;
+    } else {
+      problems.push(`pool creation fee ${String(onchain)} lamports is outside the client bounds`);
+    }
+  }
+
+  return {
+    fields: {
+      tradingFeeBps,
+      antiSniper,
+      coinCreatorSharePct,
+      poolCreationFeeSol: Number(poolCreationFeeLamports) / Number(LAMPORTS_PER_SOL_BIGINT),
+    },
+    poolCreationFeeLamports,
+  };
+}
+
+/** Every field of `onchain` that differs from what core sends for `params` (`createConfig`). */
+function compareWithParams(onchain: PoolConfig, params: LaunchpadConfigParams): string[] {
+  const problems: string[] = [];
+  const same = (field: string, actual: unknown, expected: unknown) => {
+    const a = integerOf(actual);
+    const e = integerOf(expected);
+    if (a === null || e === null || a !== e) {
+      problems.push(`${field} is ${String(a ?? actual)}, expected ${String(e ?? expected)}`);
+    }
+  };
+  const sameKey = (field: string, actual: PublicKey, expected: PublicKey) => {
+    if (!actual.equals(expected))
+      problems.push(`${field} is ${actual.toBase58()}, expected ${expected.toBase58()}`);
+  };
+
+  // Accounts and token.
+  sameKey('quoteMint', onchain.quoteMint, params.quoteMint);
+  same('quoteTokenFlag', onchain.quoteTokenFlag, 0);
+  sameKey('feeClaimer', onchain.feeClaimer, params.feeClaimer);
+  sameKey('leftoverReceiver', onchain.leftoverReceiver, params.leftoverReceiver);
+  same('tokenType', onchain.tokenType, params.tokenType);
+  same('tokenDecimal', onchain.tokenDecimal, params.tokenDecimal);
+  same('tokenUpdateAuthority', onchain.tokenUpdateAuthority, params.tokenUpdateAuthority);
+
+  // Fees.
+  const base = onchain.poolFees.baseFee;
+  const expectedBase = params.poolFees.baseFee;
+  same('baseFee.baseFeeMode', base.baseFeeMode, expectedBase.baseFeeMode);
+  same('baseFee.cliffFeeNumerator', base.cliffFeeNumerator, expectedBase.cliffFeeNumerator);
+  same('baseFee.numberOfPeriod', base.firstFactor, expectedBase.firstFactor);
+  same('baseFee.periodFrequency', base.secondFactor, expectedBase.secondFactor);
+  same('baseFee.reductionFactor', base.thirdFactor, expectedBase.thirdFactor);
+  // FORGE never enables the dynamic fee (validate.ts refuses it).
+  same('dynamicFee.initialized', onchain.poolFees.dynamicFee.initialized, 0);
+  same('collectFeeMode', onchain.collectFeeMode, params.collectFeeMode);
+  same(
+    'creatorTradingFeePercentage',
+    onchain.creatorTradingFeePercentage,
+    params.creatorTradingFeePercentage,
+  );
+  same('poolCreationFee', onchain.poolCreationFee, params.poolCreationFee);
+  same(
+    'enableFirstSwapWithMinFee',
+    onchain.enableFirstSwapWithMinFee,
+    params.enableFirstSwapWithMinFee,
+  );
+  same('activationType', onchain.activationType, params.activationType);
+
+  // Liquidity after migration.
+  same(
+    'partnerLiquidityPercentage',
+    onchain.partnerLiquidityPercentage,
+    params.partnerLiquidityPercentage,
+  );
+  same(
+    'partnerPermanentLockedLiquidityPercentage',
+    onchain.partnerPermanentLockedLiquidityPercentage,
+    params.partnerPermanentLockedLiquidityPercentage,
+  );
+  same(
+    'creatorLiquidityPercentage',
+    onchain.creatorLiquidityPercentage,
+    params.creatorLiquidityPercentage,
+  );
+  same(
+    'creatorPermanentLockedLiquidityPercentage',
+    onchain.creatorPermanentLockedLiquidityPercentage,
+    params.creatorPermanentLockedLiquidityPercentage,
+  );
+  for (const name of ['partnerLiquidityVestingInfo', 'creatorLiquidityVestingInfo'] as const) {
+    const actual = onchain[name];
+    const expected = params[name];
+    const fields = [
+      'vestingPercentage',
+      'bpsPerPeriod',
+      'numberOfPeriods',
+      'frequency',
+      'cliffDurationFromMigrationTime',
+    ] as const;
+    const empty = !expected || fields.every((f) => integerOf(expected[f]) === 0n);
+    same(`${name}.isInitialized`, actual.isInitialized, empty ? 0 : 1);
+    for (const f of fields) same(`${name}.${f}`, actual[f], expected ? expected[f] : 0);
+  }
+
+  // Migration.
+  same('migrationOption', onchain.migrationOption, params.migrationOption);
+  same('migrationFeeOption', onchain.migrationFeeOption, params.migrationFeeOption);
+  same('migrationQuoteThreshold', onchain.migrationQuoteThreshold, params.migrationQuoteThreshold);
+  same('migrationFeePercentage', onchain.migrationFeePercentage, params.migrationFee.feePercentage);
+  same(
+    'creatorMigrationFeePercentage',
+    onchain.creatorMigrationFeePercentage,
+    params.migrationFee.creatorFeePercentage,
+  );
+  const migrated = params.migratedPoolFee;
+  same('migratedCollectFeeMode', onchain.migratedCollectFeeMode, migrated?.collectFeeMode ?? 0);
+  same('migratedDynamicFee', onchain.migratedDynamicFee, migrated?.dynamicFee ?? 0);
+  same('migratedPoolFeeBps', onchain.migratedPoolFeeBps, migrated?.poolFeeBps ?? 0);
+  same(
+    'migratedPoolBaseFeeMode',
+    onchain.migratedPoolBaseFeeMode,
+    params.migratedPoolBaseFeeMode ?? 0,
+  );
+  same(
+    'migratedCompoundingFeeBps',
+    onchain.migratedCompoundingFeeBps,
+    params.compoundingFeeBps ?? 0,
+  );
+  const marketCap = params.migratedPoolMarketCapFeeSchedulerParams;
+  const marketCapOff =
+    !marketCap ||
+    [
+      marketCap.numberOfPeriod,
+      marketCap.sqrtPriceStepBps,
+      marketCap.schedulerExpirationDuration,
+      marketCap.reductionFactor,
+    ].every((v) => integerOf(v) === 0n);
+  if (!marketCapOff) {
+    problems.push(
+      'the expected config has a migrated pool market cap fee scheduler (not supported)',
+    );
+  } else if (!onchain.migratedPoolBaseFeeBytes.every((byte) => byte === 0)) {
+    problems.push('migratedPoolBaseFeeBytes is set, expected none (no market cap fee scheduler)');
+  }
+
+  // Supply: locked vesting, fixed supply, curve.
+  const vesting = onchain.lockedVestingConfig;
+  const expectedVesting = params.lockedVesting;
+  same('lockedVesting.amountPerPeriod', vesting.amountPerPeriod, expectedVesting.amountPerPeriod);
+  same(
+    'lockedVesting.cliffDurationFromMigrationTime',
+    vesting.cliffDurationFromMigrationTime,
+    expectedVesting.cliffDurationFromMigrationTime,
+  );
+  same('lockedVesting.frequency', vesting.frequency, expectedVesting.frequency);
+  same('lockedVesting.numberOfPeriod', vesting.numberOfPeriod, expectedVesting.numberOfPeriod);
+  same(
+    'lockedVesting.cliffUnlockAmount',
+    vesting.cliffUnlockAmount,
+    expectedVesting.cliffUnlockAmount,
+  );
+  const supply = params.tokenSupply;
+  same('fixedTokenSupplyFlag', onchain.fixedTokenSupplyFlag, supply ? 1 : 0);
+  same(
+    'preMigrationTokenSupply',
+    onchain.preMigrationTokenSupply,
+    supply?.preMigrationTokenSupply ?? 0,
+  );
+  same(
+    'postMigrationTokenSupply',
+    onchain.postMigrationTokenSupply,
+    supply?.postMigrationTokenSupply ?? 0,
+  );
+  same('sqrtStartPrice', onchain.sqrtStartPrice, params.sqrtStartPrice);
+  // The account stores a fixed-size curve (unused points are zero); the params hold at most
+  // MAX_CURVE_POINT points.
+  const curve = onchain.curve;
+  if (curve.length < params.curve.length || params.curve.length > MAX_CURVE_POINT) {
+    problems.push(`curve has ${curve.length} points, expected ${params.curve.length} and zeros`);
+  } else {
+    curve.forEach((point, i) => {
+      const expected = params.curve[i];
+      same(`curve[${i}].sqrtPrice`, point.sqrtPrice, expected ? expected.sqrtPrice : 0);
+      same(`curve[${i}].liquidity`, point.liquidity, expected ? expected.liquidity : 0);
+    });
+  }
+  return problems;
+}
+
+/**
+ * Compares a config read from the chain with the parameters core builds for it, field by field:
+ * accounts, token, base fee (cliff, periods, period, reduction, mode), dynamic fee, creator share,
+ * pool creation fee, first swap at the minimum fee, activation, liquidity split and vesting,
+ * migration (option, fee option, threshold, migration fee percentages, migrated pool fee), locked
+ * vesting, token supply, start price and curve. The values the program derives from these
+ * (`swapBaseAmount`, `migrationBaseThreshold`, `migrationSqrtPrice`) are not compared.
+ *
+ * With `expected.spec`, the reference is `buildConfigParams(spec, kind)`. Without it, the spec
+ * fields are read from the config itself (`inferSpecFields`: they must be values a FORGE spec can
+ * hold) and every other field must be FORGE's fixed setting; the fee claimer and leftover receiver
+ * must be `expected.owner` (or, without it, the same key).
+ *
+ * @returns every mismatch, as readable messages (on-chain values are public); empty when the config
+ *   is exactly a FORGE config of this kind.
+ */
+export function onchainConfigMismatches(
+  config: PoolConfig,
+  kind: ConfigKind,
+  expected: OnchainConfigExpectation = {},
+): string[] {
+  if (kind !== 'launchpad' && kind !== 'launchpadCoin') {
+    throw new TypeError(`unknown config kind: ${String(kind)}`);
+  }
+  const problems: string[] = [];
+  let params: LaunchpadConfigParams;
+  if (expected.spec !== undefined) {
+    try {
+      params = buildConfigParams(expected.spec, kind);
+    } catch (error) {
+      return [
+        `the spec does not build a valid ${kind} config: ${error instanceof Error ? error.message : String(error)}`,
+      ];
+    }
+    if (expected.owner && !expected.owner.equals(params.feeClaimer)) {
+      problems.push('the expected owner is not spec.ownerWallet');
+    }
+    if (
+      expected.poolCreationFeeLamports !== undefined &&
+      expected.poolCreationFeeLamports !== integerOf(params.poolCreationFee)
+    ) {
+      problems.push('the expected pool creation fee is not the one the spec builds');
+    }
+  } else {
+    const owner = expected.owner ?? config.feeClaimer;
+    const inferred = inferSpecFields(config, kind, expected.poolCreationFeeLamports, problems);
+    let curve: ConfigParameters;
+    try {
+      curve = buildCurve(curveParamsFor(inferred.fields, kind));
+    } catch (error) {
+      return [
+        ...problems,
+        `SDK buildCurve: ${error instanceof Error ? error.message : String(error)}`,
+      ];
+    }
+    params = {
+      ...curve,
+      // Exact lamports: the SOL figure above only feeds buildCurve.
+      poolCreationFee: new BN(inferred.poolCreationFeeLamports.toString()),
+      feeClaimer: owner,
+      leftoverReceiver: owner,
+      quoteMint: SOL_QUOTE_MINT,
+    };
+  }
+  problems.push(...compareWithParams(config, params));
+  return problems;
 }
 
 // ---------------------------------------------------------------------------------------------

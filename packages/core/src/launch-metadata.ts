@@ -31,7 +31,9 @@ export type LaunchCoinErrorCode =
   | 'FIRST_BUY_EXCEEDS_CURVE'
   | 'QUOTE_FAILED'
   | 'UNEXPECTED_SIGNERS'
-  | 'TX_TOO_LARGE';
+  | 'TX_TOO_LARGE'
+  /** FORGE_PLATFORM_FEE_WALLET does not exist or is not rent-exempt (user coin launch). */
+  | 'PLATFORM_FEE_WALLET_NOT_READY';
 
 /** The launch transaction cannot be built. Nothing has been sent. */
 export class LaunchCoinError extends Error {

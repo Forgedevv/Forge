@@ -28,10 +28,14 @@ import {
   CreateConfigError,
   FORGE_ACTIVATION_TYPE,
   FORGE_MIGRATION_SETTINGS,
+  FORGE_TOKEN_SUPPLY_RAW,
   buildConfigParams,
   buildCreateConfigTx,
   buildLaunchpadCoinConfig,
   buildLaunchpadConfig,
+  forgeBaseFee,
+  forgeReferenceCurve,
+  onchainConfigMismatches,
   parseLaunchpadSpec,
   quoteFirstBuyOnConfig,
   type LaunchpadConfigParams,
@@ -590,5 +594,50 @@ describe('buildCreateConfigTx', () => {
       }),
     ).rejects.toThrow(ValidationError);
     expect(connection.calls).toEqual([]);
+  });
+});
+
+describe('fixed settings shared with validate.ts', () => {
+  it('every config of every spec has the reference curve, start price and token supply', () => {
+    const reference = forgeReferenceCurve();
+    for (const spec of [
+      makeSpec(),
+      makeSpec({ tradingFeeBps: 200, antiSniper: false, coinCreatorSharePct: 0 }),
+      makeSpec({ tradingFeeBps: 50, coinCreatorSharePct: 50, poolCreationFeeSol: 0 }),
+    ]) {
+      for (const kind of ['launchpad', 'launchpadCoin'] as const) {
+        const params = buildConfigParams(spec, kind);
+        expect(params.sqrtStartPrice.eq(reference.sqrtStartPrice)).toBe(true);
+        expect(params.curve).toHaveLength(reference.curve.length);
+        params.curve.forEach((point, i) => {
+          expect(point.sqrtPrice.eq(reference.curve[i]!.sqrtPrice)).toBe(true);
+          expect(point.liquidity.eq(reference.curve[i]!.liquidity)).toBe(true);
+        });
+        expect(BigInt(params.tokenSupply!.preMigrationTokenSupply.toString())).toBe(
+          FORGE_TOKEN_SUPPLY_RAW,
+        );
+        expect(BigInt(params.tokenSupply!.postMigrationTokenSupply.toString())).toBe(
+          FORGE_TOKEN_SUPPLY_RAW,
+        );
+        expect(params.migrationFee).toEqual({ feePercentage: 0, creatorFeePercentage: 0 });
+      }
+    }
+    expect(FORGE_TOKEN_SUPPLY_RAW).toBe(1_000_000_000n * 1_000_000n);
+  });
+
+  it('builds the base fee the configs carry, from the anti-sniper schedule', () => {
+    const spec = makeSpec({ tradingFeeBps: 120 });
+    const fee = forgeBaseFee(120, true);
+    const built = buildConfigParams(spec, 'launchpad').poolFees.baseFee;
+    expect(fee.cliffFeeNumerator.eq(built.cliffFeeNumerator)).toBe(true);
+    expect(fee.firstFactor).toBe(built.firstFactor);
+    expect(fee.secondFactor.eq(built.secondFactor)).toBe(true);
+    expect(fee.thirdFactor.eq(built.thirdFactor)).toBe(true);
+    expect(fee.baseFeeMode).toBe(built.baseFeeMode);
+    expect(forgeBaseFee(120, false).firstFactor).toBe(0);
+  });
+
+  it('onchainConfigMismatches refuses an unknown kind', () => {
+    expect(() => onchainConfigMismatches({} as never, 'other' as never)).toThrow(TypeError);
   });
 });

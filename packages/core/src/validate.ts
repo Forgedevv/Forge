@@ -8,6 +8,11 @@
  *    pool creation fee 0 or 0.001..100 SOL, ...), using the SDK constants and helpers;
  *  - FORGE's stricter bounds (client trading fee 50..200 bps, pool creation fee 0 or 0.001..1 SOL,
  *    migration threshold exactly 10 SOL, SOL quote, immutable metadata, ...);
+ *  - FORGE's fixed settings, for every field that moves value: no migration fee, no locked
+ *    vesting, the token supply of `FORGE_TOKEN_SETTINGS` (fixed, nothing minted later), FORGE's
+ *    curve and start price (they decide the leftover sent to the leftover receiver), timestamp
+ *    activation, and the anti-sniper schedule exactly `ANTI_SNIPER_FEE_SCHEDULE` (or a flat fee
+ *    when `spec.antiSniper` is off);
  *  - that the parameters match the spec they were built from;
  *  - finally, the SDK's own `validateConfigParameters`, as a catch-all for curve-level rules.
  * Lamport amounts are compared as `bigint`.
@@ -32,6 +37,7 @@ import {
   validateMigrationFee,
   validateMigrationFeeOption,
   validatePoolCreationFee,
+  type BaseFee,
   type ConfigParameters,
 } from '@meteora-ag/dynamic-bonding-curve-sdk';
 import { PublicKey } from '@solana/web3.js';
@@ -61,6 +67,14 @@ import {
   SOL_QUOTE_MINT,
   solToLamports,
 } from './constants.js';
+import {
+  ANTI_SNIPER_FEE_SCHEDULE,
+  FORGE_ACTIVATION_TYPE,
+  FORGE_TOKEN_SETTINGS,
+  FORGE_TOKEN_SUPPLY_RAW,
+  forgeBaseFee,
+  forgeReferenceCurve,
+} from './settings.js';
 
 export type ViolationCode =
   | 'INVALID_ADDRESS'
@@ -79,6 +93,8 @@ export type ViolationCode =
   | 'MIGRATION_OPTION_NOT_ALLOWED'
   | 'MIGRATION_FEE_OPTION_INVALID'
   | 'MIGRATION_FEE_INVALID'
+  /** A migration fee (to the partner or the creator) is set: FORGE configs take none. */
+  | 'MIGRATION_FEE_NOT_ALLOWED'
   | 'MIGRATED_POOL_FEE_OUT_OF_BOUNDS'
   | 'MIGRATED_POOL_FEE_INVALID'
   | 'MIGRATION_THRESHOLD_MISMATCH'
@@ -92,6 +108,12 @@ export type ViolationCode =
   | 'LOCKED_LIQUIDITY_TOO_LOW'
   | 'CREATOR_LOCKED_LIQUIDITY_REQUIRED'
   | 'TOKEN_UPDATE_AUTHORITY_NOT_IMMUTABLE'
+  /** Locked vesting of base tokens is set: FORGE configs vest nothing. */
+  | 'LOCKED_VESTING_NOT_ALLOWED'
+  /** Token supply differs from `FORGE_TOKEN_SETTINGS` (1,000,000,000 tokens, 6 decimals, fixed). */
+  | 'TOKEN_SUPPLY_MISMATCH'
+  /** Start price or curve differs from FORGE's (they decide the swap / migration / leftover split). */
+  | 'CURVE_MISMATCH'
   | 'TOKEN_TYPE_INVALID'
   | 'TOKEN_DECIMAL_INVALID'
   | 'ACTIVATION_TYPE_INVALID'
@@ -211,6 +233,15 @@ const FEE_NUMERATOR_PER_BPS = BigInt(FEE_DENOMINATOR / MAX_BASIS_POINT);
 
 function bpsToNumerator(bps: number): bigint {
   return BigInt(bpsToFeeNumerator(bps).toString());
+}
+
+/** FORGE's base fee for this fee and anti-sniper flag, or null when the SDK refuses the fee. */
+function expectedBaseFee(tradingFeeBps: number, antiSniper: boolean): BaseFee | null {
+  try {
+    return forgeBaseFee(tradingFeeBps, antiSniper);
+  } catch {
+    return null;
+  }
 }
 
 /** Fee numerator to bps, rounded to the nearest bps (for messages and the bounds check). */
@@ -391,6 +422,7 @@ function validateConfig(
   collectTradingFee(config, spec, c);
   collectModes(config, c);
   collectMigration(config, c);
+  collectSupply(config, c);
   collectPoolCreationFee(config, spec, expected, c);
   collectCreatorTradingFee(config, expected, c);
   collectLiquidity(config, expected, c);
@@ -617,6 +649,36 @@ function collectTradingFee(config: ConfigCandidate, spec: LaunchpadSpec, c: Coll
     );
   }
 
+  // FORGE's schedule exactly, not just one within the bounds: a single long period at 99% (or an
+  // exponential curve) would keep traders paying the starting fee far longer than announced.
+  const reported = c.violations.some(
+    (v) => v.field === field && (v.code === 'ANTI_SNIPER_MISMATCH' || v.code === 'FEE_MISMATCH'),
+  );
+  if (
+    !reported &&
+    typeof spec?.antiSniper === 'boolean' &&
+    isIntInRange(spec.tradingFeeBps, MIN_FEE_BPS, MAX_FEE_BPS)
+  ) {
+    const forge = expectedBaseFee(spec.tradingFeeBps, spec.antiSniper);
+    const same =
+      forge !== null &&
+      toBigInt(forge.cliffFeeNumerator) === cliff &&
+      forge.firstFactor === numberOfPeriod &&
+      toBigInt(forge.secondFactor) === periodFrequency &&
+      toBigInt(forge.thirdFactor) === reductionFactor &&
+      forge.baseFeeMode === mode;
+    if (!same) {
+      const schedule = ANTI_SNIPER_FEE_SCHEDULE;
+      c.add(
+        field,
+        spec.antiSniper ? 'ANTI_SNIPER_MISMATCH' : 'FEE_MISMATCH',
+        spec.antiSniper
+          ? `the anti-sniper schedule must be exactly ANTI_SNIPER_FEE_SCHEDULE: linear from ${schedule.startingFeeBps} bps to spec.tradingFeeBps in ${schedule.numberOfPeriod} periods over ${schedule.totalDurationSeconds} s`
+          : 'spec.antiSniper is off: the base fee must be a flat spec.tradingFeeBps in FeeSchedulerLinear mode',
+      );
+    }
+  }
+
   if (config.poolFees.dynamicFee !== null && config.poolFees.dynamicFee !== undefined) {
     c.add(
       'poolFees.dynamicFee',
@@ -634,14 +696,88 @@ function collectModes(config: ConfigCandidate, c: Collector): void {
       'collectFeeMode must be QuoteToken (fees and the referral are paid in SOL)',
     );
   }
-  if (!enumValues(ActivationType).includes(config.activationType)) {
-    c.add('activationType', 'ACTIVATION_TYPE_INVALID', 'activationType must be Slot or Timestamp');
+  // The anti-sniper periods are counted in seconds: a slot-based config would run them in slots.
+  if (
+    !enumValues(ActivationType).includes(config.activationType) ||
+    config.activationType !== FORGE_ACTIVATION_TYPE
+  ) {
+    c.add(
+      'activationType',
+      'ACTIVATION_TYPE_INVALID',
+      'activationType must be Timestamp (FORGE_ACTIVATION_TYPE)',
+    );
   }
-  if (!enumValues(TokenType).includes(config.tokenType)) {
-    c.add('tokenType', 'TOKEN_TYPE_INVALID', 'tokenType must be SPLToken or Token2022');
+  if (
+    !enumValues(TokenType).includes(config.tokenType) ||
+    config.tokenType !== FORGE_TOKEN_SETTINGS.tokenType
+  ) {
+    c.add('tokenType', 'TOKEN_TYPE_INVALID', 'tokenType must be SPLToken (FORGE_TOKEN_SETTINGS)');
   }
-  if (!enumValues(TokenDecimal).includes(config.tokenDecimal)) {
-    c.add('tokenDecimal', 'TOKEN_DECIMAL_INVALID', 'tokenDecimal must be between 6 and 9');
+  if (
+    !enumValues(TokenDecimal).includes(config.tokenDecimal) ||
+    config.tokenDecimal !== FORGE_TOKEN_SETTINGS.tokenBaseDecimal
+  ) {
+    c.add(
+      'tokenDecimal',
+      'TOKEN_DECIMAL_INVALID',
+      `tokenDecimal must be ${FORGE_TOKEN_SETTINGS.tokenBaseDecimal} (FORGE_TOKEN_SETTINGS)`,
+    );
+  }
+}
+
+/**
+ * Supply side (every field decides where tokens go): no locked vesting, FORGE's fixed token
+ * supply, and FORGE's curve and start price (with a fixed supply they decide how much is swapped,
+ * migrated and left over to the leftover receiver).
+ */
+function collectSupply(config: ConfigCandidate, c: Collector): void {
+  const vesting = config.lockedVesting;
+  const vestingFields = vesting
+    ? [
+        vesting.amountPerPeriod,
+        vesting.cliffDurationFromMigrationTime,
+        vesting.frequency,
+        vesting.numberOfPeriod,
+        vesting.cliffUnlockAmount,
+      ]
+    : [];
+  if (!vesting || vestingFields.some((value) => toBigInt(value) !== 0n)) {
+    c.add(
+      'lockedVesting',
+      'LOCKED_VESTING_NOT_ALLOWED',
+      'lockedVesting must be all zero (FORGE configs vest no base token)',
+    );
+  }
+
+  const supply = config.tokenSupply;
+  if (
+    !supply ||
+    toBigInt(supply.preMigrationTokenSupply) !== FORGE_TOKEN_SUPPLY_RAW ||
+    toBigInt(supply.postMigrationTokenSupply) !== FORGE_TOKEN_SUPPLY_RAW
+  ) {
+    c.add(
+      'tokenSupply',
+      'TOKEN_SUPPLY_MISMATCH',
+      `tokenSupply must be fixed at ${FORGE_TOKEN_SUPPLY_RAW} raw units before and after migration (FORGE_TOKEN_SETTINGS)`,
+    );
+  }
+
+  const reference = forgeReferenceCurve();
+  const curve = Array.isArray(config.curve) ? config.curve : [];
+  const sameCurve =
+    toBigInt(config.sqrtStartPrice) === toBigInt(reference.sqrtStartPrice) &&
+    curve.length === reference.curve.length &&
+    reference.curve.every(
+      (point, i) =>
+        toBigInt(curve[i]?.sqrtPrice) === toBigInt(point.sqrtPrice) &&
+        toBigInt(curve[i]?.liquidity) === toBigInt(point.liquidity),
+    );
+  if (!sameCurve) {
+    c.add(
+      'curve',
+      'CURVE_MISMATCH',
+      "sqrtStartPrice and curve must be FORGE's (FORGE_TOKEN_SETTINGS, FORGE_MIGRATION_SETTINGS, 10 SOL threshold)",
+    );
   }
 }
 
@@ -679,6 +815,16 @@ function collectMigration(config: ConfigCandidate, c: Collector): void {
     : 'migrationFee is required';
   if (feeReason !== null) {
     c.add('migrationFee', 'MIGRATION_FEE_INVALID', `migrationFee: ${feeReason}`);
+  } else if (
+    config.migrationFee.feePercentage !== 0 ||
+    config.migrationFee.creatorFeePercentage !== 0
+  ) {
+    // The SDK allows up to 99% / 100% of the migrated quote: on a FORGE config it is always 0.
+    c.add(
+      'migrationFee',
+      'MIGRATION_FEE_NOT_ALLOWED',
+      'migrationFee.feePercentage and migrationFee.creatorFeePercentage must be 0',
+    );
   }
 
   const pool = config.migratedPoolFee;

@@ -32,6 +32,7 @@ import {
   SOL_QUOTE_MINT,
   SOL_QUOTE_MINT_2022,
 } from './constants.js';
+import { buildConfigParams } from './config.js';
 import {
   ValidationError,
   assertValid,
@@ -107,10 +108,10 @@ function curveParams(o: CurveOptions = {}): BuildCurveParams {
     },
     fee: {
       baseFeeParams: {
-        baseFeeMode: o.baseFeeMode ?? BaseFeeMode.FeeSchedulerExponential,
+        baseFeeMode: o.baseFeeMode ?? BaseFeeMode.FeeSchedulerLinear,
         feeSchedulerParam: antiSniper
           ? {
-              startingFeeBps: o.startingFeeBps ?? 5000,
+              startingFeeBps: o.startingFeeBps ?? MAX_ANTI_SNIPER_STARTING_FEE_BPS,
               endingFeeBps: tradingFeeBps,
               numberOfPeriod: 10,
               totalDuration: 60,
@@ -248,14 +249,17 @@ describe('validateSpecOnchain', () => {
 });
 
 describe('validateLaunchpadConfigParams: valid configs', () => {
-  it('accepts a config built with the SDK from the spec (exponential anti-sniper)', () => {
+  it('accepts a config built with the SDK from the spec (FORGE anti-sniper schedule)', () => {
     const result = validateLaunchpadConfigParams(makeConfig(), makeSpec());
     expect(result).toEqual({ ok: true, violations: [] });
   });
 
-  it('accepts a linear anti-sniper scheduler', () => {
-    const config = makeConfig({ baseFeeMode: BaseFeeMode.FeeSchedulerLinear });
-    expect(validateLaunchpadConfigParams(config, makeSpec()).violations).toEqual([]);
+  it('accepts exactly the config core builds for the spec, for both kinds', () => {
+    const spec = makeSpec();
+    expect(validateLaunchpadConfigParams(buildConfigParams(spec, 'launchpad'), spec).ok).toBe(true);
+    expect(
+      validateLaunchpadCoinConfigParams(buildConfigParams(spec, 'launchpadCoin'), spec).ok,
+    ).toBe(true);
   });
 
   it('accepts a flat fee when anti-sniper is off', () => {
@@ -330,12 +334,47 @@ describe('validateLaunchpadConfigParams: trading fee', () => {
     ).toContain('FEE_OUT_OF_CLIENT_BOUNDS');
   });
 
-  it('accepts the exponential scheduler rounding (ending fee within half a bps of the spec)', () => {
-    // The SDK floors the exponential reduction factor, so the ending fee lands slightly above.
-    const config = makeConfig({ tradingFeeBps: 133 });
-    expect(
-      validateLaunchpadConfigParams(config, makeSpec({ tradingFeeBps: 133 })).violations,
-    ).toEqual([]);
+  it('rejects an exponential scheduler, even one ending within half a bps of the spec fee', () => {
+    // The SDK floors the exponential reduction factor, so the ending fee lands slightly above:
+    // close enough for the fee check, but not FORGE's schedule.
+    const config = makeConfig({
+      tradingFeeBps: 133,
+      baseFeeMode: BaseFeeMode.FeeSchedulerExponential,
+    });
+    expect(codes(validateLaunchpadConfigParams(config, makeSpec({ tradingFeeBps: 133 })))).toEqual([
+      'ANTI_SNIPER_MISMATCH',
+    ]);
+  });
+
+  it.each<[string, CurveOptions]>([
+    ['another starting fee (50%)', { startingFeeBps: 5000 }],
+    ['an exponential decrease', { baseFeeMode: BaseFeeMode.FeeSchedulerExponential }],
+  ])('rejects an anti-sniper schedule with %s', (_label, options) => {
+    const result = validateLaunchpadConfigParams(makeConfig(options), makeSpec());
+    expect(result.ok).toBe(false);
+    expect(result.violations.map((v) => v.field)).toContain('poolFees.baseFee');
+  });
+
+  it('rejects one 300 s period at 99% (within the duration cap, but not the schedule)', () => {
+    const config = makeConfig();
+    const base = config.poolFees.baseFee;
+    const cliff = BigInt(bpsToFeeNumerator(MAX_ANTI_SNIPER_STARTING_FEE_BPS).toString());
+    const target = BigInt(bpsToFeeNumerator(100).toString());
+    base.firstFactor = 1;
+    base.secondFactor = new BN(MAX_ANTI_SNIPER_DURATION_SECONDS);
+    base.thirdFactor = new BN((cliff - target).toString());
+    expect(codes(validateLaunchpadConfigParams(config, makeSpec()))).toEqual([
+      'ANTI_SNIPER_MISMATCH',
+    ]);
+  });
+
+  it('rejects a flat fee in exponential mode when anti-sniper is off', () => {
+    const config = makeConfig({ antiSniper: false });
+    expect(validateLaunchpadConfigParams(config, makeSpec({ antiSniper: false })).ok).toBe(true);
+    config.poolFees.baseFee.baseFeeMode = BaseFeeMode.FeeSchedulerExponential;
+    expect(codes(validateLaunchpadConfigParams(config, makeSpec({ antiSniper: false })))).toEqual([
+      'FEE_MISMATCH',
+    ]);
   });
 
   it('rejects a fee that differs from the spec', () => {
@@ -393,31 +432,29 @@ describe('validateLaunchpadConfigParams: trading fee', () => {
       MAX_ANTI_SNIPER_DURATION_SECONDS,
     );
     expect(validateLaunchpadConfigParams(config, makeSpec()).ok).toBe(true);
-    // Exactly at the cap: 10 periods of 30 s.
+    // At the cap (10 periods of 30 s): within the bound, but not FORGE's 10 x 6 s schedule.
     base.secondFactor = new BN(MAX_ANTI_SNIPER_DURATION_SECONDS / base.firstFactor);
-    expect(validateLaunchpadConfigParams(config, makeSpec()).violations).toEqual([]);
+    expect(codes(validateLaunchpadConfigParams(config, makeSpec()))).toEqual([
+      'ANTI_SNIPER_MISMATCH',
+    ]);
     base.secondFactor = new BN(MAX_ANTI_SNIPER_DURATION_SECONDS / base.firstFactor + 1);
     expect(codes(validateLaunchpadConfigParams(config, makeSpec()))).toEqual([
       'FEE_SCHEDULER_TOO_LONG',
+      'ANTI_SNIPER_MISMATCH',
     ]);
     base.secondFactor = new BN('1000000000000');
     expect(codes(validateLaunchpadConfigParams(config, makeSpec()))).toEqual([
       'FEE_SCHEDULER_TOO_LONG',
+      'ANTI_SNIPER_MISMATCH',
     ]);
   });
 
-  it('caps the anti-sniper phase in slots when activationType is Slot', () => {
+  it('refuses slot activation (the anti-sniper periods are seconds)', () => {
+    expect(MAX_ANTI_SNIPER_DURATION_SLOTS).toBe(750);
     const config = makeConfig();
     config.activationType = ActivationType.Slot;
-    const base = config.poolFees.baseFee;
-    const maxSlots = MAX_ANTI_SNIPER_DURATION_SLOTS;
-    expect(maxSlots).toBe(750);
-    base.firstFactor = 10;
-    base.secondFactor = new BN(maxSlots / 10);
-    expect(validateLaunchpadConfigParams(config, makeSpec()).violations).toEqual([]);
-    base.secondFactor = new BN(maxSlots / 10 + 1);
     expect(codes(validateLaunchpadConfigParams(config, makeSpec()))).toEqual([
-      'FEE_SCHEDULER_TOO_LONG',
+      'ACTIVATION_TYPE_INVALID',
     ]);
   });
 
@@ -691,6 +728,88 @@ describe('validateLaunchpadConfigParams: creator share, liquidity, accounts, tok
         'TOKEN_TYPE_INVALID',
         'ACTIVATION_TYPE_INVALID',
       ]),
+    );
+  });
+});
+
+describe('validateLaunchpadConfigParams: fixed FORGE settings (value-moving fields)', () => {
+  it.each([
+    { feePercentage: 5, creatorFeePercentage: 0 },
+    { feePercentage: 50, creatorFeePercentage: 50 },
+    { feePercentage: 99, creatorFeePercentage: 100 },
+  ])('rejects a migration fee the SDK accepts: %o', (migrationFee) => {
+    const config = makeConfig();
+    config.migrationFee = migrationFee;
+    expect(codes(validateLaunchpadConfigParams(config, makeSpec()))).toContain(
+      'MIGRATION_FEE_NOT_ALLOWED',
+    );
+  });
+
+  it('rejects any locked vesting of base tokens', () => {
+    for (const field of [
+      'amountPerPeriod',
+      'cliffDurationFromMigrationTime',
+      'frequency',
+      'numberOfPeriod',
+      'cliffUnlockAmount',
+    ] as const) {
+      const config = makeConfig();
+      config.lockedVesting = { ...config.lockedVesting, [field]: new BN(1) };
+      expect(codes(validateLaunchpadConfigParams(config, makeSpec()))).toContain(
+        'LOCKED_VESTING_NOT_ALLOWED',
+      );
+    }
+  });
+
+  it('rejects a token supply other than FORGE_TOKEN_SETTINGS, or none', () => {
+    const expected = 10n ** 15n;
+    const bigger = makeConfig();
+    bigger.tokenSupply = {
+      preMigrationTokenSupply: new BN((expected * 2n).toString()),
+      postMigrationTokenSupply: new BN(expected.toString()),
+    };
+    expect(codes(validateLaunchpadConfigParams(bigger, makeSpec()))).toContain(
+      'TOKEN_SUPPLY_MISMATCH',
+    );
+    const none = makeConfig();
+    none.tokenSupply = null;
+    expect(codes(validateLaunchpadConfigParams(none, makeSpec()))).toContain(
+      'TOKEN_SUPPLY_MISMATCH',
+    );
+  });
+
+  it('rejects a curve with a leftover, or a moved start price or curve point', () => {
+    const params = curveParams();
+    params.token = { ...params.token, leftover: 100_000_000 };
+    const leftover = {
+      ...buildCurve(params),
+      feeClaimer: OWNER,
+      leftoverReceiver: OWNER,
+      quoteMint: SOL_QUOTE_MINT,
+    };
+    expect(codes(validateLaunchpadConfigParams(leftover, makeSpec()))).toContain('CURVE_MISMATCH');
+
+    const start = makeConfig();
+    start.sqrtStartPrice = start.sqrtStartPrice.addn(1);
+    expect(codes(validateLaunchpadConfigParams(start, makeSpec()))).toContain('CURVE_MISMATCH');
+
+    const point = makeConfig();
+    point.curve = point.curve.map((p, i) =>
+      i === 0 ? { ...p, liquidity: p.liquidity.addn(1) } : p,
+    );
+    expect(codes(validateLaunchpadConfigParams(point, makeSpec()))).toContain('CURVE_MISMATCH');
+  });
+
+  it('rejects Token-2022 and decimals other than 6, even though the SDK allows them', () => {
+    const token2022 = makeConfig();
+    token2022.tokenType = TokenType.Token2022;
+    expect(codes(validateLaunchpadConfigParams(token2022, makeSpec()))).toContain(
+      'TOKEN_TYPE_INVALID',
+    );
+    const nine = makeConfig();
+    nine.tokenDecimal = TokenDecimal.NINE;
+    expect(codes(validateLaunchpadConfigParams(nine, makeSpec()))).toContain(
+      'TOKEN_DECIMAL_INVALID',
     );
   });
 });

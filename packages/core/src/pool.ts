@@ -33,7 +33,11 @@
  *
  * `buildUserCoinLaunchTx` is the same launch for a coin created by a user on the client's
  * launchpad config: the user is pool creator, rent payer, fee payer and buyer, the mint is the
- * only other signer.
+ * only other signer. Its first buy pays the FORGE platform fee (0.3%, rounded up) like any swap
+ * built by core: one SOL transfer to `FORGE_PLATFORM_FEE_WALLET`, the last instruction.
+ *
+ * Both builders compare the on-chain config with what core builds for it, field by field
+ * (`onchainConfigMismatches` in config.ts), before building anything.
  */
 import {
   DYNAMIC_BONDING_CURVE_PROGRAM_ID,
@@ -61,10 +65,16 @@ import {
   type TransactionInstruction,
 } from '@solana/web3.js';
 import BN from 'bn.js';
-import type { OwnerTransactionSummary } from '@forge/shared';
-import type { AddressEnv } from './addresses.js';
-import { quoteFirstBuyOnConfig, type FirstBuyQuote } from './config.js';
+import type { LaunchpadSpec, OwnerTransactionSummary } from '@forge/shared';
+import { getPlatformFeeWallet, type AddressEnv } from './addresses.js';
+import {
+  onchainConfigMismatches,
+  quoteFirstBuyOnConfig,
+  type FirstBuyQuote,
+  type OnchainConfigExpectation,
+} from './config.js';
 import { FEES, MIGRATION_THRESHOLD_LAMPORTS, SOL_QUOTE_MINT } from './constants.js';
+import { PLATFORM_FEE_BPS, platformFeeLamports } from './swap.js';
 import {
   LaunchCoinError,
   assertFirstBuyLamports,
@@ -166,6 +176,12 @@ export interface BuildLaunchCoinTxParams {
   /** Durable nonce: the transaction then stays valid until the nonce advances. */
   durableNonce?: DurableNonceParam;
   /**
+   * The launchpad spec the coin config was built from. When given, the on-chain config must be
+   * exactly `buildLaunchpadCoinConfig(spec)` (`assertLaunchCoinConfig`); without it, its trading
+   * fee and anti-sniper flag are only bounded. Recommended.
+   */
+  spec?: LaunchpadSpec;
+  /**
    * Who pays the pool, mint, metadata and vault accounts and the pool creation fee (default
    * `owner`; `creator` only on a config whose pool creation fee is 0).
    */
@@ -207,6 +223,11 @@ export interface LaunchCoinCosts {
   ownerTemporaryLamports: bigint;
   /** Signature fees + priority fee (paid by the owner, the fee payer). */
   networkFeeLamports: bigint;
+  /**
+   * FORGE platform fee on the first buy (`PLATFORM_FEE_BPS` of it, rounded up), paid by the owner
+   * to `FORGE_PLATFORM_FEE_WALLET`. Only set by `buildUserCoinLaunchTx`.
+   */
+  platformFeeLamports?: bigint;
   /** `cluster` = `getFeeForMessage`; `estimate` = signatures x 5000 + priority fee. */
   networkFeeSource: 'cluster' | 'estimate';
   /** Everything the owner's balance decreases by. */
@@ -279,26 +300,16 @@ function assertDistinctKeys(entries: readonly (readonly [string, PublicKey])[]):
 }
 
 /**
- * Checks that an on-chain config is the launchpad coin config of `owner` and that it is safe to
- * launch the coin on it: SOL quote, SPL token, fee claimer = owner, FORGE creator share, creator
- * locked liquidity, first swap at the minimum fee (otherwise the client's first buy would pay
- * the anti-sniper fee), fee scheduler base fee, DAMM v2 migration at exactly 10 SOL.
- *
- * @throws LaunchCoinError `CONFIG_MISMATCH` listing every mismatch.
+ * The essential checks of a config a coin is launched on, with readable messages: SOL quote (SPL),
+ * SPL base token, first swap at the minimum fee (otherwise the first buy pays the anti-sniper
+ * fee), a fee scheduler base fee, DAMM v2 migration at exactly 10 SOL. The full field by field
+ * comparison (`onchainConfigMismatches`) follows them.
  */
-export function assertLaunchCoinConfig(config: PoolConfig, owner: PublicKey): void {
+function essentialConfigProblems(config: PoolConfig): string[] {
   const problems: string[] = [];
   if (!config.quoteMint.equals(SOL_QUOTE_MINT)) problems.push('quote mint is not SOL');
   if (config.quoteTokenFlag !== 0) problems.push('quote token is not an SPL token');
   if (config.tokenType !== TokenType.SPLToken) problems.push('base token type is not SPL token');
-  if (!config.feeClaimer.equals(owner)) problems.push('fee claimer is not the owner wallet');
-  if (!config.leftoverReceiver.equals(owner)) problems.push('leftover receiver is not the owner');
-  if (config.creatorTradingFeePercentage !== FEES.forgeCreatorSharePct) {
-    problems.push(`creator trading fee is not ${FEES.forgeCreatorSharePct}%`);
-  }
-  if (!(config.creatorPermanentLockedLiquidityPercentage > 0)) {
-    problems.push('creator has no permanently locked liquidity');
-  }
   if (config.enableFirstSwapWithMinFee !== 1) {
     problems.push(
       'first swap with minimum fee is disabled (the first buy would pay the anti-sniper fee)',
@@ -312,6 +323,45 @@ export function assertLaunchCoinConfig(config: PoolConfig, owner: PublicKey): vo
   if (BigInt(config.migrationQuoteThreshold.toString()) !== MIGRATION_THRESHOLD_LAMPORTS) {
     problems.push(`migration threshold is not ${MIGRATION_THRESHOLD_LAMPORTS} lamports`);
   }
+  return problems;
+}
+
+/**
+ * Checks that an on-chain config is the launchpad coin config of `owner` and that it is safe to
+ * launch the coin on it. Besides the essential checks (SOL quote, SPL token, first swap at the
+ * minimum fee, fee scheduler, DAMM v2 at exactly 10 SOL), EVERY field is compared with what core
+ * builds for a launchpad coin config (`onchainConfigMismatches`): fee claimer and leftover
+ * receiver = owner, FORGE creator share, the 75 / 25 permanently locked liquidity, no pool
+ * creation fee, immutable metadata, the exact fee schedule, no migration fee, no locked vesting,
+ * FORGE's supply and curve, timestamp activation.
+ *
+ * With `spec` (the spec the config was built from), the reference is exactly
+ * `buildLaunchpadCoinConfig(spec)`; without it, the trading fee and the anti-sniper flag are read
+ * from the config and only have to be values a FORGE spec can hold (linear schedule, whole fee of
+ * 50..200 bps). Pass the spec whenever it is known.
+ *
+ * @throws LaunchCoinError `CONFIG_MISMATCH` listing every mismatch.
+ */
+export function assertLaunchCoinConfig(
+  config: PoolConfig,
+  owner: PublicKey,
+  spec?: LaunchpadSpec,
+): void {
+  const problems = essentialConfigProblems(config);
+  if (!config.feeClaimer.equals(owner)) problems.push('fee claimer is not the owner wallet');
+  if (!config.leftoverReceiver.equals(owner)) problems.push('leftover receiver is not the owner');
+  if (config.creatorTradingFeePercentage !== FEES.forgeCreatorSharePct) {
+    problems.push(`creator trading fee is not ${FEES.forgeCreatorSharePct}%`);
+  }
+  if (!(config.creatorPermanentLockedLiquidityPercentage > 0)) {
+    problems.push('creator has no permanently locked liquidity');
+  }
+  problems.push(
+    ...onchainConfigMismatches(config, 'launchpadCoin', {
+      owner,
+      ...(spec !== undefined ? { spec } : {}),
+    }),
+  );
   if (problems.length > 0) {
     fail('CONFIG_MISMATCH', `config is not a valid launchpad coin config: ${problems.join('; ')}`);
   }
@@ -486,13 +536,16 @@ interface AssembleLaunchInput {
   nonce: NonceInfo | null;
   recentBlockhash: string;
   lastValidBlockHeight: number | null;
+  /** Appended after the SDK instructions (the platform fee transfer of a user coin launch). */
+  trailingInstructions?: readonly TransactionInstruction[];
 }
 
 /**
  * Quotes the first buy on the fresh pool at the minimum fee (exact: nothing else can trade before
  * it, the pool is created in the same transaction) and assembles the transaction: nonce advance,
  * compute budget, the buyer's WSOL account (idempotent), then the SDK instructions of
- * `createPoolWithFirstBuy` (proven call pattern of devnet test 3), without referral.
+ * `createPoolWithFirstBuy` (proven call pattern of devnet test 3), without referral, then the
+ * trailing instructions.
  */
 async function assembleLaunch(input: AssembleLaunchInput): Promise<{
   transaction: Transaction;
@@ -550,7 +603,7 @@ async function assembleLaunch(input: AssembleLaunchInput): Promise<{
       ),
     );
   }
-  instructions.push(...sdkTx.instructions);
+  instructions.push(...sdkTx.instructions, ...(input.trailingInstructions ?? []));
   const transaction = new Transaction({ feePayer: buyer, recentBlockhash: input.recentBlockhash });
   if (input.lastValidBlockHeight !== null) {
     transaction.lastValidBlockHeight = input.lastValidBlockHeight;
@@ -599,6 +652,8 @@ async function computeLaunchCosts(input: {
   firstBuyLamports: bigint;
   poolCreationFeeLamports: bigint;
   rentPayerIsOwner: boolean;
+  /** Platform fee paid by the owner in the transaction (user coin launch), if any. */
+  platformFeeLamports?: bigint;
 }): Promise<LaunchCoinCosts> {
   const { connection, quote } = input;
   const rentFor = async (size: number) =>
@@ -635,10 +690,12 @@ async function computeLaunchCosts(input: {
     poolAccountsRentLamports +
     METAPLEX_CREATE_METADATA_FEE_LAMPORTS +
     input.poolCreationFeeLamports;
+  const platformFee = input.platformFeeLamports ?? 0n;
   const ownerTotalLamports =
     firstBuy +
     networkFeeLamports +
     ownerTokenAccountRentLamports +
+    platformFee +
     (input.rentPayerIsOwner ? rentPayerCosts : 0n);
   return {
     firstBuyLamports: firstBuy,
@@ -650,6 +707,7 @@ async function computeLaunchCosts(input: {
     ownerTemporaryLamports,
     networkFeeLamports,
     networkFeeSource,
+    ...(input.platformFeeLamports !== undefined ? { platformFeeLamports: platformFee } : {}),
     ownerTotalLamports,
     ownerRequiredBalanceLamports: ownerTotalLamports + ownerTemporaryLamports,
     creatorTotalLamports: input.rentPayerIsOwner ? 0n : rentPayerCosts,
@@ -718,7 +776,7 @@ export async function buildLaunchCoinTx(params: BuildLaunchCoinTxParams): Promis
   const { poolConfig, client, program } = await loadLaunchState(
     connection,
     { config, pool, mint },
-    (decoded) => assertLaunchCoinConfig(decoded, owner),
+    (decoded) => assertLaunchCoinConfig(decoded, owner, params.spec),
   );
   const poolCreationFeeLamports = toBigInt(poolConfig.poolCreationFee);
   if (rentPayerKind === 'creator' && poolCreationFeeLamports !== 0n) {
@@ -859,10 +917,25 @@ export interface BuildUserCoinLaunchTxParams {
   /** Slippage on the first buy (default 100 bps, at most 1000). */
   slippageBps?: number;
   /**
-   * Accepted for symmetry with `buildLaunchCoinTx`; not read: a user coin launch involves no
-   * FORGE address (no referral on the first buy, no platform fee on the creation).
+   * Environment to read `FORGE_PLATFORM_FEE_WALLET` from (defaults to `process.env`; a browser
+   * passes its public copy explicitly). Read only when a platform fee is charged.
    */
   env?: AddressEnv;
+  /**
+   * Charge the FORGE platform fee on the first buy (default `true`): `PLATFORM_FEE_BPS` (30 bps)
+   * of `firstBuyLamports`, rounded up to the lamport (`platformFeeLamports`), as ONE SystemProgram
+   * transfer from the wallet to `FORGE_PLATFORM_FEE_WALLET`, the last instruction. Nothing is
+   * added when there is no first buy. `false` only for tools that must reproduce a launch without
+   * it.
+   */
+  chargePlatformFee?: boolean;
+  /**
+   * What the on-chain launchpad config must be, compared field by field
+   * (`assertUserCoinConfig`): the owner wallet (fee claimer and leftover receiver), the pool
+   * creation fee, or the full spec. Without it, every fixed FORGE setting is still compared and
+   * the spec fields only have to be within the client bounds.
+   */
+  expectedConfig?: OnchainConfigExpectation;
   computeUnitLimit?: number;
   /** Priority fee, micro-lamports per compute unit (default 0). */
   computeUnitPriceMicroLamports?: number;
@@ -883,10 +956,14 @@ export interface UserCoinLaunchSummary {
   expectedTokensOut: bigint;
   minimumTokensOut: bigint;
   slippageBps: number;
+  /** FORGE platform fee transferred by the wallet (0 without a first buy or when not charged). */
+  platformFeeLamports: bigint;
+  /** Recipient of the platform fee transfer, or null when there is none. */
+  platformFeeWallet: PublicKey | null;
   /**
    * Same figures as `LaunchCoinCosts`, read the same way: the `owner*` fields are the wallet's
-   * (it pays everything, including the pool accounts and the pool creation fee);
-   * `creatorTotalLamports` is 0 because no separate creator wallet pays anything.
+   * (it pays everything, including the pool accounts, the pool creation fee and the platform
+   * fee); `creatorTotalLamports` is 0 because no separate creator wallet pays anything.
    */
   costs: LaunchCoinCosts;
   recentBlockhash: string;
@@ -905,24 +982,49 @@ export interface UserCoinLaunchTx {
 }
 
 /**
- * Checks that an on-chain config can launch a user coin with a first buy at the minimum fee: SOL
- * quote, SPL token program for both tokens, `enableFirstSwapWithMinFee`. Nothing about who owns
- * the config or the creator share: the template checks the config address itself.
+ * Checks that an on-chain config is a FORGE launchpad config a user coin can be launched on:
+ * the essential checks (SOL quote, SPL token program for both tokens, `enableFirstSwapWithMinFee`,
+ * fee scheduler, DAMM v2 at exactly 10 SOL), then EVERY field compared with what core builds for
+ * a launchpad config (`onchainConfigMismatches`): liquidity split following the creator share,
+ * immutable metadata, the exact fee schedule, no migration fee, no locked vesting, FORGE's supply
+ * and curve, timestamp activation. `expected` pins the owner wallet (fee claimer and leftover
+ * receiver), the pool creation fee, or the whole spec; without it the spec fields only have to be
+ * within the client bounds and the leftover receiver must be the fee claimer.
  *
  * @throws LaunchCoinError `CONFIG_MISMATCH` listing every mismatch.
  */
-export function assertUserCoinConfig(config: PoolConfig): void {
-  const problems: string[] = [];
-  if (!config.quoteMint.equals(SOL_QUOTE_MINT)) problems.push('quote mint is not SOL');
-  if (config.quoteTokenFlag !== 0) problems.push('quote token is not an SPL token');
-  if (config.tokenType !== TokenType.SPLToken) problems.push('base token type is not SPL token');
-  if (config.enableFirstSwapWithMinFee !== 1) {
-    problems.push(
-      'first swap with minimum fee is disabled (the first buy would pay the anti-sniper fee)',
-    );
-  }
+export function assertUserCoinConfig(
+  config: PoolConfig,
+  expected: OnchainConfigExpectation = {},
+): void {
+  const problems = [
+    ...essentialConfigProblems(config),
+    ...onchainConfigMismatches(config, 'launchpad', expected),
+  ];
   if (problems.length > 0) {
     fail('CONFIG_MISMATCH', `config cannot launch a user coin: ${problems.join('; ')}`);
+  }
+}
+
+/**
+ * The platform fee wallet must exist and be rent-exempt: a SOL transfer to an account below
+ * its rent-exempt minimum fails, and the whole launch with it.
+ *
+ * @throws LaunchCoinError `PLATFORM_FEE_WALLET_NOT_READY`.
+ */
+async function assertPlatformFeeWalletLive(
+  connection: Connection,
+  wallet: PublicKey,
+): Promise<void> {
+  const info = await connection.getAccountInfo(wallet, 'confirmed');
+  const minimum = BigInt(
+    await connection.getMinimumBalanceForRentExemption(info?.data.length ?? 0),
+  );
+  if (!info || BigInt(info.lamports) < minimum) {
+    fail(
+      'PLATFORM_FEE_WALLET_NOT_READY',
+      'FORGE_PLATFORM_FEE_WALLET must exist and be rent-exempt, otherwise the launch fails on-chain',
+    );
   }
 }
 
@@ -930,9 +1032,12 @@ export function assertUserCoinConfig(config: PoolConfig): void {
  * Builds the launch transaction of a coin created by a user on the client's launchpad config:
  * pool creation + the user's first buy at the minimum fee (no referral), with a compute unit limit
  * (and a priority fee when given) and a recent blockhash. The user is pool creator, rent payer,
- * fee payer and buyer; the mint is the only other signer. Rent is read from the cluster.
+ * fee payer and buyer; the mint is the only other signer. Rent is read from the cluster. With a
+ * first buy, the last instruction transfers the platform fee (`platformFeeLamports(firstBuy)`) to
+ * `FORGE_PLATFORM_FEE_WALLET` (see `chargePlatformFee`).
  *
- * @throws LaunchCoinError (typed `code`).
+ * @throws LaunchCoinError (typed `code`; `PLATFORM_FEE_WALLET_NOT_READY` when the fee wallet is
+ *   not rent-exempt), or ForgeAddressError when `FORGE_PLATFORM_FEE_WALLET` is missing.
  */
 export async function buildUserCoinLaunchTx(
   params: BuildUserCoinLaunchTxParams,
@@ -966,13 +1071,29 @@ export async function buildUserCoinLaunchTx(
   const baseMint = mint;
   const pool = deriveDbcPoolAddress(SOL_QUOTE_MINT, baseMint, config);
 
+  // FORGE platform fee on the first buy (rounded up), to FORGE_PLATFORM_FEE_WALLET only.
+  const platformFee =
+    params.chargePlatformFee === false || params.firstBuyLamports <= 0n
+      ? 0n
+      : platformFeeLamports(params.firstBuyLamports, PLATFORM_FEE_BPS);
+  const platformFeeWallet = platformFee > 0n ? getPlatformFeeWallet(params.env) : null;
+  if (
+    platformFeeWallet &&
+    (platformFeeWallet.equals(baseMint) ||
+      platformFeeWallet.equals(config) ||
+      platformFeeWallet.equals(pool))
+  ) {
+    fail('INVALID_INPUT', 'FORGE_PLATFORM_FEE_WALLET must not be the mint, the config or the pool');
+  }
+
   // 2. On-chain state.
   const { poolConfig, client, program } = await loadLaunchState(
     connection,
     { config, pool, mint: baseMint },
-    assertUserCoinConfig,
+    (decoded) => assertUserCoinConfig(decoded, params.expectedConfig),
   );
   const poolCreationFeeLamports = toBigInt(poolConfig.poolCreationFee);
+  if (platformFeeWallet) await assertPlatformFeeWalletLive(connection, platformFeeWallet);
 
   // 3. Recent blockhash: the user signs right away, no durable nonce.
   const latest = await connection.getLatestBlockhash('confirmed');
@@ -995,6 +1116,16 @@ export async function buildUserCoinLaunchTx(
     nonce: null,
     recentBlockhash: latest.blockhash,
     lastValidBlockHeight: latest.lastValidBlockHeight,
+    // Last, like on a swap (docs/METEORA.md, "The platform fee").
+    trailingInstructions: platformFeeWallet
+      ? [
+          SystemProgram.transfer({
+            fromPubkey: wallet,
+            toPubkey: platformFeeWallet,
+            lamports: platformFee,
+          }),
+        ]
+      : [],
   });
 
   // 5. Signers: exactly the wallet (fee payer, first) and the mint.
@@ -1021,6 +1152,7 @@ export async function buildUserCoinLaunchTx(
     firstBuyLamports: params.firstBuyLamports,
     poolCreationFeeLamports,
     rentPayerIsOwner: true,
+    platformFeeLamports: platformFee,
   });
 
   return {
@@ -1037,6 +1169,8 @@ export async function buildUserCoinLaunchTx(
       expectedTokensOut: quote ? quote.tokensOut : 0n,
       minimumTokensOut: quote ? quote.minimumTokensOut : 0n,
       slippageBps,
+      platformFeeLamports: platformFee,
+      platformFeeWallet,
       costs,
       recentBlockhash: latest.blockhash,
       lastValidBlockHeight: latest.lastValidBlockHeight,

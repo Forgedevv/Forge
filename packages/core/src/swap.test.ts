@@ -42,6 +42,7 @@ import {
   SWAP_MAX_TRANSACTION_BYTES,
   SwapError,
   assertPlatformFeeWalletReady,
+  assertPoolConfigAllowed,
   assertReferralAccountReady,
   assertSwapFeeAccountsReady,
   buildBuyTx,
@@ -163,14 +164,14 @@ const systemAccount = (lamports: bigint): SwapAccountSnapshot => ({
 });
 
 function referralSnapshot(
-  overrides: Partial<{ owner: PublicKey; mint: PublicKey; state: number }> = {},
+  overrides: Partial<{ owner: PublicKey; mint: PublicKey; state: number; holder: PublicKey }> = {},
 ) {
   return {
     lamports: RENT.tokenAccount,
     owner: overrides.owner ?? TOKEN_PROGRAM_ID,
     data: tokenAccountData({
       mint: overrides.mint ?? NATIVE_MINT,
-      owner: key(),
+      owner: overrides.holder ?? key(),
       amount: 0n,
       state: overrides.state ?? 1,
       isNative: RENT.tokenAccount,
@@ -1214,6 +1215,7 @@ function mockConnection(chain: MockChain) {
 function chainWithFeeAccounts(
   env: { platform: PublicKey; referral: PublicKey },
   user: PublicKey,
+  referralHolder?: PublicKey,
 ): MockChain {
   const accounts = new Map<string, AccountInfo<Buffer>>();
   accounts.set(ACTIVE_POOL.toBase58(), accountInfo(fixture.accounts.activePool));
@@ -1223,7 +1225,7 @@ function chainWithFeeAccounts(
     fixture.accounts.migratedConfig.address,
     accountInfo(fixture.accounts.migratedConfig),
   );
-  const r = referralSnapshot();
+  const r = referralSnapshot(referralHolder ? { holder: referralHolder } : {});
   accounts.set(env.referral.toBase58(), {
     lamports: Number(r.lamports),
     owner: r.owner,
@@ -1308,7 +1310,7 @@ describe('buildBuyTx / buildSellTx / quoteSwap (mocked RPC)', () => {
       minAmountOut: 1n,
       env: f.env,
     }).catch((e: unknown) => e);
-    // minAmountOut: 1 is far below the 50% slippage cap
+    // minAmountOut: 1 is far below the 25% slippage cap
     expect((built as SwapError).code).toBe('SLIPPAGE_TOO_HIGH');
     const ok = await buildSellTx({
       connection,
@@ -1452,5 +1454,241 @@ describe('buildBuyTx / buildSellTx / quoteSwap (mocked RPC)', () => {
     const e = await expectSwapErrorAsync(fetchSwapPoolState(connection, ACTIVE_POOL), 'RPC_ERROR');
     expect((e.cause as Error).message).toMatch(/WrongSize/);
     expect(connection.getAccountInfo).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// Slippage cap, allowed configs, fee account ownership
+// ---------------------------------------------------------------------------------------------
+
+describe('slippage cap', () => {
+  it('is 25%, given in bps or implied by a minimum output', () => {
+    expect(MAX_SWAP_SLIPPAGE_BPS).toBe(2_500);
+    const state = activeState();
+    const request = { side: 'buy' as const, amountIn: SOL / 100n };
+    expectSwapError(
+      () => computeSwapQuote(state, { ...request, slippage: { slippageBps: 2_501 } }),
+      'INVALID_PARAMS',
+    );
+    const quote = computeSwapQuote(state, { ...request, slippage: { slippageBps: 2_500 } });
+    const floor = minAmountOutForSlippage(quote.expectedAmountOut, 2_500);
+    expect(quote.minAmountOut).toBe(floor);
+    expect(
+      computeSwapQuote(state, { ...request, slippage: { minAmountOut: floor } }).minAmountOut,
+    ).toBe(floor);
+    expectSwapError(
+      () => computeSwapQuote(state, { ...request, slippage: { minAmountOut: floor - 1n } }),
+      'SLIPPAGE_TOO_HIGH',
+    );
+  });
+});
+
+describe('allowedConfigs', () => {
+  const activeConfig = () => new PublicKey(fixture.accounts.activeConfig.address);
+
+  it('builds and quotes a pool whose config is allowed (key or base58)', async () => {
+    const f = feeEnv();
+    const user = key();
+    const connection = mockConnection(chainWithFeeAccounts(f, user));
+    const built = await buildBuyTx({
+      connection,
+      pool: ACTIVE_POOL,
+      user,
+      amountInLamports: SOL / 100n,
+      slippageBps: 100,
+      env: f.env,
+      allowedConfigs: [key(), activeConfig()],
+    });
+    expect(built.quote.side).toBe('buy');
+    const quote = await quoteSwap({
+      connection,
+      pool: ACTIVE_POOL,
+      side: 'buy',
+      amountIn: SOL / 100n,
+      allowedConfigs: [activeConfig().toBase58()],
+    });
+    expect(quote.amountIn).toBe(SOL / 100n);
+  });
+
+  it('refuses a pool of another config before reading it, on every entry point', async () => {
+    const f = feeEnv();
+    const user = key();
+    const chain = chainWithFeeAccounts(f, user);
+    const connection = mockConnection(chain);
+    const other = [key()];
+    const buy = await expectSwapErrorAsync(
+      buildBuyTx({
+        connection,
+        pool: ACTIVE_POOL,
+        user,
+        amountInLamports: SOL / 100n,
+        slippageBps: 100,
+        env: f.env,
+        allowedConfigs: other,
+      }),
+      'POOL_NOT_ALLOWED',
+    );
+    expect(buy.details.config).toBe(activeConfig().toBase58());
+    // Only the first batch (pool, fee accounts, user) was read: never the pool's config.
+    expect(chain.calls.filter((c) => c === 'getMultipleAccountsInfo')).toHaveLength(1);
+    await expectSwapErrorAsync(
+      buildSellTx({
+        connection,
+        pool: ACTIVE_POOL,
+        user,
+        amountInTokens: 1_000n,
+        slippageBps: 100,
+        env: f.env,
+        allowedConfigs: other,
+      }),
+      'POOL_NOT_ALLOWED',
+    );
+    await expectSwapErrorAsync(
+      quoteSwap({
+        connection,
+        pool: ACTIVE_POOL,
+        side: 'buy',
+        amountIn: 1_000n,
+        allowedConfigs: other,
+      }),
+      'POOL_NOT_ALLOWED',
+    );
+    await expectSwapErrorAsync(
+      fetchSwapPoolState(connection, ACTIVE_POOL, 'confirmed', { allowedConfigs: [] }),
+      'POOL_NOT_ALLOWED',
+    );
+  });
+
+  it('refuses an invalid allowed config before any RPC call', async () => {
+    const f = feeEnv();
+    const user = key();
+    const chain = chainWithFeeAccounts(f, user);
+    await expectSwapErrorAsync(
+      buildBuyTx({
+        connection: mockConnection(chain),
+        pool: ACTIVE_POOL,
+        user,
+        amountInLamports: SOL / 100n,
+        slippageBps: 100,
+        env: f.env,
+        allowedConfigs: ['not-a-key'],
+      }),
+      'INVALID_PARAMS',
+    );
+    expect(chain.calls).toEqual([]);
+    expect(() => assertPoolConfigAllowed(ACTIVE_POOL, activeConfig(), undefined)).not.toThrow();
+  });
+});
+
+describe('fee account ownership', () => {
+  it('requires the exact platform fee wallet, as a system account, when it is expected', () => {
+    const wallet = key();
+    expect(() =>
+      assertPlatformFeeWalletReady(wallet, systemAccount(RENT.system), RENT.system, wallet),
+    ).not.toThrow();
+    expectSwapError(
+      () => assertPlatformFeeWalletReady(wallet, systemAccount(RENT.system), RENT.system, key()),
+      'PLATFORM_FEE_WALLET_MISMATCH',
+    );
+    expectSwapError(
+      () =>
+        assertPlatformFeeWalletReady(
+          wallet,
+          { ...systemAccount(RENT.tokenAccount), owner: TOKEN_PROGRAM_ID },
+          RENT.system,
+          wallet,
+        ),
+      'PLATFORM_FEE_WALLET_MISMATCH',
+    );
+    const ctx = makeContext();
+    const request = { side: 'buy' as const, amountIn: SOL / 100n, slippage: { slippageBps: 100 } };
+    expectSwapError(
+      () => buildSwapTransaction(ctx, request, { platformFeeWallet: key() }),
+      'PLATFORM_FEE_WALLET_MISMATCH',
+    );
+    expect(
+      buildSwapTransaction(ctx, request, { platformFeeWallet: ctx.platformFeeWallet })
+        .platformFeeWallet,
+    ).toBe(ctx.platformFeeWallet);
+  });
+
+  it('requires the referral account to be held by the expected owner', () => {
+    const multisig = key();
+    const a = key();
+    expect(() =>
+      assertReferralAccountReady(a, referralSnapshot({ holder: multisig }), multisig),
+    ).not.toThrow();
+    expectSwapError(
+      () => assertReferralAccountReady(a, referralSnapshot({ holder: key() }), multisig),
+      'REFERRAL_ACCOUNT_INVALID',
+    );
+    // Without an expected owner (no FORGE_MULTISIG_VAULT), any holder is accepted.
+    expect(() => assertReferralAccountReady(a, referralSnapshot(), null)).not.toThrow();
+    const ctx = makeContext({ referralTokenAccountInfo: referralSnapshot({ holder: key() }) });
+    expectSwapError(
+      () =>
+        buildSwapTransaction(
+          ctx,
+          { side: 'buy', amountIn: SOL / 100n, slippage: { slippageBps: 100 } },
+          { referralOwner: multisig },
+        ),
+      'REFERRAL_ACCOUNT_INVALID',
+    );
+  });
+
+  it('checks the referral holder against FORGE_MULTISIG_VAULT when the env has it', async () => {
+    const f = feeEnv();
+    const user = key();
+    const multisig = key();
+    const env = { ...f.env, FORGE_MULTISIG_VAULT: multisig.toBase58() };
+    const params = {
+      pool: ACTIVE_POOL,
+      user,
+      amountInLamports: SOL / 100n,
+      slippageBps: 100,
+      env,
+    };
+    const held = mockConnection(chainWithFeeAccounts(f, user, multisig));
+    await expect(buildBuyTx({ ...params, connection: held })).resolves.toBeDefined();
+    await expect(assertSwapFeeAccountsReady({ connection: held, env })).resolves.toBeUndefined();
+
+    const foreign = mockConnection(chainWithFeeAccounts(f, user, key()));
+    await expectSwapErrorAsync(
+      buildBuyTx({ ...params, connection: foreign }),
+      'REFERRAL_ACCOUNT_INVALID',
+    );
+    await expectSwapErrorAsync(
+      assertSwapFeeAccountsReady({ connection: foreign, env }),
+      'REFERRAL_ACCOUNT_INVALID',
+    );
+    // Without FORGE_MULTISIG_VAULT the holder is not checked (a browser that was not given it).
+    await expect(buildBuyTx({ ...params, env: f.env, connection: foreign })).resolves.toBeDefined();
+    // A value that is set must be a valid key.
+    await expect(
+      buildBuyTx({ ...params, env: { ...f.env, FORGE_MULTISIG_VAULT: 'nope' }, connection: held }),
+    ).rejects.toBeInstanceOf(ForgeAddressError);
+  });
+
+  it('refuses a platform fee wallet owned by a program', async () => {
+    const f = feeEnv();
+    const user = key();
+    const chain = chainWithFeeAccounts(f, user);
+    chain.accounts.set(f.platform.toBase58(), {
+      lamports: 10_000_000,
+      owner: TOKEN_PROGRAM_ID,
+      executable: false,
+      data: Buffer.alloc(0),
+    });
+    await expectSwapErrorAsync(
+      buildBuyTx({
+        connection: mockConnection(chain),
+        pool: ACTIVE_POOL,
+        user,
+        amountInLamports: SOL / 100n,
+        slippageBps: 100,
+        env: f.env,
+      }),
+      'PLATFORM_FEE_WALLET_MISMATCH',
+    );
   });
 });

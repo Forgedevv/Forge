@@ -118,6 +118,23 @@ export function requireAddresses<N extends ForgeAddressName>(
   return result as ForgeAddresses<N>;
 }
 
+/**
+ * One FORGE address when it is set, `null` when it is absent or empty. A value that is set but is
+ * not a valid public key is refused, exactly as `requireAddresses` does. For checks that run
+ * wherever the address is known and are skipped elsewhere (e.g. the owner of the Meteora referral
+ * account, `FORGE_MULTISIG_VAULT`, in a browser that was not given it).
+ *
+ * @throws ForgeAddressError (invalid value; names only).
+ */
+export function readOptionalAddress(
+  name: ForgeAddressName,
+  env: AddressEnv = defaultEnv(),
+): PublicKey | null {
+  const value = env[name];
+  if (value === undefined || value === '') return null;
+  return requireAddresses([name], env)[name] as PublicKey;
+}
+
 /** Squads multisig vault: receives the creator fees, the Meteora referral and the cashbox sweeps. */
 export function getMultisigVault(env?: AddressEnv): PublicKey {
   return requireAddresses(['FORGE_MULTISIG_VAULT'], env).FORGE_MULTISIG_VAULT;

@@ -27,9 +27,14 @@
  * Refusals (typed `SwapError`, never a silent fallback):
  *   - the pool is migrated or its curve is complete (`POOL_GRADUATED`): the template trades through
  *     Jupiter in that case;
+ *   - the pool's config is not in the caller's `allowedConfigs` (`POOL_NOT_ALLOWED`): a launchpad
+ *     site only trades its own coins;
  *   - the platform fee wallet does not exist or is not rent-exempt
  *     (`PLATFORM_FEE_WALLET_NOT_RENT_EXEMPT`): the whole swap would fail on-chain (devnet finding);
- *   - the referral account is not an initialized wrapped SOL token account (`REFERRAL_ACCOUNT_INVALID`);
+ *   - the platform fee wallet is not exactly `FORGE_PLATFORM_FEE_WALLET`, or not a system account
+ *     (`PLATFORM_FEE_WALLET_MISMATCH`);
+ *   - the referral account is not an initialized wrapped SOL token account, or is not held by
+ *     `FORGE_MULTISIG_VAULT` when the environment has it (`REFERRAL_ACCOUNT_INVALID`);
  *   - the pool is not a plain SOL-quoted DBC pool (`UNSUPPORTED_POOL`; transfer-hook pools excluded);
  *   - the serialized transaction exceeds 1,232 bytes (`TRANSACTION_TOO_LARGE`).
  *
@@ -89,7 +94,7 @@ import {
   type PoolConfig,
   type VirtualPool,
 } from '@meteora-ag/dynamic-bonding-curve-sdk';
-import { requireAddresses, type AddressEnv } from './addresses.js';
+import { readOptionalAddress, requireAddresses, type AddressEnv } from './addresses.js';
 import { FEES } from './constants.js';
 
 // ---------------------------------------------------------------------------------------------
@@ -99,8 +104,8 @@ import { FEES } from './constants.js';
 /** Platform fee on swaps built by @forge/core, in bps (`FEES.platformFeeBps` from @forge/shared). */
 export const PLATFORM_FEE_BPS: number = FEES.platformFeeBps;
 
-/** Highest slippage tolerance accepted by the builders (50%), whether given in bps or as a minimum. */
-export const MAX_SWAP_SLIPPAGE_BPS = 5_000;
+/** Highest slippage tolerance accepted by the builders (25%), whether given in bps or as a minimum. */
+export const MAX_SWAP_SLIPPAGE_BPS = 2_500;
 
 /**
  * Default compute unit limit. Measured on devnet: ~51,000 CU for a buy (~66,500 when it also creates
@@ -135,7 +140,11 @@ export const SWAP_ERROR_CODES = [
   'POOL_NOT_FOUND',
   'UNSUPPORTED_POOL',
   'POOL_GRADUATED',
+  /** The pool's config is not in the caller's `allowedConfigs` (e.g. another launchpad's coin). */
+  'POOL_NOT_ALLOWED',
   'PLATFORM_FEE_WALLET_NOT_RENT_EXEMPT',
+  /** The platform fee wallet is not FORGE_PLATFORM_FEE_WALLET, or not a plain system account. */
+  'PLATFORM_FEE_WALLET_MISMATCH',
   'REFERRAL_ACCOUNT_INVALID',
   'INSUFFICIENT_LIQUIDITY',
   'QUOTE_FAILED',
@@ -687,12 +696,32 @@ export interface SwapContext extends SwapPoolState {
   lastValidBlockHeight: number;
 }
 
-/** Throws unless the platform fee wallet exists and holds at least its rent-exempt minimum. */
+/**
+ * Throws unless the platform fee wallet exists and holds at least its rent-exempt minimum. With
+ * `expectedWallet` (FORGE_PLATFORM_FEE_WALLET, as `buildBuyTx` / `buildSellTx` pass it), the
+ * wallet must be exactly that key and a plain system account: lamports sent to an account owned by
+ * another program could not be spent by FORGE (`PLATFORM_FEE_WALLET_MISMATCH`).
+ */
 export function assertPlatformFeeWalletReady(
   wallet: PublicKey,
   account: SwapAccountSnapshot | null,
   rentExemptMinimum: bigint,
+  expectedWallet?: PublicKey | null,
 ): void {
+  if (expectedWallet && !wallet.equals(expectedWallet)) {
+    throw new SwapError(
+      'PLATFORM_FEE_WALLET_MISMATCH',
+      'The platform fee must go to FORGE_PLATFORM_FEE_WALLET and nowhere else',
+      { details: { platformFeeWallet: wallet.toBase58() } },
+    );
+  }
+  if (expectedWallet && account && !account.owner.equals(SystemProgram.programId)) {
+    throw new SwapError(
+      'PLATFORM_FEE_WALLET_MISMATCH',
+      'FORGE_PLATFORM_FEE_WALLET must be a system account (a wallet)',
+      { details: { platformFeeWallet: wallet.toBase58(), owner: account.owner.toBase58() } },
+    );
+  }
   const lamports = account?.lamports ?? 0n;
   if (!account || lamports < rentExemptMinimum) {
     throw new SwapError(
@@ -709,10 +738,15 @@ export function assertPlatformFeeWalletReady(
   }
 }
 
-/** Throws unless the referral account is an initialized wrapped SOL token account (SPL Token). */
+/**
+ * Throws unless the referral account is an initialized wrapped SOL token account (SPL Token).
+ * With `expectedOwner` (FORGE_MULTISIG_VAULT, when the environment has it), the token account must
+ * be held by that key: otherwise the referral share would be paid to someone else.
+ */
 export function assertReferralAccountReady(
   address: PublicKey,
   account: SwapAccountSnapshot | null,
+  expectedOwner?: PublicKey | null,
 ): void {
   const fail = (reason: string, cause?: unknown) =>
     new SwapError('REFERRAL_ACCOUNT_INVALID', `FORGE_METEORA_REFERRAL_ACCOUNT ${reason}`, {
@@ -733,6 +767,39 @@ export function assertReferralAccountReady(
   }
   if (!token.mint.equals(NATIVE_MINT)) throw fail('is not a wrapped SOL account');
   if (!token.isInitialized || token.isFrozen) throw fail('is not usable (uninitialized or frozen)');
+  if (expectedOwner && !token.owner.equals(expectedOwner)) {
+    throw fail('is not held by FORGE_MULTISIG_VAULT');
+  }
+}
+
+/** The FORGE fee accounts a swap transaction must pay, as the builders read them from the env. */
+export interface SwapFeeAccountExpectations {
+  /** The platform fee transfer must go to exactly this key (FORGE_PLATFORM_FEE_WALLET). */
+  platformFeeWallet?: PublicKey | null;
+  /** The Meteora referral token account must be held by this key (FORGE_MULTISIG_VAULT). */
+  referralOwner?: PublicKey | null;
+}
+
+function toConfigKeys(allowedConfigs: readonly (PublicKey | string)[]): PublicKey[] {
+  if (!Array.isArray(allowedConfigs)) throw invalid('allowedConfigs must be an array');
+  return allowedConfigs.map((config, i) => toPublicKey(`allowedConfigs[${i}]`, config));
+}
+
+/**
+ * Throws `POOL_NOT_ALLOWED` unless the pool's config is one of `allowedConfigs`. Without a list
+ * (`undefined`), any config is accepted; an empty list accepts none.
+ */
+export function assertPoolConfigAllowed(
+  pool: PublicKey,
+  config: PublicKey,
+  allowedConfigs: readonly (PublicKey | string)[] | undefined,
+): void {
+  if (allowedConfigs === undefined) return;
+  if (!toConfigKeys(allowedConfigs).some((allowed) => allowed.equals(config))) {
+    throw new SwapError('POOL_NOT_ALLOWED', 'This pool does not belong to this launchpad', {
+      details: { pool: pool.toBase58(), config: config.toBase58() },
+    });
+  }
 }
 
 function tokenBalance(
@@ -863,20 +930,27 @@ export function compileSwapTransaction(args: {
 }
 
 /**
- * Pure transaction builder: validates the context (pool on its curve, fee accounts ready, balances),
- * quotes, and assembles the instructions in the order documented at the top of this file.
+ * Pure transaction builder: validates the context (pool on its curve, fee accounts ready and, with
+ * `expected`, exactly FORGE's), quotes, and assembles the instructions in the order documented at
+ * the top of this file.
  */
 export function buildSwapTransaction(
   ctx: SwapContext,
   request: SwapBuildRequest,
+  expected: SwapFeeAccountExpectations = {},
 ): BuiltSwapTransaction {
   const options = readBuildOptions(request);
   assertPlatformFeeWalletReady(
     ctx.platformFeeWallet,
     ctx.platformFeeWalletAccount,
     ctx.platformFeeWalletRentExemptMinimum,
+    expected.platformFeeWallet,
   );
-  assertReferralAccountReady(ctx.referralTokenAccount, ctx.referralTokenAccountInfo);
+  assertReferralAccountReady(
+    ctx.referralTokenAccount,
+    ctx.referralTokenAccountInfo,
+    expected.referralOwner,
+  );
   const quote = computeSwapQuote(ctx, request);
   const side = request.side;
 
@@ -1125,13 +1199,19 @@ async function getCurrentPointRobust(
   return new BN(blockTime ?? Math.floor(Date.now() / 1000));
 }
 
-/** Reads and decodes a pool and its config, plus the current point. */
+/**
+ * Reads and decodes a pool and its config, plus the current point. With
+ * `options.allowedConfigs`, a pool whose config is not in the list is refused (`POOL_NOT_ALLOWED`)
+ * before its config is read.
+ */
 export async function fetchSwapPoolState(
   connection: Connection,
   poolAddress: PublicKey | string,
   commitment: Commitment = DEFAULT_COMMITMENT,
+  options: { allowedConfigs?: readonly (PublicKey | string)[] } = {},
 ): Promise<SwapPoolState & { configAddress: PublicKey }> {
   const pool = toPublicKey('pool', poolAddress);
+  if (options.allowedConfigs !== undefined) toConfigKeys(options.allowedConfigs);
   const program = dbcProgram(connection);
   const poolInfo = await rpc('getAccountInfo(pool)', () =>
     connection.getAccountInfo(pool, commitment),
@@ -1143,6 +1223,7 @@ export async function fetchSwapPoolState(
     snapshot(poolInfo),
   );
   const configAddress = virtualPool.poolState.config;
+  assertPoolConfigAllowed(pool, configAddress, options.allowedConfigs);
   const configInfo = await rpc('getAccountInfo(config)', () =>
     connection.getAccountInfo(configAddress, commitment),
   );
@@ -1163,6 +1244,8 @@ export interface FetchSwapContextParams {
   platformFeeWallet: PublicKey;
   referralTokenAccount: PublicKey;
   commitment?: Commitment;
+  /** Configs the pool may belong to; anything else is `POOL_NOT_ALLOWED` (default: any config). */
+  allowedConfigs?: readonly (PublicKey | string)[];
 }
 
 /** All network reads of a swap build: pool, config, user accounts, fee accounts, rent, blockhash. */
@@ -1171,6 +1254,7 @@ export async function fetchSwapContext(p: FetchSwapContextParams): Promise<SwapC
   const commitment = p.commitment ?? DEFAULT_COMMITMENT;
   const user = toPublicKey('user', p.user);
   const pool = toPublicKey('pool', p.pool);
+  if (p.allowedConfigs !== undefined) toConfigKeys(p.allowedConfigs);
   const program = dbcProgram(connection);
 
   const [first, latest, slot] = await Promise.all([
@@ -1186,6 +1270,7 @@ export async function fetchSwapContext(p: FetchSwapContextParams): Promise<SwapC
   const [poolInfo, platformInfo, referralInfo, userInfo] = first.map(snapshot);
   const virtualPool = decodeDbcAccount<VirtualPool>(program, 'virtualPool', pool, poolInfo ?? null);
   const configAddress = virtualPool.poolState.config;
+  assertPoolConfigAllowed(pool, configAddress, p.allowedConfigs);
   const coinProgram = coinTokenProgram(virtualPool);
   const userCoinAta = getAssociatedTokenAddressSync(
     virtualPool.poolState.baseMint,
@@ -1254,15 +1339,21 @@ export async function fetchSwapContext(p: FetchSwapContextParams): Promise<SwapC
   };
 }
 
-/** FORGE fee accounts used by the swap, resolved through addresses.ts (never hard-coded). */
+/**
+ * FORGE fee accounts used by the swap, resolved through addresses.ts (never hard-coded), and the
+ * multisig vault that must hold the referral account (`null` when the environment does not have
+ * `FORGE_MULTISIG_VAULT`: the owner check is then skipped).
+ */
 export function swapFeeAddresses(env?: AddressEnv): {
   platformFeeWallet: PublicKey;
   referralTokenAccount: PublicKey;
+  multisigVault: PublicKey | null;
 } {
   const a = requireAddresses(['FORGE_PLATFORM_FEE_WALLET', 'FORGE_METEORA_REFERRAL_ACCOUNT'], env);
   return {
     platformFeeWallet: a.FORGE_PLATFORM_FEE_WALLET,
     referralTokenAccount: a.FORGE_METEORA_REFERRAL_ACCOUNT,
+    multisigVault: readOptionalAddress('FORGE_MULTISIG_VAULT', env),
   };
 }
 
@@ -1275,9 +1366,19 @@ interface SwapCommonParams extends SwapBuildOptions {
   pool: PublicKey | string;
   /** The trader: fee payer, signer and owner of the token accounts. */
   user: PublicKey | string;
-  /** Environment to read the FORGE addresses from (defaults to `process.env`). */
+  /**
+   * Environment to read the FORGE addresses from (defaults to `process.env`):
+   * `FORGE_PLATFORM_FEE_WALLET` and `FORGE_METEORA_REFERRAL_ACCOUNT` (required), and
+   * `FORGE_MULTISIG_VAULT` (optional: when set, the referral account must be held by it).
+   */
   env?: AddressEnv;
   commitment?: Commitment;
+  /**
+   * Configs the pool must belong to (e.g. the two configs of the launchpad whose site builds the
+   * swap). The pool's config is read on-chain; any other pool is refused with `POOL_NOT_ALLOWED`.
+   * Without it, any SOL-quoted DBC pool is accepted.
+   */
+  allowedConfigs?: readonly (PublicKey | string)[];
 }
 
 export type BuildBuyTxParams = SwapCommonParams & {
@@ -1303,7 +1404,8 @@ async function buildSide(
   assertU64(side === 'buy' ? 'amountInLamports' : 'amountInTokens', amountIn, 1n);
   const slippage = readSlippage(slippageOf(p));
   const options = readBuildOptions(p);
-  const { platformFeeWallet, referralTokenAccount } = swapFeeAddresses(p.env);
+  const { platformFeeWallet, referralTokenAccount, multisigVault } = swapFeeAddresses(p.env);
+  if (p.allowedConfigs !== undefined) toConfigKeys(p.allowedConfigs);
   const ctx = await fetchSwapContext({
     connection: p.connection,
     pool: p.pool,
@@ -1311,8 +1413,13 @@ async function buildSide(
     platformFeeWallet,
     referralTokenAccount,
     ...(p.commitment ? { commitment: p.commitment } : {}),
+    ...(p.allowedConfigs !== undefined ? { allowedConfigs: p.allowedConfigs } : {}),
   });
-  return buildSwapTransaction(ctx, { side, amountIn, slippage, ...options });
+  return buildSwapTransaction(
+    ctx,
+    { side, amountIn, slippage, ...options },
+    { platformFeeWallet, referralOwner: multisigVault },
+  );
 }
 
 /** Unsigned buy transaction (SOL -> coin) with the FORGE referral and the platform fee. */
@@ -1332,6 +1439,8 @@ export type QuoteSwapParams = {
   /** Lamports on a buy, raw coin units on a sell. */
   amountIn: bigint;
   commitment?: Commitment;
+  /** Same as on `buildBuyTx`: configs the pool must belong to (`POOL_NOT_ALLOWED` otherwise). */
+  allowedConfigs?: readonly (PublicKey | string)[];
 } & (SlippageInput | { slippageBps?: undefined; minAmountOut?: undefined });
 
 /**
@@ -1344,13 +1453,19 @@ export async function quoteSwap(params: QuoteSwapParams): Promise<SwapQuote> {
     params.slippageBps === undefined && params.minAmountOut === undefined
       ? { slippageBps: 0 }
       : readSlippage(slippageOf(params));
-  const state = await fetchSwapPoolState(params.connection, params.pool, params.commitment);
+  const state = await fetchSwapPoolState(
+    params.connection,
+    params.pool,
+    params.commitment,
+    params.allowedConfigs !== undefined ? { allowedConfigs: params.allowedConfigs } : {},
+  );
   return computeSwapQuote(state, { side: params.side, amountIn: params.amountIn, slippage });
 }
 
 /**
- * Startup / pre-build check of the FORGE fee accounts: the platform fee wallet must be rent-exempt
- * and the referral account must be a wrapped SOL token account. Throws `SwapError`.
+ * Startup / pre-build check of the FORGE fee accounts: the platform fee wallet must be a
+ * rent-exempt system account and the referral account must be a wrapped SOL token account, held by
+ * `FORGE_MULTISIG_VAULT` when the environment has it. Throws `SwapError`.
  */
 export async function assertSwapFeeAccountsReady(params: {
   connection: Connection;
@@ -1358,7 +1473,7 @@ export async function assertSwapFeeAccountsReady(params: {
   commitment?: Commitment;
 }): Promise<void> {
   const commitment = params.commitment ?? DEFAULT_COMMITMENT;
-  const { platformFeeWallet, referralTokenAccount } = swapFeeAddresses(params.env);
+  const { platformFeeWallet, referralTokenAccount, multisigVault } = swapFeeAddresses(params.env);
   const [platformInfo, referralInfo] = (
     await rpc('getMultipleAccountsInfo', () =>
       params.connection.getMultipleAccountsInfo(
@@ -1375,6 +1490,11 @@ export async function assertSwapFeeAccountsReady(params: {
       ),
     ),
   );
-  assertPlatformFeeWalletReady(platformFeeWallet, platformInfo ?? null, rentMinimum);
-  assertReferralAccountReady(referralTokenAccount, referralInfo ?? null);
+  assertPlatformFeeWalletReady(
+    platformFeeWallet,
+    platformInfo ?? null,
+    rentMinimum,
+    platformFeeWallet,
+  );
+  assertReferralAccountReady(referralTokenAccount, referralInfo ?? null, multisigVault);
 }

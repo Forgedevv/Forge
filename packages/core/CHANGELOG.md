@@ -9,6 +9,48 @@ First version meant for publication on npm as `@forgedevv/core` (with `@forgedev
 `node scripts/publish-core.mjs --publish`. Not published yet.
 
 - `listCoinsOfCreator` (creator pools through SDK `getPoolsByCreator`), `DBC_POOL_CREATOR_OFFSET`, `DBC_POOL_CONFIG_OFFSET`.
+
+### Changed (security review)
+
+- **On-chain configs compared field by field.** New `onchainConfigMismatches(config, kind,
+  { spec?, owner?, poolCreationFeeLamports? })` (config.ts) compares a decoded config with the
+  parameters core builds for it: accounts, token, base fee (cliff, periods, period, reduction,
+  mode), dynamic fee, creator share, pool creation fee, first swap at the minimum fee, activation,
+  liquidity split and vesting, migration option / fee option / threshold, migration fee
+  percentages, migrated pool fee, locked vesting, token supply, start price and curve. Without a
+  spec, the spec fields are read from the config and must be values a FORGE spec can hold.
+  - `assertLaunchCoinConfig(config, owner, spec?)`: runs it (optional `spec`, recommended).
+    `BuildLaunchCoinTxParams.spec?` passes it. A coin config with a pool creation fee is now
+    `CONFIG_MISMATCH` (the current builder sets none).
+  - `assertUserCoinConfig(config, expected?)`: runs it against the launchpad config;
+    `BuildUserCoinLaunchTxParams.expectedConfig?` passes the expectation.
+- **validate.ts pins every value-moving field to FORGE's settings**: no migration fee
+  (`MIGRATION_FEE_NOT_ALLOWED`), no locked vesting (`LOCKED_VESTING_NOT_ALLOWED`), the fixed supply
+  of `FORGE_TOKEN_SETTINGS` (`TOKEN_SUPPLY_MISMATCH`), FORGE's curve and start price
+  (`CURVE_MISMATCH`, they decide the leftover), SPL token with 6 decimals, timestamp activation,
+  and the anti-sniper schedule exactly `ANTI_SNIPER_FEE_SCHEDULE` (a flat linear fee when
+  `spec.antiSniper` is off): an exponential schedule, another starting fee or one 300 s period at
+  99% are refused.
+- The fixed settings moved to `settings.ts` (re-exported by config.ts, unchanged values), with
+  `FORGE_TOKEN_SUPPLY_RAW`, `forgeFeeSchedulerParam`, `forgeBaseFee`, `forgeReferenceCurve`.
+  `curveParamsFor`, `creatorTradingFeePercentageFor` and `poolCreationFeeSolFor` accept just the
+  spec fields they read (`ConfigSpecFields`); a full `LaunchpadSpec` still fits.
+- **Platform fee on a user coin's first buy.** `buildUserCoinLaunchTx` adds ONE SystemProgram
+  transfer of `platformFeeLamports(firstBuyLamports)` (30 bps, rounded up) to
+  `FORGE_PLATFORM_FEE_WALLET` (read from `env`), as the last instruction; `chargePlatformFee:
+  false` turns it off. The wallet must be rent-exempt (`PLATFORM_FEE_WALLET_NOT_READY`). The
+  summary gains `platformFeeLamports` and `platformFeeWallet`; `LaunchCoinCosts.platformFeeLamports`
+  (optional) is set and counted in `ownerTotalLamports`.
+- **Swaps.** `MAX_SWAP_SLIPPAGE_BPS` is 2,500 (25%, was 50%). `buildBuyTx`, `buildSellTx`,
+  `quoteSwap`, `fetchSwapContext` and `fetchSwapPoolState` take an optional `allowedConfigs`: a
+  pool whose on-chain config is not listed is refused (`POOL_NOT_ALLOWED`) before its config is
+  read. The builders now require the platform fee wallet to be exactly `FORGE_PLATFORM_FEE_WALLET`
+  and a system account (`PLATFORM_FEE_WALLET_MISMATCH`), and, when the environment has
+  `FORGE_MULTISIG_VAULT`, the Meteora referral token account to be held by it
+  (`REFERRAL_ACCOUNT_INVALID`). `buildSwapTransaction(ctx, request, expected?)`,
+  `assertPlatformFeeWalletReady(..., expectedWallet?)`, `assertReferralAccountReady(...,
+  expectedOwner?)`, new `assertPoolConfigAllowed`, `readOptionalAddress` (addresses.ts);
+  `swapFeeAddresses` also returns `multisigVault`.
 - `checkPaymentTransaction` / `verifyPayment`: `transferLamports` on `amount_mismatch` when the transfer amount differs.
 
 ### Changed (wave 5 review)
