@@ -7,7 +7,7 @@ This zone contains all the logic that touches money, the network or the chain:
 
 - `config.ts`: reads and validates `forge.config.json`.
 - `security-headers.ts`: Content-Security-Policy allowlist, used by `next.config.ts`.
-- `JupiterTrade.tsx`: Jupiter Plugin (loads the external plugin script). Only rendered by `TradePanel` once a coin graduated.
+- `JupiterTrade.tsx`: Jupiter Plugin (loads the external plugin script). Only rendered by `TradePanel` once a coin graduated, with the pool handle `findLaunchpadPool` issued (it takes no mint: anything else is refused). Not part of the free-zone API: `CoinTradePanel` covers graduated coins.
 - `CoinTradePanel.tsx`: trade panel of a coin page; renders `TradePanel` for the mint (FORGE buy/sell with the 0.3% platform fee on the curve, Jupiter after graduation).
 - `TradePanel.tsx` / `BuyButton.tsx`: take a mint, never a pool. The pool is derived from the mint and this launchpad's two configs (`trade/launchpad-pool.ts`: `launchpadConfig` for its users' coins, `launchpadCoinConfig` for its own coin `launchpadCoinMint` only: anyone can create a pool for another mint on that config, and such a look-alike is never traded nor listed), looked up on-chain, and handed to the form as a handle only `findLaunchpadPool` can issue. `trade/core-adapter.ts` checks the pool's config again on-chain (`allowedConfigs` of `@forge/core`) and is the only place reading the FORGE fee accounts (build-time `NEXT_PUBLIC_*`, no override; `setSwapCore` works under tests only).
 - `CreateCoin.tsx`: coin creation: form, server preparation (`/api/upload`), full cost summary shown BEFORE signing, send through the RPC relay, confirmation by polling.

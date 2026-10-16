@@ -133,7 +133,7 @@ function LiveTradePanel(props: TradePanelProps) {
           This coin graduated. Swaps run through Jupiter and include a {formatBps(PLATFORM_FEE_BPS)}{' '}
           FORGE platform fee.
         </p>
-        <JupiterTrade mint={launchpadPool.mint} />
+        <JupiterTrade launchpadPool={launchpadPool} />
       </div>
     );
   } else {

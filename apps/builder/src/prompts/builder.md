@@ -49,8 +49,8 @@ all of your work, so follow these rules strictly:
   `getServerSideProps`, no `getInitialProps`, no `getStaticProps`, no `getStaticPaths`, and never
   a request or response object (`res`).
 - From `src/forge/`, import only its public components and helpers, by name, with `@/forge/...`:
-  `CoinTradePanel` (props `mint`, `symbol`, `displayDecimals`, `className`), `JupiterTrade`
-  (`mint`), `CreateCoin` and `ClaimCreatorFees` (no props), `siteConfig`, `cluster` and
+  `CoinTradePanel` (props `mint`, `symbol`, `displayDecimals`, `className`; it also trades
+  graduated coins through Jupiter), `CreateCoin` and `ClaimCreatorFees` (no props), `siteConfig`, `cluster` and
   `poolCreationFeeSol` from `@/forge/config`, `DataStreamProvider`, `useDataStream` and
   `useDataStreamListener`, the token icons of `@/forge/token-icon`, `TokenChart`, and the
   formatting helpers (`formatUnits`, `formatBps`, `formatSol`, `@/forge/chart/formatter`).

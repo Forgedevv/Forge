@@ -28,7 +28,6 @@ const component = (...props: string[]): ForgeExportRule => ({ kind: 'component',
 const COIN_TRADE_PANEL = component('mint', 'symbol', 'displayDecimals', 'className');
 const CREATE_COIN = component();
 const CLAIM_CREATOR_FEES = component();
-const JUPITER_TRADE = component('mint');
 
 /**
  * The public FORGE surface for free-zone code: module (repo path without extension, a folder
@@ -36,17 +35,18 @@ const JUPITER_TRADE = component('mint');
  *
  * Deliberately absent (refused): the trade internals (`trade/*`: swap core, `setSwapCore`,
  * `createCoreSwapCore`, `TradeForm`, `useTradeExecution`...), `TradePanel` and `BuyButton` (they
- * take a raw pool address), coin creation and claim internals (`create/*`, `claims/*`), the server
+ * take a raw pool address), `JupiterTrade` (it took any mint, so a page could trade another
+ * launchpad's coin; `CoinTradePanel` routes graduated coins to it), coin creation and claim
+ * internals (`create/*`, `claims/*`), the server
  * modules (`server-relay`, `relay`, `security-headers`, `mode-guard`), the data API client
  * (`data/client`), mocks and fixtures, `forgeConfig` / `onchainConfig` / `rpcRelayEndpoint`, the
  * app shell and mode pages.
  */
 export const FORGE_PUBLIC_API: Readonly<Record<string, Readonly<Record<string, ForgeExportRule>>>> =
   {
-    // Trade panel of a coin: derives the pool from this launchpad's config and the mint.
+    // Trade panel of a coin: derives the pool from this launchpad's config and the mint, and
+    // routes a graduated coin to the Jupiter plugin with the FORGE referral fee.
     'src/forge/CoinTradePanel': { CoinTradePanel: COIN_TRADE_PANEL, default: COIN_TRADE_PANEL },
-    // Graduated coins: the Jupiter plugin with the FORGE referral fee.
-    'src/forge/JupiterTrade': { JupiterTrade: JUPITER_TRADE, default: JUPITER_TRADE },
     'src/forge/CreateCoin': { CreateCoin: CREATE_COIN, default: CREATE_COIN },
     'src/forge/ClaimCreatorFees': {
       ClaimCreatorFees: CLAIM_CREATOR_FEES,

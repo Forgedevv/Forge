@@ -60,6 +60,16 @@ describe('audit probes: internal FORGE modules imported from a free zone', () =>
     expect(rules).toContain('server-response');
   });
 
+  it('refuses the Jupiter plugin with any mint (graduated coins go through CoinTradePanel)', () => {
+    for (const src of [
+      `import JupiterTrade from '@/forge/JupiterTrade'; export const P = ({ m }: { m: string }) => <JupiterTrade mint={m} />;`,
+      `import { JupiterTrade } from '@/forge/JupiterTrade'; export const P = () => <JupiterTrade mint="So11111111111111111111111111111111111111112" />;`,
+      `import dynamic from 'next/dynamic'; const J = dynamic(() => import('@/forge/JupiterTrade'), { ssr: false }); export const P = ({ m }: { m: string }) => <J mint={m} />;`,
+    ]) {
+      expect(importFindings(src).length, src).toBeGreaterThan(0);
+    }
+  });
+
   it('refuses the trade panel and the buy button with a raw pool address', () => {
     for (const [module, name] of [
       ['@/forge/TradePanel', 'TradePanel'],
@@ -211,7 +221,6 @@ describe('public FORGE surface and free-zone imports stay allowed', () => {
     'a component loaded with React lazy': `import { lazy } from 'react'; const Claims = lazy(() => import('@/forge/ClaimCreatorFees')); export const P = () => <Claims />;`,
     'the creation form (template create page)': `import CreateCoin from '@/forge/CreateCoin'; export default function Page() { return <main><CreateCoin /></main>; }`,
     'the creator fee claims': `import { ClaimCreatorFees } from '@/forge/ClaimCreatorFees'; export const P = () => <ClaimCreatorFees />;`,
-    'the graduated trade': `import JupiterTrade from '@/forge/JupiterTrade'; export const P = ({ m }: { m: string }) => <JupiterTrade mint={m} />;`,
     'the public site config': `import { siteConfig, cluster, poolCreationFeeSol } from '@/forge/config'; export const s = [siteConfig.name, cluster, poolCreationFeeSol];`,
     'the site config by a relative path': `import { siteConfig } from '../forge/config'; export const name = siteConfig.name;`,
     'a value re-export': `export { siteConfig } from '@/forge/config';`,

@@ -66,10 +66,17 @@ vi.mock('../../src/forge/trade/connection', async () => {
   return { getRelayConnection: () => h.connectionRef.current };
 });
 
-vi.mock('../../src/forge/JupiterTrade', () => ({
-  default: ({ mint }: { mint: string }) => <div data-testid="jupiter-mock" data-mint={mint} />,
-  JupiterTrade: ({ mint }: { mint: string }) => <div data-testid="jupiter-mock" data-mint={mint} />,
-}));
+vi.mock('../../src/forge/JupiterTrade', async () => {
+  const { isLaunchpadPool } = await import('../../src/forge/trade/launchpad-pool');
+  const Mock = ({ launchpadPool }: { launchpadPool: { mint: string } }) => (
+    <div
+      data-testid="jupiter-mock"
+      data-mint={launchpadPool.mint}
+      data-issued={String(isLaunchpadPool(launchpadPool))}
+    />
+  );
+  return { default: Mock, JupiterTrade: Mock };
+});
 
 const CONFIRM = { intervalMs: 1, timeoutMs: 2000 };
 
@@ -195,6 +202,8 @@ describe('routing', () => {
     renderPanel();
     const jupiter = await screen.findByTestId('jupiter-mock');
     expect(jupiter.getAttribute('data-mint')).toBe(keys.mint);
+    // Jupiter gets the pool handle found on this launchpad, never a raw mint.
+    expect(jupiter.getAttribute('data-issued')).toBe('true');
     expect(screen.queryByTestId('trade-form')).toBeNull();
     expect(core.calls.quote).toBe(0);
     expect(screen.getByTestId('trade-jupiter').textContent).toContain('0.3%');
