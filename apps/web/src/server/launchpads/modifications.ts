@@ -1,7 +1,9 @@
+import type { CoinImageRehoster } from '../coin-images';
 import { NOT_FOUND_MESSAGES, RouteError } from '../jobs/http';
 import type { RoutesLogger } from '../jobs/log';
 import { addJobEventSafe } from '../jobs/service';
 import { StoreError, type JobRecord, type LaunchpadRecord, type RoutesStore } from '../jobs/store';
+import { requestWithStoredImages, storeChangedImages } from './modification-images';
 import { LAUNCHPAD_QUOTAS, launchpadQuotas, openModificationJobs } from './quotas';
 
 /*
@@ -15,6 +17,10 @@ import { LAUNCHPAD_QUOTAS, launchpadQuotas, openModificationJobs } from './quota
  * gate passes (rechecked before each change, docs/PRODUCT.md); at most one modification in
  * progress. A modification still awaiting payment is rewritten instead of duplicated, so a retry
  * or a changed request never creates a second job.
+ *
+ * A logo (or coin image) changed in the modification chat is copied into FORGE's bucket before
+ * anything is written, and the stored request carries the bucket URL instead of the owner's
+ * (modification-images.ts); an image that cannot be copied answers 422 IMAGE_UNAVAILABLE.
  *
  * The database allows one open modification job per launchpad (partial unique index
  * `jobs_one_open_modification_idx`, migration 0007): a concurrent insert fails with a unique
@@ -33,6 +39,8 @@ export interface ModificationsServiceDeps {
   store: RoutesStore;
   logger: RoutesLogger;
   gating: (wallet: string) => Promise<GatingResult>;
+  /** Image copy into the bucket (coin-images/), created only when an image changed. */
+  images: () => CoinImageRehoster;
 }
 
 export interface ModificationResult {
@@ -87,8 +95,8 @@ export function createModificationsService(deps: ModificationsServiceDeps): Modi
     conversationId: string;
     request: string;
   }): Promise<ModificationResult> {
-    const text = input.request.trim();
-    if (text.length === 0 || text.length > LAUNCHPAD_QUOTAS.maxRequestLength) {
+    const typed = input.request.trim();
+    if (typed.length === 0 || typed.length > LAUNCHPAD_QUOTAS.maxRequestLength) {
       throw new RouteError(
         400,
         'BAD_REQUEST',
@@ -137,6 +145,20 @@ export function createModificationsService(deps: ModificationsServiceDeps): Modi
         'GATING_REQUIRED',
         'You need to hold more $FORGE to request a change.',
       );
+    }
+
+    // The request as the builder will read it: a changed image points at the bucket copy.
+    const images = await storeChangedImages(
+      { images: deps.images, logger },
+      launchpad.spec,
+      conversation.draft,
+    );
+    const text = requestWithStoredImages(typed, images);
+    if (images.length > 0) {
+      logger.log('info', 'modification.images_copied', {
+        launchpadId: launchpad.id,
+        fields: images.map((image) => image.field).join(','),
+      });
     }
 
     // A modification awaiting payment: rewrite its request (idempotent retry or a new wording).

@@ -106,6 +106,22 @@ describe('SupabaseRoutesStore owner filters', () => {
     expect(select.split(/,\s*|\(/)).toContain('owner_tx_details');
   });
 
+  it("reads a conversation's draft (conversations.spec), raw, with the owner filter", async () => {
+    const draft = { theme: { logoUrl: 'https://cdn.example.com/logo.png' } };
+    const { store, calls } = fakeDb([
+      { data: { id: 'c1', owner_wallet: W, launchpad_id: 'lp1', spec: draft } },
+    ]);
+    expect(await store.getOwnedConversation('c1', W)).toEqual({
+      id: 'c1',
+      ownerWallet: W,
+      launchpadId: 'lp1',
+      draft,
+    });
+    const select = calls[0]!.ops.find(([op]) => op === 'select')![1][0] as string;
+    expect(select.split(/,\s*/)).toContain('spec');
+    expect(ownerFilters(calls[0]!.ops)).toContainEqual(['owner_wallet', W]);
+  });
+
   it('drops a row whose launchpad belongs to someone else (defense in depth)', async () => {
     const { store } = fakeDb([{ data: { ...JOB, launchpads: { ...LP, owner_wallet: 'other' } } }]);
     expect(await store.getOwnedJob('j1', W)).toBeNull();
@@ -135,6 +151,7 @@ describe('SupabaseRoutesStore owner filters', () => {
       id: 'c1',
       ownerWallet: W,
       launchpadId: 'lp1',
+      draft: null,
     });
     expect(await store.listRefunds(W, ['j1', 'j2'])).toEqual([
       { jobId: 'j1', lamports: 5n, signature: 'rs' },

@@ -25,7 +25,10 @@ const body = (spec: unknown = validSpec(), conversationId = CONVERSATION) => ({
   spec,
 });
 // Image copies are covered by spec-confirm-images.test.ts; here the spec passes through.
-const keepImages = { rehost: (spec: LaunchpadSpec) => Promise.resolve(spec) };
+const keepImages = {
+  rehost: (spec: LaunchpadSpec) => Promise.resolve(spec),
+  rehostImage: (url: string) => Promise.resolve(url),
+};
 const call = (b: unknown, deps = makeDeps(), cookie?: string | null) =>
   handleSpecConfirm(postJson('/api/spec/confirm', b, cookie === undefined ? {} : { cookie }), {
     ...deps,

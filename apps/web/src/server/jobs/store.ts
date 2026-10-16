@@ -67,6 +67,11 @@ export interface ConversationRecord {
   id: string;
   ownerWallet: string;
   launchpadId: string | null;
+  /**
+   * `conversations.spec`: the design chat's current draft (jsonb, null when none), unparsed. A
+   * modification reads its image URLs (launchpads/modification-images.ts).
+   */
+  draft: unknown;
 }
 
 export interface RefundRecord {
@@ -215,6 +220,7 @@ const ConversationRowSchema = z.object({
   id: z.string(),
   owner_wallet: z.string(),
   launchpad_id: z.string().nullable().optional(),
+  spec: z.unknown().optional(),
 });
 
 const RefundRowSchema = z.object({
@@ -281,7 +287,12 @@ export function parseJobEventRow(row: unknown): JobEventRecord {
 
 export function parseConversationRow(row: unknown): ConversationRecord {
   const r = parse(ConversationRowSchema, row, 'conversation');
-  return { id: r.id, ownerWallet: r.owner_wallet, launchpadId: r.launchpad_id ?? null };
+  return {
+    id: r.id,
+    ownerWallet: r.owner_wallet,
+    launchpadId: r.launchpad_id ?? null,
+    draft: r.spec ?? null,
+  };
 }
 
 export function parseJobPaymentRow(row: unknown): JobPaymentRecord {

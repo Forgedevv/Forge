@@ -12,7 +12,9 @@ import {
 } from './fetch-image';
 
 /*
- * Copy of a confirmed spec's images into FORGE's R2 bucket (POST /api/spec/confirm).
+ * Copy of a confirmed spec's images into FORGE's R2 bucket (POST /api/spec/confirm), and of an
+ * image changed by a modification (POST /api/launchpads/:id/modifications,
+ * launchpads/modification-images.ts).
  *
  * The owner gives the coin image (and optionally the logo) as a public URL in the chat. Coin
  * metadata (GET /api/coin-meta/:slug) and the client site would otherwise hotlink it: the third
@@ -47,6 +49,11 @@ export class CoinImageUnavailableError extends Error {
 export interface CoinImageRehoster {
   /** `spec` with its image URLs pointing at the bucket. Throws CoinImageUnavailableError. */
   rehost(spec: LaunchpadSpec): Promise<LaunchpadSpec>;
+  /**
+   * Bucket URL of one image: `url` itself when it already is a `coin-images/` object of the
+   * bucket, else the URL of its stored copy. Throws CoinImageUnavailableError.
+   */
+  rehostImage(url: string, field: ImageField): Promise<string>;
 }
 
 export interface CoinImageRehosterDeps {
@@ -119,6 +126,11 @@ export function createCoinImageRehoster(deps: CoinImageRehosterDeps): CoinImageR
   }
 
   return {
+    async rehostImage(url, field) {
+      const value = await download(url, field);
+      return typeof value === 'string' ? value : store(value, field);
+    },
+
     async rehost(spec) {
       const imageSource = spec.launchpadCoin.imageUrl;
       const logoSource = spec.theme.logoUrl;

@@ -1,4 +1,5 @@
 import { getDefaultGatingCheck } from '../chat/gating';
+import { getDefaultCoinImageRehoster } from '../coin-images';
 import { errorToResponse, type IdRouteContext } from '../jobs/handlers';
 import { getRoutesRuntime, launchpadsLogger } from '../jobs/runtime';
 import { createCoreClaimsChain } from './chain';
@@ -34,6 +35,7 @@ function getLaunchpadsHandlers(): LaunchpadsHandlers {
       store,
       logger,
       gating: (wallet) => getDefaultGatingCheck()(wallet),
+      images: getDefaultCoinImageRehoster,
     }),
     reactivation: createReactivateService({ store, logger }),
     retries: createRetryService({

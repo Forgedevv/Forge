@@ -170,8 +170,12 @@ export class MemoryRoutesStore implements RoutesStore {
     return record;
   }
 
-  addConversation(owner: string, launchpadId: string | null): ConversationRecord {
-    const record = { id: uuid(), ownerWallet: owner, launchpadId };
+  addConversation(
+    owner: string,
+    launchpadId: string | null,
+    draft: unknown = null,
+  ): ConversationRecord {
+    const record = { id: uuid(), ownerWallet: owner, launchpadId, draft };
     this.conversations.set(record.id, record);
     return record;
   }

@@ -1,3 +1,4 @@
+import type { CoinImageRehoster } from '../../coin-images';
 import { harness as jobsHarness } from '../../jobs/__tests__/fakes';
 import { createClaimsService } from '../claims';
 import { createLaunchpadsHandlers } from '../handlers';
@@ -9,7 +10,14 @@ import { FakeClaimsChain } from './fake-chain';
 
 export const NOW = Date.UTC(2026, 9, 11, 9, 0, 0);
 
-export function launchpadsHarness(opts: { clientsDomain?: string | null } = {}) {
+/** Default image copy of the harness: any call fails the test (no image changed). */
+const noImages = (): CoinImageRehoster => {
+  throw new Error('unexpected coin image copy');
+};
+
+export function launchpadsHarness(
+  opts: { clientsDomain?: string | null; images?: () => CoinImageRehoster } = {},
+) {
   const base = jobsHarness();
   const chain = new FakeClaimsChain();
   const gate: { result: GatingResult | Error } = { result: { enabled: false, ok: true } };
@@ -26,7 +34,12 @@ export function launchpadsHarness(opts: { clientsDomain?: string | null } = {}) 
       now: () => NOW,
     }),
     claims: createClaimsService({ store: base.store, chain, logger: base.logger }),
-    modifications: createModificationsService({ store: base.store, logger: base.logger, gating }),
+    modifications: createModificationsService({
+      store: base.store,
+      logger: base.logger,
+      gating,
+      images: opts.images ?? noImages,
+    }),
     reactivation: createReactivateService({
       store: base.store,
       logger: base.logger,

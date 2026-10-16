@@ -200,7 +200,7 @@ export class SupabaseRoutesStore implements RoutesStore {
   ): Promise<ConversationRecord | null> {
     const res = await this.db
       .from('conversations')
-      .select('id, owner_wallet, launchpad_id')
+      .select('id, owner_wallet, launchpad_id, spec')
       .eq('id', conversationId)
       .eq('owner_wallet', wallet)
       .maybeSingle();

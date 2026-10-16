@@ -15,6 +15,7 @@ export {
   createCoinImageRehoster,
   imageUnavailableMessage,
   type CoinImageRehoster,
+  type ImageField,
 } from './rehost';
 
 let cached: CoinImageRehoster | null = null;
