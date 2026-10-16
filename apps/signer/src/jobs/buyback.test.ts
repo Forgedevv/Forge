@@ -340,6 +340,16 @@ describe('validateBuyQuote', () => {
   ])('rejects: %s', (reason, over) => {
     expect(validateBuyQuote(buyQuote(100n, over), req, limits)).toBe(reason);
   });
+  it('accepts a minimum rounded down to the unit and refuses one unit less', () => {
+    const limits = { maxSlippageBps: 50, maxPriceImpactBps: 100 };
+    // floor(1 000 001 * 0.995) = 995 000: the rounding must not count as extra slippage.
+    const rounded = buyQuote(100n, { outAmount: '1000001', otherAmountThreshold: '995000' });
+    expect(validateBuyQuote(rounded, { forgeMint: FORGE.toBase58(), lamports: 100n }, limits)).toBeNull();
+    const short = buyQuote(100n, { outAmount: '1000001', otherAmountThreshold: '994999' });
+    expect(validateBuyQuote(short, { forgeMint: FORGE.toBase58(), lamports: 100n }, limits)).toBe(
+      'slippage_too_high',
+    );
+  });
   it('never accepts more than 1% slippage whatever the configuration says', () => {
     const q = buyQuote(100n, { slippageBps: 150, otherAmountThreshold: '985000' });
     expect(validateBuyQuote(q, req, { maxSlippageBps: 500, maxPriceImpactBps: 100 })).toBe(

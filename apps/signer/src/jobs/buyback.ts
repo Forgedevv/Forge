@@ -871,8 +871,9 @@ export function validateBuyQuote(
   const threshold = BigInt(quote.otherAmountThreshold);
   if (out <= 0n || threshold <= 0n) return 'zero_output';
   if (threshold > out) return 'threshold_inconsistent';
-  // The guaranteed minimum must match the cap, whatever `slippageBps` claims.
-  if (threshold * 10_000n < out * BigInt(10_000 - maxSlippage)) return 'slippage_too_high';
+  // The guaranteed minimum must match the cap, whatever `slippageBps` claims: at least the
+  // floor-rounded `out * (1 - cap)` (every quote source rounds its minimum down to the unit).
+  if (threshold < (out * BigInt(10_000 - maxSlippage)) / 10_000n) return 'slippage_too_high';
   return null;
 }
 
