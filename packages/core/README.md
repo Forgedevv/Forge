@@ -1,9 +1,10 @@
 # @forgedevv/core
 
 The FORGE transaction core: it builds the Meteora Dynamic Bonding Curve configs, the launchpad coin
-launch, buys and sells with the FORGE platform fee and referral, creator fee claims, payment checks
-and the read helpers used by FORGE launchpad sites. Every function that builds a transaction
-returns it **unsigned**: the user signs in their wallet.
+launch, buys and sells with the FORGE platform fee and referral, creator fee claims (bonding curve
+share, and the DAMM v2 position fees of a migrated pool), payment checks and the read helpers used
+by FORGE launchpad sites. Every function that builds a transaction returns it **unsigned**: the
+user signs in their wallet.
 
 Inside the FORGE monorepo this package is `@forge/core`. It is published on the public npm registry
 as `@forgedevv/core` (with its contracts package `@forgedevv/shared`), and client projects install

@@ -87,7 +87,14 @@ export type ClaimErrorCode =
   | 'receiver_mismatch'
   | 'receiver_not_rent_exempt'
   | 'claimer_wsol_not_empty'
-  | 'unexpected_sdk_instructions';
+  | 'unexpected_sdk_instructions'
+  // DAMM v2 position fee claims (position-claims.ts).
+  | 'not_migrated'
+  | 'damm_pool_not_found'
+  | 'damm_pool_mismatch'
+  | 'position_not_found'
+  | 'position_mismatch'
+  | 'position_not_owned';
 
 export class ClaimError extends Error {
   readonly code: ClaimErrorCode;
@@ -208,7 +215,8 @@ export function isClaimWorthwhile(summary: ClaimSummary, minNetLamports = 0n): b
   return summary.receiverQuoteLamports > 0n && summary.netLamports > minNetLamports;
 }
 
-function assertSolQuote(state: DbcPoolState): void {
+/** @throws ClaimError `unsupported_quote_mint` unless the pool is quoted in SOL. */
+export function assertSolQuotedPool(state: DbcPoolState): void {
   if (!state.config.quoteMint.equals(SOL_QUOTE_MINT)) {
     throw new ClaimError(
       'unsupported_quote_mint',
@@ -217,7 +225,10 @@ function assertSolQuote(state: DbcPoolState): void {
   }
 }
 
-function assertReceiver(receiver: PublicKey): void {
+const assertSolQuote = assertSolQuotedPool;
+
+/** @throws ClaimError `invalid_receiver` for anything but a usable wallet address. */
+export function assertClaimReceiver(receiver: PublicKey): void {
   if (!(receiver instanceof PublicKey)) {
     throw new ClaimError('invalid_receiver', 'Claim receiver must be a PublicKey');
   }
@@ -225,6 +236,8 @@ function assertReceiver(receiver: PublicKey): void {
     throw new ClaimError('invalid_receiver', 'Claim receiver is not a valid wallet');
   }
 }
+
+const assertReceiver = assertClaimReceiver;
 
 function isEmpty(amounts: TokenAmounts): boolean {
   return amounts.base === 0n && amounts.quote === 0n;

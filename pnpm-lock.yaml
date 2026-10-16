@@ -408,6 +408,9 @@ importers:
       '@forge/shared':
         specifier: workspace:*
         version: link:../shared
+      '@meteora-ag/cp-amm-sdk':
+        specifier: 1.5.1
+        version: 1.5.1(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@6.0.3)
       '@meteora-ag/dynamic-bonding-curve-sdk':
         specifier: 1.5.13
         version: 1.5.13(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@6.0.3)(utf-8-validate@6.0.6)

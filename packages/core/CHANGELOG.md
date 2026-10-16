@@ -53,6 +53,27 @@ First version meant for publication on npm as `@forgedevv/core` (with `@forgedev
   `swapFeeAddresses` also returns `multisigVault`.
 - `checkPaymentTransaction` / `verifyPayment`: `transferLamports` on `amount_mismatch` when the transfer amount differs.
 
+### Added (DAMM v2 position fee claims)
+
+- `position-claims.ts`: after a launchpad coin migrates, the FORGE creator wallet keeps a
+  permanently locked DAMM v2 position that earns the migrated pool's trading fees.
+  `buildCreatorPositionFeeClaimTx` builds the unsigned `claim_position_fee` of the creator's
+  position(s) to a receiver (`buildForgeCreatorPositionFeeClaimTx`: the multisig vault), creator
+  signing, optional fee payer: coin fees to the receiver's associated account, SOL fees to the
+  creator's temporary WSOL account closed to the receiver (fees plus rent as lamports). The
+  transaction never removes liquidity nor closes, locks or transfers the position or its NFT.
+  Summary, costs (`PositionClaimCosts`), skip reasons (`no_position`, `nothing_to_claim`,
+  `not_worthwhile`), `isPositionClaimWorthwhile`. Pure helpers: `migratedDammV2Pool` (the DAMM v2
+  pool of a migrated DBC pool, derived like the SDK migration), `positionPendingFees`,
+  `summarizePosition`, `sumPendingFees`; reads: `findCreatorDammV2Positions` (the creator's
+  positions, NFT ownership re-checked), `getDammV2PoolState`. Constants for policies:
+  `DAMM_V2_PROGRAM_ID`, `CLAIM_POSITION_FEE_DISCRIMINATOR`, `CLAIM_POSITION_FEE_ACCOUNTS`.
+  New `ClaimError` codes: `not_migrated`, `damm_pool_not_found`, `damm_pool_mismatch`,
+  `position_not_found`, `position_mismatch`, `position_not_owned`.
+- Dependency: `@meteora-ag/cp-amm-sdk` 1.5.1 (exact pin, like the DBC SDK).
+- Fixtures: `__fixtures__/cp-amm-devnet-accounts.json`, the devnet test 2 migration captured
+  read-only (`scripts/devnet-tests` `fixtures:cp-amm`).
+
 ### Changed (wave 5 review)
 
 - **Launch metadata budget.** `LAUNCH_METADATA_BUDGET_BYTES` (148): name + symbol + metadata URI

@@ -27,6 +27,7 @@ describe('@forge/core has no import side effects', () => {
     await import('@solana/web3.js');
     await import('@solana/spl-token');
     await import('@meteora-ag/dynamic-bonding-curve-sdk');
+    await import('@meteora-ag/cp-amm-sdk');
     await import('bn.js');
     await import('@forge/shared');
 
