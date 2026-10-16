@@ -7,10 +7,31 @@ import { PriceUnavailableError } from './errors';
  */
 
 /**
- * Sanity bounds on the SOL/USD rate. A rate outside them is treated as a broken oracle and the
- * quote is refused (fail closed), so that a bad price can never make a launchpad (almost) free.
+ * Absolute limits on the SOL/USD rate, checked on every conversion: no configuration can accept a
+ * rate outside them. The narrower, configurable guard below is what quotes actually go through.
  */
-export const SOL_USD_PRICE_BOUNDS = { min: 1, max: 100_000 } as const;
+export const SOL_USD_PRICE_HARD_LIMITS = { min: 1, max: 100_000 } as const;
+
+/**
+ * The guard of the quote price (GuardedPriceSource, price-source.ts). A rate outside [min, max],
+ * or more than `maxDeviationPct` percent away from the last accepted rate, is treated as a broken
+ * or manipulated oracle and the quote is refused (fail closed, retryable), so that a bad price can
+ * never make a launchpad (almost) free.
+ */
+export interface SolUsdPriceGuard {
+  /** Dollars per SOL. */
+  min: number;
+  max: number;
+  /** Largest move from the last accepted price, in percent. */
+  maxDeviationPct: number;
+}
+
+/** Defaults of SOL_USD_PRICE_MIN, SOL_USD_PRICE_MAX and SOL_USD_PRICE_MAX_DEVIATION_PCT. */
+export const DEFAULT_SOL_USD_PRICE_GUARD: Readonly<SolUsdPriceGuard> = {
+  min: 10,
+  max: 2_000,
+  maxDeviationPct: 25,
+};
 
 /** The payment kind each job type is paid with. */
 export function kindForJobType(type: JobType): PaymentKind {
@@ -22,12 +43,12 @@ export function usdPriceForKind(kind: PaymentKind): number {
   return kind === 'creation' ? PRICING.creationUsd : PRICING.modificationUsd;
 }
 
-export function assertSaneSolUsdPrice(price: number): void {
-  if (
-    !Number.isFinite(price) ||
-    price < SOL_USD_PRICE_BOUNDS.min ||
-    price > SOL_USD_PRICE_BOUNDS.max
-  ) {
+/** Throws PriceUnavailableError unless `price` is a finite rate within `bounds` (inclusive). */
+export function assertSaneSolUsdPrice(
+  price: number,
+  bounds: { min: number; max: number } = SOL_USD_PRICE_HARD_LIMITS,
+): void {
+  if (!Number.isFinite(price) || price < bounds.min || price > bounds.max) {
     throw new PriceUnavailableError('SOL/USD price outside the sanity bounds');
   }
 }

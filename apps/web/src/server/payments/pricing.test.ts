@@ -2,7 +2,14 @@
 import { PRICING } from '@forge/shared';
 import { describe, expect, it } from 'vitest';
 import { PriceUnavailableError } from './errors';
-import { kindForJobType, usdPriceForKind, usdToLamports } from './pricing';
+import {
+  assertSaneSolUsdPrice,
+  DEFAULT_SOL_USD_PRICE_GUARD,
+  kindForJobType,
+  SOL_USD_PRICE_HARD_LIMITS,
+  usdPriceForKind,
+  usdToLamports,
+} from './pricing';
 
 describe('pricing', () => {
   it('takes prices from the shared constants', () => {
@@ -34,6 +41,19 @@ describe('pricing', () => {
       expect(() => usdToLamports(33, price)).toThrow(PriceUnavailableError);
     },
   );
+
+  it('checks a rate against the given bounds, the hard limits by default', () => {
+    expect(SOL_USD_PRICE_HARD_LIMITS).toEqual({ min: 1, max: 100_000 });
+    expect(() => assertSaneSolUsdPrice(5_000)).not.toThrow();
+    expect(() => assertSaneSolUsdPrice(5_000, DEFAULT_SOL_USD_PRICE_GUARD)).toThrow(
+      PriceUnavailableError,
+    );
+    expect(() => assertSaneSolUsdPrice(9, DEFAULT_SOL_USD_PRICE_GUARD)).toThrow(
+      PriceUnavailableError,
+    );
+    expect(() => assertSaneSolUsdPrice(10, DEFAULT_SOL_USD_PRICE_GUARD)).not.toThrow();
+    expect(() => assertSaneSolUsdPrice(2_000, DEFAULT_SOL_USD_PRICE_GUARD)).not.toThrow();
+  });
 
   it('refuses a non-positive dollar amount', () => {
     expect(() => usdToLamports(0, 150)).toThrow(RangeError);

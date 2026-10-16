@@ -3,7 +3,7 @@ import { readPaymentsConfig } from './config';
 import { createCorePaymentGateway } from './gateway';
 import { createPaymentsHandlers, errorToResponse, type PaymentsHandlers } from './handlers';
 import { consoleLogger } from './log';
-import { JupiterPriceSource } from './price-source';
+import { GuardedPriceSource, JupiterPriceSource } from './price-source';
 import { MemoryRateLimiter } from './rate-limit';
 import { createPaymentsService } from './service';
 import { createServiceSupabaseClient, SupabasePaymentsStore } from './supabase-store';
@@ -31,7 +31,15 @@ export function getPaymentsHandlers(): PaymentsHandlers {
     cluster: config.cluster,
     cashbox: config.cashbox,
   });
-  const prices = new JupiterPriceSource({ apiKey: config.jupiterApiKey });
+  // Every quote's rate within the configured bounds and close to the last accepted one.
+  const prices = new GuardedPriceSource(
+    new JupiterPriceSource({ apiKey: config.jupiterApiKey }),
+    config.priceGuard,
+    {
+      onRefused: ({ reason, price, reference }) =>
+        consoleLogger.log('warn', 'price.refused', { reason, price, reference }),
+    },
+  );
   const service = createPaymentsService({ store, gateway, prices, logger: consoleLogger });
   handlers = createPaymentsHandlers({
     service,

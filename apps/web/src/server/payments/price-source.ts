@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { PriceUnavailableError } from './errors';
-import { assertSaneSolUsdPrice } from './pricing';
+import { assertSaneSolUsdPrice, type SolUsdPriceGuard } from './pricing';
 import { withRetry } from './retry';
 
 /*
@@ -88,5 +88,70 @@ export class FixedPriceSource implements SolUsdPriceSource {
   async getSolUsdPrice(): Promise<number> {
     assertSaneSolUsdPrice(this.price);
     return this.price;
+  }
+}
+
+/**
+ * The last accepted price stops being a reference after this long without a quote: a real move of
+ * more than the allowed deviation then locks quotes out for at most this long (the configured
+ * bounds still apply), never for good.
+ */
+export const PRICE_REFERENCE_MAX_AGE_MS = 60 * 60_000;
+
+export interface GuardedPriceSourceOptions {
+  now?: () => number;
+  referenceMaxAgeMs?: number;
+  /** Called when a price is refused (prices are public numbers, safe to log). */
+  onRefused?: (event: {
+    reason: 'out_of_bounds' | 'deviation';
+    price: number;
+    reference: number | null;
+  }) => void;
+}
+
+/**
+ * The price every quote goes through (default-handlers.ts): the inner source's rate must be within
+ * the configured bounds and within `maxDeviationPct` of the last accepted rate (kept in memory,
+ * per server instance). Otherwise PriceUnavailableError: the route answers a retryable 503 and no
+ * quote is handed out (fail closed). A refused rate never becomes the reference.
+ */
+export class GuardedPriceSource implements SolUsdPriceSource {
+  private reference: { price: number; at: number } | null = null;
+  private readonly now: () => number;
+  private readonly referenceMaxAgeMs: number;
+
+  constructor(
+    private readonly inner: SolUsdPriceSource,
+    private readonly guard: SolUsdPriceGuard,
+    private readonly options: GuardedPriceSourceOptions = {},
+  ) {
+    this.now = options.now ?? Date.now;
+    this.referenceMaxAgeMs = options.referenceMaxAgeMs ?? PRICE_REFERENCE_MAX_AGE_MS;
+  }
+
+  async getSolUsdPrice(): Promise<number> {
+    const price = await this.inner.getSolUsdPrice();
+    const now = this.now();
+    const reference =
+      this.reference && now - this.reference.at <= this.referenceMaxAgeMs
+        ? this.reference.price
+        : null;
+    try {
+      assertSaneSolUsdPrice(price, this.guard);
+    } catch (error) {
+      this.options.onRefused?.({ reason: 'out_of_bounds', price, reference });
+      throw error;
+    }
+    if (reference !== null) {
+      const deviationPct = (Math.abs(price - reference) / reference) * 100;
+      if (deviationPct > this.guard.maxDeviationPct) {
+        this.options.onRefused?.({ reason: 'deviation', price, reference });
+        throw new PriceUnavailableError(
+          'SOL/USD price moved more than the allowed deviation from the last accepted price',
+        );
+      }
+    }
+    this.reference = { price, at: now };
+    return price;
   }
 }

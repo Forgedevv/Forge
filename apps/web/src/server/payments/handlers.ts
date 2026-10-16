@@ -41,6 +41,9 @@ export interface PaymentsHandlerDeps {
 
 const NO_STORE = { 'Cache-Control': 'no-store' } as const;
 
+/** Retry-After of a PRICE_UNAVAILABLE answer (the price cache lives 15 s). */
+export const PRICE_RETRY_AFTER_SECONDS = 30;
+
 export function json(body: unknown, status = 200, headers: Record<string, string> = {}): Response {
   return Response.json(body, { status, headers: { ...NO_STORE, ...headers } });
 }
@@ -63,10 +66,13 @@ export function errorToResponse(error: unknown, logger: PaymentsLogger, route: s
   }
   if (error instanceof PriceUnavailableError) {
     logger.log('warn', 'price.unavailable', { route });
+    // Retryable: the price source failed, or its rate was refused by the price guard.
     return errorJson(
       503,
       'PRICE_UNAVAILABLE',
       'Pricing is temporarily unavailable. Please try again in a moment.',
+      {},
+      { 'Retry-After': String(PRICE_RETRY_AFTER_SECONDS) },
     );
   }
   if (error instanceof RpcUnavailableError) {

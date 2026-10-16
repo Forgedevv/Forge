@@ -21,7 +21,7 @@ export type { PaymentGateway } from './gateway';
 export { createPaymentsHandlers } from './handlers';
 export type { PaymentsHandlers } from './handlers';
 export { kindForJobType, usdPriceForKind, usdToLamports } from './pricing';
-export { FixedPriceSource, JupiterPriceSource } from './price-source';
+export { FixedPriceSource, GuardedPriceSource, JupiterPriceSource } from './price-source';
 export type { SolUsdPriceSource } from './price-source';
 export { CONFIRM_WAIT, createPaymentsService, QUOTE_TIMING } from './service';
 export type { ConfirmResult, PaymentsService, QuoteResult } from './service';

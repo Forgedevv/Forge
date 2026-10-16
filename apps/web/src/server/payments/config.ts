@@ -1,6 +1,11 @@
 import type { PublicKey } from '@solana/web3.js';
 import { ForgeAddressError, requireAddresses, type PaymentCluster } from './core-adapter';
 import { PaymentConfigError } from './errors';
+import {
+  DEFAULT_SOL_USD_PRICE_GUARD,
+  SOL_USD_PRICE_HARD_LIMITS,
+  type SolUsdPriceGuard,
+} from './pricing';
 
 /*
  * Environment of the payment routes (docs/INTERFACES.md §8). Read lazily, at the first request,
@@ -20,6 +25,8 @@ export interface PaymentsConfig {
   supabaseUrl: string;
   supabaseServiceRoleKey: string;
   jupiterApiKey: string | undefined;
+  /** Bounds and largest move of the SOL/USD rate of the quotes (GuardedPriceSource). */
+  priceGuard: SolUsdPriceGuard;
 }
 
 function required(env: Env, name: string): string {
@@ -82,6 +89,41 @@ export function readCashbox(env: Env): PublicKey {
   }
 }
 
+function readNumber(env: Env, name: string, fallback: number): number {
+  const raw = env[name]?.trim();
+  if (!raw) return fallback;
+  const value = Number(raw);
+  if (!Number.isFinite(value)) throw new PaymentConfigError(`${name} must be a number`);
+  return value;
+}
+
+/**
+ * SOL_USD_PRICE_MIN / SOL_USD_PRICE_MAX (dollars per SOL, defaults 10 and 2000) and
+ * SOL_USD_PRICE_MAX_DEVIATION_PCT (largest move from the last accepted price, default 25). The
+ * bounds must lie within the hard limits (1 to 100000) with min below max, the deviation in
+ * (0, 100].
+ */
+export function readPriceGuard(env: Env): SolUsdPriceGuard {
+  const d = DEFAULT_SOL_USD_PRICE_GUARD;
+  const min = readNumber(env, 'SOL_USD_PRICE_MIN', d.min);
+  const max = readNumber(env, 'SOL_USD_PRICE_MAX', d.max);
+  const maxDeviationPct = readNumber(env, 'SOL_USD_PRICE_MAX_DEVIATION_PCT', d.maxDeviationPct);
+  const hard = SOL_USD_PRICE_HARD_LIMITS;
+  if (min < hard.min || min > hard.max) {
+    throw new PaymentConfigError(`SOL_USD_PRICE_MIN must be between ${hard.min} and ${hard.max}`);
+  }
+  if (max < hard.min || max > hard.max) {
+    throw new PaymentConfigError(`SOL_USD_PRICE_MAX must be between ${hard.min} and ${hard.max}`);
+  }
+  if (min >= max) {
+    throw new PaymentConfigError('SOL_USD_PRICE_MIN must be below SOL_USD_PRICE_MAX');
+  }
+  if (!(maxDeviationPct > 0 && maxDeviationPct <= 100)) {
+    throw new PaymentConfigError('SOL_USD_PRICE_MAX_DEVIATION_PCT must be above 0 and at most 100');
+  }
+  return { min, max, maxDeviationPct };
+}
+
 export function readPaymentsConfig(env: Env = process.env): PaymentsConfig {
   const cluster = readCluster(env);
   const jupiterApiKey = env.JUPITER_API_KEY?.trim();
@@ -92,5 +134,6 @@ export function readPaymentsConfig(env: Env = process.env): PaymentsConfig {
     supabaseUrl: required(env, 'SUPABASE_URL'),
     supabaseServiceRoleKey: required(env, 'SUPABASE_SERVICE_ROLE_KEY'),
     jupiterApiKey: jupiterApiKey ? jupiterApiKey : undefined,
+    priceGuard: readPriceGuard(env),
   };
 }

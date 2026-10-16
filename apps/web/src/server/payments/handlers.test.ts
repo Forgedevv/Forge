@@ -269,7 +269,11 @@ describe('errorToResponse', () => {
 
   it('maps price and configuration failures', async () => {
     const logger = new MemoryLogger();
-    expect(errorToResponse(new PriceUnavailableError(), logger, 'quote').status).toBe(503);
+    const price = errorToResponse(new PriceUnavailableError(), logger, 'quote');
+    expect(price.status).toBe(503);
+    // Retryable: the price guard or the price source refused, nothing was quoted.
+    expect(price.headers.get('retry-after')).toBe('30');
+    expect(await price.json()).toMatchObject({ code: 'PRICE_UNAVAILABLE' });
     const config = errorToResponse(new PaymentConfigError('RPC_URL is not set'), logger, 'quote');
     expect(config.status).toBe(500);
     expect(logger.entries.at(-1)).toMatchObject({
