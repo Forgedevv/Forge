@@ -24,7 +24,12 @@ import {
   type PaymentCheck,
 } from './core-adapter';
 import { ClusterMismatchError, PaymentConfigError, RpcUnavailableError } from './errors';
-import { createCorePaymentGateway, PAYMENT_COMMITMENT, translateCoreError } from './gateway';
+import {
+  cashboxBalanceGrowth,
+  createCorePaymentGateway,
+  PAYMENT_COMMITMENT,
+  translateCoreError,
+} from './gateway';
 import { landedPayment, landedTx, randomSignature, TEST_BLOCKHASH } from './test-helpers';
 
 const PAYER = PublicKey.unique();
@@ -424,6 +429,84 @@ describe('gateway', () => {
       expect.any(String),
       expect.objectContaining({ commitment: 'finalized' }),
     );
+  });
+
+  it('reads what the cashbox balance grew by in a finalized transaction', async () => {
+    const { connection, rpc } = fakeConnection();
+    const gateway = createCorePaymentGateway({
+      connection,
+      cluster: 'devnet',
+      cashbox: CASHBOX,
+      retry: NO_RETRY,
+    });
+    await expect(gateway.cashboxReceived(randomSignature())).resolves.toBe(LAMPORTS);
+    expect(rpc.getTransaction).toHaveBeenCalledWith(expect.any(String), {
+      commitment: 'finalized',
+      maxSupportedTransactionVersion: 0,
+    });
+
+    // Not served (yet): unknown. Paid elsewhere: the cashbox did not grow.
+    const unserved = fakeConnection({ tx: null });
+    await expect(
+      createCorePaymentGateway({
+        connection: unserved.connection,
+        cluster: 'devnet',
+        cashbox: CASHBOX,
+        retry: NO_RETRY,
+      }).cashboxReceived(randomSignature()),
+    ).resolves.toBeNull();
+    const elsewhere = fakeConnection({
+      tx: paymentTx({ transfers: [{ from: PAYER, to: OTHER, lamports: LAMPORTS }] }),
+    });
+    await expect(
+      createCorePaymentGateway({
+        connection: elsewhere.connection,
+        cluster: 'devnet',
+        cashbox: CASHBOX,
+        retry: NO_RETRY,
+      }).cashboxReceived(randomSignature()),
+    ).resolves.toBe(0n);
+
+    // RPC failures never carry their message further; another cluster is refused.
+    const failing = fakeConnection({ fail: new Error('https://devnet.example/?api-key=SECRET') });
+    const error = await createCorePaymentGateway({
+      connection: failing.connection,
+      cluster: 'devnet',
+      cashbox: CASHBOX,
+      retry: NO_RETRY,
+    })
+      .cashboxReceived(randomSignature())
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(RpcUnavailableError);
+    expect(String((error as Error).message)).not.toContain('SECRET');
+    const mainnet = fakeConnection({ genesis: CLUSTER_GENESIS_HASH['mainnet-beta'] });
+    await expect(
+      createCorePaymentGateway({
+        connection: mainnet.connection,
+        cluster: 'devnet',
+        cashbox: CASHBOX,
+        retry: NO_RETRY,
+      }).cashboxReceived(randomSignature()),
+    ).rejects.toBeInstanceOf(ClusterMismatchError);
+    expect(mainnet.rpc.getTransaction).not.toHaveBeenCalled();
+  });
+
+  it('cashboxBalanceGrowth trusts only the transaction of the signature, with its meta', () => {
+    const tx = paymentTx();
+    const signature = tx.transaction.signatures[0]!;
+    expect(cashboxBalanceGrowth(tx, signature, CASHBOX)).toBe(LAMPORTS);
+    expect(cashboxBalanceGrowth(tx, randomSignature(), CASHBOX)).toBeNull();
+    expect(cashboxBalanceGrowth({ ...tx, meta: null }, signature, CASHBOX)).toBeNull();
+    // The cashbox paid the fee and received nothing: no growth, never a negative amount.
+    const feeOnly = landedTx({
+      feePayer: CASHBOX,
+      transfers: [{ from: CASHBOX, to: OTHER, lamports: 1n }],
+      blockTime: 1_800_000_000,
+    });
+    expect(cashboxBalanceGrowth(feeOnly, feeOnly.transaction.signatures[0]!, CASHBOX)).toBe(0n);
+    // A failed transaction moves nothing to the cashbox.
+    const failed = paymentTx({ err: { InstructionError: [0, { Custom: 1 }] } });
+    expect(cashboxBalanceGrowth(failed, failed.transaction.signatures[0]!, CASHBOX)).toBe(0n);
   });
 
   it('never builds a transaction for another cluster', async () => {

@@ -22,10 +22,16 @@ import type { JobContext, PaymentAnomalyReason, PaymentRecord, PaymentsStore } f
  *   requests are idempotent. The payment row is written first: it is the source of truth, and a
  *   later confirm or quote request repairs a job left behind by a crash between the two writes;
  * - money that reached the cashbox without paying for its job (late, wrong amount, released
- *   draft, second payment of a paid job) is recorded in `payment_anomalies` for a manual refund
- *   (docs/DECISIONS.md D20) before the request is answered, idempotently on the signature. Only a
- *   transaction verified on-chain is recorded: landed without error, signed by the payer, with
- *   exactly one transfer from the payer to the cashbox.
+ *   draft, disabled launchpad, second payment of a paid job) is recorded in `payment_anomalies`
+ *   for a manual refund (docs/DECISIONS.md D20) before the request is answered, idempotently on
+ *   the signature. Only a transaction verified on-chain is recorded: landed without error, signed
+ *   by the payer, with exactly one transfer from the payer to the cashbox; or, for any other
+ *   rejection made after the payer's signature was checked (memo, transfers, payer, window), a
+ *   transaction whose cashbox balance grew (what it grew by is recorded, with the rejection in
+ *   the note);
+ * - the quote window (with the block time tolerance) is passed to the core verification, so that
+ *   a transaction served without its block time gets the core's `getBlockTime` fallback instead
+ *   of staying pending forever.
  */
 
 export const QUOTE_TIMING = {
@@ -120,6 +126,44 @@ function isPending(
 /** The cluster does not know the signature at all (as opposed to seen but not final yet). */
 function isUnseen(verification: PaymentVerification): boolean {
   return verification.status === 'pending' && verification.reason === 'not_found';
+}
+
+type InvalidVerification = Extract<PaymentVerification, { status: 'invalid' }>;
+
+/**
+ * Rejections the core reports only after checking that the payer signed the transaction (and
+ * that it landed without error): when the cashbox balance grew anyway, that money came with the
+ * payer's signature and is recorded for a refund. `amount_mismatch` and `payment_expired` have
+ * their own handling; a transaction not signed by the payer is never recorded (anyone may present
+ * someone else's payment).
+ */
+const SIGNED_BY_PAYER_REJECTIONS: ReadonlySet<string> = new Set([
+  'recipient_mismatch',
+  'multiple_transfers',
+  'payer_mismatch',
+  'memo_missing',
+  'memo_mismatch',
+  'payment_too_early',
+]);
+
+/**
+ * Anomaly notes. A transaction rejected for this quote may still pay another one (an earlier
+ * quote of the same job carries the same memo; another job of the same wallet, its own memo), so
+ * ops check before refunding.
+ */
+export const REFUND_CHECK_NOTE =
+  'check that the transaction paid no other quote (payments.tx_signature) before refunding';
+export const BEFORE_WINDOW_NOTE = 'landed before the quote window';
+
+/** Quote window accepted for the block time of a payment (validity plus tolerance, both ends). */
+export function quoteWindow(payment: Pick<PaymentRecord, 'quoteExpiresAt'>): {
+  start: number;
+  end: number;
+} {
+  return {
+    start: payment.quoteExpiresAt - QUOTE_TIMING.validityMs - QUOTE_TIMING.blockTimeToleranceMs,
+    end: payment.quoteExpiresAt + QUOTE_TIMING.blockTimeToleranceMs,
+  };
 }
 
 /**
@@ -414,12 +458,21 @@ export function createPaymentsService(deps: PaymentsServiceDeps): PaymentsServic
     }
   }
 
-  function expectedFor(payment: PaymentRecord): ExpectedPayment {
-    return {
+  /**
+   * What the core checks the transaction against. With the window (default), a transaction
+   * served without its block time gets the core's `getBlockTime` fallback, and one that landed
+   * outside the window is `invalid` (`payment_too_early` / `payment_expired`). Stray signatures
+   * are verified without it: their money is recorded whenever it landed.
+   */
+  function expectedFor(payment: PaymentRecord, withWindow = true): ExpectedPayment {
+    const expected: ExpectedPayment = {
       payer: new PublicKey(payment.payerWallet),
       lamports: payment.lamports,
       jobId: payment.jobId,
     };
+    if (!withWindow) return expected;
+    const { start, end } = quoteWindow(payment);
+    return { ...expected, notBefore: new Date(start), expiresAt: new Date(end) };
   }
 
   /**
@@ -475,27 +528,62 @@ export function createPaymentsService(deps: PaymentsServiceDeps): PaymentsServic
   }
 
   /**
-   * A signature presented for a quote that can no longer accept it (released draft, quote already
-   * paid by another transaction). It is verified like a payment of that quote and, when it moved
-   * money to the cashbox, recorded before `refusal` is thrown. While the transaction is seen but
-   * not final the answer is 202, so the client keeps confirming until it can be recorded.
+   * A rejected confirmation whose transaction the payer signed (SIGNED_BY_PAYER_REJECTIONS): the
+   * cashbox balance is read from the transaction and, when it grew, what it grew by is recorded
+   * under `reason` (the rejection goes in the note). An RPC failure propagates: the request fails
+   * and its retry records it.
+   */
+  async function recordRejected(
+    payment: PaymentRecord,
+    signature: string,
+    verification: InvalidVerification,
+    reason: PaymentAnomalyReason,
+    note: string | null = null,
+  ): Promise<void> {
+    if (!SIGNED_BY_PAYER_REJECTIONS.has(verification.reason)) return;
+    const received = await gateway.cashboxReceived(signature);
+    if (received === null || received <= 0n) return;
+    const rejection = `confirmation rejected (${verification.reason}); ${REFUND_CHECK_NOTE}`;
+    await recordAnomaly(
+      payment,
+      signature,
+      reason,
+      received,
+      note === null ? rejection : `${note}; ${rejection}`,
+    );
+  }
+
+  /**
+   * A signature presented for a quote that can no longer accept it (released draft, disabled
+   * launchpad, quote already paid by another transaction). It is verified like a payment of that
+   * quote (whenever it landed) and, when it moved money to the cashbox, recorded before `refusal`
+   * is thrown. While the transaction is seen but not final the answer is 202, so the client keeps
+   * confirming until it can be recorded.
    */
   async function refuseStray(
     payment: PaymentRecord,
     signature: string,
     reason: PaymentAnomalyReason,
     refusal: PaymentError,
+    note: string | null = null,
   ): Promise<ConfirmResult> {
     // A signature already held by a payment brought no new money.
     if (!(await store.findPaymentBySignature(signature))) {
-      const verification = await verifyWithWait(signature, expectedFor(payment));
+      const verification = await verifyWithWait(signature, expectedFor(payment, false));
       if (isPending(verification) && !isUnseen(verification)) {
         return { httpStatus: 202, status: payment.status };
       }
       const received = receivedLamports(verification);
       if (received !== undefined) {
-        const note = verification.status === 'invalid' ? 'amount differs from the quote' : null;
-        await recordAnomaly(payment, signature, reason, received, note);
+        const notes = [
+          note,
+          verification.status === 'invalid' ? 'amount differs from the quote' : null,
+        ]
+          .filter((n): n is string => n !== null)
+          .join('; ');
+        await recordAnomaly(payment, signature, reason, received, notes === '' ? null : notes);
+      } else if (verification.status === 'invalid') {
+        await recordRejected(payment, signature, verification, reason, note);
       }
     }
     throw refusal;
@@ -533,6 +621,7 @@ export function createPaymentsService(deps: PaymentsServiceDeps): PaymentsServic
       case 'malformed_signature':
         throw new PaymentError(400, 'BAD_REQUEST', 'Invalid transaction signature.');
       case 'before_quote':
+      case 'payment_too_early':
         throw new PaymentError(422, 'PAYMENT_INVALID', 'This transaction predates this quote.');
       default:
         throw new PaymentError(422, 'PAYMENT_INVALID', 'This transaction is not a valid payment.');
@@ -575,17 +664,18 @@ export function createPaymentsService(deps: PaymentsServiceDeps): PaymentsServic
     // Included modification: nothing to verify on-chain.
     if (payment.lamports === 0n) return { httpStatus: 200, status: payment.status };
 
-    // A creation draft released after expiry (its slug went to another wallet) can no longer be
-    // paid. Only reachable for a quote that was never confirmed within an hour of its expiry (the
-    // release requires that); money that reached the cashbox anyway is recorded for a refund.
-    if (
-      payment.kind === 'creation' &&
-      payment.txSignature === null &&
-      ctx.launchpad.status === 'disabled'
-    ) {
+    // A disabled launchpad can no longer be paid for:
+    // - a creation draft released after expiry (its slug went to another wallet). Only reachable
+    //   for a quote that was never confirmed within an hour of its expiry (the release requires
+    //   that);
+    // - a modification quoted before the launchpad was disabled: its job could never run, so it
+    //   must not become paid.
+    // Money that reached the cashbox anyway is recorded for a refund.
+    if (payment.txSignature === null && ctx.launchpad.status === 'disabled') {
       logger.log('warn', 'confirm.launchpad_disabled', {
         paymentId,
         jobId: payment.jobId,
+        kind: payment.kind,
         signature,
       });
       return refuseStray(
@@ -593,6 +683,9 @@ export function createPaymentsService(deps: PaymentsServiceDeps): PaymentsServic
         signature,
         'launchpad_released',
         new PaymentError(403, 'LAUNCHPAD_DISABLED', LAUNCHPAD_DISABLED_MESSAGE),
+        payment.kind === 'modification'
+          ? 'modification paid after the launchpad was disabled'
+          : null,
       );
     }
 
@@ -640,6 +733,20 @@ export function createPaymentsService(deps: PaymentsServiceDeps): PaymentsServic
         if (received !== undefined) {
           await recordAnomaly(payment, signature, 'amount_mismatch', received);
         }
+      } else if (verification.reason === 'payment_expired') {
+        // The exact payment of this job landed after the window: this quote no longer accepts it.
+        await recordAnomaly(payment, signature, 'late', payment.lamports);
+        return expire(payment, 'confirm.late_payment', signature);
+      } else {
+        // Money that reached the cashbox with the payer's signature but does not pay this quote
+        // (another memo, several transfers, another source, before the quote): refunded by hand.
+        await recordRejected(
+          payment,
+          signature,
+          verification,
+          verification.reason === 'payment_too_early' ? 'late' : 'amount_mismatch',
+          verification.reason === 'payment_too_early' ? BEFORE_WINDOW_NOTE : null,
+        );
       }
       reject(payment, signature, verification.reason);
     }
@@ -650,10 +757,10 @@ export function createPaymentsService(deps: PaymentsServiceDeps): PaymentsServic
       reject(payment, signature, 'amount_mismatch');
     }
 
-    // The transaction must have landed inside the quote window.
-    const windowStart =
-      payment.quoteExpiresAt - QUOTE_TIMING.validityMs - QUOTE_TIMING.blockTimeToleranceMs;
-    const windowEnd = payment.quoteExpiresAt + QUOTE_TIMING.blockTimeToleranceMs;
+    // The transaction must have landed inside the quote window. The core already checked it (the
+    // window is part of `expectedFor`, and it answers pending while the block time is unknown):
+    // checked again here, defense in depth.
+    const { start: windowStart, end: windowEnd } = quoteWindow(payment);
     if (verification.blockTime === null) {
       // Without a block time, "confirmed by now" only proves the deadline while now <= windowEnd.
       if (now() > windowEnd) return { httpStatus: 202, status: payment.status };
@@ -664,7 +771,16 @@ export function createPaymentsService(deps: PaymentsServiceDeps): PaymentsServic
         await recordAnomaly(payment, signature, 'late', verification.lamports);
         return expire(payment, 'confirm.late_payment', signature);
       }
-      if (landedAt < windowStart) reject(payment, signature, 'before_quote');
+      if (landedAt < windowStart) {
+        await recordAnomaly(
+          payment,
+          signature,
+          'late',
+          verification.lamports,
+          `${BEFORE_WINDOW_NOTE}; ${REFUND_CHECK_NOTE}`,
+        );
+        reject(payment, signature, 'before_quote');
+      }
     }
 
     const other = await store.findConfirmedPaymentForJob(payment.jobId);

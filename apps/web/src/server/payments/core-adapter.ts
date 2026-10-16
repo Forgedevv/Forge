@@ -10,6 +10,7 @@ export {
   buildPaymentTx,
   checkPaymentTransaction,
   CLUSTER_GENESIS_HASH,
+  encodeBase58,
   ForgeAddressError,
   MAX_PAYMENT_LAMPORTS,
   MEMO_PROGRAM_ID,
@@ -18,6 +19,7 @@ export {
   PaymentError,
   paymentMemo,
   requireAddresses,
+  retryRpc,
   verifyPayment,
 } from '@forge/core';
 export type {

@@ -18,7 +18,7 @@ import {
   type PaymentParams,
   type PaymentVerification,
 } from './core-adapter';
-import type { BuiltPayment, PaymentGateway } from './gateway';
+import { cashboxBalanceGrowth, type BuiltPayment, type PaymentGateway } from './gateway';
 
 /*
  * Test doubles shared by the payment tests (no network). Not imported by production code.
@@ -133,17 +133,25 @@ export function landedPayment(options: {
 
 /**
  * PaymentGateway over an in-memory "chain": `land(signature, tx)` makes a transaction visible;
- * verification runs the adapter's real `checkPaymentTransaction` on it. Unknown signatures are
- * pending.
+ * verification runs the adapter's real `checkPaymentTransaction` on it, with the expected window,
+ * and like the core's `verifyPayment` falls back to `blockTimes` (its `getBlockTime`) when the
+ * transaction carries no block time and a window is expected. Unknown signatures are pending.
  */
 export class FakeChainGateway implements PaymentGateway {
   readonly txs = new Map<string, VersionedTransactionResponse>();
   readonly built: { payer: string; lamports: bigint; jobId: string }[] = [];
   readonly verifyCalls: string[] = [];
+  /** What `getBlockTime` answers for the slot of a landed signature (absent: null). */
+  readonly blockTimes = new Map<string, number>();
+  /** Every window received by `verify` (the core's `notBefore` / `expiresAt`). */
+  readonly windows: { notBefore: Date | undefined; expiresAt: Date | undefined }[] = [];
+  readonly cashboxReads: string[] = [];
   /** Landed signatures that have not reached the required commitment yet. */
   readonly notFinal = new Set<string>();
   /** Thrown by every call when set (e.g. RpcUnavailableError, ClusterMismatchError). */
   failure: Error | null = null;
+  /** Thrown by `cashboxReceived` only when set. */
+  cashboxFailure: Error | null = null;
   /** Runs before each verification (tests land transactions during the wait loop). */
   onVerify: ((signature: string, call: number) => void) | null = null;
 
@@ -176,10 +184,17 @@ export class FakeChainGateway implements PaymentGateway {
     this.onVerify?.(signature, this.verifyCalls.length);
     await Promise.resolve();
     if (this.failure) throw this.failure;
-    const tx = this.txs.get(signature);
-    if (!tx) return { status: 'pending', signature, reason: 'not_found' };
+    const landed = this.txs.get(signature);
+    if (!landed) return { status: 'pending', signature, reason: 'not_found' };
     if (this.notFinal.has(signature)) {
       return { status: 'pending', signature, reason: 'below_commitment' };
+    }
+    this.windows.push({ notBefore: expected.notBefore, expiresAt: expected.expiresAt });
+    const hasWindow = expected.notBefore !== undefined || expected.expiresAt !== undefined;
+    let tx = landed;
+    if (hasWindow && (tx.blockTime === null || tx.blockTime === undefined)) {
+      const fallback = this.blockTimes.get(signature);
+      if (fallback !== undefined) tx = { ...tx, blockTime: fallback };
     }
     return checkPaymentTransaction(tx, signature, {
       cashbox: this.cashbox,
@@ -187,7 +202,19 @@ export class FakeChainGateway implements PaymentGateway {
       lamports: expected.lamports,
       memo: paymentMemo(expected.jobId),
       confirmationStatus: 'confirmed',
+      ...(expected.notBefore ? { notBefore: expected.notBefore } : {}),
+      ...(expected.expiresAt ? { expiresAt: expected.expiresAt } : {}),
     });
+  }
+
+  async cashboxReceived(signature: string): Promise<bigint | null> {
+    this.cashboxReads.push(signature);
+    await Promise.resolve();
+    if (this.failure) throw this.failure;
+    if (this.cashboxFailure) throw this.cashboxFailure;
+    const tx = this.txs.get(signature);
+    if (!tx || this.notFinal.has(signature)) return null;
+    return cashboxBalanceGrowth(tx, signature, this.cashbox);
   }
 }
 

@@ -6,7 +6,14 @@ import { ClusterMismatchError, PriceUnavailableError, RpcUnavailableError } from
 import { MemoryLogger } from './log';
 import { MemoryPaymentsStore } from './memory-store';
 import { FixedPriceSource, type SolUsdPriceSource } from './price-source';
-import { createPaymentsService, QUOTE_TIMING, receivedLamports, type QuoteResult } from './service';
+import {
+  BEFORE_WINDOW_NOTE,
+  createPaymentsService,
+  QUOTE_TIMING,
+  receivedLamports,
+  REFUND_CHECK_NOTE,
+  type QuoteResult,
+} from './service';
 import {
   FakeChainGateway,
   landedPayment,
@@ -247,6 +254,73 @@ describe('createQuote', () => {
         note: null,
       },
     ]);
+  });
+
+  it('refuses to confirm a modification once the launchpad is disabled and records it for a refund', async () => {
+    const ctx = setup({ included: 0 });
+    const job = ctx.store.addJob({ launchpadId: ctx.launchpad.id, type: 'modify_launchpad' });
+    const quote = await ctx.service.createQuote({
+      wallet: OWNER_WALLET,
+      jobId: job.id,
+      kind: 'modification',
+    });
+    const signature = pay(ctx, quote, job.id);
+    // Disabled between the quote and the confirmation: the job must never become paid.
+    ctx.store.launchpads.get(ctx.launchpad.id)!.status = 'disabled';
+    await expect(confirm(ctx, quote.paymentId, signature)).rejects.toMatchObject({
+      httpStatus: 403,
+      code: 'LAUNCHPAD_DISABLED',
+    });
+    expect(ctx.store.jobs.get(job.id)!.status).toBe('spec_ready');
+    expect(ctx.store.payments.get(quote.paymentId)).toMatchObject({
+      status: 'quoted',
+      txSignature: null,
+    });
+    expect(
+      ctx.logger.entries.some(
+        (e) =>
+          e.event === 'confirm.launchpad_disabled' &&
+          e.fields.kind === 'modification' &&
+          e.fields.signature === signature,
+      ),
+    ).toBe(true);
+    expect([...ctx.store.anomalies.values()]).toEqual([
+      {
+        jobId: job.id,
+        paymentId: quote.paymentId,
+        wallet: OWNER_WALLET,
+        signature,
+        lamports: BigInt(quote.lamports),
+        reason: 'launchpad_released',
+        note: 'modification paid after the launchpad was disabled',
+      },
+    ]);
+    // A retry answers the same and records nothing twice.
+    await expect(confirm(ctx, quote.paymentId, signature)).rejects.toMatchObject({
+      code: 'LAUNCHPAD_DISABLED',
+    });
+    expect(ctx.store.anomalies.size).toBe(1);
+  });
+
+  it('keeps a modification confirmed before the launchpad was disabled paid', async () => {
+    const ctx = setup({ included: 0 });
+    const job = ctx.store.addJob({ launchpadId: ctx.launchpad.id, type: 'modify_launchpad' });
+    const quote = await ctx.service.createQuote({
+      wallet: OWNER_WALLET,
+      jobId: job.id,
+      kind: 'modification',
+    });
+    const signature = pay(ctx, quote, job.id);
+    await expect(confirm(ctx, quote.paymentId, signature)).resolves.toMatchObject({
+      status: 'confirmed',
+    });
+    ctx.store.launchpads.get(ctx.launchpad.id)!.status = 'disabled';
+    // The idempotent retry of the same signature: nothing refused, nothing recorded.
+    await expect(confirm(ctx, quote.paymentId, signature)).resolves.toMatchObject({
+      httpStatus: 200,
+      status: 'confirmed',
+    });
+    expect(ctx.store.anomalies.size).toBe(0);
   });
 
   it('rejects when spec.ownerWallet differs from the launchpad owner', async () => {
@@ -752,21 +826,72 @@ describe('confirmPayment', () => {
     });
   });
 
-  it('without a block time: accepts before the deadline, stays pending after it', async () => {
+  it('passes the quote window to the core verification', async () => {
+    const ctx = setup();
+    const quote = await quoteCreation(ctx);
+    await confirm(ctx, quote.paymentId, pay(ctx, quote, ctx.job.id));
+    const expiresAt = T0 + QUOTE_TIMING.validityMs;
+    expect(ctx.gateway.windows).toEqual([
+      {
+        notBefore: new Date(
+          expiresAt - QUOTE_TIMING.validityMs - QUOTE_TIMING.blockTimeToleranceMs,
+        ),
+        expiresAt: new Date(expiresAt + QUOTE_TIMING.blockTimeToleranceMs),
+      },
+    ]);
+  });
+
+  it('without a block time: settles through the getBlockTime fallback, pending while unknown', async () => {
+    // Served without its block time, landed in time: the fallback proves it.
     const early = setup();
     const q1 = await quoteCreation(early);
-    await expect(
-      confirm(early, q1.paymentId, pay(early, q1, early.job.id, { blockTime: null })),
-    ).resolves.toMatchObject({ status: 'confirmed' });
+    const s1 = pay(early, q1, early.job.id, { blockTime: null });
+    early.gateway.blockTimes.set(s1, early.clock.seconds(30_000));
+    await expect(confirm(early, q1.paymentId, s1)).resolves.toMatchObject({
+      status: 'confirmed',
+    });
 
+    // Confirmed long after the window, landed in time: still accepted.
+    const slow = setup();
+    const q2 = await quoteCreation(slow);
+    const s2 = pay(slow, q2, slow.job.id, { blockTime: null });
+    slow.gateway.blockTimes.set(s2, slow.clock.seconds(60_000));
+    slow.clock.advance(10 * 60_000);
+    await expect(confirm(slow, q2.paymentId, s2)).resolves.toMatchObject({ status: 'confirmed' });
+
+    // Landed after the window: expired and recorded, instead of answering 202 forever.
     const late = setup();
-    const q2 = await quoteCreation(late);
-    const signature = pay(late, q2, late.job.id, { blockTime: null });
-    late.clock.advance(QUOTE_TIMING.validityMs + QUOTE_TIMING.blockTimeToleranceMs + 1);
-    await expect(confirm(late, q2.paymentId, signature)).resolves.toEqual({
+    const q3 = await quoteCreation(late);
+    const s3 = pay(late, q3, late.job.id, { blockTime: null });
+    const lateMs = QUOTE_TIMING.validityMs + QUOTE_TIMING.blockTimeToleranceMs + 1_000;
+    late.gateway.blockTimes.set(s3, late.clock.seconds(lateMs));
+    late.clock.advance(lateMs + 5_000);
+    await expect(confirm(late, q3.paymentId, s3)).rejects.toMatchObject({
+      httpStatus: 410,
+      code: 'QUOTE_EXPIRED',
+    });
+    expect(late.store.anomalies.get(s3)).toMatchObject({
+      reason: 'late',
+      lamports: CREATION_LAMPORTS,
+      note: null,
+    });
+    expect(late.store.jobs.get(late.job.id)!.status).toBe('spec_ready');
+
+    // No block time at all, even from the fallback: never accepted blind, before or after the
+    // deadline.
+    const unknown = setup();
+    const q4 = await quoteCreation(unknown);
+    const s4 = pay(unknown, q4, unknown.job.id, { blockTime: null });
+    await expect(confirm(unknown, q4.paymentId, s4)).resolves.toEqual({
       httpStatus: 202,
       status: 'quoted',
     });
+    unknown.clock.advance(QUOTE_TIMING.validityMs + QUOTE_TIMING.blockTimeToleranceMs + 1);
+    await expect(confirm(unknown, q4.paymentId, s4)).resolves.toEqual({
+      httpStatus: 202,
+      status: 'quoted',
+    });
+    expect(unknown.store.jobs.get(unknown.job.id)!.status).toBe('spec_ready');
   });
 
   it('surfaces a wrong cluster and records nothing', async () => {
@@ -954,14 +1079,13 @@ describe('payment anomalies (docs/DECISIONS.md D20)', () => {
           }),
       ],
       [
-        'the memo of another job',
+        'another recipient, signed by the payer, with a memo of this job',
         (ctx) =>
           landedPayment({
             payer: OWNER,
-            cashbox: CASHBOX,
+            cashbox: PublicKey.unique(),
             lamports: CREATION_LAMPORTS,
             jobId: ctx.job.id,
-            memo: paymentMemo('11111111-2222-4333-8444-555555555555'),
             blockTime: ctx.clock.seconds(),
           }),
       ],
@@ -974,6 +1098,154 @@ describe('payment anomalies (docs/DECISIONS.md D20)', () => {
       await expect(confirm(ctx, quote.paymentId, signature), label).rejects.toBeInstanceOf(Error);
       expect(ctx.store.anomalies.size, label).toBe(0);
     }
+  });
+
+  it('records money that reached the cashbox in a confirmation rejected after the payer signed', async () => {
+    const OTHER_JOB = '11111111-2222-4333-8444-555555555555';
+    const cases: {
+      label: string;
+      tx: (ctx: Ctx) => ReturnType<typeof landedTx>;
+      error: { httpStatus: number; code: string };
+      reason: 'amount_mismatch' | 'late';
+      lamports: bigint;
+      rejection: string;
+      note?: string;
+    }[] = [
+      {
+        label: 'the memo of another job',
+        tx: (ctx) =>
+          landedPayment({
+            payer: OWNER,
+            cashbox: CASHBOX,
+            lamports: CREATION_LAMPORTS,
+            jobId: ctx.job.id,
+            memo: paymentMemo(OTHER_JOB),
+            blockTime: ctx.clock.seconds(),
+          }),
+        error: { httpStatus: 422, code: 'PAYMENT_INVALID' },
+        reason: 'amount_mismatch',
+        lamports: CREATION_LAMPORTS,
+        rejection: 'memo_mismatch',
+      },
+      {
+        label: 'no memo',
+        tx: (ctx) =>
+          landedTx({
+            feePayer: OWNER,
+            transfers: [{ from: OWNER, to: CASHBOX, lamports: CREATION_LAMPORTS }],
+            blockTime: ctx.clock.seconds(),
+          }),
+        error: { httpStatus: 422, code: 'PAYMENT_INVALID' },
+        reason: 'amount_mismatch',
+        lamports: CREATION_LAMPORTS,
+        rejection: 'memo_missing',
+      },
+      {
+        label: 'two transfers to the cashbox',
+        tx: (ctx) =>
+          landedTx({
+            feePayer: OWNER,
+            transfers: [
+              { from: OWNER, to: CASHBOX, lamports: CREATION_LAMPORTS },
+              { from: OWNER, to: CASHBOX, lamports: 1_000n },
+            ],
+            memos: [paymentMemo(ctx.job.id)],
+            memoSigners: [OWNER],
+            blockTime: ctx.clock.seconds(),
+          }),
+        error: { httpStatus: 422, code: 'PAYMENT_INVALID' },
+        reason: 'amount_mismatch',
+        lamports: CREATION_LAMPORTS + 1_000n,
+        rejection: 'multiple_transfers',
+      },
+      {
+        label: 'a transfer from another account, signed by the payer',
+        tx: (ctx) =>
+          landedTx({
+            feePayer: OWNER,
+            transfers: [{ from: OTHER, to: CASHBOX, lamports: CREATION_LAMPORTS }],
+            memos: [paymentMemo(ctx.job.id)],
+            memoSigners: [OWNER],
+            blockTime: ctx.clock.seconds(),
+          }),
+        error: { httpStatus: 403, code: 'WRONG_WALLET' },
+        reason: 'amount_mismatch',
+        lamports: CREATION_LAMPORTS,
+        rejection: 'payer_mismatch',
+      },
+      {
+        label: 'the exact payment, landed before the quote',
+        tx: (ctx) =>
+          landedPayment({
+            payer: OWNER,
+            cashbox: CASHBOX,
+            lamports: CREATION_LAMPORTS,
+            jobId: ctx.job.id,
+            blockTime: ctx.clock.seconds(-120_000),
+          }),
+        error: { httpStatus: 422, code: 'PAYMENT_INVALID' },
+        reason: 'late',
+        lamports: CREATION_LAMPORTS,
+        rejection: 'payment_too_early',
+        note: BEFORE_WINDOW_NOTE,
+      },
+    ];
+    for (const c of cases) {
+      const ctx = setup();
+      const quote = await quoteCreation(ctx);
+      const signature = randomSignature();
+      ctx.gateway.land(signature, c.tx(ctx));
+      await expect(confirm(ctx, quote.paymentId, signature), c.label).rejects.toMatchObject(
+        c.error,
+      );
+      const rejection = `confirmation rejected (${c.rejection}); ${REFUND_CHECK_NOTE}`;
+      expect(ctx.store.anomalies.get(signature), c.label).toEqual({
+        jobId: ctx.job.id,
+        paymentId: quote.paymentId,
+        wallet: OWNER_WALLET,
+        signature,
+        lamports: c.lamports,
+        reason: c.reason,
+        note: c.note ? `${c.note}; ${rejection}` : rejection,
+      });
+      expect(ctx.store.payments.get(quote.paymentId), c.label).toMatchObject({
+        status: 'quoted',
+        txSignature: null,
+      });
+      expect(ctx.store.jobs.get(ctx.job.id)!.status, c.label).toBe('spec_ready');
+      // A retry answers the same and records nothing twice.
+      await expect(confirm(ctx, quote.paymentId, signature), c.label).rejects.toMatchObject(
+        c.error,
+      );
+      expect(ctx.store.anomalies.size, c.label).toBe(1);
+    }
+  });
+
+  it('fails a rejected confirmation when the cashbox cannot be read, and records it on the retry', async () => {
+    const ctx = setup();
+    const quote = await quoteCreation(ctx);
+    const signature = randomSignature();
+    ctx.gateway.land(
+      signature,
+      landedPayment({
+        payer: OWNER,
+        cashbox: CASHBOX,
+        lamports: CREATION_LAMPORTS,
+        jobId: ctx.job.id,
+        memo: paymentMemo('11111111-2222-4333-8444-555555555555'),
+        blockTime: ctx.clock.seconds(),
+      }),
+    );
+    ctx.gateway.cashboxFailure = new RpcUnavailableError();
+    await expect(confirm(ctx, quote.paymentId, signature)).rejects.toBeInstanceOf(
+      RpcUnavailableError,
+    );
+    expect(ctx.store.anomalies.size).toBe(0);
+    ctx.gateway.cashboxFailure = null;
+    await expect(confirm(ctx, quote.paymentId, signature)).rejects.toMatchObject({
+      code: 'PAYMENT_INVALID',
+    });
+    expect(ctx.store.anomalies.get(signature)?.lamports).toBe(CREATION_LAMPORTS);
   });
 
   it('records nothing for a released draft when the signature never landed', async () => {

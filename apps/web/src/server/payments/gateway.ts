@@ -1,9 +1,16 @@
-import type { Connection, Finality, PublicKey } from '@solana/web3.js';
+import type {
+  Connection,
+  Finality,
+  PublicKey,
+  VersionedTransactionResponse,
+} from '@solana/web3.js';
 import {
   assertCluster,
   buildPaymentTx,
+  encodeBase58,
   ForgeAddressError,
   PaymentError as CorePaymentError,
+  retryRpc,
   verifyPayment,
   type AddressEnv,
   type ExpectedPayment,
@@ -40,6 +47,40 @@ export interface BuiltPayment {
 export interface PaymentGateway {
   buildPayment(params: PaymentParams): Promise<BuiltPayment>;
   verify(signature: string, expected: ExpectedPayment): Promise<PaymentVerification>;
+  /**
+   * Lamports the cashbox balance grew by in the transaction `signature` (post - pre balance, at
+   * PAYMENT_COMMITMENT; 0n when it did not grow), or null when the transaction is not served. Read
+   * for a confirmation that is rejected, so that money that reached the cashbox anyway is recorded.
+   */
+  cashboxReceived(signature: string): Promise<bigint | null>;
+}
+
+/**
+ * Pure: what the cashbox balance grew by in `tx` (0n when it did not grow), or null when the
+ * transaction served is not the one of `signature` (its first signature) or has no status meta.
+ */
+export function cashboxBalanceGrowth(
+  tx: VersionedTransactionResponse,
+  signature: string,
+  cashbox: PublicKey,
+): bigint | null {
+  const first: unknown = tx.transaction?.signatures?.[0];
+  const served = first instanceof Uint8Array ? encodeBase58(first) : first;
+  if (served !== signature) return null;
+  const meta = tx.meta;
+  if (!meta) return null;
+  const keys = tx.transaction.message.getAccountKeys({
+    accountKeysFromLookups: meta.loadedAddresses ?? undefined,
+  });
+  for (let i = 0; i < keys.length; i++) {
+    if (!keys.get(i)?.equals(cashbox)) continue;
+    const pre = meta.preBalances[i];
+    const post = meta.postBalances[i];
+    if (pre === undefined || post === undefined) return null;
+    const growth = BigInt(post) - BigInt(pre);
+    return growth > 0n ? growth : 0n;
+  }
+  return 0n;
 }
 
 export interface CorePaymentGatewayOptions {
@@ -100,6 +141,23 @@ export function createCorePaymentGateway(options: CorePaymentGatewayOptions): Pa
           cluster,
           commitment: PAYMENT_COMMITMENT,
         });
+      } catch (error) {
+        throw translateCoreError(error);
+      }
+    },
+
+    async cashboxReceived(signature) {
+      try {
+        await assertCluster(connection, cluster, options.retry);
+        const tx = await retryRpc(
+          () =>
+            connection.getTransaction(signature, {
+              commitment: PAYMENT_COMMITMENT,
+              maxSupportedTransactionVersion: 0,
+            }),
+          options.retry,
+        );
+        return tx ? cashboxBalanceGrowth(tx, signature, options.cashbox) : null;
       } catch (error) {
         throw translateCoreError(error);
       }
