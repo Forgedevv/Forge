@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { Keypair, VersionedTransaction } from '@solana/web3.js';
+import { Keypair, VersionedTransaction, type PublicKey } from '@solana/web3.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { signOwnerTransaction } from '../actions';
 import { base64ToBytes } from '../base58';
@@ -8,6 +8,7 @@ import { setSession } from '../session-store';
 import {
   SIG,
   encode,
+  fakeConnection,
   fakeSign,
   id,
   json,
@@ -144,6 +145,88 @@ describe('signOwnerTransaction', () => {
     expect(result.error).toMatch(message);
     expect(sign).not.toHaveBeenCalled();
     expect(fetchFn).toHaveBeenCalledTimes(1);
+  });
+
+  // Before: the config, creator and mint all came from the same server response; the config is
+  // now read from the chain before the wallet is asked to sign.
+  it('reads the launchpad coin config on-chain through the client connection', async () => {
+    const connection = signIn();
+    const fixture = launchFixture();
+    mockFetch((_url, init) =>
+      init?.method === 'POST' ? json({ signature: SIG }) : json(served(fixture)),
+    );
+    await expect(signOwnerTransaction(id(), () => undefined)).resolves.toEqual({
+      phase: 'confirmed',
+      signature: SIG,
+    });
+    const getAccountInfo = (connection as unknown as { getAccountInfo: ReturnType<typeof vi.fn> })
+      .getAccountInfo;
+    expect(getAccountInfo).toHaveBeenCalledTimes(1);
+    const [key, commitment] = getAccountInfo.mock.calls[0] as [PublicKey, string];
+    expect(key.toBase58()).toBe(fixture.launch.config);
+    expect(commitment).toBe('confirmed');
+  });
+
+  it.each([
+    [
+      'a fee claimer other than the owner',
+      { feeClaimer: Keypair.generate().publicKey },
+      /does not pay its trading fees to your wallet/,
+    ],
+    ['a coin creation fee', { poolCreationFeeLamports: 1_000_000n }, /charges a coin creation fee/],
+    [
+      'a creator share other than 25%',
+      { creatorTradingFeePercentage: 50 },
+      /does not set the 25% creator share/,
+    ],
+    ['mutable coin metadata', { tokenUpdateAuthority: 0 }, /lets the coin metadata be changed/],
+    [
+      'an account of another program',
+      { owner: Keypair.generate().publicKey },
+      /not a Meteora coin config/,
+    ],
+    ['another account size', { size: 1_000 }, /not a Meteora coin config/],
+    [
+      'another account type',
+      { discriminator: [1, 2, 3, 4, 5, 6, 7, 8] },
+      /not a Meteora coin config/,
+    ],
+  ])(
+    'refuses a coin config on-chain with %s before the wallet is asked to sign',
+    async (_label, config, message) => {
+      const sign = vi.fn();
+      setWallet(sign);
+      const fetchFn = mockFetch(() => json(served(launchFixture({ config }))));
+      const result = await signOwnerTransaction(id(), () => undefined);
+      expect(result.phase).toBe('error');
+      expect(result.error).toMatch(message);
+      expect(result.error).toMatch(/Nothing was signed/);
+      expect(sign).not.toHaveBeenCalled();
+      expect(fetchFn).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('refuses when the coin config is missing on-chain or cannot be read', async () => {
+    const cases: [string, () => void, RegExp][] = [
+      ['missing', () => setWallet(vi.fn()), /does not exist on-chain/],
+      [
+        'unreadable',
+        () =>
+          setWallet(
+            vi.fn(),
+            fakeConnection({ getAccountInfo: vi.fn().mockRejectedValue(new Error('429')) }),
+          ),
+        /could not be read on-chain/,
+      ],
+      ['without a connection', () => setWallet(vi.fn(), null), /could not be read on-chain/],
+    ];
+    for (const [label, connect, message] of cases) {
+      connect();
+      mockFetch(() => json(served(launchFixture({ config: null }))));
+      const result = await signOwnerTransaction(id(), () => undefined);
+      expect(result.phase, label).toBe('error');
+      expect(result.error, label).toMatch(message);
+    }
   });
 
   // Before: a response without launch accounts was signed with only internal consistency checks.

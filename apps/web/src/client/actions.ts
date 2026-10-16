@@ -24,6 +24,7 @@ import { z } from 'zod';
 import { bytesToBase64 } from './base58';
 import { defaultMessage, errorMessage, isUserRejection } from './errors';
 import { request, route, validateBody } from './http';
+import { verifyLaunchConfigOnChain } from './launch-config';
 import {
   getKeptLaunch,
   isAlreadySigned,
@@ -342,10 +343,16 @@ export async function signOwnerTransaction(jobId: string, onPhase: OnTxPhase): P
     // and exactly the launch of this summary (first buy, coin) on the accounts of `launch`
     // (config, mint, creator wallet, nonce account, metadata URI), as @forge/core builds it.
     // A response without `launch` is refused.
-    verifyLaunchTransaction(prepared, {
+    const launch = verifyLaunchTransaction(prepared, {
       wallet: address,
       summary: res.summary,
       launch: res.launch,
+    });
+    // The config itself is read from the chain, not taken from the server: fee claimer = this
+    // wallet, no coin creation fee, FORGE's 25% creator share, immutable coin metadata.
+    await verifyLaunchConfigOnChain(getWalletBridge().connection, {
+      config: launch.config,
+      owner: address,
     });
     report('awaiting_signature');
     try {

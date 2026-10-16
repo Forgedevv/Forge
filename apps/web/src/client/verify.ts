@@ -428,9 +428,13 @@ export interface ExpectedLaunch {
  *
  * Every account of the launch is pinned to the `launch` values of the server response: the
  * config, the mint, the creator wallet, the durable nonce account and the metadata URI must be
- * exactly those, not merely consistent within the transaction.
+ * exactly those, not merely consistent within the transaction. Returns those (validated) launch
+ * accounts; the config is then checked on-chain (launch-config.ts).
  */
-export function verifyLaunchTransaction(tx: VersionedTransaction, expected: ExpectedLaunch) {
+export function verifyLaunchTransaction(
+  tx: VersionedTransaction,
+  expected: ExpectedLaunch,
+): OwnerTransactionLaunch {
   const decoded = decodeTransaction(tx);
   if (decoded.feePayer !== expected.wallet) {
     fail('The launch transaction fee payer is not your wallet.');
@@ -470,6 +474,7 @@ export function verifyLaunchTransaction(tx: VersionedTransaction, expected: Expe
     if (err instanceof TypeError) fail('The launch details from the server are invalid.');
     throw err;
   }
+  return launch;
 }
 
 /** The wallet returned the same message, now signed by the wallet. */

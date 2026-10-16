@@ -10,10 +10,17 @@ import {
   TransactionInstruction,
   TransactionMessage,
   VersionedTransaction,
+  type AccountInfo,
   type Connection,
 } from '@solana/web3.js';
 import { vi } from 'vitest';
 import { base58Encode, bytesToBase64 } from '../base58';
+import {
+  POOL_CONFIG_DISCRIMINATOR,
+  POOL_CONFIG_OFFSETS,
+  POOL_CONFIG_SIZE,
+  TOKEN_UPDATE_AUTHORITY_IMMUTABLE,
+} from '../launch-config';
 import { setSession } from '../session-store';
 import { setWalletBridge } from '../wallet-bridge';
 
@@ -110,17 +117,57 @@ export function mockFetch(handler: Handler) {
   return fn;
 }
 
+/**
+ * Accounts on the fake chain, by address, served by `fakeConnection().getAccountInfo`. Every
+ * `launchFixture` puts its launchpad coin config there (unless told otherwise).
+ */
+export const chainAccounts = new Map<string, AccountInfo<Buffer>>();
+
 export function fakeConnection(overrides: Partial<Record<string, unknown>> = {}) {
   return {
     sendRawTransaction: vi.fn().mockResolvedValue(SIG),
     getSignatureStatuses: vi
       .fn()
       .mockResolvedValue({ value: [{ err: null, confirmationStatus: 'confirmed' }] }),
+    getAccountInfo: vi.fn(async (key: PublicKey) => chainAccounts.get(key.toBase58()) ?? null),
     ...overrides,
   } as unknown as Connection & {
     sendRawTransaction: ReturnType<typeof vi.fn>;
     getSignatureStatuses: ReturnType<typeof vi.fn>;
+    getAccountInfo: ReturnType<typeof vi.fn>;
   };
+}
+
+export interface CoinConfigOptions {
+  feeClaimer?: PublicKey;
+  creatorTradingFeePercentage?: number;
+  tokenUpdateAuthority?: number;
+  poolCreationFeeLamports?: bigint;
+  /** Program owning the account (default the DBC program). */
+  owner?: PublicKey;
+  /** Account size (default the `PoolConfig` size). */
+  size?: number;
+  discriminator?: readonly number[];
+}
+
+/**
+ * A DBC `PoolConfig` account as the chain serves it: the launchpad coin config @forge/core
+ * creates for `feeClaimer` (25% creator share, no creation fee, immutable metadata) unless
+ * overridden. Fields that are not checked are left at zero.
+ */
+export function coinConfigAccount(
+  o: CoinConfigOptions & { feeClaimer: PublicKey },
+): AccountInfo<Buffer> {
+  const data = Buffer.alloc(o.size ?? POOL_CONFIG_SIZE);
+  Buffer.from(o.discriminator ?? POOL_CONFIG_DISCRIMINATOR).copy(data, 0);
+  const at = POOL_CONFIG_OFFSETS;
+  if (data.length >= at.poolCreationFee + 8) {
+    o.feeClaimer.toBuffer().copy(data, at.feeClaimer);
+    data[at.creatorTradingFeePercentage] = o.creatorTradingFeePercentage ?? 25;
+    data[at.tokenUpdateAuthority] = o.tokenUpdateAuthority ?? TOKEN_UPDATE_AUTHORITY_IMMUTABLE;
+    data.writeBigUInt64LE(o.poolCreationFeeLamports ?? 0n, at.poolCreationFee);
+  }
+  return { data, owner: o.owner ?? DBC_PROGRAM, executable: false, lamports: 1, rentEpoch: 0 };
 }
 
 /** A wallet that "signs" by writing SIG_BYTES into the slot of its own key. */
@@ -338,6 +385,11 @@ export interface LaunchTxOptions {
     creator: PublicKey;
     mint: PublicKey;
   }) => TransactionInstruction[];
+  /**
+   * The launchpad coin config put on the fake chain (`chainAccounts`): the valid one of `payer`
+   * by default, overridden fields, or `null` for none.
+   */
+  config?: CoinConfigOptions | null;
 }
 
 /**
@@ -448,6 +500,9 @@ export function launchFixture(o: LaunchTxOptions = {}): {
   if (presign === true) tx.partialSign(creator, mint);
   else if (presign === 'creator') tx.partialSign(creator);
   else if (presign === 'mint') tx.partialSign(mint);
+  if (o.config !== null) {
+    chainAccounts.set(config.toBase58(), coinConfigAccount({ feeClaimer: payer, ...o.config }));
+  }
   return {
     tx: VersionedTransaction.deserialize(
       tx.serialize({ requireAllSignatures: false, verifySignatures: false }),
