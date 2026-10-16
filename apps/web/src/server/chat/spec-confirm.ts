@@ -1,6 +1,14 @@
-import { Uuid, type SpecConfirmResponse } from '@forge/shared';
+import { Uuid, type LaunchpadSpec, type SpecConfirmResponse } from '@forge/shared';
 import { z } from 'zod';
 import { checkOrigin, requireSession } from '@/server/auth';
+import {
+  CoinImageUnavailableError,
+  getDefaultCoinImageRehoster,
+  imageUnavailableMessage,
+  type CoinImageRehoster,
+} from '@/server/coin-images';
+import { UploadConfigError } from '@/server/uploads/config';
+import { StorageError } from '@/server/uploads/storage';
 import { defaultChatDeps, type ChatDeps } from './handler';
 import { apiError, readBoundedJson } from './http';
 import { clientIp } from './rate-limit';
@@ -14,6 +22,10 @@ import { DRAFT_POLICY, StoreError } from './store';
  * session wallet and creates the draft launchpad plus its `create_launchpad` job in `spec_ready`.
  * Idempotent per conversation: confirming the same spec again returns the same ids.
  * Slug reservation (anti-squatting): see DRAFT_POLICY in store.ts.
+ *
+ * Before anything is written, the coin image and the logo are copied into FORGE's R2 bucket and
+ * the stored spec keeps the bucket URLs (coin-images/rehost.ts). An image that cannot be copied
+ * answers 422 IMAGE_UNAVAILABLE (the owner gives another URL in the chat) and creates nothing.
  */
 
 const CONFIRM_PER_WINDOW = 20;
@@ -22,7 +34,43 @@ const CONFIRM_WINDOW_MS = 10 * 60_000;
 /** Same shape as SpecConfirmRequest; the spec is validated separately for readable messages. */
 const ConfirmBody = z.strictObject({ conversationId: Uuid, spec: z.unknown() });
 
-export type SpecConfirmDeps = Pick<ChatDeps, 'store' | 'limiter' | 'gating'>;
+export type SpecConfirmDeps = Pick<ChatDeps, 'store' | 'limiter' | 'gating'> & {
+  images: () => CoinImageRehoster;
+};
+
+export function defaultSpecConfirmDeps(): SpecConfirmDeps {
+  return { ...defaultChatDeps(), images: getDefaultCoinImageRehoster };
+}
+
+const UNAVAILABLE_MESSAGE = 'Could not confirm the launchpad right now. Please try again.';
+
+/** The spec with its images in the bucket, or the error response (nothing written yet). */
+async function rehostImages(
+  deps: SpecConfirmDeps,
+  spec: LaunchpadSpec,
+): Promise<LaunchpadSpec | Response> {
+  let rehosted: LaunchpadSpec;
+  try {
+    rehosted = await deps.images().rehost(spec);
+  } catch (error) {
+    if (error instanceof CoinImageUnavailableError) {
+      return apiError(422, 'IMAGE_UNAVAILABLE', imageUnavailableMessage(error));
+    }
+    if (error instanceof UploadConfigError || error instanceof StorageError) {
+      // Both messages name variables or an operation and an HTTP status, never a value.
+      console.error(`[spec] coin image copy unavailable: ${error.message}`);
+      return apiError(503, 'SERVER_ERROR', UNAVAILABLE_MESSAGE);
+    }
+    throw error;
+  }
+  // The bucket URLs must pass the same rules as the owner's (e.g. R2_PUBLIC_URL with a port).
+  const checked = validateConfirmedSpec(rehosted);
+  if (!checked.ok) {
+    console.error('[spec] coin image copy unavailable: R2_PUBLIC_URL is not a public https URL');
+    return apiError(503, 'SERVER_ERROR', UNAVAILABLE_MESSAGE);
+  }
+  return checked.spec;
+}
 
 /** The wallet check runs on the raw body first so a wrong wallet is reported as such. */
 const Envelope = z.object({
@@ -32,7 +80,7 @@ const Envelope = z.object({
 
 export async function handleSpecConfirm(
   request: Request,
-  deps: SpecConfirmDeps = defaultChatDeps(),
+  deps: SpecConfirmDeps = defaultSpecConfirmDeps(),
 ): Promise<Response> {
   try {
     const forbidden = checkOrigin(request);
@@ -94,10 +142,13 @@ export async function handleSpecConfirm(
       );
     }
 
+    const spec = await rehostImages(deps, checked.spec);
+    if (spec instanceof Response) return spec;
+
     const outcome = await store.confirmSpec({
       wallet: session.wallet,
       conversationId: parsed.data.conversationId,
-      spec: checked.spec,
+      spec,
     });
     switch (outcome.status) {
       case 'created':
@@ -140,10 +191,6 @@ export async function handleSpecConfirm(
     }
   } catch (error) {
     console.error(`[spec] ${error instanceof StoreError ? error.message : 'unexpected error'}`);
-    return apiError(
-      503,
-      'SERVER_ERROR',
-      'Could not confirm the launchpad right now. Please try again.',
-    );
+    return apiError(503, 'SERVER_ERROR', UNAVAILABLE_MESSAGE);
   }
 }

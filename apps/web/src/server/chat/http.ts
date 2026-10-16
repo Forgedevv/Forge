@@ -6,7 +6,7 @@ import type { ClientErrorCode } from '@forge/shared';
  */
 
 export type ApiErrorCode =
-  ClientErrorCode | 'BAD_REQUEST' | 'NOT_FOUND' | 'CONFLICT' | 'SERVER_ERROR';
+  ClientErrorCode | 'BAD_REQUEST' | 'NOT_FOUND' | 'CONFLICT' | 'IMAGE_UNAVAILABLE' | 'SERVER_ERROR';
 
 export function apiError(
   status: number,

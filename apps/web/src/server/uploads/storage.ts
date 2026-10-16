@@ -34,6 +34,11 @@ export interface StoredObject {
   contentType: string | null;
 }
 
+export interface PutOptions {
+  /** `Cache-Control` stored with the object (signed, so R2 refuses any other value). */
+  cacheControl?: string;
+}
+
 export interface ObjectStorage {
   /**
    * Presigned write-once PUT: signed with `Content-Type`, `If-None-Match: *` and
@@ -52,12 +57,17 @@ export interface ObjectStorage {
   }): PresignedPut;
   /** Object bytes, or null when absent. Throws ObjectTooLargeError above `maxBytes`. */
   get(key: string, maxBytes: number): Promise<StoredObject | null>;
-  /** Write-once PUT: `exists` when the key is already taken (nothing overwritten). */
+  /**
+   * Write-once PUT: `exists` when the key is already taken (nothing overwritten). `cacheControl`
+   * (optional) is stored with the object and served on its public URL; without it the object
+   * gets the bucket default, as coin uploads do.
+   */
   putIfAbsent(
     key: string,
     body: Uint8Array,
     contentType: string,
     sha256Base64: string,
+    options?: PutOptions,
   ): Promise<'created' | 'exists'>;
   /** Idempotent: deleting a missing key succeeds. */
   delete(key: string): Promise<void>;
@@ -217,7 +227,7 @@ export function createR2Storage(options: R2StorageOptions): ObjectStorage {
       return { bytes, contentType: res.headers.get('content-type') };
     },
 
-    async putIfAbsent(key, body, contentType, sha256Base64) {
+    async putIfAbsent(key, body, contentType, sha256Base64, putOptions) {
       const res = await send(
         'put',
         'PUT',
@@ -226,6 +236,7 @@ export function createR2Storage(options: R2StorageOptions): ObjectStorage {
           'Content-Type': contentType,
           'If-None-Match': '*',
           'x-amz-checksum-sha256': sha256Base64,
+          ...(putOptions?.cacheControl ? { 'Cache-Control': putOptions.cacheControl } : {}),
         },
         body,
       );

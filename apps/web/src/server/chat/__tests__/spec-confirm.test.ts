@@ -1,4 +1,5 @@
 // @vitest-environment node
+import type { LaunchpadSpec } from '@forge/shared';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { handleSpecConfirm } from '../spec-confirm';
 import {
@@ -23,8 +24,13 @@ const body = (spec: unknown = validSpec(), conversationId = CONVERSATION) => ({
   conversationId,
   spec,
 });
+// Image copies are covered by spec-confirm-images.test.ts; here the spec passes through.
+const keepImages = { rehost: (spec: LaunchpadSpec) => Promise.resolve(spec) };
 const call = (b: unknown, deps = makeDeps(), cookie?: string | null) =>
-  handleSpecConfirm(postJson('/api/spec/confirm', b, cookie === undefined ? {} : { cookie }), deps);
+  handleSpecConfirm(postJson('/api/spec/confirm', b, cookie === undefined ? {} : { cookie }), {
+    ...deps,
+    images: () => keepImages,
+  });
 const json = async (res: Response) => (await res.json()) as Record<string, string>;
 
 describe('POST /api/spec/confirm', () => {
