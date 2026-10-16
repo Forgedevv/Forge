@@ -151,6 +151,25 @@ export async function sendSigned(tx: Transaction, label?: string): Promise<strin
   return signature;
 }
 
+/**
+ * Asks the devnet faucet of the RPC for `lamports` (public endpoints cap and rate-limit this;
+ * https://faucet.solana.com is the fallback). Returns the signature, or null when refused.
+ */
+export async function tryAirdrop(to: PublicKey, lamports: bigint): Promise<string | null> {
+  const conn = getConnection();
+  try {
+    const signature = await conn.requestAirdrop(to, Number(lamports));
+    const { lastValidBlockHeight } = await conn.getLatestBlockhash(COMMITMENT);
+    await confirmBySignature(signature, lastValidBlockHeight);
+    console.log(`    airdrop ${formatSol(lamports)} -> ${to.toBase58()} ${signature}`);
+    return signature;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`    airdrop refused: ${msg.slice(0, 160)}`);
+    return null;
+  }
+}
+
 export async function transferSol(
   from: Keypair,
   to: PublicKey,

@@ -28,14 +28,9 @@ import {
   SystemProgram,
   Transaction,
   TransactionInstruction,
-  VersionedTransaction,
 } from '@solana/web3.js';
 import { createForgeSignerCore } from '../../../apps/signer/src/core-adapter.js';
-import {
-  creatorRole,
-  openKeystore,
-  type KeystoreSigner,
-} from '../../../apps/signer/src/keystore.js';
+import { creatorRole, openKeystore } from '../../../apps/signer/src/keystore.js';
 import {
   ClaimJournalEntry,
   createClaimsJob,
@@ -51,16 +46,13 @@ import {
   createMemoryJournal,
   Mutex,
   rpcFromConnection,
-  scrubText,
-  type JobAlerter,
-  type JobLogger,
-  type KeystoreLike,
 } from '../../../apps/signer/src/jobs/shared.js';
 import { MemoryRefundDb, memoryFlags } from '../../../apps/signer/src/jobs/testing.js';
 import { runMain } from './lib/funding.js';
 import { STATE_DIR, loadEnv } from './lib/env.js';
 import { State, type Json } from './lib/state.js';
 import { loadWallets } from './lib/wallets.js';
+import { consoleAlerter, consoleLogger, walletKeystore } from './lib/signer-harness.js';
 import {
   formatSol,
   getBalance,
@@ -77,29 +69,6 @@ const WORK_DIR = resolve(STATE_DIR, 'signer-claims');
 /** Devnet: claim whatever is there (the temporary WSOL rent goes to the stand-in vault anyway). */
 const DEVNET_MIN_CLAIM_LAMPORTS = 1_000n;
 
-function consoleLogger(prefix: string): JobLogger {
-  const out =
-    (level: string) =>
-    (fields: Record<string, unknown>, msg: string): void => {
-      const json = JSON.stringify(fields, (_k, v: unknown) =>
-        typeof v === 'bigint' ? v.toString() : v,
-      );
-      console.log(scrubText(`    [${prefix}:${level}] ${msg} ${json}`).slice(0, 400));
-    };
-  return { debug: () => undefined, info: out('info'), warn: out('warn'), error: out('error') };
-}
-
-function consoleAlerter(alerts: string[]): JobAlerter {
-  return {
-    async alert(level, code, message, details) {
-      alerts.push(code);
-      console.log(
-        scrubText(`    ALERT [${level}] ${code}: ${message} ${JSON.stringify(details ?? {})}`),
-      );
-    },
-  };
-}
-
 /** Throwaway passphrase for the devnet keystore, kept in .state (devnet stand-in only). */
 function devnetPassphrase(): string {
   if (!existsSync(WORK_DIR)) mkdirSync(WORK_DIR, { recursive: true });
@@ -108,42 +77,6 @@ function devnetPassphrase(): string {
     writeFileSync(file, randomBytes(32).toString('hex'), { encoding: 'utf8', mode: 0o600 });
   }
   return readFileSync(file, 'utf8').trim();
-}
-
-/** Keystore-shaped signer over existing devnet wallets (script-only stand-in). */
-function walletKeystore(roles: Record<string, Keypair>): KeystoreLike {
-  const byRef = new Map<string, { role: string; keypair: Keypair }>();
-  const refOf = new Map<string, string>();
-  for (const [role, keypair] of Object.entries(roles)) {
-    const ref = `ks_${randomBytes(16).toString('hex')}`;
-    byRef.set(ref, { role, keypair });
-    refOf.set(role, ref);
-  }
-  const entry = (ref: string) => {
-    const e = byRef.get(ref);
-    if (!e) throw new Error('unknown ref');
-    return e;
-  };
-  return {
-    findRef: async (role) => refOf.get(role),
-    getPublicKey: async (ref) => entry(ref).keypair.publicKey,
-    withSigner: async (ref, fn) => {
-      const { role, keypair } = entry(ref);
-      const signer: KeystoreSigner = {
-        ref,
-        role: role as KeystoreSigner['role'],
-        publicKey: keypair.publicKey,
-        signTransaction(tx: Transaction | VersionedTransaction) {
-          if ('message' in tx) tx.sign([keypair]);
-          else tx.partialSign(keypair);
-        },
-        signMessage() {
-          throw new Error('not needed');
-        },
-      };
-      return fn(signer);
-    },
-  };
 }
 
 async function waitFinalized(signature: string): Promise<void> {
