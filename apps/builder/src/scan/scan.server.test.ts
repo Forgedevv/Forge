@@ -13,6 +13,10 @@ import { added, scan } from './test-helpers.js';
  * (`res.end('<script>...')`) from `getServerSideProps` or `getInitialProps`, bypassing every JSX
  * and DOM rule, and the template CSP keeps 'unsafe-inline' for scripts. Pages are static: the
  * server-side data hooks and the response object are refused in free-zone files.
+ *
+ * Regression (audit, reproduced): `getStaticProps` / `getStaticPaths` run on the build server and
+ * publish what they return as JSON; a free-zone page could bake a server value (the relay token)
+ * into the public site. They are refused too.
  */
 
 const PAGE = 'src/pages/promo.tsx';
@@ -80,6 +84,17 @@ describe('server-side output in free-zone pages', () => {
     'end method taken off the response': `export const f = (res: any) => { const end = res.end; end.call(res, 'x'); };`,
     'writeHead on any receiver': `export const f = (o: any) => o.writeHead(200);`,
     'a then callback on something else than fetch': `export const f = (p: any) => p.then((res: any) => res.end('x'));`,
+    // Build-time data hooks: what they return is published as public JSON (audit, reproduced).
+    'getStaticProps as a function': `export async function getStaticProps() { return { props: { n: 1 } }; }`,
+    'getStaticProps as a const': `export const getStaticProps = async () => ({ props: { n: 1 }, revalidate: 60 });`,
+    'getStaticProps through an export specifier': `const load = async () => ({ props: {} }); export { load as getStaticProps };`,
+    'getStaticProps re-exported from another file': `export { getStaticProps } from '../components/data';`,
+    getStaticPaths: `export const getStaticPaths = async () => ({ paths: [], fallback: 'blocking' });`,
+    'getStaticPaths re-exported from another file': `export { getStaticPaths } from '../components/data';`,
+    unstable_getStaticProps: `export const unstable_getStaticProps = async () => ({ props: {} });`,
+    unstable_getStaticPaths: `export const unstable_getStaticPaths = async () => ({ paths: [] });`,
+    unstable_getServerProps: `export const unstable_getServerProps = async () => ({ props: {} });`,
+    'getStaticProps through a computed export name': `const load = async () => ({ props: {} }); export { load as 'getStaticProps' };`,
   };
   for (const [name, src] of Object.entries(blocked)) {
     it(`blocks: ${name}`, () => {
@@ -94,8 +109,23 @@ describe('server-side output in free-zone pages', () => {
     ).toBeGreaterThan(0);
   });
 
+  it('blocks the reproduced payload: the relay token baked into public JSON by getStaticProps', () => {
+    const src = [
+      `import { readServerRelayToken } from '@/forge/server-relay';`,
+      `export const getStaticProps = async () => ({ props: { relay: readServerRelayToken() } });`,
+      `export default function Promo() {`,
+      `  return <main>Promo</main>;`,
+      `}`,
+    ].join('\n');
+    expect(
+      serverResponse(src)
+        .map((v) => v.reason)
+        .join(' | '),
+    ).toMatch(/getStaticProps/);
+    expect(violationsOf(src).map((v) => v.rule)).toContain('forbidden-import');
+  });
+
   const allowed: Record<string, string> = {
-    'getStaticProps (build time, no response object)': `export const getStaticProps = async () => ({ props: { n: 1 }, revalidate: 60 });`,
     'json of a same-origin fetch result': `export async function load() { const res = await fetch('/api/x'); return res.json(); }`,
     'response of a same-origin fetch': `export async function load() { const response = await fetch('/api/x'); return response.status === 200 ? response.json() : null; }`,
     'json of a fetch result in a then callback': `export const load = () => fetch('/api/x').then((res) => res.json());`,

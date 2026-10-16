@@ -271,9 +271,9 @@ describe('wallet and signing APIs', () => {
 
   it('allows wallet-looking design names', () => {
     const src = `
-      import { TradePanel } from '@/forge/TradePanel';
-      export function Hero({ onApproveClick }: { onApproveClick: () => void }) {
-        return <section><button onClick={onApproveClick}>Approve</button><TradePanel /></section>;
+      import { CoinTradePanel } from '@/forge/CoinTradePanel';
+      export function Hero({ onApproveClick, mint }: { onApproveClick: () => void; mint: string }) {
+        return <section><button onClick={onApproveClick}>Approve</button><CoinTradePanel mint={mint} /></section>;
       }`;
     expect(scanComponent(src)).toEqual([]);
   });
@@ -597,7 +597,7 @@ describe('realistic clean theme change', () => {
         `import Image from 'next/image';
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
-import { TradePanel } from '@/forge/TradePanel';
+import { CoinTradePanel } from '@/forge/CoinTradePanel';
 import { tokens } from '@/theme/tokens';
 import content from '@/content/home.json';
 
@@ -622,7 +622,7 @@ export function Hero({ mint }: { mint: string }) {
       <Link href={\`/coin/\${mint}\`} className="rounded-xl bg-[var(--primary)] px-6 py-3">Trade now</Link>
       <a href="https://x.com/moonpad" target="_blank" rel="noreferrer">Follow us on X</a>
       <ul>{pools.map((p) => <li key={p.id}>{p.name}</li>)}</ul>
-      <TradePanel />
+      <CoinTradePanel mint={mint} />
     </section>
   );
 }

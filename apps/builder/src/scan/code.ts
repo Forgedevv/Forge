@@ -23,6 +23,13 @@ import {
   type Value,
 } from './fold.js';
 import {
+  forgeExportRule,
+  importTarget,
+  publicExportNames,
+  publicForgeModule,
+  resolveLocalImport,
+} from './forge-api.js';
+import {
   AddressCollector,
   activeHtmlFindings,
   cssFindings,
@@ -108,11 +115,24 @@ const NET_SINKS = new Set(['fetch', 'WebSocket', 'EventSource', 'sendBeacon']);
 const TIMERS = new Set(['setTimeout', 'setInterval', 'setImmediate']);
 
 /**
- * Next.js server-side data hooks. Through their context they hand page code the raw request and
- * response objects, and a response can be written directly (`res.end('<script>...')`), bypassing
- * every JSX and DOM rule. Free-zone pages are static: any mention of these names is refused.
+ * Next.js server-side data hooks. `getServerSideProps` and `getInitialProps` hand page code the
+ * raw request and response objects, and a response can be written directly
+ * (`res.end('<script>...')`), bypassing every JSX and DOM rule. `getStaticProps` and
+ * `getStaticPaths` run on the build server with its environment: what they return is published as
+ * public JSON (a server secret read there would be baked into the site). Free-zone pages are
+ * static and run no server-side data code: any mention of these names (and of their former
+ * `unstable_` names) is refused.
  */
-const SERVER_DATA_HOOKS = new Set(['getServerSideProps', 'getInitialProps']);
+const SERVER_DATA_HOOKS = new Set([
+  'getServerSideProps',
+  'getInitialProps',
+  'getStaticProps',
+  'getStaticPaths',
+  'unstable_getServerProps',
+  'unstable_getServerSideProps',
+  'unstable_getStaticProps',
+  'unstable_getStaticPaths',
+]);
 /** Methods that only exist on a server response: refused on any receiver. */
 const RESPONSE_ONLY_NAMES = new Set([
   'setHeader',
@@ -564,6 +584,151 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
   const isComponentName = (name: string): boolean => componentNames.get(name) === true;
 
   /**
+   * FORGE components loaded on demand: `const X = dynamic(() => import('@/forge/M'))` (or
+   * `.then((m) => m.Name)`, or React `lazy`) binds `X` to one export of `M`, checked like a named
+   * import. Only the `next/dynamic` default import and React's `lazy`, declared once in the file,
+   * are trusted to hand the props of `X` to the loaded component unchanged. Any other `import()`
+   * of `src/forge/` exposes the whole module and is refused.
+   */
+  const loaderClaims = new Map<
+    ts.Node,
+    { exportName: string; local: string | null; exported: boolean }
+  >();
+  {
+    const declCounts = new Map<string, number>();
+    const declare = (name: string): void => {
+      declCounts.set(name, (declCounts.get(name) ?? 0) + 1);
+    };
+    const dynamicNames = new Set<string>();
+    for (const st of sf.statements) {
+      if (
+        !ts.isImportDeclaration(st) ||
+        !ts.isStringLiteral(st.moduleSpecifier) ||
+        st.moduleSpecifier.text !== 'next/dynamic'
+      )
+        continue;
+      const clause = st.importClause;
+      if (clause?.name) dynamicNames.add(ts.idText(clause.name));
+      const nb = clause?.namedBindings;
+      if (nb && ts.isNamedImports(nb)) {
+        for (const e of nb.elements) {
+          if (e.propertyName && moduleExportName(e.propertyName) === 'default')
+            dynamicNames.add(ts.idText(e.name));
+        }
+      }
+    }
+    const walkDecls = (node: ts.Node): void => {
+      if (ts.isImportClause(node) && node.name) declare(ts.idText(node.name));
+      else if (ts.isNamespaceImport(node) || ts.isImportSpecifier(node))
+        declare(ts.idText(node.name));
+      else if (ts.isImportEqualsDeclaration(node)) declare(ts.idText(node.name));
+      else if (ts.isVariableDeclaration(node) || ts.isParameter(node))
+        for (const n of bindingNames(node.name)) declare(n);
+      else if (
+        (ts.isFunctionDeclaration(node) ||
+          ts.isFunctionExpression(node) ||
+          ts.isClassDeclaration(node) ||
+          ts.isClassExpression(node) ||
+          ts.isEnumDeclaration(node)) &&
+        node.name
+      )
+        declare(ts.idText(node.name));
+      ts.forEachChild(node, walkDecls);
+    };
+    walkDecls(sf);
+    const declaredOnce = (name: string): boolean => declCounts.get(name) === 1;
+    const isTrustedLoader = (callee: ts.Expression): boolean => {
+      const c = unwrap(callee);
+      if (ts.isIdentifier(c)) {
+        const name = ts.idText(c);
+        return declaredOnce(name) && (dynamicNames.has(name) || reactImports.get(name) === 'lazy');
+      }
+      if (ts.isPropertyAccessExpression(c) && ts.idText(c.name) === 'lazy') {
+        const recv = unwrap(c.expression);
+        return (
+          ts.isIdentifier(recv) && reactNames.has(ts.idText(recv)) && declaredOnce(ts.idText(recv))
+        );
+      }
+      return false;
+    };
+    const isImportCall = (e: ts.Expression): e is ts.CallExpression =>
+      ts.isCallExpression(e) &&
+      e.expression.kind === ts.SyntaxKind.ImportKeyword &&
+      e.arguments.length === 1;
+    /** `() => import('m')` or `() => import('m').then((m) => m.Name)`: the call and the export. */
+    const loaderImport = (
+      arg: ts.Expression,
+    ): { call: ts.CallExpression; exportName: string } | null => {
+      const fn = unwrap(arg);
+      if (!(ts.isArrowFunction(fn) || ts.isFunctionExpression(fn)) || fn.parameters.length > 0)
+        return null;
+      let body: ts.Expression;
+      if (ts.isBlock(fn.body)) {
+        const only = fn.body.statements.length === 1 ? fn.body.statements[0] : undefined;
+        if (!only || !ts.isReturnStatement(only) || !only.expression) return null;
+        body = only.expression;
+      } else {
+        body = fn.body;
+      }
+      let e = unwrap(body);
+      if (ts.isAwaitExpression(e)) e = unwrap(e.expression);
+      if (isImportCall(e)) return { call: e, exportName: 'default' };
+      if (!ts.isCallExpression(e) || e.arguments.length !== 1) return null;
+      const then = unwrap(e.expression);
+      if (!ts.isPropertyAccessExpression(then) || ts.idText(then.name) !== 'then') return null;
+      const target = unwrap(then.expression);
+      const cb = unwrap(e.arguments[0]!);
+      if (!isImportCall(target) || !ts.isArrowFunction(cb) || cb.parameters.length !== 1)
+        return null;
+      const param = cb.parameters[0]!.name;
+      if (!ts.isIdentifier(param) || ts.isBlock(cb.body)) return null;
+      const ret = unwrap(cb.body);
+      if (!ts.isPropertyAccessExpression(ret)) return null;
+      const recv = unwrap(ret.expression);
+      if (!ts.isIdentifier(recv) || ts.idText(recv) !== ts.idText(param)) return null;
+      return { call: target, exportName: ts.idText(ret.name) };
+    };
+    const walkLoaders = (node: ts.Node): void => {
+      if (
+        ts.isCallExpression(node) &&
+        node.arguments[0] !== undefined &&
+        isTrustedLoader(node.expression)
+      ) {
+        const loaded = loaderImport(node.arguments[0]);
+        if (loaded) {
+          const { parent, child } = parentOf(node);
+          const decl =
+            parent &&
+            ts.isVariableDeclaration(parent) &&
+            parent.initializer === child &&
+            ts.isIdentifier(parent.name) &&
+            (ts.getCombinedNodeFlags(parent) & ts.NodeFlags.Const) !== 0
+              ? parent
+              : undefined;
+          // `export const X = dynamic(...)`: other files would render X unchecked.
+          const statement = decl?.parent?.parent;
+          const exported =
+            statement !== undefined &&
+            ts.isVariableStatement(statement) &&
+            (statement.modifiers ?? []).some((m) => m.kind === ts.SyntaxKind.ExportKeyword);
+          loaderClaims.set(loaded.call, {
+            exportName: loaded.exportName,
+            local: decl ? ts.idText(decl.name as ts.Identifier) : null,
+            exported,
+          });
+        }
+      }
+      ts.forEachChild(node, walkLoaders);
+    };
+    walkLoaders(sf);
+  }
+  /** Local names bound to a FORGE component: only rendered as JSX, with the listed props. */
+  const forgeComponents = new Map<
+    string,
+    { module: string; exportName: string; props: readonly string[] }
+  >();
+
+  /**
    * Response objects: `res` / `response` (unless every declaration of the name is the result of a
    * `fetch` call), anything destructured from a `res` property, and any variable initialized from
    * one of those. Best effort: the data hooks that hand out the response are refused anyway.
@@ -876,6 +1041,141 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
     return out.sort().join(',');
   };
 
+  /**
+   * An import of a `src/forge/` module (`module`: canonical id) by this free-zone file. Only the
+   * public exports of FORGE_PUBLIC_API may be used, by name; anything that exposes the whole
+   * module (namespace import, `export *`, `import()`, `require()`) is refused. Finding keys name
+   * the module and the export, not the specifier: the same import written another way is the same
+   * finding.
+   */
+  const forgeImportCheck = (node: ts.Node, module: string): void => {
+    const id = module.toLowerCase();
+    const deny = (at: ts.Node, what: string, reason: string): void =>
+      add('forbidden-import', at, reason, `forge-import|${id}|${what}`);
+    const isPublic = publicForgeModule(module) !== undefined;
+    const internal = (what: string): string =>
+      `${what} ${module}: this module is internal to FORGE (free-zone code may only use the public FORGE components and helpers)`;
+    const whole = (at: ts.Node, what: string, form: string): void =>
+      deny(
+        at,
+        what,
+        isPublic
+          ? `${form} of ${module} is not allowed: import its public exports by name (${publicExportNames(module).join(', ')})`
+          : internal(`${form} of`),
+      );
+    const sideEffect = (at: ts.Node, typeNamesOnly = false): void => {
+      if (isPublic) return;
+      deny(
+        at,
+        'side-effect',
+        typeNamesOnly
+          ? `import of ${module} with inline type names only (the module may still be loaded): write \`import type { ... }\``
+          : internal('import of'),
+      );
+    };
+    /**
+     * One export of the module, bound to `local` (`null`: used without a name of this file;
+     * `exported`: the binding is itself exported to other files).
+     */
+    const bind = (
+      at: ts.Node,
+      exportName: string,
+      local: string | null,
+      exported = false,
+    ): void => {
+      const rule = forgeExportRule(module, exportName);
+      if (rule === undefined) {
+        deny(
+          at,
+          exportName,
+          isPublic
+            ? `"${exportName}" is not a public export of ${module} (public: ${publicExportNames(module).join(', ')})`
+            : internal(`"${exportName}" of`),
+        );
+        return;
+      }
+      if (rule.kind !== 'component') return;
+      if (exported) {
+        deny(
+          at,
+          `${exportName}|re-export`,
+          `FORGE component "${exportName}" of ${module} may not be re-exported: load and render it in the file that uses it`,
+        );
+        return;
+      }
+      if (local === null) {
+        deny(
+          at,
+          `${exportName}|unbound`,
+          `FORGE component "${exportName}" of ${module} must be imported (or loaded with dynamic()) into a const of this file and rendered as a JSX element`,
+        );
+        return;
+      }
+      forgeComponents.set(local, { module, exportName, props: rule.props });
+    };
+
+    if (ts.isImportDeclaration(node)) {
+      const clause = node.importClause;
+      if (!clause) return sideEffect(node);
+      if (clause.isTypeOnly) return;
+      let runtime = 0;
+      if (clause.name) {
+        runtime++;
+        bind(clause.name, 'default', ts.idText(clause.name));
+      }
+      const nb = clause.namedBindings;
+      if (nb && ts.isNamespaceImport(nb)) {
+        runtime++;
+        whole(nb, '*', 'a namespace import');
+      } else if (nb) {
+        for (const e of nb.elements) {
+          if (e.isTypeOnly) continue;
+          runtime++;
+          bind(e, moduleExportName(e.propertyName ?? e.name), ts.idText(e.name));
+        }
+      }
+      // Only inline `type` names: the statement may still load the module.
+      if (runtime === 0) sideEffect(node, true);
+      return;
+    }
+    if (ts.isExportDeclaration(node)) {
+      if (node.isTypeOnly) return;
+      const ec = node.exportClause;
+      if (!ec || ts.isNamespaceExport(ec)) {
+        whole(ec ?? node, 'export*', '`export * from`');
+        return;
+      }
+      let runtime = 0;
+      for (const e of ec.elements) {
+        if (e.isTypeOnly) continue;
+        runtime++;
+        const name = moduleExportName(e.propertyName ?? e.name);
+        if (forgeExportRule(module, name)?.kind === 'component') {
+          deny(
+            e,
+            `${name}|re-export`,
+            `FORGE component "${name}" of ${module} may not be re-exported: import and render it where it is used`,
+          );
+        } else {
+          bind(e, name, null);
+        }
+      }
+      if (runtime === 0) sideEffect(node, true);
+      return;
+    }
+    if (ts.isImportEqualsDeclaration(node)) {
+      if (!node.isTypeOnly) whole(node, 'require', '`import = require()`');
+      return;
+    }
+    if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) {
+      const claim = loaderClaims.get(node);
+      if (claim) bind(node, claim.exportName, claim.local, claim.exported);
+      else whole(node, 'import()', 'import() (other than `const X = dynamic(() => import(...))`)');
+      return;
+    }
+    whole(node, 'require', 'require()');
+  };
+
   const moduleCheck = (node: ts.Node, specifierNode: ts.Expression | undefined): void => {
     if (!specifierNode) {
       add('forbidden-import', node, 'module loaded without a static specifier');
@@ -887,15 +1187,34 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
       add('forbidden-import', node, 'dynamic module specifier');
       return;
     }
-    if (
-      spec.startsWith('./') ||
-      spec.startsWith('../') ||
-      spec.startsWith('@/') ||
-      spec.startsWith('~/') ||
-      spec === '.' ||
-      spec === '..'
-    )
+    if (spec.includes('!')) {
+      add(
+        'forbidden-import',
+        node,
+        `loader syntax in import "${truncate(spec)}"`,
+        `import|${spec}`,
+      );
       return;
+    }
+    if (spec.includes('\\')) {
+      add('forbidden-import', node, `backslash in import "${truncate(spec)}"`, `import|${spec}`);
+      return;
+    }
+    // Relative and `@/` imports: resolved, then checked against what they really point to.
+    const local = resolveLocalImport(path, spec);
+    if (local.kind === 'invalid') {
+      add('forbidden-import', node, local.reason, `import|${spec}`);
+      return;
+    }
+    if (local.kind === 'file') {
+      const target = importTarget(local.path);
+      if (target.kind === 'blocked') {
+        add('forbidden-import', node, target.reason, `import|local|${local.path.toLowerCase()}`);
+      } else if (target.kind === 'forge') {
+        forgeImportCheck(node, target.module);
+      }
+      return;
+    }
     if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(spec) && !spec.startsWith('node:')) {
       add('forbidden-import', node, `URL or scheme import "${truncate(spec)}"`, `import|${spec}`);
       return;
@@ -1224,7 +1543,7 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
     add(
       'server-response',
       node,
-      `"${name}" is not allowed: pages are static (server-side code can write the raw response)`,
+      `"${name}" is not allowed: pages are static (server-side data code can write the raw response or publish server values)`,
     );
 
   /** Rules for a property name used on some receiver (`recv.name`, `recv['name']`). */
@@ -1761,6 +2080,18 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
       moduleCheck(node, node.arguments[0]);
     } else if (ts.isImportTypeNode(node)) {
       // `import('x')` in a type position: no runtime effect.
+    } else if (ts.isMetaProperty(node) && node.keywordToken === ts.SyntaxKind.ImportKeyword) {
+      // `import.meta.webpackContext('../forge')` loads modules by folder: only `.url` is plain data.
+      const p = node.parent;
+      const prop =
+        ts.isPropertyAccessExpression(p) && p.expression === node ? ts.idText(p.name) : '';
+      if (prop !== 'url') {
+        add(
+          'forbidden-import',
+          node,
+          `import.meta${prop ? `.${prop}` : ''} is not allowed (module loading by the bundler)`,
+        );
+      }
     }
 
     if (ts.isIdentifier(node)) handleIdentifier(node);
@@ -1901,6 +2232,93 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
   visit(sf);
   addresses.joined('literals', literals);
 
+  /**
+   * FORGE components bound in this file: every reference must be a JSX tag with listed props (an
+   * alias, a wrapper, `createElement`, a re-export or spread props could hand them any prop, such
+   * as a raw pool address or a test override).
+   */
+  const forgeJsxCheck = (
+    el: ts.JsxOpeningElement | ts.JsxSelfClosingElement,
+    local: string,
+    b: { module: string; exportName: string; props: readonly string[] },
+  ): void => {
+    const label = `${b.module.toLowerCase()}#${b.exportName}`;
+    const allowed = b.props.filter((p) => p !== 'children');
+    const list = allowed.length > 0 ? allowed.join(', ') : 'none';
+    for (const a of el.attributes.properties) {
+      if (ts.isJsxSpreadAttribute(a)) {
+        add(
+          'forbidden-import',
+          a,
+          `spread props on the FORGE component <${local}> (allowed props: ${list})`,
+          `forge-usage|${label}|spread`,
+        );
+        continue;
+      }
+      const prop = attrName(a);
+      if (prop === 'key' || b.props.includes(prop)) continue;
+      add(
+        'forbidden-import',
+        a,
+        `prop "${prop}" is not allowed on the FORGE component <${local}> (allowed props: ${list})`,
+        `forge-usage|${label}|prop:${prop}`,
+      );
+    }
+    if (ts.isJsxOpeningElement(el) && !b.props.includes('children')) {
+      const children = el.parent.children.filter(
+        (c) =>
+          !(ts.isJsxText(c) && c.containsOnlyTriviaWhiteSpaces) &&
+          !(ts.isJsxExpression(c) && c.expression === undefined),
+      );
+      if (children.length > 0) {
+        add(
+          'forbidden-import',
+          el,
+          `the FORGE component <${local}> takes no children`,
+          `forge-usage|${label}|prop:children`,
+        );
+      }
+    }
+  };
+  if (forgeComponents.size > 0) {
+    const forgeUsage = (node: ts.Node): void => {
+      if (ts.isIdentifier(node)) {
+        const local = ts.idText(node);
+        const b = forgeComponents.get(local);
+        const p = node.parent;
+        if (b && p) {
+          const label = `${b.module.toLowerCase()}#${b.exportName}`;
+          if ((ts.isJsxOpeningElement(p) || ts.isJsxSelfClosingElement(p)) && p.tagName === node) {
+            forgeJsxCheck(p, local, b);
+          } else if (ts.isExportSpecifier(p)) {
+            if ((p.propertyName ?? p.name) === node && !p.parent.parent.moduleSpecifier) {
+              add(
+                'forbidden-import',
+                p,
+                `FORGE component "${local}" may not be re-exported: import and render it where it is used`,
+                `forge-usage|${label}|re-export`,
+              );
+            }
+          } else if (
+            !ts.isJsxClosingElement(p) &&
+            !(ts.isVariableDeclaration(p) && p.name === node) &&
+            isValueReference(node) &&
+            !isTypePosition(node)
+          ) {
+            add(
+              'forbidden-import',
+              node,
+              `the FORGE component "${local}" may only be rendered as a JSX element (<${local} ... />), not used as a value`,
+              `forge-usage|${label}|value:${snippet(p)}`,
+            );
+          }
+        }
+      }
+      ts.forEachChild(node, forgeUsage);
+    };
+    forgeUsage(sf);
+  }
+
   for (const acc of folder.accumulatedStrings()) addresses.run('acc', acc, 1);
 
   const identifiers = new Set<string>();
@@ -1917,6 +2335,11 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
     ...scriptUrlFindings(text),
     ...hiddenUnicodeFindings(text, true),
   ];
+}
+
+/** Text of an import/export name (`a`, `default`, or a string name such as `'a-b'`). */
+function moduleExportName(name: ts.ModuleExportName): string {
+  return ts.isIdentifier(name) ? ts.idText(name) : name.text;
 }
 
 function isAssign(kind: ts.SyntaxKind): boolean {

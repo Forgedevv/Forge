@@ -46,7 +46,19 @@ all of your work, so follow these rules strictly:
 - No `eval`, `new Function`, `setTimeout`/`setInterval` with a string, `dangerouslySetInnerHTML`,
   `javascript:` URLs, or access to `window`/`globalThis` properties by computed name.
 - No environment variables, secrets or server code in pages or components. Pages are static: no
-  `getServerSideProps`, no `getInitialProps`, and never a request or response object (`res`).
+  `getServerSideProps`, no `getInitialProps`, no `getStaticProps`, no `getStaticPaths`, and never
+  a request or response object (`res`).
+- From `src/forge/`, import only its public components and helpers, by name, with `@/forge/...`:
+  `CoinTradePanel` (props `mint`, `symbol`, `displayDecimals`, `className`), `JupiterTrade`
+  (`mint`), `CreateCoin` and `ClaimCreatorFees` (no props), `siteConfig`, `cluster` and
+  `poolCreationFeeSol` from `@/forge/config`, `DataStreamProvider`, `useDataStream` and
+  `useDataStreamListener`, the token icons of `@/forge/token-icon`, `TokenChart`, and the
+  formatting helpers (`formatUnits`, `formatBps`, `formatSol`, `@/forge/chart/formatter`).
+  Everything else there is internal and refused, as are `import * as`, `export * from` and
+  `require` of `src/forge/`. Render a FORGE component as a JSX element only, with those props and
+  no spread (`<CoinTradePanel mint={mint} />`), never as a value and never re-exported; load one on
+  demand only as `const CoinTradePanel = dynamic(() => import('@/forge/CoinTradePanel'), { ssr: false });`.
+  Never import `forge.config.json`, `src/pages/api/` or `node_modules` by path.
 - No hidden, zero-width or bidirectional Unicode characters.
 - No symlinks, no executable files, no binary files other than images and fonts in `public/`.
 
