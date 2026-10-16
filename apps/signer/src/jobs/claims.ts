@@ -15,7 +15,9 @@
  *   4. once the pool has migrated to DAMM v2, its creator keeps a permanently locked position
  *      that earns the migrated pool's trading fees (devnet test 2). When the DBC share had nothing
  *      to send, the creator's positions are read (core `findCreatorDammV2Positions`) and, if their
- *      pending SOL fees reach the same threshold, the position fee claim is built by core
+ *      pending SOL fees reach their own, higher threshold (SIGNER_CLAIMS_MIN_POSITION_LAMPORTS:
+ *      every position claim pays the rent of a temporary WSOL account, which reaches the vault
+ *      with the fees), the position fee claim is built by core
  *      (`claim_position_fee`, SOL unwrapped to the vault), checked against its own policy
  *      (`assertCreatorPositionClaimTx`: no remove liquidity, no transfer of the position NFT, no
  *      other program), signed, journaled, sent and confirmed the same way.
@@ -35,6 +37,7 @@ import { NATIVE_MINT } from '@solana/spl-token';
 import { PublicKey, type Transaction } from '@solana/web3.js';
 import { z } from 'zod';
 import type { LaunchpadStatus } from '@forge/shared';
+import { ClaimError } from '@forge/core';
 import { creatorRole } from '../keystore.js';
 import type { CreatorPoolState, CreatorPositionsState, SignerCore } from '../core-adapter.js';
 import {
@@ -128,6 +131,11 @@ export const ClaimJournalEntry = z.object({
   pendingSince: z.string().nullable(),
   /** Same for the position fees (absent in older journals). */
   positionPendingSince: z.string().nullable().default(null),
+  /**
+   * When the operator was told that WSOL in the creator's account blocks the payer-paid claim
+   * (core `claimer_wsol_not_empty`): alerted once, reset by the next claim that builds.
+   */
+  wsolBlockedAlertedAt: z.string().nullable().default(null),
   /** When the one-time "graduated" notice was sent. */
   graduationNoticeAt: z.string().nullable(),
   consecutiveFailures: z.number().int().nonnegative(),
@@ -146,8 +154,14 @@ export const CLAIM_FEE_BUFFER_LAMPORTS = 20_000n;
 export interface ClaimsConfig {
   /** FORGE_MULTISIG_VAULT (from `requireAddresses` of @forge/core at startup). */
   vault: PublicKey;
-  /** Claim only when the unclaimed share (lamports, DBC or position fees) reaches this amount. */
+  /** Claim the DBC creator share only when it (lamports) reaches this amount. */
   minClaimLamports: bigint;
+  /**
+   * Claim the DAMM v2 position fees only when they (lamports) reach this amount. Higher than
+   * the DBC one: every position claim pays the rent of a temporary WSOL account (about 0.002 SOL),
+   * which reaches the vault with the fees but is lost to the payer each time.
+   */
+  minPositionClaimLamports: bigint;
   /** Who pays the network fee and the temporary accounts' rent: the payer wallet or the creator. */
   feePayer: 'payer' | 'creator';
   /** Alert when fees above the threshold stay unclaimed longer than this (default 48 h). */
@@ -285,12 +299,43 @@ export function createClaimsJob(deps: ClaimsDeps): ClaimsJob {
     lastPositionClaim: null,
     pendingSince: null,
     positionPendingSince: null,
+    wsolBlockedAlertedAt: null,
     graduationNoticeAt: null,
     consecutiveFailures: 0,
     lastError: null,
   });
 
   const label = (kind: ClaimKind) => (kind === 'dbc' ? 'creator-fee' : 'position-fee');
+
+  /**
+   * Core refused to build the claim: the creator's WSOL account holds WSOL that the close would
+   * hand to the payer (anyone can put a lamport there). Alerted once per pool, not every run,
+   * until a claim of that pool builds again; the pool is left to the operator meanwhile.
+   */
+  async function wsolBlocked(ctx: PoolContext, kind: ClaimKind, err: ClaimError): Promise<ClaimOutcome> {
+    const { lp, poolKey } = ctx;
+    const outcome: ClaimOutcome = {
+      launchpadId: lp.id,
+      pool: poolKey,
+      kind,
+      result: 'manual',
+      reason: 'claimer_wsol_not_empty',
+    };
+    if (ctx.entry.wsolBlockedAlertedAt !== null) {
+      log.warn({ launchpadId: lp.id, pool: poolKey, kind }, 'claim still blocked by WSOL in the creator account');
+      return outcome;
+    }
+    await alert(
+      'high',
+      'creator_wsol_blocked',
+      `A ${label(kind)} claim is blocked: the creator's WSOL account holds WSOL that closing it would hand to the fee payer. Unwrap it, or claim it with the creator paying`,
+      { launchpadId: lp.id, pool: poolKey, kind, error: err.message },
+      `creator_wsol_blocked:${poolKey}`,
+    );
+    ctx.entry = { ...ctx.entry, wsolBlockedAlertedAt: iso() };
+    await journal.put(poolKey, ctx.entry);
+    return outcome;
+  }
   const alertCode = (kind: ClaimKind, suffix: string) =>
     kind === 'dbc' ? `creator_claim_${suffix}` : `position_claim_${suffix}`;
 
@@ -422,7 +467,15 @@ export function createClaimsJob(deps: ClaimsDeps): ClaimsJob {
         return { outcome: { ...base, result: 'skipped', reason: 'payer_low_balance' } };
       }
 
-      const built = await build(feePayer);
+      let built: BuiltClaim | { outcome: ClaimOutcome };
+      try {
+        built = await build(feePayer);
+      } catch (err) {
+        if (err instanceof ClaimError && err.code === 'claimer_wsol_not_empty') {
+          return { outcome: await wsolBlocked(ctx, kind, err) };
+        }
+        throw err;
+      }
       if ('outcome' in built) return built;
       // The kill switch may have been turned on since the run started: re-read it before signing.
       const pause = await checkPaused(deps.flags, JOB_FLAGS.claims, config.paused, log);
@@ -438,6 +491,8 @@ export function createClaimsJob(deps: ClaimsDeps): ClaimsJob {
       const { raw, signature } = await signWithKeystore(keystore, built.transaction, signers);
       ctx.entry = {
         ...ctx.entry,
+        // A claim that builds is no longer blocked by WSOL in the creator's account.
+        wsolBlockedAlertedAt: null,
         inFlight: {
           kind,
           signature,
@@ -566,7 +621,7 @@ export function createClaimsJob(deps: ClaimsDeps): ClaimsJob {
       return { ...base, result: 'manual', reason: 'creator_position_missing' };
     }
     const claimable = read.claimable.quote;
-    if (claimable < config.minClaimLamports) {
+    if (claimable < config.minPositionClaimLamports) {
       if (ctx.entry.positionPendingSince !== null) {
         ctx.entry = { ...ctx.entry, positionPendingSince: null };
         await journal.put(poolKey, ctx.entry);
@@ -597,7 +652,7 @@ export function createClaimsJob(deps: ClaimsDeps): ClaimsJob {
       if (!tx || built.lastValidBlockHeight === null) {
         return { outcome: { ...base, result: 'nothing_to_claim' } };
       }
-      if (built.summary.claimable.quote < config.minClaimLamports) {
+      if (built.summary.claimable.quote < config.minPositionClaimLamports) {
         return {
           outcome: { ...base, result: 'below_threshold', claimable: built.summary.claimable.quote },
         };
@@ -857,6 +912,11 @@ export function createClaimsJob(deps: ClaimsDeps): ClaimsJob {
 /** Default threshold: 0.01 SOL (a claim advances ~0.004 SOL of rent, returned to the vault). */
 export const DEFAULT_MIN_CLAIM_LAMPORTS = 10_000_000n;
 /**
+ * Default of SIGNER_CLAIMS_MIN_POSITION_LAMPORTS (0.05 SOL): a position claim pays the rent of a
+ * temporary WSOL account (about 0.002 SOL) every time, so it waits for more than a DBC claim.
+ */
+export const DEFAULT_MIN_POSITION_CLAIM_LAMPORTS = 50_000_000n;
+/**
  * Default run interval: 1 hour. A run is read-only unless a pool's unclaimed fees (DBC share or,
  * after migration, DAMM v2 position fees) reach the threshold, so the hourly cadence costs RPC
  * reads only. `OPS.claimIntervalHours` of @forge/shared (24) is no longer the signer default.
@@ -884,6 +944,11 @@ export function claimsConfigFromEnv(
         env.SIGNER_CLAIMS_MIN_LAMPORTS,
         'SIGNER_CLAIMS_MIN_LAMPORTS',
         DEFAULT_MIN_CLAIM_LAMPORTS,
+      ),
+      minPositionClaimLamports: parseLamportsEnv(
+        env.SIGNER_CLAIMS_MIN_POSITION_LAMPORTS,
+        'SIGNER_CLAIMS_MIN_POSITION_LAMPORTS',
+        DEFAULT_MIN_POSITION_CLAIM_LAMPORTS,
       ),
       feePayer,
       paused: parseBoolEnv(env.SIGNER_CLAIMS_PAUSED, 'SIGNER_CLAIMS_PAUSED', false),

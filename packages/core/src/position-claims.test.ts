@@ -621,20 +621,36 @@ describe('buildCreatorPositionFeeClaimTx', () => {
     expect((err as ClaimError).code).toBe('not_migrated');
   });
 
-  it('refuses a creator WSOL account holding WSOL unless the creator is the receiver', async () => {
+  it('accepts a creator WSOL account holding WSOL: it reaches the receiver with the close', async () => {
+    // Anyone can send 1 lamport of WSOL to the creator's account; refusing it would let anyone
+    // block the pool's claims. The temporary account is closed to the receiver, so the WSOL is
+    // simply received, and counted.
     const held = async () =>
       mockConnection({
         overrides: { [fx('creatorPosition').address]: await withPendingFees() },
         extra: { [creatorWsol().toBase58()]: tokenAccount(NATIVE_MINT, CREATOR, 5n) },
       });
-    const err = await build({}, await held()).catch((e: unknown) => e);
-    expect((err as ClaimError).code).toBe('claimer_wsol_not_empty');
-    const own = await build({ receiver: CREATOR }, await held());
-    expect(own.transaction).not.toBeNull();
-    expect(own.transaction!.instructions.at(-1)!.keys[1]!.pubkey.equals(CREATOR)).toBe(true);
+    const result = await build({}, await held());
+    expect(result.transaction).not.toBeNull();
+    expect(result.transaction!.instructions.at(-1)!.keys[1]!.pubkey.equals(RECEIVER)).toBe(true);
+    expect(result.summary.existingWsolLamports).toBe(5n);
     // An existing account costs no rent; its whole balance is handed over on close.
-    expect(own.summary.costs.unwrapAccountRentLamports).toBe(0n);
+    expect(result.summary.costs.unwrapAccountRentLamports).toBe(0n);
+    expect(result.summary.receiverQuoteLamports).toBe(PENDING_QUOTE + TOKEN_RENT + 5n);
+    expect(result.summary.netLamports).toBe(
+      PENDING_QUOTE + TOKEN_RENT + 5n - result.summary.costs.payerTotalLamports,
+    );
+    // The creator as its own receiver: the same.
+    const own = await build({ receiver: CREATOR }, await held());
+    expect(own.transaction!.instructions.at(-1)!.keys[1]!.pubkey.equals(CREATOR)).toBe(true);
+    expect(own.summary.existingWsolLamports).toBe(5n);
     expect(own.summary.receiverQuoteLamports).toBe(PENDING_QUOTE + TOKEN_RENT + 5n);
+    // An empty or new account: nothing counted.
+    const empty = await build(
+      {},
+      mockConnection({ overrides: { [fx('creatorPosition').address]: await withPendingFees() } }),
+    );
+    expect(empty.summary.existingWsolLamports).toBe(0n);
   });
 
   it('pins the receiver with expectedReceiver and rejects unusable receivers', async () => {

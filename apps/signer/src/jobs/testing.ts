@@ -719,10 +719,12 @@ export function buildFakeClaimTx(
     randomAddress(), // eventAuthority
     programId,
   ].map((pubkey, i) => ({ pubkey, isSigner: i === 8, isWritable: [1, 2, 3, 4, 5].includes(i) }));
+  // Arguments: max_base_amount (uncapped), max_quote_amount (the forwarded amount in the exact
+  // layout, uncapped when the account is closed to the receiver), like core.
   const data = Buffer.alloc(24);
   DBC_CREATOR_CLAIM_DISCRIMINATORS[0]!.copy(data, 0);
   data.writeBigUInt64LE((1n << 64n) - 1n, 8);
-  data.writeBigUInt64LE((1n << 64n) - 1n, 16);
+  data.writeBigUInt64LE(forwardLamports ?? (1n << 64n) - 1n, 16);
   const tx = new Transaction().add(
     createAssociatedTokenAccountIdempotentInstruction(payer, receiverBase, receiver, baseMint),
     createAssociatedTokenAccountIdempotentInstruction(payer, tempWsol, creator, NATIVE_MINT),

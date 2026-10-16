@@ -9,6 +9,7 @@ import {
 } from '@solana/spl-token';
 import { PublicKey, SystemProgram, TransactionInstruction } from '@solana/web3.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { ClaimError } from '@forge/core';
 import { creatorRole, openKeystore, type Keystore } from '../keystore.js';
 import {
   ClaimJournalEntry,
@@ -106,7 +107,13 @@ async function setup(
       flags,
       alerter,
       logger: silentJobLogger,
-      config: { vault, minClaimLamports: MIN, feePayer: 'payer', ...options.config },
+      config: {
+        vault,
+        minClaimLamports: MIN,
+        minPositionClaimLamports: MIN,
+        feePayer: 'payer',
+        ...options.config,
+      },
       retry,
       onBeforeSend: () => undefined,
       sleep,
@@ -321,7 +328,13 @@ describe('claims: refusals and alerts', () => {
       (
         await t
           .job({
-            config: { vault: t.vault, minClaimLamports: MIN, feePayer: 'payer', paused: true },
+            config: {
+              vault: t.vault,
+              minClaimLamports: MIN,
+              minPositionClaimLamports: MIN,
+              feePayer: 'payer',
+              paused: true,
+            },
           })
           .runOnce()
       ).reason,
@@ -646,6 +659,69 @@ describe('position fee claims: migrated pools', () => {
     });
   });
 
+  it('uses its own, higher threshold for position fees, separate from the DBC one', async () => {
+    // Above the DBC threshold, below the position one: the position fees wait.
+    const waits = await migrated({
+      positionQuote: 3n * MIN,
+      config: { minPositionClaimLamports: 5n * MIN },
+    });
+    expect((await waits.job().runOnce()).outcomes[1]).toMatchObject({
+      kind: 'position',
+      result: 'below_threshold',
+      claimable: 3n * MIN,
+    });
+    expect(waits.chain.calls).not.toContain('sendRawTransaction');
+    const due = await migrated({
+      positionQuote: 5n * MIN,
+      config: { minPositionClaimLamports: 5n * MIN },
+    });
+    expect((await due.job().runOnce()).outcomes[1]).toMatchObject({
+      kind: 'position',
+      result: 'claimed',
+      lamports: 5n * MIN,
+    });
+    // The DBC share keeps its own threshold whatever the position one.
+    const dbc = await setup({ claimable: MIN, config: { minPositionClaimLamports: 100n * MIN } });
+    expect((await dbc.job().runOnce()).outcomes[0]).toMatchObject({ kind: 'dbc', result: 'claimed' });
+  });
+
+  it('alerts once, not every run, when WSOL in the creator account blocks a payer-paid claim', async () => {
+    const t = await setup();
+    const blocked = {
+      ...t.core,
+      buildCreatorClaimTx: async () => {
+        throw new ClaimError('claimer_wsol_not_empty', 'the creator WSOL account holds 1 lamport');
+      },
+    };
+    const alerts = () => t.alerter.alerts.filter((a) => a.code === 'creator_wsol_blocked');
+    const first = await t.job({ core: blocked }).runOnce();
+    expect(first.outcomes[0]).toMatchObject({
+      kind: 'dbc',
+      result: 'manual',
+      reason: 'claimer_wsol_not_empty',
+    });
+    expect(alerts()).toHaveLength(1);
+    expect(alerts()[0]!.level).toBe('high');
+    expect(alerts()[0]!.details).toMatchObject({ launchpadId: t.launchpadId, kind: 'dbc' });
+    expect(t.alerter.alerts.map((a) => a.code)).not.toContain('creator_claim_error');
+    // The next runs (the same condition, hour after hour) stay silent.
+    t.clock.advance(60 * 60_000);
+    expect((await t.job({ core: blocked }).runOnce()).outcomes[0]).toMatchObject({
+      result: 'manual',
+      reason: 'claimer_wsol_not_empty',
+    });
+    t.clock.advance(60 * 60_000);
+    await t.job({ core: blocked }).runOnce();
+    expect(alerts()).toHaveLength(1);
+    expect((await t.journal.get(t.pool.toBase58()))?.wsolBlockedAlertedAt).not.toBeNull();
+    // Once the account is unwrapped the claim builds, and a new blockage alerts again.
+    expect((await t.job().runOnce()).outcomes[0]).toMatchObject({ kind: 'dbc', result: 'claimed' });
+    expect((await t.journal.get(t.pool.toBase58()))?.wsolBlockedAlertedAt).toBeNull();
+    t.poolState().claimableQuote = 50_000_000n;
+    await t.job({ core: blocked }).runOnce();
+    expect(alerts()).toHaveLength(2);
+  });
+
   it('lets the creator wallet pay a position claim when configured', async () => {
     const t = await migrated({ config: { feePayer: 'creator' } });
     const signSpy = vi.spyOn(keystore, 'withSigner');
@@ -948,14 +1024,23 @@ describe('claimsConfigFromEnv', () => {
     expect(c.config).toMatchObject({
       vault,
       minClaimLamports: 10_000_000n,
+      // Position claims pay about 0.002 SOL of WSOL rent each time: a higher default.
+      minPositionClaimLamports: 50_000_000n,
       feePayer: 'payer',
       paused: false,
     });
+    expect(
+      claimsConfigFromEnv({ SIGNER_CLAIMS_MIN_POSITION_LAMPORTS: '7' }, vault).config
+        .minPositionClaimLamports,
+    ).toBe(7n);
     expect(claimsConfigFromEnv({ SIGNER_CLAIMS_FEE_PAYER: 'creator' }, vault).config.feePayer).toBe(
       'creator',
     );
     expect(() => claimsConfigFromEnv({ SIGNER_CLAIMS_FEE_PAYER: 'vault' }, vault)).toThrow();
     expect(() => claimsConfigFromEnv({ SIGNER_CLAIMS_MIN_LAMPORTS: '-1' }, vault)).toThrow();
+    expect(() =>
+      claimsConfigFromEnv({ SIGNER_CLAIMS_MIN_POSITION_LAMPORTS: '1.5' }, vault),
+    ).toThrow();
   });
 });
 

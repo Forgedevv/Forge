@@ -25,8 +25,10 @@
  *   exactly that amount of SOL to the receiver.
  * So the payer's balance only decreases by the network fee and the one-time rent below, and the
  * claimer's balance does not change at all when the claimer is not the payer (read-only signer).
- * A claimer WSOL account that already holds WSOL is refused when the claimer is not the payer
- * (`claimer_wsol_not_empty`): closing it would hand that WSOL to the payer.
+ * A claimer WSOL account that already holds WSOL (anyone can send some to it) goes with the
+ * close: to the receiver when the receiver pays (accepted and counted in the summary as
+ * received, `existingWsolLamports`), back to the claimer when it pays its own claim (accepted).
+ * It is refused when the close would hand it to a payer that is neither (`claimer_wsol_not_empty`).
  *
  * Base side (the coin): the program needs a base token account even when there is nothing to
  * claim (FORGE configs collect fees in SOL only). It is the receiver's associated account, created
@@ -142,6 +144,12 @@ export interface ClaimSummary {
    */
   receiverQuoteLamports: bigint;
   quoteIsExact: boolean;
+  /**
+   * WSOL the claimer's temporary account already held when the transaction was built and that
+   * the close hands to the receiver (counted in `receiverQuoteLamports`). Zero when the account
+   * is empty or new, and when the close returns it to a claimer paying its own claim.
+   */
+  existingWsolLamports: bigint;
   /** Zero costs when there is no transaction. */
   costs: ClaimCosts;
   /**
@@ -293,7 +301,13 @@ async function buildTradingClaim(
       transaction: null,
       lastValidBlockHeight: null,
       skipReason: 'nothing_to_claim',
-      summary: { ...baseSummary, receiverQuoteLamports: 0n, costs: ZERO_COSTS, netLamports: 0n },
+      summary: {
+        ...baseSummary,
+        receiverQuoteLamports: 0n,
+        existingWsolLamports: 0n,
+        costs: ZERO_COSTS,
+        netLamports: 0n,
+      },
     };
   }
 
@@ -337,9 +351,11 @@ async function buildTradingClaim(
     ),
   ]);
   const [receiverBaseInfo, claimerWsolInfo, receiverInfo] = infos;
-  // The temporary WSOL account is closed to the payer: when it already holds WSOL of a claimer
-  // that is not the payer, that WSOL would move to the payer. Refuse instead.
-  if (claimerWsolInfo && !claimer.equals(payer) && claimerWsolInfo.owner.equals(TOKEN_PROGRAM_ID)) {
+  // The temporary WSOL account is closed to the payer. WSOL it already holds (anyone can send
+  // some, 1 lamport is enough) goes with the close: fine when the payer is the receiver (it is
+  // received) or the claimer itself (its own); refused when it would reach a third-party payer.
+  let existingWsolLamports = 0n;
+  if (claimerWsolInfo && claimerWsolInfo.owner.equals(TOKEN_PROGRAM_ID)) {
     let amount: bigint;
     try {
       amount = unpackAccount(claimerWsol, claimerWsolInfo, TOKEN_PROGRAM_ID).amount;
@@ -347,12 +363,13 @@ async function buildTradingClaim(
       // Not a token account (e.g. lamports sent to the address): the idempotent creation takes it.
       amount = 0n;
     }
-    if (amount > 0n) {
+    if (amount > 0n && !claimer.equals(payer) && !receiver.equals(payer)) {
       throw new ClaimError(
         'claimer_wsol_not_empty',
         `The claimer's WSOL account ${claimerWsol.toBase58()} holds ${amount} lamports of WSOL: unwrap it before claiming with another payer`,
       );
     }
+    if (receiver.equals(payer)) existingWsolLamports = amount;
   }
   if (exact && quote > 0n) {
     const size = receiverInfo?.data.length ?? 0;
@@ -420,11 +437,13 @@ async function buildTradingClaim(
     payerTotalLamports,
     payerRequiredBalanceLamports: payerTotalLamports + temporaryLamports,
   };
+  const receiverQuoteLamports = quote + existingWsolLamports;
   const summary: ClaimSummary = {
     ...baseSummary,
-    receiverQuoteLamports: quote,
+    receiverQuoteLamports,
+    existingWsolLamports,
     costs,
-    netLamports: quote - payerTotalLamports,
+    netLamports: receiverQuoteLamports - payerTotalLamports,
   };
   if (options.minNetLamports !== undefined && !isClaimWorthwhile(summary, options.minNetLamports)) {
     return { transaction: null, lastValidBlockHeight: null, skipReason: 'not_worthwhile', summary };

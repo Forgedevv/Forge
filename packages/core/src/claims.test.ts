@@ -326,18 +326,31 @@ describe('buildCreatorClaimTx — claim to another receiver (FORGE: the multisig
     expect(summary.costs.networkFeeLamports).toBe(2n * CLAIM_LAMPORTS_PER_SIGNATURE);
   });
 
-  it('refuses a creator WSOL account holding WSOL when another wallet pays', async () => {
+  it('refuses a creator WSOL account holding WSOL only when a third-party payer would get it', async () => {
+    const held = () =>
+      mockConnection({ extra: { [wsol.toBase58()]: wsolAccount(FORGE_CREATOR, 5n) } });
+    // Closed to a payer that is neither the creator nor the receiver: the WSOL would be its.
     const payer = Keypair.generate().publicKey;
-    const mock = mockConnection({ extra: { [wsol.toBase58()]: wsolAccount(FORGE_CREATOR, 5n) } });
-    const err = await build(payer, mock).catch((e: unknown) => e);
+    const err = await build(payer, held()).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(ClaimError);
     expect((err as ClaimError).code).toBe('claimer_wsol_not_empty');
-    // The creator paying itself gets its own WSOL back: allowed.
-    const own = await build(
-      undefined,
-      mockConnection({ extra: { [wsol.toBase58()]: wsolAccount(FORGE_CREATOR, 5n) } }),
-    );
+    // The creator paying itself gets its own WSOL back: allowed, nothing counted for the receiver.
+    const own = await build(undefined, held());
     expect(own.transaction).not.toBeNull();
+    expect(own.summary.existingWsolLamports).toBe(0n);
+    expect(own.summary.receiverQuoteLamports).toBe(TEST2_CREATOR_QUOTE);
+    // The receiver paying (uncapped layout, closed to it): the WSOL is received, and counted.
+    // Anyone could otherwise block a pool's claims by sending 1 lamport of WSOL to the account.
+    const received = await build(RECEIVER, held());
+    expect(received.transaction).not.toBeNull();
+    expect(received.summary.quoteIsExact).toBe(false);
+    expect(received.summary.existingWsolLamports).toBe(5n);
+    expect(received.summary.receiverQuoteLamports).toBe(TEST2_CREATOR_QUOTE + 5n);
+    expect(received.summary.netLamports).toBe(
+      TEST2_CREATOR_QUOTE + 5n - received.summary.costs.payerTotalLamports,
+    );
+    // Without WSOL in the account, nothing is counted.
+    expect((await build(RECEIVER)).summary.existingWsolLamports).toBe(0n);
   });
 
   it('refuses a receiver that would not be rent-exempt after the transfer', async () => {

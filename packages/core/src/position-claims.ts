@@ -445,11 +445,18 @@ export interface PositionClaimSummary {
   claimable: TokenAmounts;
   /**
    * SOL the receiver gets from the transaction, lamports: the claimable SOL fees plus the
-   * lamports of the temporary WSOL account closed to it (its rent). A lower bound: the claim is
-   * uncapped and fees accrue until it executes. Never exact (`quoteIsExact` is always false).
+   * lamports of the temporary WSOL account closed to it (its rent, and the WSOL it already held).
+   * A lower bound: the claim is uncapped and fees accrue until it executes. Never exact
+   * (`quoteIsExact` is always false).
    */
   receiverQuoteLamports: bigint;
   quoteIsExact: false;
+  /**
+   * WSOL the creator's temporary account already held when the transaction was built (anyone
+   * can send some to it): it reaches the receiver with the close, counted in
+   * `receiverQuoteLamports`. Zero when the account is empty or new.
+   */
+  existingWsolLamports: bigint;
   /** Zero costs when there is no transaction. */
   costs: PositionClaimCosts;
   /** `receiverQuoteLamports - costs.payerTotalLamports`. Coin fees are not valued. */
@@ -593,7 +600,13 @@ export async function buildCreatorPositionFeeClaimTx(
     transaction: null,
     lastValidBlockHeight: null,
     skipReason,
-    summary: { ...baseSummary, receiverQuoteLamports: 0n, costs: ZERO_COSTS, netLamports: 0n },
+    summary: {
+      ...baseSummary,
+      receiverQuoteLamports: 0n,
+      existingWsolLamports: 0n,
+      costs: ZERO_COSTS,
+      netLamports: 0n,
+    },
   });
   if (positions.length === 0) return skip('no_position');
   if (claimable.base === 0n && claimable.quote === 0n) return skip('nothing_to_claim');
@@ -667,22 +680,16 @@ export async function buildCreatorPositionFeeClaimTx(
     ),
   ]);
   const [receiverBaseInfo, creatorWsolInfo] = infos;
-  // The temporary account is closed to the receiver: WSOL already held by the creator would go
-  // with it. Refuse unless the creator is the receiver.
-  if (creatorWsolInfo && !params.creator.equals(receiver)) {
-    let amount = 0n;
-    if (creatorWsolInfo.owner.equals(TOKEN_PROGRAM_ID)) {
-      try {
-        amount = unpackAccount(creatorWsol, creatorWsolInfo, TOKEN_PROGRAM_ID).amount;
-      } catch {
-        amount = 0n;
-      }
-    }
-    if (amount > 0n) {
-      throw new ClaimError(
-        'claimer_wsol_not_empty',
-        `The creator's WSOL account ${creatorWsol.toBase58()} holds ${amount} lamports of WSOL: unwrap it before claiming to another receiver`,
-      );
+  // The temporary account is closed to the receiver: WSOL it already holds (anyone can send
+  // some to it, 1 lamport is enough) simply goes with it, counted as received. Refusing it
+  // would let anyone block a pool's claims for the price of a lamport.
+  let existingWsolLamports = 0n;
+  if (creatorWsolInfo && creatorWsolInfo.owner.equals(TOKEN_PROGRAM_ID)) {
+    try {
+      existingWsolLamports = unpackAccount(creatorWsol, creatorWsolInfo, TOKEN_PROGRAM_ID).amount;
+    } catch {
+      // Not a token account (e.g. lamports sent to the address): the idempotent creation takes it.
+      existingWsolLamports = 0n;
     }
   }
 
@@ -734,6 +741,7 @@ export async function buildCreatorPositionFeeClaimTx(
   const summary: PositionClaimSummary = {
     ...baseSummary,
     receiverQuoteLamports,
+    existingWsolLamports,
     costs,
     netLamports: receiverQuoteLamports - payerTotalLamports,
   };
