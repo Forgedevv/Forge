@@ -1,6 +1,7 @@
 /// <reference types="node" />
-import { createHmac } from 'node:crypto';
+import { createHash, createHmac, randomBytes } from 'node:crypto';
 import {
+  SIGNER_NONCE_HEADER,
   SIGNER_ROUTES,
   SIGNER_SIGNATURE_HEADER,
   SIGNER_TIMESTAMP_HEADER,
@@ -22,6 +23,8 @@ export interface SignerClientOptions {
   /** Base backoff delay in ms (doubles on each retry). Default 200. */
   retryBaseMs?: number;
   sleep?: (ms: number) => Promise<void>;
+  /** Returns a fresh request nonce (32 lowercase hex characters). Default: 16 random bytes. */
+  nonce?: () => string;
 }
 
 export interface SignerClient {
@@ -50,6 +53,7 @@ export function createSignerClient(opts: SignerClientOptions): SignerClient {
   const maxAttempts = opts.maxAttempts ?? 3;
   const retryBaseMs = opts.retryBaseMs ?? 200;
   const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const nonce = opts.nonce ?? (() => randomBytes(16).toString('hex'));
   const baseUrl = opts.baseUrl.replace(/\/+$/, '');
 
   async function call<T>(
@@ -59,23 +63,40 @@ export function createSignerClient(opts: SignerClientOptions): SignerClient {
   ): Promise<T> {
     // Serialize once: the signed bytes are exactly the sent bytes.
     const rawBody = body === undefined ? '' : JSON.stringify(body);
+    const bodySha256 = createHash('sha256').update(rawBody, 'utf8').digest('hex');
+    // The signed target is the path and query of the URL actually requested (after URL
+    // normalization), so it matches the request line the signer reads.
+    const url = new URL(`${baseUrl}${route.path}`);
+    const target = `${url.pathname}${url.search}`;
     let lastError: Error = new SignerClientError('signer request failed');
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       if (attempt > 1) await sleep(retryBaseMs * 2 ** (attempt - 2));
-      // Re-sign per attempt so the timestamp stays inside the signer clock-skew window.
+      // Re-sign per attempt, with a fresh nonce, so the timestamp stays inside the signer
+      // clock-skew window and a retry within the same second is not taken for a replay.
       const timestamp = Math.floor(now() / 1000).toString();
+      const requestNonce = nonce();
       const signature = createHmac('sha256', opts.hmacSecret)
-        .update(signerSignedPayload(timestamp, rawBody))
+        .update(
+          signerSignedPayload({
+            method: route.method,
+            path: target,
+            timestamp,
+            nonce: requestNonce,
+            bodySha256,
+          }),
+          'utf8',
+        )
         .digest('hex');
       const headers: Record<string, string> = {
         [SIGNER_TIMESTAMP_HEADER]: timestamp,
+        [SIGNER_NONCE_HEADER]: requestNonce,
         [SIGNER_SIGNATURE_HEADER]: signature,
       };
       if (body !== undefined) headers['content-type'] = 'application/json';
 
       let res: Response;
       try {
-        res = await doFetch(`${baseUrl}${route.path}`, {
+        res = await doFetch(url.href, {
           method: route.method,
           headers,
           ...(body !== undefined ? { body: rawBody } : {}),

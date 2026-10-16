@@ -292,19 +292,68 @@ export type RpcResponse = z.infer<typeof RpcResponse>;
 // Internal builder -> signer API (§7)
 // ---------------------------------------------------------------------------
 
-/** Hex HMAC-SHA256 computed with SIGNER_HMAC_SECRET over `signerSignedPayload(...)`. */
+/** Lowercase hex HMAC-SHA256 computed with SIGNER_HMAC_SECRET over `signerSignedPayload(...)`. */
 export const SIGNER_SIGNATURE_HEADER = 'X-Forge-Signature';
 /** Unix time in seconds, as a decimal string. */
 export const SIGNER_TIMESTAMP_HEADER = 'X-Forge-Timestamp';
+/**
+ * 16 random bytes as 32 lowercase hex characters, fresh for every request (and every retry). The
+ * signer accepts a nonce once within the clock-skew window.
+ */
+export const SIGNER_NONCE_HEADER = 'X-Forge-Nonce';
 /** Requests whose timestamp differs from the signer clock by more than this are rejected. */
 export const SIGNER_MAX_CLOCK_SKEW_SECONDS = 60;
+/** First line of the signed string. Any change to its layout gets a new tag. */
+export const SIGNER_SIGNATURE_VERSION = 'forge-signer-v2';
+
+/** The request fields covered by the signer HMAC. */
+export interface SignerSignedFields {
+  /** HTTP method, uppercase (`POST`). */
+  method: string;
+  /** Request target exactly as sent: the path plus the query string (`/v1/configs?a=1`). */
+  path: string;
+  /** Same value as the timestamp header. */
+  timestamp: string;
+  /** Same value as the nonce header. */
+  nonce: string;
+  /** Lowercase hex SHA-256 of the raw body bytes (an empty body hashes zero bytes). */
+  bodySha256: string;
+}
+
+const SIGNED_FIELD_FORMATS: Record<keyof SignerSignedFields, RegExp> = {
+  method: /^[A-Z]{1,16}$/,
+  // Origin-form target: printable ASCII, no space, no control character.
+  path: /^\/[\x21-\x7e]{0,2047}$/,
+  timestamp: /^[0-9]{1,12}$/,
+  nonce: /^[0-9a-f]{32}$/,
+  bodySha256: /^[0-9a-f]{64}$/,
+};
 
 /**
- * Exact string fed to HMAC-SHA256: `<timestamp>.<raw body>`. The timestamp is covered by the MAC
- * so that a captured request cannot be replayed with a fresh timestamp.
+ * Exact string fed to HMAC-SHA256, one field per line, in this order:
+ *
+ *   forge-signer-v2\n<METHOD>\n<path?query>\n<timestamp>\n<nonce>\n<body sha256>
+ *
+ * Every field has a strict format that excludes the line feed, and the field count is fixed, so
+ * the string decodes to exactly one tuple: a signature made for one method, route, query, time,
+ * nonce or body is worth nothing for any other. Throws on a field outside its format, so neither
+ * side can sign or check an ambiguous string.
  */
-export function signerSignedPayload(timestamp: string, rawBody: string): string {
-  return `${timestamp}.${rawBody}`;
+export function signerSignedPayload(fields: SignerSignedFields): string {
+  for (const key of Object.keys(SIGNED_FIELD_FORMATS) as (keyof SignerSignedFields)[]) {
+    const value = fields[key];
+    if (typeof value !== 'string' || !SIGNED_FIELD_FORMATS[key].test(value)) {
+      throw new TypeError(`signer signed payload: invalid ${key}`);
+    }
+  }
+  return [
+    SIGNER_SIGNATURE_VERSION,
+    fields.method,
+    fields.path,
+    fields.timestamp,
+    fields.nonce,
+    fields.bodySha256,
+  ].join('\n');
 }
 
 export const SIGNER_ROUTES = {

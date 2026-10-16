@@ -3,6 +3,7 @@ import { pino, type Logger } from 'pino';
 import type { z } from 'zod';
 import {
   SIGNER_MAX_CLOCK_SKEW_SECONDS,
+  SIGNER_NONCE_HEADER,
   SIGNER_ROUTES,
   SIGNER_SIGNATURE_HEADER,
   SIGNER_TIMESTAMP_HEADER,
@@ -11,12 +12,12 @@ import {
   SignerLaunchPrepareRequest,
 } from '@forge/shared';
 import { DEFAULT_MAX_BODY_BYTES, readRawBody } from './http/body.js';
-import { assertHmacSecret, checkTimestamp, verifySignature } from './http/hmac.js';
+import { assertHmacSecret, checkTimestamp, isNonce, verifySignature } from './http/hmac.js';
 import { createIpFilter, parseAllowedIps } from './http/ip.js';
 import { ReplayCache } from './http/replay.js';
 import { SignerHealthReport, SignerLaunchPrepareResult } from './routes/schemas.js';
 
-export { signRequest, MIN_HMAC_SECRET_BYTES } from './http/hmac.js';
+export { signRequest, MIN_HMAC_SECRET_BYTES, type RequestToSign } from './http/hmac.js';
 export { parseAllowedIps } from './http/ip.js';
 
 /*
@@ -27,10 +28,13 @@ export { parseAllowedIps } from './http/ip.js';
  *   1. client IP in the allowlist (TCP peer address, proxy headers ignored)       -> 403
  *   2. raw body read as bytes, at most `maxBodyBytes`                             -> 413
  *   3. X-Forge-Timestamp: integer seconds, |now - ts| <= 60 s                      -> 401
- *   4. X-Forge-Signature: hex HMAC-SHA256(secret, "<ts>.<raw body>"), constant time -> 401
- *   5. signature never seen within the window (replay cache)                      -> 401
- *   6. known route (exact method + path)                                          -> 404
- *   7. body: UTF-8, JSON, strict zod schema (GET: empty body)                      -> 400
+ *   4. X-Forge-Nonce: 32 lowercase hex characters                                  -> 401
+ *   5. X-Forge-Signature: hex HMAC-SHA256(secret, signerSignedPayload(...)) over
+ *      the method, the path with its query, the timestamp, the nonce and the
+ *      SHA-256 of the raw body (packages/shared), constant time                   -> 401
+ *   6. nonce never seen within the window (replay cache)                          -> 401
+ *   7. known route (exact method + path)                                          -> 404
+ *   8. body: UTF-8, JSON, strict zod schema (GET: empty body)                      -> 400
  * Only then is the injected handler called. Handler responses are re-validated with the shared
  * response schema (unknown keys stripped) before being sent.
  *
@@ -263,16 +267,31 @@ export function createSignerServer(options: SignerServerOptions): Server {
       return;
     }
 
-    // 4. Signature (constant time).
+    // 4. Nonce.
+    const nonce = singleHeader(req, SIGNER_NONCE_HEADER);
+    if (!isNonce(nonce)) {
+      reject(req, res, 401, 'bad_nonce');
+      return;
+    }
+
+    // 5. Signature (constant time), bound to this method and this exact request target: a
+    //    signature made for another route, method or query string does not verify here.
     const signature = singleHeader(req, SIGNER_SIGNATURE_HEADER);
-    if (signature === undefined || !verifySignature(secret, timestamp, body.raw, signature)) {
+    const signed = {
+      method: req.method ?? '',
+      path: req.url ?? '',
+      timestamp,
+      nonce,
+      rawBody: body.raw,
+    };
+    if (signature === undefined || !verifySignature(secret, signed, signature)) {
       reject(req, res, 401, 'bad_signature');
       return;
     }
 
-    // 5. Replay. Recorded before routing so that a valid signature is usable exactly once,
-    //    whatever the route or the outcome.
-    const seen = replay.checkAndRemember(signature, ts.seconds, Math.floor(nowMs / 1000));
+    // 6. Replay. Recorded before routing so that a nonce (and so a signature) is usable exactly
+    //    once, whatever the route or the outcome.
+    const seen = replay.checkAndRemember(nonce, ts.seconds, Math.floor(nowMs / 1000));
     if (seen === 'replay') {
       reject(req, res, 401, 'replay');
       return;
@@ -282,14 +301,14 @@ export function createSignerServer(options: SignerServerOptions): Server {
       return;
     }
 
-    // 6. Route.
+    // 7. Route.
     const route = routes.find((r) => r.method === req.method && r.path === req.url);
     if (route === undefined) {
       reject(req, res, 404, 'unknown_route');
       return;
     }
 
-    // 7. Body validation, then the handler.
+    // 8. Body validation, then the handler.
     let result: { status: number; body: unknown } | 'bad_request';
     try {
       result = await route.run(body.raw);

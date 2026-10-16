@@ -2,7 +2,12 @@ import { request, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { pino } from 'pino';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { SIGNER_SIGNATURE_HEADER, SIGNER_TIMESTAMP_HEADER } from '@forge/shared';
+import { createHash, createHmac } from 'node:crypto';
+import {
+  SIGNER_NONCE_HEADER,
+  SIGNER_SIGNATURE_HEADER,
+  SIGNER_TIMESTAMP_HEADER,
+} from '@forge/shared';
 import {
   createSignerServer,
   loadSignerServerEnv,
@@ -74,7 +79,7 @@ function send(
   });
 }
 
-// Distinct timestamps (within the window) so that identical requests get distinct signatures.
+// Distinct timestamps (within the window), on top of the fresh nonce of every signRequest call.
 let tick = 0;
 function nextAt(): number {
   tick = (tick + 1) % 50;
@@ -82,10 +87,12 @@ function nextAt(): number {
 }
 
 function signed(port: number, method: string, path: string, body = '', at = nextAt()) {
-  return send(port, method, path, signRequest(SECRET, body, at), body);
+  return send(port, method, path, signRequest(SECRET, { method, path, body }, at), body);
 }
 
 const configsBody = JSON.stringify({ jobId: JOB_ID });
+const configsReq = { method: 'POST', path: '/v1/configs', body: configsBody };
+const healthReq = { method: 'GET', path: '/v1/health' };
 
 describe('createSignerServer', () => {
   it('refuses a secret shorter than 32 bytes', () => {
@@ -130,14 +137,14 @@ describe('createSignerServer', () => {
 
   it('rejects a bad signature', async () => {
     const { port } = await start();
-    const headers = signRequest('another-secret-0123456789-abcdefghijk', configsBody, NOW);
+    const headers = signRequest('another-secret-0123456789-abcdefghijk', configsReq, NOW);
     const res = await send(port, 'POST', '/v1/configs', headers, configsBody);
     expect(res).toEqual({ status: 401, body: { error: 'unauthorized' } });
   });
 
   it('rejects malformed signatures (uppercase, short, non hex)', async () => {
     const { port } = await start();
-    const good = signRequest(SECRET, configsBody, NOW);
+    const good = signRequest(SECRET, configsReq, NOW);
     const sig = good[SIGNER_SIGNATURE_HEADER] as string;
     for (const bad of [sig.toUpperCase(), sig.slice(0, 63), `${sig}00`, 'z'.repeat(64)]) {
       const res = await send(
@@ -153,7 +160,7 @@ describe('createSignerServer', () => {
 
   it('rejects a tampered body', async () => {
     const { port } = await start();
-    const headers = signRequest(SECRET, configsBody, NOW);
+    const headers = signRequest(SECRET, configsReq, NOW);
     const tampered = JSON.stringify({ jobId: '00000000-0000-4000-8000-000000000000' });
     const res = await send(port, 'POST', '/v1/configs', headers, tampered);
     expect(res.status).toBe(401);
@@ -161,7 +168,7 @@ describe('createSignerServer', () => {
 
   it('rejects a tampered timestamp', async () => {
     const { port } = await start();
-    const headers = signRequest(SECRET, configsBody, NOW);
+    const headers = signRequest(SECRET, configsReq, NOW);
     const ts = Number(headers[SIGNER_TIMESTAMP_HEADER]) + 1;
     const res = await send(
       port,
@@ -184,10 +191,18 @@ describe('createSignerServer', () => {
   it('rejects malformed timestamps even when signed', async () => {
     const { port } = await start();
     const seconds = String(NOW / 1000);
+    const nonce = 'a'.repeat(32);
+    // A correct MAC over the malformed timestamp itself: only the format check can refuse it.
+    const emptyBody = createHash('sha256').digest('hex');
+    const sign = (ts: string, n: string) =>
+      createHmac('sha256', SECRET)
+        .update(['forge-signer-v2', 'GET', '/v1/health', ts, n, emptyBody].join('\n'))
+        .digest('hex');
     for (const ts of [`${seconds}.0`, `+${seconds}`, `-${seconds}`, '1.8e9', '0x6b49d200', '']) {
       const res = await send(port, 'GET', '/v1/health', {
         [SIGNER_TIMESTAMP_HEADER]: ts,
-        [SIGNER_SIGNATURE_HEADER]: signRequest(SECRET, '', NOW)[SIGNER_SIGNATURE_HEADER] as string,
+        [SIGNER_NONCE_HEADER]: nonce,
+        [SIGNER_SIGNATURE_HEADER]: sign(ts, nonce),
       });
       expect(res.status).toBe(401);
     }
@@ -196,7 +211,7 @@ describe('createSignerServer', () => {
   it('rejects a replayed request, on the same or another route', async () => {
     const configs = vi.fn(stubSignerRoutes.configs);
     const { port, clock } = await start({ routes: { ...stubSignerRoutes, configs } });
-    const headers = signRequest(SECRET, configsBody, NOW);
+    const headers = signRequest(SECRET, configsReq, NOW);
     expect((await send(port, 'POST', '/v1/configs', headers, configsBody)).status).toBe(501);
     expect((await send(port, 'POST', '/v1/configs', headers, configsBody)).status).toBe(401);
     expect((await send(port, 'POST', '/v1/launch-coin/prepare', headers, configsBody)).status).toBe(
@@ -209,9 +224,110 @@ describe('createSignerServer', () => {
     expect(configs).toHaveBeenCalledTimes(1);
   });
 
+  describe('signature bound to the method, the path and the query string', () => {
+    it('refuses a valid signature replayed on another route, method or path spelling', async () => {
+      const configs = vi.fn(stubSignerRoutes.configs);
+      const launchCoinPrepare = vi.fn(stubSignerRoutes.launchCoinPrepare);
+      const { port } = await start({ routes: { ...stubSignerRoutes, configs, launchCoinPrepare } });
+      const headers = signRequest(SECRET, configsReq, NOW);
+      const replays: [string, string][] = [
+        ['POST', '/v1/launch-coin/prepare'],
+        ['PUT', '/v1/configs'],
+        ['POST', '/v1/configs?retry=1'],
+        ['POST', '/v1/configs?'],
+        ['POST', '/v1/configs/'],
+        ['POST', '/v1//configs'],
+        ['POST', '/V1/configs'],
+      ];
+      for (const [method, path] of replays) {
+        const res = await send(port, method, path, headers, configsBody);
+        expect(res, `${method} ${path}`).toEqual({ status: 401, body: { error: 'unauthorized' } });
+      }
+      expect(configs).not.toHaveBeenCalled();
+      expect(launchCoinPrepare).not.toHaveBeenCalled();
+      // The refused attempts did not consume the nonce: the genuine request still passes, once.
+      expect((await send(port, 'POST', '/v1/configs', headers, configsBody)).status).toBe(501);
+      expect((await send(port, 'POST', '/v1/configs', headers, configsBody)).status).toBe(401);
+      expect(configs).toHaveBeenCalledTimes(1);
+    });
+
+    it('refuses a GET signature on another method or another query string', async () => {
+      const { port } = await start();
+      const health = signRequest(SECRET, healthReq, NOW);
+      expect((await send(port, 'POST', '/v1/health', health)).status).toBe(401);
+      expect((await send(port, 'HEAD', '/v1/health', health)).status).toBe(401);
+      expect((await send(port, 'GET', '/v1/health?x=1', health)).status).toBe(401);
+      const withQuery = signRequest(SECRET, { method: 'GET', path: '/v1/health?x=1' }, NOW);
+      expect((await send(port, 'GET', '/v1/health', withQuery)).status).toBe(401);
+      expect((await send(port, 'GET', '/v1/health?x=2', withQuery)).status).toBe(401);
+      expect((await send(port, 'GET', '/v1/health?x=1&x=1', withQuery)).status).toBe(401);
+      // Each signature verifies on its own target only (the query one then has no route).
+      expect((await send(port, 'GET', '/v1/health?x=1', withQuery)).status).toBe(404);
+      expect(await send(port, 'GET', '/v1/health', health)).toEqual({
+        status: 200,
+        body: { ok: true },
+      });
+    });
+
+    it('refuses a tampered or malformed nonce, and a nonce reused under a fresh signature', async () => {
+      const { port } = await start();
+      const nonce = '0123456789abcdef0123456789abcdef';
+      const headers = signRequest(SECRET, { ...healthReq, nonce }, NOW);
+      expect(headers[SIGNER_NONCE_HEADER]).toBe(nonce);
+      for (const bad of [
+        `1${nonce.slice(1)}`,
+        nonce.toUpperCase(),
+        nonce.slice(0, 31),
+        `${nonce}00`,
+        'z'.repeat(32),
+        '',
+      ]) {
+        const res = await send(port, 'GET', '/v1/health', {
+          ...headers,
+          [SIGNER_NONCE_HEADER]: bad,
+        });
+        expect(res.status, bad).toBe(401);
+      }
+      expect((await send(port, 'GET', '/v1/health', headers)).status).toBe(200);
+      const reused = signRequest(SECRET, { ...healthReq, nonce }, NOW - 1_000);
+      expect(reused[SIGNER_SIGNATURE_HEADER]).not.toBe(headers[SIGNER_SIGNATURE_HEADER]);
+      expect((await send(port, 'GET', '/v1/health', reused)).status).toBe(401);
+    });
+
+    it('accepts a MAC computed independently from the documented signed string', async () => {
+      const { port } = await start();
+      const ts = String(NOW / 1000);
+      const nonce = 'fedcba9876543210fedcba9876543210';
+      const signedString = [
+        'forge-signer-v2',
+        'POST',
+        '/v1/configs',
+        ts,
+        nonce,
+        createHash('sha256').update(configsBody, 'utf8').digest('hex'),
+      ].join('\n');
+      const signature = createHmac('sha256', SECRET).update(signedString, 'utf8').digest('hex');
+      expect(signRequest(SECRET, { ...configsReq, nonce }, NOW)[SIGNER_SIGNATURE_HEADER]).toBe(
+        signature,
+      );
+      const res = await send(
+        port,
+        'POST',
+        '/v1/configs',
+        {
+          [SIGNER_TIMESTAMP_HEADER]: ts,
+          [SIGNER_NONCE_HEADER]: nonce,
+          [SIGNER_SIGNATURE_HEADER]: signature,
+        },
+        configsBody,
+      );
+      expect(res.status).toBe(501);
+    });
+  });
+
   it('rejects concurrent identical requests except one', async () => {
     const { port } = await start();
-    const headers = signRequest(SECRET, '', NOW);
+    const headers = signRequest(SECRET, healthReq, NOW);
     const results = await Promise.all(
       Array.from({ length: 5 }, () => send(port, 'GET', '/v1/health', headers)),
     );
@@ -221,12 +337,17 @@ describe('createSignerServer', () => {
 
   it('rejects missing headers', async () => {
     const { port } = await start();
-    const headers = signRequest(SECRET, configsBody, NOW);
-    const noTs = { [SIGNER_SIGNATURE_HEADER]: headers[SIGNER_SIGNATURE_HEADER] as string };
-    const noSig = { [SIGNER_TIMESTAMP_HEADER]: headers[SIGNER_TIMESTAMP_HEADER] as string };
+    const headers = signRequest(SECRET, configsReq, NOW);
+    const without = (name: string) =>
+      Object.fromEntries(Object.entries(headers).filter(([key]) => key !== name));
     expect((await send(port, 'POST', '/v1/configs', {}, configsBody)).status).toBe(401);
-    expect((await send(port, 'POST', '/v1/configs', noTs, configsBody)).status).toBe(401);
-    expect((await send(port, 'POST', '/v1/configs', noSig, configsBody)).status).toBe(401);
+    for (const name of [SIGNER_TIMESTAMP_HEADER, SIGNER_NONCE_HEADER, SIGNER_SIGNATURE_HEADER]) {
+      expect((await send(port, 'POST', '/v1/configs', without(name), configsBody)).status).toBe(
+        401,
+      );
+    }
+    // All three present: the same request passes.
+    expect((await send(port, 'POST', '/v1/configs', headers, configsBody)).status).toBe(501);
   });
 
   it('rejects an oversized body before checking anything else', async () => {
@@ -305,18 +426,8 @@ describe('createSignerServer', () => {
       expect((await signed(port, 'POST', '/v1/configs', body)).status).toBe(400);
     }
     const invalidUtf8 = Buffer.from([0x7b, 0xff, 0x7d]);
-    const ts = String(NOW / 1000);
-    const { createHmac } = await import('node:crypto');
-    const sig = createHmac('sha256', SECRET)
-      .update(Buffer.concat([Buffer.from(`${ts}.`), invalidUtf8]))
-      .digest('hex');
-    const res = await send(
-      port,
-      'POST',
-      '/v1/configs',
-      { [SIGNER_TIMESTAMP_HEADER]: ts, [SIGNER_SIGNATURE_HEADER]: sig },
-      invalidUtf8,
-    );
+    const headers = signRequest(SECRET, { ...configsReq, body: invalidUtf8 }, NOW);
+    const res = await send(port, 'POST', '/v1/configs', headers, invalidUtf8);
     expect(res.status).toBe(400);
   });
 
@@ -360,7 +471,7 @@ describe('createSignerServer', () => {
     const lines: string[] = [];
     const logger = pino({ level: 'info' }, { write: (line: string) => lines.push(line) });
     const { port } = await start({ logger });
-    const headers = signRequest(SECRET, configsBody, NOW);
+    const headers = signRequest(SECRET, configsReq, NOW);
     await send(port, 'POST', '/v1/configs', headers, configsBody);
     await send(port, 'POST', '/v1/configs', headers, configsBody);
     const tampered = JSON.stringify({ jobId: JOB_ID, marker: 'BODY-MARKER' });

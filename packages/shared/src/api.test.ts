@@ -233,8 +233,72 @@ describe('API schemas', () => {
   it('exposes the signer HMAC constants', () => {
     expect(api.SIGNER_SIGNATURE_HEADER).toBe('X-Forge-Signature');
     expect(api.SIGNER_TIMESTAMP_HEADER).toBe('X-Forge-Timestamp');
+    expect(api.SIGNER_NONCE_HEADER).toBe('X-Forge-Nonce');
     expect(api.SIGNER_MAX_CLOCK_SKEW_SECONDS).toBe(60);
-    expect(api.signerSignedPayload('1700000000', '{"jobId":"x"}')).toBe('1700000000.{"jobId":"x"}');
+    expect(api.SIGNER_SIGNATURE_VERSION).toBe('forge-signer-v2');
+  });
+
+  describe('signerSignedPayload', () => {
+    const fields = {
+      method: 'POST',
+      path: '/v1/configs',
+      timestamp: '1700000000',
+      nonce: '0123456789abcdef0123456789abcdef',
+      bodySha256: 'a'.repeat(64),
+    };
+
+    it('binds the method, the path with its query, the timestamp, the nonce and the body hash', () => {
+      expect(api.signerSignedPayload(fields)).toBe(
+        [
+          'forge-signer-v2',
+          'POST',
+          '/v1/configs',
+          '1700000000',
+          '0123456789abcdef0123456789abcdef',
+          'a'.repeat(64),
+        ].join('\n'),
+      );
+      expect(api.signerSignedPayload({ ...fields, path: '/v1/configs?x=1&y=%20' })).toContain(
+        '\n/v1/configs?x=1&y=%20\n',
+      );
+    });
+
+    it('gives a different string for every field change', () => {
+      const base = api.signerSignedPayload(fields);
+      const variants = [
+        { method: 'GET' },
+        { path: '/v1/launch-coin/prepare' },
+        { path: '/v1/configs?x=1' },
+        { timestamp: '1700000001' },
+        { nonce: 'f'.repeat(32) },
+        { bodySha256: 'b'.repeat(64) },
+      ];
+      const seen = new Set([base]);
+      for (const change of variants) seen.add(api.signerSignedPayload({ ...fields, ...change }));
+      expect(seen.size).toBe(variants.length + 1);
+    });
+
+    it('refuses fields that could make the string ambiguous', () => {
+      const bad: Partial<typeof fields>[] = [
+        { method: 'post' },
+        { method: 'POST\n/v1/health' },
+        { method: '' },
+        { path: 'v1/configs' },
+        { path: '/v1/configs\n1700000000' },
+        { path: '/v1/a b' },
+        { path: 'http://signer/v1/configs' },
+        { path: `/${'a'.repeat(2048)}` },
+        { timestamp: '1700000000.5' },
+        { timestamp: '' },
+        { nonce: 'F'.repeat(32) },
+        { nonce: 'a'.repeat(31) },
+        { bodySha256: 'A'.repeat(64) },
+        { bodySha256: 'a'.repeat(63) },
+      ];
+      for (const change of bad) {
+        expect(() => api.signerSignedPayload({ ...fields, ...change })).toThrow(TypeError);
+      }
+    });
   });
 });
 

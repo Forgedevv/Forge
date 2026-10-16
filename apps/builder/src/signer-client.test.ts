@@ -1,5 +1,5 @@
 /// <reference types="node" />
-import { createHmac } from 'node:crypto';
+import { createHash, createHmac } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import { createSignerClient, SignerClientError } from './signer-client.js';
 
@@ -7,6 +7,22 @@ const SECRET = 'a'.repeat(32);
 const JOB = '3f2b8c1e-9d4a-4b6e-8a1c-2d3e4f5a6b7c';
 const ADDR = '11111111111111111111111111111112';
 const NOW = 1_700_000_000_000;
+const NONCE_RE = /^[0-9a-f]{32}$/;
+
+/** The signed string documented on `signerSignedPayload` (packages/shared), rebuilt by hand. */
+function expectedSignature(method: string, path: string, ts: string, nonce: string, body: string) {
+  const bodySha256 = createHash('sha256').update(body, 'utf8').digest('hex');
+  return createHmac('sha256', SECRET)
+    .update(['forge-signer-v2', method, path, ts, nonce, bodySha256].join('\n'))
+    .digest('hex');
+}
+
+function sentHeaders(fetchMock: { mock: { calls: unknown[][] } }, call = 0) {
+  return (fetchMock.mock.calls[call] as unknown as [string, RequestInit])[1].headers as Record<
+    string,
+    string
+  >;
+}
 
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -34,7 +50,7 @@ describe('createSignerClient', () => {
     ).toThrow(/32 bytes/);
   });
 
-  it('signs "<ts>.<raw body>" and sends the exact same bytes', async () => {
+  it('signs the method, the path, the timestamp, the nonce and the body hash', async () => {
     const fetchMock = vi.fn(async () => json({ launchpadConfig: ADDR, launchpadCoinConfig: ADDR }));
     const res = await make(fetchMock).createConfigs(JOB);
     expect(res.launchpadConfig).toBe(ADDR);
@@ -44,10 +60,13 @@ describe('createSignerClient', () => {
     const body = init.body as string;
     expect(body).toBe(JSON.stringify({ jobId: JOB }));
     const headers = init.headers as Record<string, string>;
-    const ts = headers['X-Forge-Timestamp'];
+    const ts = headers['X-Forge-Timestamp'] as string;
     expect(ts).toBe(String(NOW / 1000));
-    const expected = createHmac('sha256', SECRET).update(`${ts}.${body}`).digest('hex');
-    expect(headers['X-Forge-Signature']).toBe(expected);
+    const nonce = headers['X-Forge-Nonce'] as string;
+    expect(nonce).toMatch(NONCE_RE);
+    expect(headers['X-Forge-Signature']).toBe(
+      expectedSignature('POST', '/v1/configs', ts, nonce, body),
+    );
   });
 
   it('signs an empty body for health', async () => {
@@ -59,8 +78,90 @@ describe('createSignerClient', () => {
     expect(init.body).toBeUndefined();
     const headers = init.headers as Record<string, string>;
     expect(headers['X-Forge-Signature']).toBe(
-      createHmac('sha256', SECRET).update(`${headers['X-Forge-Timestamp']}.`).digest('hex'),
+      expectedSignature(
+        'GET',
+        '/v1/health',
+        headers['X-Forge-Timestamp'] as string,
+        headers['X-Forge-Nonce'] as string,
+        '',
+      ),
     );
+  });
+
+  it('gives the same body a different signature on each route', async () => {
+    const fetchMock = vi.fn(async (url: string) =>
+      url.endsWith('/v1/configs')
+        ? json({ launchpadConfig: ADDR, launchpadCoinConfig: ADDR })
+        : json({ partiallySignedTx: 'AAAA', mint: ADDR }),
+    );
+    const client = make(fetchMock, { nonce: () => 'ab'.repeat(16) });
+    await client.createConfigs(JOB);
+    await client.prepareLaunchCoin(JOB);
+    const configs = sentHeaders(fetchMock, 0);
+    const prepare = sentHeaders(fetchMock, 1);
+    // Same body, same second, same nonce: only the route differs, and so does the MAC.
+    expect(configs['X-Forge-Timestamp']).toBe(prepare['X-Forge-Timestamp']);
+    expect(configs['X-Forge-Nonce']).toBe(prepare['X-Forge-Nonce']);
+    expect(configs['X-Forge-Signature']).not.toBe(prepare['X-Forge-Signature']);
+    const body = JSON.stringify({ jobId: JOB });
+    const ts = String(NOW / 1000);
+    const nonce = 'ab'.repeat(16);
+    expect(prepare['X-Forge-Signature']).toBe(
+      expectedSignature('POST', '/v1/launch-coin/prepare', ts, nonce, body),
+    );
+    expect(prepare['X-Forge-Signature']).not.toBe(
+      expectedSignature('POST', '/v1/configs', ts, nonce, body),
+    );
+  });
+
+  it('signs the path of a base URL with a prefix, as requested', async () => {
+    const fetchMock = vi.fn(async () => json({ ok: true }));
+    await make(fetchMock, { baseUrl: 'http://signer:8787/internal/' }).health();
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe('http://signer:8787/internal/v1/health');
+    const headers = init.headers as Record<string, string>;
+    expect(headers['X-Forge-Signature']).toBe(
+      expectedSignature(
+        'GET',
+        '/internal/v1/health',
+        headers['X-Forge-Timestamp'] as string,
+        headers['X-Forge-Nonce'] as string,
+        '',
+      ),
+    );
+  });
+
+  it('uses a fresh nonce on every attempt, even within the same second', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(json({}, 503))
+      .mockRejectedValueOnce(new TypeError('fetch failed'))
+      .mockResolvedValueOnce(json({ ok: true }));
+    expect(await make(fetchMock).health()).toEqual({ ok: true });
+    const attempts = [0, 1, 2].map((i) => sentHeaders(fetchMock, i));
+    for (const headers of attempts) {
+      expect(headers['X-Forge-Timestamp']).toBe(String(NOW / 1000));
+      expect(headers['X-Forge-Nonce']).toMatch(NONCE_RE);
+      expect(headers['X-Forge-Signature']).toBe(
+        expectedSignature(
+          'GET',
+          '/v1/health',
+          headers['X-Forge-Timestamp'] as string,
+          headers['X-Forge-Nonce'] as string,
+          '',
+        ),
+      );
+    }
+    expect(new Set(attempts.map((h) => h['X-Forge-Nonce'])).size).toBe(3);
+    expect(new Set(attempts.map((h) => h['X-Forge-Signature'])).size).toBe(3);
+  });
+
+  it('refuses to sign with a nonce outside the format', async () => {
+    const fetchMock = vi.fn(async () => json({ ok: true }));
+    await expect(make(fetchMock, { nonce: () => 'not-hex' }).health()).rejects.toThrow(
+      /invalid nonce/,
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('prepares the launch coin route', async () => {

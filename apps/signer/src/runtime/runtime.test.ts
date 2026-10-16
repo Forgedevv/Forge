@@ -324,7 +324,7 @@ describe('signer runtime wiring', () => {
     const runtime = await create();
     expect(runtime.health().ok).toBe(false);
     const { port } = await runtime.start();
-    const headers = signRequest(HMAC, '');
+    const headers = signRequest(HMAC, { method: 'GET', path: '/v1/health' });
     const reply = await new Promise<{ status: number; text: string }>((resolve, reject) => {
       const req = request(
         { host: '127.0.0.1', port, method: 'GET', path: '/v1/health', headers },

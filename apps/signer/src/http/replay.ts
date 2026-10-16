@@ -1,7 +1,7 @@
 /*
- * In-memory cache of the signatures already accepted. A signature is kept until its timestamp
- * leaves the accepted window (timestamp + max skew), after which the timestamp check alone
- * rejects it. The cache is bounded: when it is full of live entries, new requests are refused
+ * In-memory cache of the request nonces already accepted (the server records a nonce only after
+ * its signature verified). A nonce is kept until its timestamp leaves the accepted window
+ * (timestamp + max skew), after which the timestamp check alone rejects the request. The cache is bounded: when it is full of live entries, new requests are refused
  * (fail closed) instead of evicting an entry, which would reopen a replay.
  *
  * The cache is per process: the signer must run as a single instance.
@@ -26,27 +26,27 @@ export class ReplayCache {
   }
 
   /**
-   * Records `signature` (timestamp `tsSeconds`) and says whether it was new. Check and insert
-   * are one synchronous step, so two concurrent identical requests cannot both pass.
+   * Records `key` (timestamp `tsSeconds`) and says whether it was new. Check and insert are one
+   * synchronous step, so two concurrent identical requests cannot both pass.
    */
-  checkAndRemember(signature: string, tsSeconds: number, nowSeconds: number): ReplayResult {
-    const expiresAt = this.entries.get(signature);
+  checkAndRemember(key: string, tsSeconds: number, nowSeconds: number): ReplayResult {
+    const expiresAt = this.entries.get(key);
     if (expiresAt !== undefined) {
       if (expiresAt >= nowSeconds) return 'replay';
-      this.entries.delete(signature);
+      this.entries.delete(key);
     }
     if (this.entries.size >= this.maxEntries) {
       this.sweep(nowSeconds);
       if (this.entries.size >= this.maxEntries) return 'full';
     }
-    this.entries.set(signature, tsSeconds + this.windowSeconds);
+    this.entries.set(key, tsSeconds + this.windowSeconds);
     return 'fresh';
   }
 
   /** Removes the expired entries. */
   sweep(nowSeconds: number): void {
-    for (const [signature, expiresAt] of this.entries) {
-      if (expiresAt < nowSeconds) this.entries.delete(signature);
+    for (const [key, expiresAt] of this.entries) {
+      if (expiresAt < nowSeconds) this.entries.delete(key);
     }
   }
 }

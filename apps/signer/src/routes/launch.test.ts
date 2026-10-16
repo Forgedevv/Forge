@@ -318,6 +318,9 @@ function post(port: number, path: string, headers: Record<string, string>, body:
   });
 }
 
+const configs = (body: string) => ({ method: 'POST', path: '/v1/configs', body });
+const prepare = (body: string) => ({ method: 'POST', path: '/v1/launch-coin/prepare', body });
+
 describe('signing routes over HTTP', () => {
   it('runs only authenticated, fresh, unreplayed requests', async () => {
     const h = await setup(ks.keystore);
@@ -326,25 +329,32 @@ describe('signing routes over HTTP', () => {
     try {
       const body = JSON.stringify({ jobId: h.jobId });
       // Bad signature, stale and future timestamps: refused before any handler work.
-      const wrong = signRequest('another-secret-0123456789-abcdefghijklmn', body, clock.now);
+      const wrong = signRequest(
+        'another-secret-0123456789-abcdefghijklmn',
+        configs(body),
+        clock.now,
+      );
       expect((await post(port, '/v1/configs', wrong, body)).status).toBe(401);
-      const stale = signRequest(SECRET, body, clock.now - 61_000);
+      const stale = signRequest(SECRET, configs(body), clock.now - 61_000);
       expect((await post(port, '/v1/configs', stale, body)).status).toBe(401);
-      const future = signRequest(SECRET, body, clock.now + 61_000);
+      const future = signRequest(SECRET, configs(body), clock.now + 61_000);
       expect((await post(port, '/v1/configs', future, body)).status).toBe(401);
       // An extra key in the body (an address) is refused, even when signed.
       const extra = JSON.stringify({ jobId: h.jobId, ownerWallet: randomKey().toBase58() });
       expect(
-        (await post(port, '/v1/configs', signRequest(SECRET, extra, clock.now), extra)).status,
+        (await post(port, '/v1/configs', signRequest(SECRET, configs(extra), clock.now), extra))
+          .status,
       ).toBe(400);
       expect(h.chain.built.config).toBe(0);
 
-      const headers = signRequest(SECRET, body, clock.now);
+      const headers = signRequest(SECRET, configs(body), clock.now);
+      // The configs signature replayed on the launch route: refused before any handler work.
+      expect((await post(port, '/v1/launch-coin/prepare', headers, body)).status).toBe(401);
       const first = await post(port, '/v1/configs', headers, body);
       expect(first.status).toBe(200);
-      const configs = first.body as { launchpadConfig: string; launchpadCoinConfig: string };
+      const created = first.body as { launchpadConfig: string; launchpadCoinConfig: string };
       expect(dbcAccounts(h).sort()).toEqual(
-        [configs.launchpadConfig, configs.launchpadCoinConfig].sort(),
+        [created.launchpadConfig, created.launchpadCoinConfig].sort(),
       );
       // The same signed request again: replay, refused.
       expect((await post(port, '/v1/configs', headers, body)).status).toBe(401);
@@ -352,7 +362,7 @@ describe('signing routes over HTTP', () => {
       const again = await post(
         port,
         '/v1/configs',
-        signRequest(SECRET, body, clock.now - 1_000),
+        signRequest(SECRET, configs(body), clock.now - 1_000),
         body,
       );
       expect(again).toEqual(first);
@@ -360,7 +370,7 @@ describe('signing routes over HTTP', () => {
       const launch = await post(
         port,
         '/v1/launch-coin/prepare',
-        signRequest(SECRET, body, clock.now - 2_000),
+        signRequest(SECRET, prepare(body), clock.now - 2_000),
         body,
       );
       expect(launch.status).toBe(200);
@@ -374,7 +384,7 @@ describe('signing routes over HTTP', () => {
       const paused = await post(
         port,
         '/v1/launch-coin/prepare',
-        signRequest(SECRET, body, clock.now - 3_000),
+        signRequest(SECRET, prepare(body), clock.now - 3_000),
         body,
       );
       expect(paused).toEqual({ status: 503, body: { error: 'deploys_paused' } });
