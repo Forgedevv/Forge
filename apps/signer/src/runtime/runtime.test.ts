@@ -112,6 +112,7 @@ const flagsRows = [
   'claims_paused',
   'cashbox_sweep_paused',
   'refunds_paused',
+  'jupiter_claims_paused',
 ].map((key) => ({ key, value: false }));
 
 function mockFetch(calls: string[] = []): typeof fetch {
@@ -287,6 +288,7 @@ describe('signer runtime wiring', () => {
     const runtime = await create({}, { extraJobs: [spyModule(seen)] });
     expect(runtime.scheduler.names()).toEqual([
       'claims',
+      'jupiter-claims',
       'cashbox',
       'refunds',
       'watch',
@@ -347,7 +349,14 @@ describe('signer runtime wiring', () => {
     };
     expect(body.ok).toBe(true);
     expect(body.cluster).toBe('devnet');
-    expect(Object.keys(body.jobs)).toEqual(['claims', 'cashbox', 'refunds', 'watch', 'convert']);
+    expect(Object.keys(body.jobs)).toEqual([
+      'claims',
+      'jupiter-claims',
+      'cashbox',
+      'refunds',
+      'watch',
+      'convert',
+    ]);
     for (const secret of [PASSPHRASE, HMAC, SERVICE_KEY]) expect(reply.text).not.toContain(secret);
 
     // Unsigned: refused.
@@ -392,6 +401,7 @@ describe('signer runtime wiring', () => {
     expect(runtime.disabledJobs).toEqual(['buyback']);
     expect(runtime.scheduler.names()).toEqual([
       'claims',
+      'jupiter-claims',
       'cashbox',
       'refunds',
       'watch',
@@ -674,7 +684,7 @@ describe('runtime environment file', () => {
       Object.entries(fromExample).map(([k, v]) => [k, baseEnv()[k] ?? v]),
     );
     const runtime = await create({ ...filled, NODE_ENV: 'test' });
-    expect(runtime.scheduler.names()).toHaveLength(5);
+    expect(runtime.scheduler.names()).toHaveLength(6);
     expect(runtime.config.convertRoles).toEqual(['cashbox']);
   });
 });

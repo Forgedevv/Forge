@@ -30,6 +30,11 @@ import {
   createPostgrestClaimsStore,
 } from '../jobs/claims.js';
 import {
+  createJupiterClaimsJob,
+  createJupiterClaimsJournal,
+  jupiterClaimsConfigFromEnv,
+} from '../jobs/jupiter-claims.js';
+import {
   createFileLedger,
   createJupiterClient,
   createRpcBalanceSource,
@@ -148,6 +153,44 @@ export const claimsModule: SignerJobModule = {
       payerLock: ctx.payerLock,
       payerReservations: ctx.payerReservations,
     });
+    return { runOnce: () => job.runOnce(), delayMs: () => intervalMs };
+  },
+};
+
+/**
+ * Jupiter referral fee claims (jobs/jupiter-claims.ts), mainnet-beta only: the referral program
+ * does not exist elsewhere, so on any other cluster the module registers a job that does nothing
+ * (health status `off`) after one log line. The configuration is parsed on every cluster.
+ */
+export const jupiterClaimsModule: SignerJobModule = {
+  name: 'jupiter-claims',
+  create(ctx) {
+    const { config, intervalMs } = jupiterClaimsConfigFromEnv(ctx.env, {
+      vault: ctx.addresses.vault,
+      jupiterReferral: ctx.addresses.jupiterReferral,
+    });
+    const logger = ctx.jobLogger('jupiter-claims');
+    if (ctx.cluster !== 'mainnet-beta') {
+      logger.info(
+        { cluster: ctx.cluster },
+        'jupiter referral claims off: the referral program only exists on mainnet-beta',
+      );
+      return { runOnce: async () => ({ status: 'off' }), delayMs: () => intervalMs };
+    }
+    const job = createJupiterClaimsJob({
+      connection: ctx.connection,
+      rpc: ctx.rpc,
+      keystore: ctx.keystore,
+      journal: createJupiterClaimsJournal(ctx.journalDir),
+      flags: ctx.flags,
+      alerter: ctx.alerter,
+      logger,
+      config,
+      onBeforeSend: ctx.onBeforeSend,
+      payerLock: ctx.payerLock,
+      payerReservations: ctx.payerReservations,
+    });
+    logger.info({ mints: config.mints.length }, 'jupiter referral claims wired');
     return { runOnce: () => job.runOnce(), delayMs: () => intervalMs };
   },
 };
@@ -337,6 +380,7 @@ export const convertModule: SignerJobModule = {
 /** The jobs every signer process runs, in this order. */
 export const BUILTIN_JOB_MODULES: readonly SignerJobModule[] = [
   claimsModule,
+  jupiterClaimsModule,
   cashboxModule,
   refundsModule,
   watchModule,

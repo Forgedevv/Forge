@@ -905,7 +905,8 @@ export function decodeSystemTransfer(
 export const MAX_COMPUTE_UNIT_PRICE = 1_000_000n;
 export const MAX_COMPUTE_UNIT_LIMIT = 1_400_000;
 
-function checkComputeBudget(ix: TransactionInstruction): void {
+/** A compute budget instruction must be a bounded unit limit or unit price (TX_POLICY otherwise). */
+export function checkComputeBudget(ix: TransactionInstruction): void {
   const data = Buffer.from(ix.data);
   const kind = data[0];
   if (kind === 2 && data.length === 5) {
@@ -1407,6 +1408,16 @@ export interface FlagsReader {
 }
 
 /**
+ * Kill switch of the Jupiter referral claims (jobs/jupiter-claims.ts). Not in the shared
+ * `FlagKey` contract yet: adding it there, with the migration that seeds the row, is the lead's
+ * change. Until the row exists the job is paused, fail closed, with a high alert.
+ */
+export const JUPITER_CLAIMS_FLAG = 'jupiter_claims_paused' as const;
+
+/** A kill switch key: the shared contract's flags plus the signer's pending ones. */
+export type KillSwitchKey = FlagKey | typeof JUPITER_CLAIMS_FLAG;
+
+/**
  * Kill switches of these jobs (`flags` table, seeded by migration 0005 with `false`). A missing
  * row pauses the job: the switch must exist for an operator to be able to use it.
  */
@@ -1414,7 +1425,8 @@ export const JOB_FLAGS = {
   claims: 'claims_paused',
   cashbox: 'cashbox_sweep_paused',
   refunds: 'refunds_paused',
-} as const satisfies Record<string, FlagKey>;
+  jupiterClaims: JUPITER_CLAIMS_FLAG,
+} as const satisfies Record<string, KillSwitchKey>;
 
 export type PauseReason = 'config' | 'flag' | 'flag_missing' | 'flags_unavailable';
 
@@ -1423,7 +1435,7 @@ export type PauseCheck = { paused: false } | { paused: true; reason: PauseReason
 /** Fail closed: a job that cannot read its flag, or whose flag row is missing, does not run. */
 export async function checkPaused(
   flags: FlagsReader,
-  key: FlagKey,
+  key: KillSwitchKey,
   localPaused: boolean | undefined,
   logger: JobLogger,
 ): Promise<PauseCheck> {
@@ -1448,7 +1460,7 @@ export async function alertAbnormalPause(
   alerter: JobAlerter,
   logger: JobLogger,
   job: string,
-  key: FlagKey,
+  key: KillSwitchKey,
   reason: PauseReason,
 ): Promise<void> {
   if (reason !== 'flag_missing' && reason !== 'flags_unavailable') return;
