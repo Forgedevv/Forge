@@ -3,12 +3,9 @@
 All notable changes to `@forge/core`. Versions follow semantic versioning. Consumers (the
 launchpad template, the signer, the web app) pin an exact version, never a range.
 
-## 0.1.0 — unreleased
+## 0.2.0 — unreleased
 
-First version meant for publication on npm as `@forgedevv/core` (with `@forgedevv/shared`), through
-`node scripts/publish-core.mjs --publish`. Not published yet.
-
-- `listCoinsOfCreator` (creator pools through SDK `getPoolsByCreator`), `DBC_POOL_CREATOR_OFFSET`, `DBC_POOL_CONFIG_OFFSET`.
+Everything below was added after 0.1.0 was published. Publish `@forgedevv/shared` 0.2.0 with it.
 
 ### Changed (security review)
 
@@ -89,6 +86,13 @@ First version meant for publication on npm as `@forgedevv/core` (with `@forgedev
 - Dependency: `@meteora-ag/cp-amm-sdk` 1.5.1 (exact pin, like the DBC SDK).
 - Fixtures: `__fixtures__/cp-amm-devnet-accounts.json`, the devnet test 2 migration captured
   read-only (`scripts/devnet-tests` `fixtures:cp-amm`).
+
+## 0.1.0 — 2026-10-14
+
+First version published on npm as `@forgedevv/core` (with `@forgedevv/shared`), through
+`node scripts/publish-core.mjs --publish`.
+
+- `listCoinsOfCreator` (creator pools through SDK `getPoolsByCreator`), `DBC_POOL_CREATOR_OFFSET`, `DBC_POOL_CONFIG_OFFSET`.
 
 ### Changed (wave 5 review)
 
