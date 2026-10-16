@@ -149,6 +149,30 @@ describe('resolveBuybackMode', () => {
     expect(d.mode).toBe('simulation');
     expect(d.liveRequested).toBe(requested);
   });
+  it('is live on devnet only behind the devnet-test flag with the dbc-devnet route', () => {
+    const devnet = { ...full, cluster: 'devnet', devnetTest: true, route: 'dbc-devnet' as const };
+    expect(resolveBuybackMode(devnet).mode).toBe('live');
+    expect(resolveBuybackMode({ ...devnet, route: 'jupiter' })).toMatchObject({
+      mode: 'simulation',
+      liveRequested: true,
+    });
+    expect(resolveBuybackMode({ ...devnet, devnetTest: false })).toMatchObject({
+      mode: 'simulation',
+      liveRequested: false,
+    });
+    expect(resolveBuybackMode({ ...devnet, hasWithdrawer: false })).toMatchObject({
+      mode: 'simulation',
+      liveRequested: true,
+    });
+  });
+  it('never lets the devnet gate or the devnet route reach mainnet-beta', () => {
+    expect(() => resolveBuybackMode({ ...full, devnetTest: true })).toThrow(
+      /cannot be set on mainnet-beta/,
+    );
+    expect(() => resolveBuybackMode({ ...full, route: 'dbc-devnet' })).toThrow(
+      /refused on mainnet-beta/,
+    );
+  });
 });
 
 describe('buybackConfigFromEnv', () => {
@@ -184,6 +208,46 @@ describe('buybackConfigFromEnv', () => {
     expect(buybackConfigFromEnv({ FORGE_BUYBACK_LIVE: 'false' }, addresses).config.live).toBe(
       false,
     );
+  });
+  it('reads the route, the devnet gate and the fee allowance, refusing them on mainnet-beta', () => {
+    const pool = randomAddress().toBase58();
+    const { config } = buybackConfigFromEnv(
+      {
+        BUYBACK_ROUTE: 'dbc-devnet',
+        BUYBACK_DEVNET_DBC_POOL: pool,
+        BUYBACK_MAX_ORDER_LAMPORTS: '100000000',
+        FORGE_BUYBACK_DEVNET_TEST: 'true',
+      },
+      addresses,
+    );
+    expect(config.route).toBe('dbc-devnet');
+    expect(config.devnetTest).toBe(true);
+    expect(config.devnetPool?.toBase58()).toBe(pool);
+    // Priority fee cap (100 000) + 10 000, plus 30 bps of the largest order on the DBC route.
+    expect(config.orderFeeAllowanceLamports).toBe(110_000n + 300_000n);
+    expect(buybackConfigFromEnv({}, addresses).config.orderFeeAllowanceLamports).toBe(110_000n);
+    expect(
+      buybackConfigFromEnv({ BUYBACK_ORDER_FEE_ALLOWANCE_LAMPORTS: '7' }, addresses).config
+        .orderFeeAllowanceLamports,
+    ).toBe(7n);
+    expect(() => buybackConfigFromEnv({ BUYBACK_ROUTE: 'dbc-devnet' }, addresses)).toThrow(
+      /BUYBACK_DEVNET_DBC_POOL/,
+    );
+    expect(() => buybackConfigFromEnv({ BUYBACK_ROUTE: 'orca' }, addresses)).toThrow(
+      /BUYBACK_ROUTE/,
+    );
+    expect(() =>
+      buybackConfigFromEnv(
+        { SOLANA_CLUSTER: 'mainnet-beta', FORGE_BUYBACK_DEVNET_TEST: 'true' },
+        addresses,
+      ),
+    ).toThrow(/mainnet-beta/);
+    expect(() =>
+      buybackConfigFromEnv(
+        { SOLANA_CLUSTER: 'mainnet-beta', BUYBACK_ROUTE: 'dbc-devnet', BUYBACK_DEVNET_DBC_POOL: pool },
+        addresses,
+      ),
+    ).toThrow(/mainnet-beta/);
   });
 });
 
@@ -1036,6 +1100,16 @@ describe('buyback job, live flow', () => {
     expect(r3.outcome?.result).toBe('idle');
     expect(h.swapPreparer.prepare).toHaveBeenCalledTimes(1);
     expect(h.withdraw).toHaveBeenCalledTimes(1);
+  });
+
+  it('withdraws a fee allowance per planned order on top of the orders', async () => {
+    const h = liveHarness();
+    await h.make({ orderFeeAllowanceLamports: 150_000n }).runOnce();
+    const planned = (await plan(h.journal)).slots.filter((s) => s.status === 'planned');
+    const total = planned.reduce((a, s) => a + BigInt(s.lamports), 0n);
+    expect(h.withdraw.mock.calls[0]![0]).toMatchObject({
+      lamports: total + 150_000n * BigInt(planned.length) - 10_000_000n,
+    });
   });
 
   it('binds the swap transaction check to the validated quote and the slippage cap', async () => {
