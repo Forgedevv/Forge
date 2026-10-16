@@ -6,6 +6,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef } fr
 import { StreamRequest, StreamResponse } from '@/contexts/TokenChart/msg';
 import { delay } from '@/lib/utils';
 import { listedConfigs } from '../trade/launchpad-pool';
+import { launchpadStreamMessage } from './client';
 
 const WS_URL = 'wss://trench-stream.jup.ag/ws';
 
@@ -142,7 +143,8 @@ export const DataStreamProvider = ({ children }: { children: React.ReactNode }) 
     };
 
     initws.onmessage = (event) => {
-      const msg: StreamResponse = JSON.parse(event.data);
+      // Pool updates of look-alike coins (another mint on the launchpad coin config) are dropped.
+      const msg: StreamResponse = launchpadStreamMessage(JSON.parse(event.data) as StreamResponse);
 
       setDataStreamMsg(msg);
 

@@ -12,6 +12,11 @@ import { launchpadPoolForMint } from './pool-address';
  * (`allowedConfigs` of @forge/core).
  *
  * `forge.config.json` is bundled and frozen (`config.ts`), so nothing at runtime can add a config.
+ *
+ * The launchpad coin config is open: anyone can create a DBC pool for their own mint on it. Only
+ * one coin there is this launchpad's, `onchain.launchpadCoinMint`; any other pool on that config
+ * is a look-alike and is never traded nor listed. Before the launch (no valid coin mint), nothing
+ * on the coin config is accepted.
  */
 
 /** The DBC configs of this launchpad, valid and distinct; empty before the on-chain setup. */
@@ -62,19 +67,71 @@ export function launchpadPoolKey(value: unknown): PublicKey | null {
   return isLaunchpadPool(value) ? new PublicKey(value.pool) : null;
 }
 
+/** This launchpad's own coin (`onchain.launchpadCoinMint`), or null before the launch. */
+export function launchpadCoinMint(): string | null {
+  return canonicalAddress(onchainConfig?.launchpadCoinMint);
+}
+
+/**
+ * The configs on which `mint` can be a coin of this launchpad: the users config for any coin, the
+ * launchpad coin config for the launchpad's own coin only.
+ */
+export function configsForMint(mint: string): string[] {
+  const coin = canonicalAddress(mint);
+  if (!coin) return [];
+  const users = canonicalAddress(onchainConfig?.launchpadConfig);
+  const coinConfig = canonicalAddress(onchainConfig?.launchpadCoinConfig);
+  const configs: string[] = [];
+  if (users) configs.push(users);
+  if (coinConfig && !configs.includes(coinConfig) && coin === launchpadCoinMint()) {
+    configs.push(coinConfig);
+  }
+  return configs;
+}
+
 /** The pools `mint` would have on this launchpad's configs (derived, nothing read). */
 export function candidatePools(mint: string): { config: string; pool: string }[] {
   const candidates: { config: string; pool: string }[] = [];
-  for (const config of launchpadConfigs()) {
+  for (const config of configsForMint(mint)) {
     const pool = launchpadPoolForMint(mint, config);
     if (pool) candidates.push({ config, pool });
   }
   return candidates;
 }
 
+/** The pool ids a coin list entry (data API, stream) gives for its coin. */
+export interface ListedPoolEntry {
+  readonly id?: string | null;
+  readonly baseAsset?: {
+    readonly id?: string | null;
+    readonly firstPool?: { readonly id?: string | null } | null;
+  } | null;
+}
+
+/**
+ * True when a coin list entry may be shown. Before the on-chain setup, always (the lists are then
+ * filtered on `NEXT_PUBLIC_POOL_CONFIG_KEY` and nothing is tradable). After it, only the launchpad's
+ * own coin, or a coin whose pool (`id`, or `baseAsset.firstPool.id` once graduated) is its pool on
+ * the users config. The lists are requested on both configs: this drops the look-alikes created on
+ * the launchpad coin config, and anything that cannot be traced to the users config.
+ */
+export function isListedLaunchpadCoin(entry: ListedPoolEntry | null | undefined): boolean {
+  if (launchpadConfigs().length === 0) return true;
+  const mint = canonicalAddress(entry?.baseAsset?.id ?? null);
+  if (!mint) return false;
+  const users = canonicalAddress(onchainConfig?.launchpadConfig);
+  const coinConfig = canonicalAddress(onchainConfig?.launchpadCoinConfig);
+  if (!coinConfig || coinConfig === users) return true;
+  if (mint === launchpadCoinMint()) return true;
+  const usersPool = launchpadPoolForMint(mint, users);
+  if (!usersPool) return false;
+  return entry?.id === usersPool || entry?.baseAsset?.firstPool?.id === usersPool;
+}
+
 /**
  * Finds the pool of `mint` on this launchpad: the first candidate (users' config, then the
- * launchpad coin's) whose account exists and belongs to the DBC program. A pool address is a PDA
+ * launchpad coin's, for the launchpad's own coin only) whose account exists and belongs to the DBC
+ * program. A pool address is a PDA
  * of its config and its mint, so an account there is that config's pool. A graduated coin keeps
  * its DBC pool account: the panel then routes it to Jupiter. Null when the coin is not on this
  * launchpad (or before the on-chain setup).

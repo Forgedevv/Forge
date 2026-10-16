@@ -12,7 +12,11 @@ import {
   GetTxsResponse,
 } from '@/components/Explore/types';
 import { serializeParams } from '@/lib/utils';
-import { listedConfigs } from '../trade/launchpad-pool';
+import {
+  isListedLaunchpadCoin,
+  listedConfigs,
+  type ListedPoolEntry,
+} from '../trade/launchpad-pool';
 
 const BASE_URL = 'https://datapi.jup.ag';
 
@@ -39,6 +43,38 @@ export function launchpadGemsRequest<T extends GetGemsTokenListRequest>(
   return filtered as T;
 }
 
+/**
+ * The coin lists without the entries that are not this launchpad's coins: a pool someone created
+ * on the launchpad coin config for another mint matches the config filter of the request, so it is
+ * dropped here (`isListedLaunchpadCoin`).
+ */
+export function launchpadGemsResponse<T extends Record<string, unknown>>(response: T): T {
+  if (!response || typeof response !== 'object') return response;
+  const filtered: Record<string, unknown> = {};
+  for (const [tab, value] of Object.entries(response)) {
+    const pools = (value as { pools?: unknown } | undefined)?.pools;
+    filtered[tab] = Array.isArray(pools)
+      ? {
+          ...(value as object),
+          pools: (pools as ListedPoolEntry[]).filter((pool) => isListedLaunchpadCoin(pool)),
+        }
+      : value;
+  }
+  return filtered as T;
+}
+
+/**
+ * A data stream message without the pool updates that are not this launchpad's coins (same rule as
+ * the lists: the recent stream is subscribed on both configs). Other messages are unchanged.
+ */
+export function launchpadStreamMessage<M extends { type: string; data?: unknown }>(msg: M): M {
+  if (!msg || msg.type !== 'updates' || !Array.isArray(msg.data)) return msg;
+  const data = (msg.data as ({ pool?: ListedPoolEntry } | null)[]).filter((update) =>
+    isListedLaunchpadCoin(update?.pool),
+  );
+  return { ...msg, data };
+}
+
 export class ApeClient {
   static async getGemsTokenList<T extends GetGemsTokenListRequest>(
     req: T,
@@ -51,12 +87,13 @@ export class ApeClient {
       for (const [tab, value] of Object.entries(req)) empty[tab] = value ? { pools: [] } : undefined;
       return empty as GemsTokenListResponse<T>;
     }
-    return ky
+    const lists = await ky
       .post(`${BASE_URL}/v1/pools/gems`, {
         json: filtered,
         ...options,
       })
-      .json();
+      .json<GemsTokenListResponse<T>>();
+    return launchpadGemsResponse(lists);
   }
   static async getToken(req: GetTokenRequest, options?: Options): Promise<GetTokenResponse> {
     return ky

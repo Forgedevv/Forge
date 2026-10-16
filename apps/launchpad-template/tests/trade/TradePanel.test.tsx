@@ -49,6 +49,7 @@ vi.mock('../../src/forge/config', async () => {
       cluster: 'devnet',
       launchpadConfig: h.keys.config,
       launchpadCoinConfig: h.keys.coinConfig,
+      launchpadCoinMint: h.keys.ownMint,
     },
     forgeConfig: {},
   };
@@ -605,6 +606,14 @@ describe('pools of this launchpad only', () => {
     await typeAmount('0.1');
     await screen.findByTestId('quote-summary');
     expect(quote.mock.calls[0]?.[0].pool.toBase58()).toBe(keys.ownPool);
+  });
+
+  it('refuses a look-alike pool on the launchpad coin config, without any quote', async () => {
+    render(<TradePanel mint={keys.lookAlikeMint} symbol="PAD" />);
+    expect((await screen.findByTestId('trade-not-on-launchpad')).textContent).toMatch(
+      /not on this launchpad/,
+    );
+    expect(core.calls).toEqual({ quote: 0, buy: 0, sell: 0, graduated: 0 });
   });
 
   it('refuses a coin with no pool on this launchpad, without any quote', async () => {

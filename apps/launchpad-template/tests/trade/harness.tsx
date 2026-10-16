@@ -54,7 +54,9 @@ export function accountsByAddress(
 ) {
   return async (address: PublicKey) => {
     const key = address.toBase58();
-    if (key === keys.pool || key === keys.ownPool) return poolAccount();
+    if (key === keys.pool || key === keys.ownPool || key === keys.lookAlikePool) {
+      return poolAccount();
+    }
     return key === keys.mint || key === keys.ownMint ? mint : others(key);
   };
 }
@@ -63,6 +65,7 @@ export function accountsByAddress(
 export function derivedPool(mint: string, config: string | null | undefined): string | null {
   if (mint === keys.mint && config === keys.config) return keys.pool;
   if (mint === keys.ownMint && config === keys.coinConfig) return keys.ownPool;
+  if (mint === keys.lookAlikeMint && config === keys.coinConfig) return keys.lookAlikePool;
   return null;
 }
 
@@ -99,6 +102,9 @@ export const keys = {
   /** The launchpad's own coin and its pool, on `coinConfig`. */
   ownMint: Keypair.generate().publicKey.toBase58(),
   ownPool: Keypair.generate().publicKey.toBase58(),
+  /** Someone else's coin with a real DBC pool on `coinConfig` (a look-alike). */
+  lookAlikeMint: Keypair.generate().publicKey.toBase58(),
+  lookAlikePool: Keypair.generate().publicKey.toBase58(),
   mint: Keypair.generate().publicKey.toBase58(),
   user: Keypair.generate().publicKey,
 };

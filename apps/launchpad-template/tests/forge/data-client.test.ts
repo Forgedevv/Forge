@@ -7,7 +7,9 @@ const http = vi.hoisted(() => ({
 vi.mock('ky', () => ({ default: { post: http.post, get: vi.fn() } }));
 
 const state = vi.hoisted(() => ({
-  onchain: undefined as { launchpadConfig?: string; launchpadCoinConfig?: string } | undefined,
+  onchain: undefined as
+    | { launchpadConfig?: string; launchpadCoinConfig?: string; launchpadCoinMint?: string }
+    | undefined,
 }));
 vi.mock('../../src/forge/config', () => ({
   get onchainConfig() {
@@ -15,7 +17,12 @@ vi.mock('../../src/forge/config', () => ({
   },
 }));
 
-import { ApeClient, launchpadGemsRequest } from '../../src/forge/data/client';
+import {
+  ApeClient,
+  launchpadGemsRequest,
+  launchpadStreamMessage,
+} from '../../src/forge/data/client';
+import { dbcPoolAddress } from '../../src/forge/tx/programs';
 
 const key = () => Keypair.generate().publicKey.toBase58();
 
@@ -48,6 +55,56 @@ describe('coin lists are filtered to this launchpad', () => {
     await ApeClient.getGemsTokenList({ recent: { timeframe: '24h', partnerConfigs: [] } });
     const body = (http.post.mock.calls[0] as unknown as [string, { json: unknown }])[1].json;
     expect(body).toEqual({ recent: { timeframe: '24h', partnerConfigs: [users, coin] } });
+  });
+
+  it('drops the look-alikes created on the launchpad coin config from the lists', async () => {
+    const users = key();
+    const coin = key();
+    const official = key();
+    const userCoin = key();
+    const fake = key();
+    state.onchain = {
+      launchpadConfig: users,
+      launchpadCoinConfig: coin,
+      launchpadCoinMint: official,
+    };
+    const pools = [
+      { id: dbcPoolAddress(coin, official), baseAsset: { id: official } },
+      { id: dbcPoolAddress(users, userCoin), baseAsset: { id: userCoin } },
+      { id: dbcPoolAddress(coin, fake), baseAsset: { id: fake } },
+    ];
+    http.post.mockImplementationOnce(() => ({
+      json: async () => ({ recent: { pools }, graduated: { pools: [pools[2]] } }),
+    }));
+    const lists = await ApeClient.getGemsTokenList({
+      recent: { timeframe: '24h' },
+      graduated: { timeframe: '24h' },
+    });
+    expect(lists.recent.pools.map((pool) => pool.baseAsset.id)).toEqual([official, userCoin]);
+    expect(lists.graduated.pools).toEqual([]);
+  });
+
+  it('drops the look-alike pool updates from the data stream', () => {
+    const users = key();
+    const coin = key();
+    const official = key();
+    const fake = key();
+    state.onchain = {
+      launchpadConfig: users,
+      launchpadCoinConfig: coin,
+      launchpadCoinMint: official,
+    };
+    const ok = {
+      type: 'new',
+      pool: { id: dbcPoolAddress(coin, official), baseAsset: { id: official } },
+    };
+    const bad = { type: 'new', pool: { id: dbcPoolAddress(coin, fake), baseAsset: { id: fake } } };
+    expect(launchpadStreamMessage({ type: 'updates', data: [ok, bad] })).toEqual({
+      type: 'updates',
+      data: [ok],
+    });
+    const actions = { type: 'actions', data: [{ asset: fake }] };
+    expect(launchpadStreamMessage(actions)).toBe(actions);
   });
 
   it('never queries an unfiltered list: no config means empty lists and no request', async () => {
