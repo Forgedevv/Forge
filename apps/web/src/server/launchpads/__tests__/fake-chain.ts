@@ -116,6 +116,7 @@ export class FakeClaimsChain implements ClaimsChain {
       quoteIsExact: false,
       costs,
       netLamports: claimable.quote - 5000n,
+      existingWsolLamports: 0n,
     };
     const skip = this.belowCost.has(pool.toBase58())
       ? 'not_worthwhile'

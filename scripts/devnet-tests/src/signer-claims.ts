@@ -328,7 +328,7 @@ async function claimPart(state: State, wallets: ReturnType<typeof loadWallets>):
     flags: memoryFlags(),
     alerter: consoleAlerter(alerts),
     logger: consoleLogger('claims'),
-    config: { vault, minClaimLamports: DEVNET_MIN_CLAIM_LAMPORTS, feePayer: 'payer' },
+    config: { vault, minClaimLamports: DEVNET_MIN_CLAIM_LAMPORTS, minPositionClaimLamports: DEVNET_MIN_CLAIM_LAMPORTS, feePayer: 'payer' },
     onBeforeSend: () => undefined,
   });
   const report = await job.runOnce();

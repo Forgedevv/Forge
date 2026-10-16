@@ -330,7 +330,7 @@ export async function runCorePositionClaim(): Promise<boolean> {
         flags: memoryFlags(),
         alerter: consoleAlerter(alerts),
         logger: consoleLogger('claims'),
-        config: { vault: receiver, minClaimLamports: DEVNET_MIN_CLAIM_LAMPORTS, feePayer: 'payer' },
+        config: { vault: receiver, minClaimLamports: DEVNET_MIN_CLAIM_LAMPORTS, minPositionClaimLamports: DEVNET_MIN_CLAIM_LAMPORTS, feePayer: 'payer' },
         onBeforeSend: () => undefined,
       });
       const report = await job.runOnce();
