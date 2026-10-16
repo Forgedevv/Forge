@@ -260,12 +260,53 @@ describe('CORS', () => {
 describe('caller tiers', () => {
   it('serves non-browser callers on the anonymous tier, or refuses them when disabled', async () => {
     const on = makeRelay();
-    const a = await send(on, call('getSlot'), { origin: null });
+    const a = await send(on, call('getBalance', [PK]), { origin: null });
     expect(a.res.status).toBe(200);
     expect(a.res.headers.get('access-control-allow-origin')).toBeNull();
+    expect(a.json).toEqual({ jsonrpc: '2.0', id: 1, result: 'getBalance:0' });
 
     const off = makeRelay({ allowAnonymous: false });
-    expect((await send(off, call('getSlot'), { origin: null })).res.status).toBe(403);
+    const refused = await send(off, call('getBalance', [PK]), { origin: null });
+    expect(refused.res.status).toBe(403);
+    expect(off.upstreamPayloads).toHaveLength(0);
+    expect(off.logger.entries).toContainEqual(
+      expect.objectContaining({
+        event: 'caller_refused',
+        fields: expect.objectContaining({ reason: 'anonymous_disabled' }),
+      }),
+    );
+  });
+
+  it('gives anonymous callers the creator fee claim methods only (no Origin widens nothing)', async () => {
+    const relay = makeRelay();
+    const claim = [
+      call('getProgramAccounts', CREATOR_POOLS_PARAMS, 1),
+      call('getAccountInfo', [PK, { encoding: 'base64', commitment: 'confirmed' }], 2),
+      call('getLatestBlockhash', [{ commitment: 'confirmed' }], 3),
+      call('sendTransaction', [TX, { encoding: 'base64', maxRetries: 3 }], 4),
+      call('getSignatureStatuses', [[SIG], { searchTransactionHistory: false }], 5),
+    ];
+    const ok = await send(relay, claim, { origin: null });
+    expect(ok.res.status).toBe(200);
+    expect((ok.json as { error?: unknown }[]).every((r) => r.error === undefined)).toBe(true);
+    expect(relay.upstreamPayloads).toHaveLength(1);
+
+    // What a live site may call, a caller without an Origin may not.
+    const others = [
+      call('simulateTransaction', [TX, { encoding: 'base64', sigVerify: false }], 1),
+      call('getTokenAccountsByOwner', [PK, { mint: PK2 }], 2),
+      call('getSlot', [], 3),
+      call('getEpochInfo', [], 4),
+    ];
+    const refused = await send(relay, others, { origin: null });
+    expect(refused.res.status).toBe(200);
+    for (const answer of refused.json as { error?: { code: number } }[]) {
+      expect(answer.error?.code).toBe(-32601);
+    }
+    expect(relay.upstreamPayloads).toHaveLength(1);
+    const live = await send(relay, others, { origin: CLIENT });
+    expect((live.json as { error?: unknown }[]).every((r) => r.error === undefined)).toBe(true);
+    expect(relay.upstreamPayloads).toHaveLength(2);
   });
 
   it('accepts a valid server token of an active launchpad', async () => {
@@ -842,17 +883,49 @@ describe('rate limits', () => {
     expect(alerts.map((e) => e.fields.bucket)).toEqual(['anon']);
   });
 
-  it('keeps the global cost ceiling for every tier', async () => {
-    const relay = makeRelay({ limits: { global: rule(4) } });
-    expect((await send(relay, call('getSlot'), { ip: '192.0.2.1' })).res.status).toBe(200);
-    expect((await send(relay, call('getSlot'), { origin: null, ip: '192.0.2.2' })).res.status).toBe(
-      200,
-    );
-    expect((await send(relay, call('getSlot'), { ip: '192.0.2.3' })).res.status).toBe(429);
+  it('keeps a cost ceiling per caller class, which no other class can spend', async () => {
+    const relay = makeRelay({
+      limits: { globalAnonymous: rule(4), globalSites: rule(4), globalServer: rule(4) },
+    });
     const token = deriveRelayToken(SECRET, 'moonpad');
-    expect(
-      (await send(relay, call('getSlot'), { origin: null, token, ip: '76.76.21.1' })).res.status,
-    ).toBe(429);
+    const status = async (method: string, opts: PostOptions) =>
+      (await send(relay, call(method, method === 'getBalance' ? [PK] : []), opts)).res.status;
+
+    // Each request costs overhead 1 + weight 1: two drain a ceiling of 4, whatever the IP.
+    expect(await status('getBalance', { origin: null, ip: '192.0.2.1' })).toBe(200);
+    expect(await status('getBalance', { origin: null, ip: '192.0.2.2' })).toBe(200);
+    expect(await status('getBalance', { origin: null, ip: '192.0.2.3' })).toBe(429);
+    expect(relay.logger.entries).toContainEqual(
+      expect.objectContaining({
+        event: 'rate_limited',
+        fields: expect.objectContaining({ tier: 'anonymous', bucket: 'global:anonymous' }),
+      }),
+    );
+
+    // Rotating anonymous IPs never cut the FORGE site, the client sites or the server routes off.
+    expect(await status('getSlot', { origin: FORGE, ip: '203.0.113.1' })).toBe(200);
+    expect(await status('getSlot', { origin: CLIENT, ip: '203.0.113.2' })).toBe(200);
+    expect(await status('getSlot', { origin: null, token, ip: '76.76.21.1' })).toBe(200);
+
+    // Draining the client sites class leaves the FORGE site and the server routes alone.
+    expect(await status('getSlot', { origin: CLIENT, ip: '203.0.113.3' })).toBe(200);
+    for (const origin of [CLIENT, SLEEPING, 'https://forge-moonpad-abc-team.vercel.app']) {
+      expect(await status('getBalance', { origin, ip: '203.0.113.4' })).toBe(429);
+    }
+    expect(await status('getSlot', { origin: FORGE, ip: '203.0.113.5' })).toBe(200);
+    expect(await status('getSlot', { origin: null, token, ip: '76.76.21.2' })).toBe(200);
+    // The ceilings log their class, never an IP.
+    expect(JSON.stringify(relay.logger.entries)).not.toContain('203.0.113');
+  });
+
+  it('keeps a ceiling on the FORGE site class too', async () => {
+    const relay = makeRelay({ limits: { globalForge: rule(4) } });
+    const status = async (origin: string, ip: string) =>
+      (await send(relay, call('getSlot'), { origin, ip })).res.status;
+    expect(await status(FORGE, '192.0.2.1')).toBe(200);
+    expect(await status(FORGE, '192.0.2.2')).toBe(200);
+    expect(await status(FORGE, '192.0.2.3')).toBe(429);
+    expect(await status(CLIENT, '192.0.2.4')).toBe(200);
   });
 
   it('charges invalid requests too', async () => {

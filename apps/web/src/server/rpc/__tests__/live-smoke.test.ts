@@ -36,9 +36,10 @@ const ORIGIN = 'https://forge.example';
 
 describe.skipIf(!enabled)('relay live smoke (devnet, read-only)', () => {
   it('serves web3.js through the relay and never returns the provider key', async () => {
+    // Production requires the relay's own upstream: the devnet RPC_URL stands in for it here.
     const config = readRelayConfig({
       SOLANA_CLUSTER: 'devnet',
-      RPC_URL: rpcUrl,
+      RPC_RELAY_UPSTREAM_URL: rpcUrl,
       NEXT_PUBLIC_APP_URL: ORIGIN,
       NODE_ENV: 'production',
     });

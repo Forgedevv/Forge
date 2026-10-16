@@ -22,6 +22,8 @@ function build(): RelayHandler {
   // Once per instance (the handler is built once): which variable the upstream comes from.
   const selection = upstreamSelectionLog(config);
   consoleLogger.log(selection.level, selection.event, selection.fields);
+  // Anonymous callers are off by default in production and on mainnet (RPC_RELAY_ANONYMOUS).
+  consoleLogger.log('info', 'anonymous_tier', { enabled: config.allowAnonymous });
   const directory = config.supabase
     ? new CachedLaunchpadDirectory(
         createSupabaseSnapshotLoader(

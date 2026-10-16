@@ -12,10 +12,12 @@ import {
   type ValidCall,
 } from './jsonrpc';
 import {
+  classCeiling,
   MAX_REQUEST_COST,
   MAX_SENDS_PER_REQUEST,
   REQUEST_OVERHEAD,
   type BucketDraw,
+  type CallerClass,
   type RelayRateLimitStore,
 } from './limits';
 import type { RelayLogger } from './log';
@@ -30,11 +32,15 @@ import type { Upstream, UpstreamResult } from './upstream';
  * Pipeline: caller tier (Origin / server token / anonymous) -> request overhead charged ->
  * content type -> body size cap -> JSON-RPC parsing (single call or batch of at most 10) ->
  * per-call allowlist and params validation (narrowed to the creator fee claim's methods for the
- * origin of a sleeping site) -> weighted rate limits -> upstream (ids rewritten) -> answers mapped
+ * origin of a sleeping site and for anonymous callers) -> weighted rate limits (per IP or per
+ * launchpad, then the ceiling of the caller's class) -> upstream (ids rewritten) -> answers mapped
  * back to the caller's ids, in request order.
  *
  * Sleeping sites: their browser origin is served (the claim stays available, decision D29), their
  * server token is not (draft and live only), so nothing else runs while a launchpad sleeps.
+ * Anonymous callers (no Origin, no token; off by default in production and on mainnet) get the
+ * same narrowed method set as a sleeping site: dropping the Origin header never buys more methods
+ * than the narrowest browser caller gets.
  *
  * Invalid calls of a batch get their own error and are not forwarded; the others are. Upstream
  * failures are mapped to fixed JSON-RPC errors: the provider URL, its key and its error texts never
@@ -314,10 +320,14 @@ export function createRelayHandler(deps: RelayDeps): RelayHandler {
 
   /**
    * Enforced buckets drawn for `units` (all calls) and `sends` (sendTransaction calls). Browser and
-   * anonymous callers share the per-IP buckets: an Origin header buys no extra budget.
+   * anonymous callers share the per-IP buckets: an Origin header buys no extra budget. Every class
+   * has its own ceiling: no class can spend the budget of another.
    */
   function draws(caller: CallerTier, units: number, sends: number): BucketDraw[] {
-    const out: BucketDraw[] = [{ key: 'global', cost: units, rule: limits.global }];
+    const callerClass = classOf(caller);
+    const out: BucketDraw[] = [
+      { key: `global:${callerClass}`, cost: units, rule: classCeiling(limits, callerClass) },
+    ];
     switch (caller.tier) {
       case 'browser':
       case 'anonymous':
@@ -487,10 +497,10 @@ export function createRelayHandler(deps: RelayDeps): RelayHandler {
       if (!parsed.ok) return json(errorResponse(null, parsed.error), parsed.status, corsOrigin);
       const { batch } = parsed;
       // A sleeping site only claims creator fees (D29): it gets the claim's methods, nothing else.
-      const calls =
-        caller.tier === 'browser' && caller.originKind === 'sleeping'
-          ? restrictCalls(parsed.calls, SLEEPING_SITE_METHODS)
-          : parsed.calls;
+      // Anonymous callers get the same set, so dropping the Origin header widens nothing.
+      const calls = restrictedToClaim(caller)
+        ? restrictCalls(parsed.calls, SLEEPING_SITE_METHODS)
+        : parsed.calls;
       const valid = calls.filter((c): c is ValidCall => c.ok);
 
       let units = 0;
@@ -582,7 +592,31 @@ function methodList(calls: readonly CheckedCall[]): string {
   return [...new Set(calls.map((c) => (c.method ?? '?').slice(0, 40)))].join(',');
 }
 
-/** Bucket family for logs (`ip`, `origin`, ...), never the IP itself. */
+/** The class whose ceiling a caller draws from (limits.ts). */
+export function classOf(caller: CallerTier): CallerClass {
+  switch (caller.tier) {
+    case 'browser':
+      return caller.originKind === 'forge' || caller.originKind === 'local' ? 'forge' : 'sites';
+    case 'server':
+      return 'server';
+    case 'anonymous':
+      return 'anonymous';
+  }
+}
+
+/** Callers limited to the creator fee claim's methods: sleeping sites and anonymous callers. */
+export function restrictedToClaim(caller: CallerTier): boolean {
+  return (
+    caller.tier === 'anonymous' || (caller.tier === 'browser' && caller.originKind === 'sleeping')
+  );
+}
+
+/**
+ * Bucket family for logs (`ip`, `origin`, ...), never the IP itself. A class ceiling keeps its
+ * class (`global:sites`), which names no caller.
+ */
 function bucketName(key: string | undefined): string {
-  return key ? (key.split(':')[0] ?? 'unknown') : 'unknown';
+  if (!key) return 'unknown';
+  if (key.startsWith('global:')) return key;
+  return key.split(':')[0] ?? 'unknown';
 }

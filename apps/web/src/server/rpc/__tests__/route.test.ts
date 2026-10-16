@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { call, DEVNET_GENESIS, FAKE_KEY, UPSTREAM_URL } from './helpers';
+import { call, DEVNET_GENESIS, FAKE_KEY, PK, UPSTREAM_URL } from './helpers';
 
 /*
  * The route files with the production wiring (environment -> config -> handler), the provider
@@ -8,6 +8,9 @@ import { call, DEVNET_GENESIS, FAKE_KEY, UPSTREAM_URL } from './helpers';
  */
 
 const FORGE = 'https://forge.example';
+/** RPC_URL of the payment and launch routes: a key the relay must never use in production. */
+const SERVER_ROUTES_KEY = 'server-routes-key-0123456789abcdef';
+const SERVER_ROUTES_RPC_URL = `https://devnet.helius-rpc.com/?api-key=${SERVER_ROUTES_KEY}`;
 
 function rpcRequest(body: unknown, origin: string | null = FORGE): Request {
   return new Request(`${FORGE}/api/rpc`, {
@@ -19,9 +22,12 @@ function rpcRequest(body: unknown, origin: string | null = FORGE): Request {
 
 beforeEach(() => {
   vi.resetModules();
+  // Our devnet deployment: NODE_ENV=production on devnet, the relay with its own upstream.
   vi.stubEnv('NODE_ENV', 'production');
   vi.stubEnv('SOLANA_CLUSTER', 'devnet');
-  vi.stubEnv('RPC_URL', UPSTREAM_URL);
+  vi.stubEnv('RPC_URL', SERVER_ROUTES_RPC_URL);
+  vi.stubEnv('RPC_RELAY_UPSTREAM_URL', UPSTREAM_URL);
+  vi.stubEnv('RPC_RELAY_ANONYMOUS', '');
   vi.stubEnv('NEXT_PUBLIC_APP_URL', FORGE);
   vi.stubEnv('CLIENTS_DOMAIN', 'forge-sites.app');
   vi.stubEnv('SUPABASE_URL', '');
@@ -73,7 +79,28 @@ describe('app/api/rpc/route', { timeout: 30_000 }, () => {
       }),
     );
     expect(preflight.status).toBe(204);
+    // Anonymous callers are off by default in production (devnet included).
+    const anonymous = await POST(rpcRequest(call('getBalance', [PK]), null));
+    expect(anonymous.status).toBe(403);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(loggedText()).not.toContain(FAKE_KEY);
+    expect(loggedText()).not.toContain(SERVER_ROUTES_KEY);
+  });
+
+  it('serves anonymous callers in production only when RPC_RELAY_ANONYMOUS=on', async () => {
+    vi.stubEnv('RPC_RELAY_ANONYMOUS', 'on');
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: string, init: RequestInit) => {
+        const body = JSON.parse(String(init.body)) as { id: number; method: string };
+        const result = body.method === 'getGenesisHash' ? DEVNET_GENESIS : 4242;
+        return Response.json({ jsonrpc: '2.0', id: body.id, result });
+      }),
+    );
+    const { POST } = await import('../../../../app/api/rpc/route');
+    const res = await POST(rpcRequest(call('getBalance', [PK]), null));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ jsonrpc: '2.0', id: 1, result: 4242 });
   });
 
   it('prefers RPC_RELAY_UPSTREAM_URL and logs once which variable it uses, never the URL', async () => {
@@ -106,7 +133,30 @@ describe('app/api/rpc/route', { timeout: 30_000 }, () => {
     expect(logs).not.toContain('helius');
   });
 
-  it('warns at startup in production when the relay shares RPC_URL', async () => {
+  it('fails closed in production without RPC_RELAY_UPSTREAM_URL (never falls back to RPC_URL)', async () => {
+    vi.stubEnv('RPC_RELAY_UPSTREAM_URL', '');
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const { POST, OPTIONS } = await import('../../../../app/api/rpc/route');
+    const res = await POST(rpcRequest(call('getSlot')));
+    expect(res.status).toBe(503);
+    expect(await res.text()).not.toContain(SERVER_ROUTES_KEY);
+    const preflight = await OPTIONS(
+      new Request(`${FORGE}/api/rpc`, {
+        method: 'OPTIONS',
+        headers: { origin: FORGE, 'access-control-request-method': 'POST' },
+      }),
+    );
+    expect(preflight.status).toBe(503);
+    expect(fetchMock).not.toHaveBeenCalled();
+    const logs = loggedText();
+    expect(logs).toContain('config_error');
+    expect(logs).toContain('RPC_RELAY_UPSTREAM_URL is required in production');
+    expect(logs).not.toContain(SERVER_ROUTES_KEY);
+  });
+
+  it('warns at startup in production when the relay upstream is the very same URL as RPC_URL', async () => {
+    vi.stubEnv('RPC_URL', UPSTREAM_URL);
     vi.stubGlobal(
       'fetch',
       vi.fn(async (_url: string, init: RequestInit) => {
@@ -122,14 +172,14 @@ describe('app/api/rpc/route', { timeout: 30_000 }, () => {
       .filter((line) => line.includes('upstream_selected'));
     expect(warned).toHaveLength(1);
     expect(JSON.parse(warned[0]!)).toMatchObject({
-      upstream: 'RPC_URL',
+      upstream: 'RPC_RELAY_UPSTREAM_URL',
       sharedWithServerRoutes: true,
     });
     expect(loggedText()).not.toContain(FAKE_KEY);
   });
 
   it('answers 503 without detail on a configuration error, and names only the variable', async () => {
-    vi.stubEnv('RPC_URL', `https://mainnet.helius-rpc.com/?api-key=${FAKE_KEY}`);
+    vi.stubEnv('RPC_RELAY_UPSTREAM_URL', `https://mainnet.helius-rpc.com/?api-key=${FAKE_KEY}`);
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
     const { POST } = await import('../../../../app/api/rpc/route');
@@ -141,7 +191,7 @@ describe('app/api/rpc/route', { timeout: 30_000 }, () => {
     expect(fetchMock).not.toHaveBeenCalled();
     const logs = loggedText();
     expect(logs).toContain('config_error');
-    expect(logs).toContain('RPC_URL');
+    expect(logs).toContain('RPC_RELAY_UPSTREAM_URL');
     expect(logs).not.toContain(FAKE_KEY);
   });
 });

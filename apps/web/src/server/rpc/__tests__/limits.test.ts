@@ -2,6 +2,10 @@
 import { describe, expect, it } from 'vitest';
 import { readLimits } from '../config';
 import {
+  CALLER_CLASSES,
+  CLASS_SHARES,
+  classCeiling,
+  DEFAULT_GLOBAL_UNITS_PER_MINUTE,
   DEFAULT_LIMITS,
   MAX_REQUEST_COST,
   MAX_SENDS_PER_REQUEST,
@@ -101,5 +105,37 @@ describe('limits configuration', () => {
       'RPC_RELAY_IP_UNITS_PER_MINUTE must be a positive number',
     );
     expect(() => readLimits({ RPC_RELAY_GLOBAL_UNITS_PER_MINUTE: 'lots' })).toThrow();
+    expect(() => readLimits({ RPC_RELAY_GLOBAL_SITES_UNITS_PER_MINUTE: '-1' })).toThrow(
+      'RPC_RELAY_GLOBAL_SITES_UNITS_PER_MINUTE must be a positive number',
+    );
+  });
+
+  it('splits the global ceiling between the caller classes', () => {
+    const d = DEFAULT_LIMITS;
+    const perMinute = (r: BucketRule) => r.refillPerSecond * 60;
+    const classes = [d.globalForge, d.globalSites, d.globalServer, d.globalAnonymous];
+    expect(classes.reduce((sum, r) => sum + perMinute(r), 0)).toBeCloseTo(
+      DEFAULT_GLOBAL_UNITS_PER_MINUTE,
+    );
+    expect(Object.keys(d)).not.toContain('global');
+    for (const callerClass of CALLER_CLASSES) {
+      expect(perMinute(classCeiling(d, callerClass))).toBeCloseTo(
+        DEFAULT_GLOBAL_UNITS_PER_MINUTE * CLASS_SHARES[callerClass],
+      );
+    }
+
+    // The total is split by the same shares; one class can be set on its own.
+    const limits = readLimits({
+      RPC_RELAY_GLOBAL_UNITS_PER_MINUTE: '6000',
+      RPC_RELAY_GLOBAL_ANONYMOUS_UNITS_PER_MINUTE: '60',
+    });
+    expect(perMinute(limits.globalForge)).toBeCloseTo(1_500);
+    expect(perMinute(limits.globalSites)).toBeCloseTo(3_000);
+    expect(perMinute(limits.globalServer)).toBeCloseTo(900);
+    expect(perMinute(limits.globalAnonymous)).toBeCloseTo(60);
+    expect(limits.globalAnonymous.capacity).toBe(MAX_REQUEST_COST);
+    expect(readLimits({ RPC_RELAY_GLOBAL_FORGE_UNITS_PER_MINUTE: '30000' }).globalSites).toEqual(
+      d.globalSites,
+    );
   });
 });

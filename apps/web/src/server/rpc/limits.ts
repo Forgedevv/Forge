@@ -7,9 +7,14 @@
  * Buckets per caller tier (handler.ts). An Origin header is not an identity (any non-browser
  * client can send one), so it never buys a larger per-IP budget:
  * - browser (allowed Origin) and anonymous (no Origin, no token): the SAME per-client-IP bucket
- *   (`ip:<ip>`, IPv6 by /64) + global;
- * - server (valid X-Forge-Relay-Token): per launchpad slug + global (Vercel egress IPs are shared
- *   by every client project, so the client IP is not a meaningful key there).
+ *   (`ip:<ip>`, IPv6 by /64) + the ceiling of the caller's class;
+ * - server (valid X-Forge-Relay-Token): per launchpad slug + the ceiling of the server class
+ *   (Vercel egress IPs are shared by every client project, so the client IP is not a meaningful
+ *   key there).
+ * Class ceilings (enforced, `global:<class>`): the FORGE site (and localhost outside production),
+ * client sites (recorded client and sleeping sites, previews), server-token callers, anonymous
+ * callers. Each class has its own ceiling, so traffic of one class (e.g. rotating IPs without an
+ * Origin) can never spend the budget of another and cut the FORGE site or the client sites off.
  * Alert-only buckets (never refuse, only log when exceeded): per origin, and all anonymous
  * traffic. Enforcing them would let anyone drain a site's origin bucket (or the anonymous one)
  * by sending its Origin header, and deny service to its real visitors.
@@ -27,6 +32,17 @@ export interface BucketRule {
   refillPerSecond: number;
 }
 
+/**
+ * Caller classes, each with its own enforced ceiling:
+ * - `forge`: the FORGE site's origin (and localhost outside production);
+ * - `sites`: client sites (draft, live or sleeping, at their slug or recorded host) and previews;
+ * - `server`: server-token callers (client sites' server routes);
+ * - `anonymous`: neither an Origin nor a token (only when RPC_RELAY_ANONYMOUS is on).
+ */
+export type CallerClass = 'forge' | 'sites' | 'server' | 'anonymous';
+
+export const CALLER_CLASSES: readonly CallerClass[] = ['forge', 'sites', 'server', 'anonymous'];
+
 export interface RelayLimits {
   /** Per client IP, browser and anonymous tiers alike. */
   ip: BucketRule;
@@ -39,7 +55,28 @@ export interface RelayLimits {
   sendPerCaller: BucketRule;
   /** sendTransaction calls per launchpad on the server tier. */
   sendServer: BucketRule;
-  global: BucketRule;
+  /** Enforced ceiling of the FORGE site class. */
+  globalForge: BucketRule;
+  /** Enforced ceiling of the client sites class. */
+  globalSites: BucketRule;
+  /** Enforced ceiling of the server-token class. */
+  globalServer: BucketRule;
+  /** Enforced ceiling of the anonymous class. */
+  globalAnonymous: BucketRule;
+}
+
+/** The enforced ceiling of a caller class. */
+export function classCeiling(limits: RelayLimits, callerClass: CallerClass): BucketRule {
+  switch (callerClass) {
+    case 'forge':
+      return limits.globalForge;
+    case 'sites':
+      return limits.globalSites;
+    case 'server':
+      return limits.globalServer;
+    case 'anonymous':
+      return limits.globalAnonymous;
+  }
 }
 
 /** Units charged for every HTTP request, valid or not. */
@@ -59,6 +96,31 @@ const sendsPerMinute = (sends: number, burst: number): BucketRule => ({
   refillPerSecond: sends / 60,
 });
 
+/** Total of the class ceilings, units per minute (RPC_RELAY_GLOBAL_UNITS_PER_MINUTE). */
+export const DEFAULT_GLOBAL_UNITS_PER_MINUTE = 60_000;
+/** Burst of a class ceiling, in seconds of its sustained rate. */
+const CLASS_BURST_SECONDS = 10;
+
+/**
+ * Share of the total each class gets by default. Client sites carry the trading traffic; the FORGE
+ * site serves the dashboard and launches; server routes are uploads and coin creation; anonymous
+ * callers get the least (they are off by default in production).
+ */
+export const CLASS_SHARES: Readonly<Record<CallerClass, number>> = {
+  forge: 0.25,
+  sites: 0.5,
+  server: 0.15,
+  anonymous: 0.1,
+};
+
+/** Ceiling of a class sharing `totalUnitsPerMinute`. */
+export function classCeilingRule(
+  callerClass: CallerClass,
+  totalUnitsPerMinute: number,
+): BucketRule {
+  return perMinute(totalUnitsPerMinute * CLASS_SHARES[callerClass], CLASS_BURST_SECONDS);
+}
+
 /**
  * Defaults, per server instance. A trade on a client site costs about 40-80 units over a minute
  * (quote reads, simulation, send, then status polling); a page view with balance polling a few
@@ -71,7 +133,10 @@ export const DEFAULT_LIMITS: RelayLimits = {
   anonymousGlobal: perMinute(600, 30),
   sendPerCaller: sendsPerMinute(6, 6),
   sendServer: sendsPerMinute(30, 10),
-  global: perMinute(60_000, 10),
+  globalForge: classCeilingRule('forge', DEFAULT_GLOBAL_UNITS_PER_MINUTE),
+  globalSites: classCeilingRule('sites', DEFAULT_GLOBAL_UNITS_PER_MINUTE),
+  globalServer: classCeilingRule('server', DEFAULT_GLOBAL_UNITS_PER_MINUTE),
+  globalAnonymous: classCeilingRule('anonymous', DEFAULT_GLOBAL_UNITS_PER_MINUTE),
 };
 
 export interface BucketDraw {
