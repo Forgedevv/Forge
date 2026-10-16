@@ -342,7 +342,8 @@ The signer never takes an address or an amount from the request: it re-reads eve
 | `ANTHROPIC_API_KEY` | ✓ (design chat) | | ✓ (model gateway only) | |
 | `FORGE_MINT` (optional), `FORGE_GATING_AMOUNT` | ✓ | | | ✓ (buyback) |
 | `FORGE_CASHBOX_WALLET` / `NEXT_PUBLIC_FORGE_CASHBOX_WALLET` | ✓ / ✓ (required in production) | | | ✓ |
-| `FORGE_MULTISIG_VAULT` | | | ✓ | ✓ |
+| `FORGE_MULTISIG_VAULT` | | ✓ as `NEXT_PUBLIC_FORGE_MULTISIG_VAULT` (referral holder check) | ✓ (injects the public twin) | ✓ |
+| `FORGE_SQUADS_MULTISIG`, `FORGE_SQUADS_SPENDING_LIMIT`, `FORGE_SQUADS_VAULT_INDEX` (optional, read in `packages/core/src/addresses.ts`) | | | | ✓ (buyback funding) |
 | `FORGE_METEORA_REFERRAL_ACCOUNT`, `FORGE_PLATFORM_FEE_WALLET`, `FORGE_JUPITER_REFERRAL_ACCOUNT` | | ✓ as `NEXT_PUBLIC_*` twins | ✓ (injects the public twins) | ✓ |
 | `NEXT_PUBLIC_POOL_CONFIG_KEY`, `NEXT_PUBLIC_R2_PUBLIC_URL`, `NEXT_PUBLIC_SITE_NAME` | | ✓ | ✓ (injected) | |
 | `JUPITER_API_KEY` | ✓ | | | ✓ |

@@ -26,6 +26,7 @@ Sent by `apps/signer` and `apps/builder` via `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CH
 | `claims_paused` | the signer stops claiming the creator share (DBC before graduation, DAMM v2 position after) to the multisig |
 | `cashbox_sweep_paused` | the signer stops moving the cashbox surplus to the multisig |
 | `refunds_paused` | the signer stops automatic refunds (they wait, nothing is lost) |
+| `jupiter_claims_paused` | the signer stops claiming the Jupiter referral fees to the multisig (mainnet only) |
 | `launchpads.status = 'disabled'` | the builder deploys the maintenance page **and pauses the Vercel project**, so the site and its old previews stop serving |
 
 Each service rereads the flags at least every minute, and the money jobs reread their flag again right before signing.
@@ -47,6 +48,7 @@ The builder logs `visual review discarded, first pass kept` with the reason (`ca
 | Transfer the cashbox surplus to the multisig | every 24 h | signer |
 | Automatic refunds (2 failed builds) | continuous | signer |
 | $FORGE buyback | the bot withdraws the day's budget from the vault through its Squads spending limit (once per UTC day), then makes several small buys at random times and returns every $FORGE to the vault. Live only on mainnet-beta with `FORGE_BUYBACK_LIVE=true`, `FORGE_MINT`, `FORGE_SQUADS_MULTISIG` and `FORGE_SQUADS_SPENDING_LIMIT`; simulation otherwise | signer |
+| Claim the Jupiter referral fees (SOL and USDC by default, `SIGNER_JUPITER_CLAIMS_MINTS`) to the multisig | every 24 h (mainnet-beta only; off on devnet) | signer |
 | Convert to SOL the Jupiter fees received in other currencies | every 24 h (mainnet, `FORGE_CONVERT_LIVE=true`) | signer |
 | Check that disabled launchpads are cut (paused on Vercel) | every 15 min | builder |
 | Put launchpads with no trade for 30 days into sleep mode | every 24 h | builder |
