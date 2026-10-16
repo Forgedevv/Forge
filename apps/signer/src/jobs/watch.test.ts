@@ -1,10 +1,17 @@
 /// <reference types="node" />
+import { promises as fs } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { Keypair, PublicKey } from '@solana/web3.js';
 import type { Alerter } from '../alerts.js';
+import { createMemoryJournal } from './shared.js';
 import {
+  EXPECTED_SIGNATURE_LOG_FILE,
+  SerializedWatchState,
   buildCreatorAccounts,
   buildStaticAccounts,
+  createExpectedSignatureLog,
   createExpectedSignatures,
   createSupabaseTargetSource,
   createWatchState,
@@ -21,6 +28,7 @@ import {
   outflowOf,
   parseWatchConfig,
   recipientsOf,
+  restoreWatchState,
   runWatchCycle,
   startWatch,
   type AccountSnapshot,
@@ -171,7 +179,8 @@ describe('payer and buyback bot wallets', () => {
     expect(accounts.find((a) => a.role === 'payer')).toMatchObject({
       watchOutflows: true,
       watchTokenAccounts: true,
-      allowedDestinations: [],
+      // The claims the payer pays for forward their fees to the vault.
+      allowedDestinations: [VAULT],
       requireRentExempt: true,
     });
     expect(accounts.find((a) => a.role === 'buyback')).toMatchObject({
@@ -851,5 +860,198 @@ describe('createSupabaseTargetSource', () => {
       });
     await expect(make(() => new Response('no', { status: 500 })).load()).rejects.toThrow(/500/);
     await expect(make(() => new Response('{"a":1}', { status: 200 })).load()).rejects.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// Announced signatures: durable before the broadcast, loaded at start
+
+describe('expected signature log', () => {
+  async function tmp(): Promise<string> {
+    return fs.mkdtemp(path.join(os.tmpdir(), 'forge-expected-'));
+  }
+  const DAY = 24 * 60 * 60_000;
+
+  function payerChain(): FakeChain {
+    const chain = makeChain();
+    chain.accounts.set(VAULT, snap(VAULT, 50n * SOL));
+    chain.accounts.set(FEE, snap(FEE, RENT_0));
+    chain.accounts.set(CASHBOX, snap(CASHBOX, 3n * SOL));
+    chain.accounts.set(PAYER, snap(PAYER, 5n * SOL));
+    chain.signatures.set(VAULT, ['v0']);
+    chain.signatures.set(CASHBOX, ['c0']);
+    chain.signatures.set(PAYER, ['p0']);
+    return chain;
+  }
+  const payerAccounts = () =>
+    buildStaticAccounts({ vault: VAULT, platformFee: FEE, cashbox: CASHBOX, payer: PAYER }, config);
+
+  it('appends each announced signature before expect() returns and loads them back', async () => {
+    const dir = await tmp();
+    try {
+      let t = 1_000;
+      const log = createExpectedSignatureLog(dir, { now: () => t });
+      const expected = createExpectedSignatures(DAY, () => t, log);
+      expected.expect('sig1');
+      t = 2_000;
+      expected.expect('sig2');
+      expect(await fs.readFile(path.join(dir, EXPECTED_SIGNATURE_LOG_FILE), 'utf8')).toBe(
+        '1000 sig1\n2000 sig2\n',
+      );
+      // A restart: a fresh set knows nothing until the log is loaded.
+      const fresh = createExpectedSignatures(DAY, () => t, log);
+      expect(fresh.has('sig1')).toBe(false);
+      fresh.restore(log.load());
+      expect(fresh.has('sig1')).toBe(true);
+      expect(fresh.has('sig2')).toBe(true);
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('is empty without a file, skips malformed lines and drops expired entries at load', async () => {
+    const dir = await tmp();
+    try {
+      let t = 10 * DAY;
+      const log = createExpectedSignatureLog(dir, { ttlMs: DAY, now: () => t });
+      expect(log.load()).toEqual([]);
+      const file = path.join(dir, EXPECTED_SIGNATURE_LOG_FILE);
+      await fs.writeFile(
+        file,
+        `${t - DAY - 1} old\n${t - DAY} edge\ngarbage line\n\n${t} two words\n${t} fresh\r\n`,
+      );
+      expect(log.load()).toEqual([
+        { at: t - DAY, signature: 'edge' },
+        { at: t, signature: 'fresh' },
+      ]);
+      // Compacted on disk too.
+      expect(await fs.readFile(file, 'utf8')).toBe(`${t - DAY} edge\n${t} fresh\n`);
+      t += DAY + 1;
+      expect(log.load()).toEqual([]);
+      expect(await fs.readFile(file, 'utf8')).toBe('');
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('prunes the expired entries once the file grows past the bound, and never grows unbounded', async () => {
+    const dir = await tmp();
+    try {
+      let t = 0;
+      const log = createExpectedSignatureLog(dir, { ttlMs: 1_000, maxBytes: 200, now: () => t });
+      const file = path.join(dir, EXPECTED_SIGNATURE_LOG_FILE);
+      for (let i = 0; i < 20; i++) {
+        t = i * 100;
+        log.append({ signature: `signature-${String(i).padStart(3, '0')}`, at: t });
+      }
+      const content = await fs.readFile(file, 'utf8');
+      expect(Buffer.byteLength(content)).toBeLessThanOrEqual(200);
+      // The newest entry is always kept; the expired ones (older than 1 s) are gone.
+      expect(content).toContain('signature-019');
+      expect(content).not.toContain('signature-000');
+      expect(log.load().every((e) => t - e.at <= 1_000)).toBe(true);
+      // No temp file left behind.
+      expect((await fs.readdir(dir)).filter((n) => n.endsWith('.tmp'))).toEqual([]);
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses an invalid signature and a directory it cannot write, so nothing is broadcast', async () => {
+    const dir = await tmp();
+    try {
+      const log = createExpectedSignatureLog(dir);
+      expect(() => log.append({ signature: 'two words', at: 1 })).toThrow(/invalid signature/);
+      expect(() => log.append({ signature: '', at: 1 })).toThrow(/invalid signature/);
+      // A file where the directory should be: the append cannot create the log.
+      const blocked = path.join(dir, 'blocked');
+      await fs.writeFile(blocked, 'not a directory');
+      const broken = createExpectedSignatureLog(blocked);
+      const expected = createExpectedSignatures(DAY, Date.now, broken);
+      expect(() => expected.expect('sig')).toThrow();
+      expect(expected.has('sig')).toBe(false);
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not flag a payer spend announced before a restart that lost the state save', async () => {
+    const dir = await tmp();
+    try {
+      const chain = payerChain();
+      const staticAccounts = payerAccounts();
+      const journal = createMemoryJournal(SerializedWatchState);
+      const log = createExpectedSignatureLog(dir);
+
+      // First life: a cycle saves the state, then a config creation is announced and sent...
+      const before = createExpectedSignatures(DAY, Date.now, log);
+      const first = makeDeps(chain, { accounts: [], pools: [] }, {
+        staticAccounts,
+        expected: before,
+        journal,
+        expectedLog: log,
+      });
+      await restoreWatchState(first.deps);
+      expect((await runWatchCycle(first.deps)).detections).toEqual([]);
+      before.expect('p1');
+      chain.signatures.set(PAYER, ['p1', 'p0']);
+      chain.txs.set('p1', tx('p1', { [PAYER]: [5n * SOL, 4n * SOL], [OTHER]: [0n, SOL] }));
+      // ...and the signer dies before the next cycle saves the state with that signature.
+
+      // Second life: a fresh set, the state of the first cycle, the log.
+      const after = createExpectedSignatures(DAY, Date.now, log);
+      const second = makeDeps(chain, { accounts: [], pools: [] }, {
+        staticAccounts,
+        expected: after,
+        journal,
+        expectedLog: log,
+      });
+      await restoreWatchState(second.deps);
+      expect(after.has('p1')).toBe(true);
+      const r = await runWatchCycle(second.deps);
+      expect(r.detections.filter((d) => d.code === 'UNEXPECTED_OUTFLOW')).toEqual([]);
+      expect(second.alerts).not.toHaveBeenCalled();
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('alerts once when the log cannot be read, and the watcher still starts', async () => {
+    const dir = await tmp();
+    try {
+      const journal = createMemoryJournal(SerializedWatchState);
+      const log = createExpectedSignatureLog(dir);
+      await fs.mkdir(path.join(dir, EXPECTED_SIGNATURE_LOG_FILE)); // a directory, not a file
+      const { deps, alerts } = makeDeps(makeChain(), { accounts: [], pools: [] }, {
+        expected: createExpectedSignatures(),
+        journal,
+        expectedLog: log,
+      });
+      expect(await restoreWatchState(deps)).toBe(false);
+      expect(alerts.mock.calls.map((c) => c[1])).toEqual(['WATCH_EXPECTED_LOG_UNREADABLE']);
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('lets the payer forward SOL to the vault (claims it pays for) without an alert', async () => {
+    const chain = payerChain();
+    const { deps } = makeDeps(chain, { accounts: [], pools: [] }, { staticAccounts: payerAccounts() });
+    expect((await runWatchCycle(deps)).detections).toEqual([]);
+    chain.signatures.set(PAYER, ['p2', 'p1', 'p0']);
+    // p1: nobody announced it, but every lamport went to the vault.
+    chain.txs.set('p1', tx('p1', { [PAYER]: [5n * SOL, 4n * SOL], [VAULT]: [50n * SOL, 51n * SOL] }));
+    // p2: part of it went elsewhere.
+    chain.txs.set(
+      'p2',
+      tx('p2', {
+        [PAYER]: [4n * SOL, 2n * SOL],
+        [VAULT]: [51n * SOL, 52n * SOL],
+        [ATTACKER]: [0n, SOL],
+      }),
+    );
+    const r = await runWatchCycle(deps);
+    const outflows = r.detections.filter((d) => d.code === 'UNEXPECTED_OUTFLOW');
+    expect(outflows.map((d) => d.details.signature)).toEqual(['p2']);
   });
 });

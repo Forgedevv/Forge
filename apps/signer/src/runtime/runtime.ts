@@ -45,7 +45,7 @@ import {
   sendAlert,
 } from '../jobs/shared.js';
 import { PayerReservations } from '../jobs/reservations.js';
-import { createExpectedSignatures } from '../jobs/watch.js';
+import { createExpectedSignatureLog, createExpectedSignatures } from '../jobs/watch.js';
 import {
   createFileRouteJournals,
   createForgeRouteCore,
@@ -204,7 +204,11 @@ export async function createSignerRuntime(options: SignerRuntimeOptions): Promis
       fetch: doFetch,
     });
     const flags = createPostgrestFlagsReader(db);
-    const expected = createExpectedSignatures(24 * 60 * 60_000, now);
+    // Every announced signature is on disk (fsynced) before its broadcast, so a restart between
+    // a broadcast and the next watcher state save does not flag the signer's own transaction.
+    const expectedTtlMs = 24 * 60 * 60_000;
+    const expectedLog = createExpectedSignatureLog(config.journalDir, { ttlMs: expectedTtlMs, now });
+    const expected = createExpectedSignatures(expectedTtlMs, now, expectedLog);
     const context: SignerJobContext = {
       env,
       cluster: config.cluster,
@@ -229,6 +233,7 @@ export async function createSignerRuntime(options: SignerRuntimeOptions): Promis
       payerLock: new Mutex(),
       payerReservations: new PayerReservations(),
       expected,
+      expectedLog,
       onBeforeSend: (signature) => expected.expect(signature),
       journalDir: config.journalDir,
       convertRoles: config.convertRoles,

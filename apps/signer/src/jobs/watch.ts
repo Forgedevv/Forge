@@ -34,13 +34,32 @@
  * restart resumes where it stopped and the downtime is examined. Only the very first observation
  * of an address or a pool (no saved state) is silent.
  *
+ * The expected signatures are also written, one by one and fsynced, to an append-only log
+ * (`watch.expected.log`) by `expect()` itself, before the broadcast they announce: the state
+ * journal is only saved at the end of a cycle, so a signer restarted in between would otherwise
+ * forget its own transactions and raise UNEXPECTED_OUTFLOW on them. The log is loaded with the
+ * state at start.
+ *
  * The job is read-only: it never signs and never sends a transaction.
  */
+import {
+  closeSync,
+  fstatSync,
+  fsyncSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeSync,
+} from 'node:fs';
+import path from 'node:path';
+import { randomBytes } from 'node:crypto';
 import { PublicKey, type Connection } from '@solana/web3.js';
 import { NATIVE_MINT, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from '@solana/spl-token';
 import { z } from 'zod';
 import type { Alerter, AlertLevel } from '../alerts.js';
-import { createFileJournal, type Journal } from './shared.js';
+import { JobError, createFileJournal, describeError, type Journal } from './shared.js';
 
 // ---------------------------------------------------------------------------------------------
 // Types
@@ -285,7 +304,8 @@ export function buildStaticAccounts(
   ];
   if (addresses.payer) {
     // Every payer spend (configs, nonce accounts, claims it pays for, conversions) is announced
-    // before its broadcast; anything else leaving the wallet is an outflow worth an alert.
+    // before its broadcast; anything else leaving the wallet is an outflow worth an alert,
+    // except what goes to the vault (the claims the payer pays for forward their fees to it).
     out.push({
       address: addresses.payer,
       label: 'payer wallet',
@@ -294,7 +314,7 @@ export function buildStaticAccounts(
       requireRentExempt: true,
       watchOutflows: true,
       watchTokenAccounts: true,
-      allowedDestinations: [],
+      allowedDestinations: [addresses.vault],
     });
   }
   if (addresses.buyback) {
@@ -743,9 +763,14 @@ export interface ExpectedSignatures {
   restore(entries: ReadonlyArray<{ signature: string; at: number }>): void;
 }
 
+/**
+ * @param log When given, `expect()` appends every signature to it, fsynced, before returning
+ *   (and throws when it cannot: the caller then does not broadcast). See `createExpectedSignatureLog`.
+ */
 export function createExpectedSignatures(
   ttlMs = 24 * 60 * 60_000,
   now: () => number = Date.now,
+  log?: ExpectedSignatureLog,
 ): ExpectedSignatures {
   const map = new Map<string, number>();
   const prune = (t: number) => {
@@ -755,6 +780,8 @@ export function createExpectedSignatures(
     expect(signature) {
       const t = now();
       prune(t);
+      // On disk first: the broadcast must not go out before the signature is durable.
+      log?.append({ signature, at: t });
       map.set(signature, t);
     },
     has(signature) {
@@ -772,6 +799,130 @@ export function createExpectedSignatures(
           map.set(e.signature, e.at);
         }
       }
+    },
+  };
+}
+
+/** File name of the append-only log of the announced signatures (`<dir>/watch.expected.log`). */
+export const EXPECTED_SIGNATURE_LOG_FILE = 'watch.expected.log';
+
+/** Default size past which the log is rewritten without its expired entries. */
+export const EXPECTED_SIGNATURE_LOG_MAX_BYTES = 1024 * 1024;
+
+export interface ExpectedSignatureEntry {
+  signature: string;
+  at: number;
+}
+
+/**
+ * Append-only log of the signatures announced to the watcher, one `<at> <signature>` line
+ * each. `append` writes and fsyncs synchronously (the announcing hook is synchronous, and the
+ * broadcast must wait for the disk), so a signer restarted right after a broadcast, before the
+ * state journal is saved at the end of the watcher cycle, still knows its own transaction.
+ * Bounded by age: rewritten without the expired entries (ttl) once it grows past `maxBytes`
+ * and at load; past that, only the newest entries that fit half of `maxBytes` are kept.
+ */
+export interface ExpectedSignatureLog {
+  /** Appends one entry and fsyncs it before returning. Throws (JOURNAL_IO) when it could not. */
+  append(entry: ExpectedSignatureEntry): void;
+  /** Every live entry on disk, oldest first (malformed lines are skipped). Throws (JOURNAL_IO). */
+  load(): ExpectedSignatureEntry[];
+}
+
+export function createExpectedSignatureLog(
+  dir: string,
+  options: { ttlMs?: number; maxBytes?: number; now?: () => number } = {},
+): ExpectedSignatureLog {
+  const ttlMs = options.ttlMs ?? 24 * 60 * 60_000;
+  const maxBytes = options.maxBytes ?? EXPECTED_SIGNATURE_LOG_MAX_BYTES;
+  const now = options.now ?? Date.now;
+  const resolved = path.resolve(dir);
+  const file = path.join(resolved, EXPECTED_SIGNATURE_LOG_FILE);
+  const lineOf = (e: ExpectedSignatureEntry) => `${e.at} ${e.signature}\n`;
+  const ioError = (err: unknown, fallback: string) =>
+    new JobError('JOURNAL_IO', describeError(err).code ?? fallback);
+
+  const parse = (content: string): ExpectedSignatureEntry[] => {
+    const out: ExpectedSignatureEntry[] = [];
+    for (const raw of content.split('\n')) {
+      const m = /^([0-9]{1,15}) (\S+)$/.exec(raw.trim());
+      if (m) out.push({ at: Number(m[1]), signature: m[2]! });
+    }
+    return out;
+  };
+
+  const live = (entries: ExpectedSignatureEntry[], t: number) =>
+    entries.filter((e) => t - e.at <= ttlMs);
+
+  /** Rewrites the whole log atomically (temp file, fsync, rename). */
+  const rewrite = (entries: ExpectedSignatureEntry[]): void => {
+    let content = entries.map(lineOf).join('');
+    if (Buffer.byteLength(content) > maxBytes) {
+      // Still too big with the live entries only: keep the newest ones that fit half the bound.
+      let kept = entries.length;
+      let bytes = 0;
+      for (let i = entries.length - 1; i >= 0; i--) {
+        bytes += Buffer.byteLength(lineOf(entries[i]!));
+        if (bytes > maxBytes / 2) break;
+        kept = i;
+      }
+      content = entries.slice(kept).map(lineOf).join('');
+    }
+    const tmp = path.join(resolved, `.${EXPECTED_SIGNATURE_LOG_FILE}.${randomBytes(6).toString('hex')}.tmp`);
+    try {
+      const fd = openSync(tmp, 'wx', 0o600);
+      try {
+        writeSync(fd, content);
+        fsyncSync(fd);
+      } finally {
+        closeSync(fd);
+      }
+      renameSync(tmp, file);
+    } catch (err) {
+      try {
+        rmSync(tmp, { force: true });
+      } catch {
+        // The temp file is the lesser problem.
+      }
+      throw ioError(err, 'rewrite failed');
+    }
+  };
+
+  const read = (): string => {
+    try {
+      return readFileSync(file, 'utf8');
+    } catch (err) {
+      if ((err as { code?: string }).code === 'ENOENT') return '';
+      throw ioError(err, 'read failed');
+    }
+  };
+
+  return {
+    append(entry) {
+      if (entry.signature === '' || /\s/.test(entry.signature)) {
+        throw new JobError('JOURNAL_IO', 'invalid signature');
+      }
+      let size: number;
+      try {
+        mkdirSync(resolved, { recursive: true, mode: 0o700 });
+        const fd = openSync(file, 'a', 0o600);
+        try {
+          writeSync(fd, lineOf(entry));
+          fsyncSync(fd);
+          size = fstatSync(fd).size;
+        } finally {
+          closeSync(fd);
+        }
+      } catch (err) {
+        throw ioError(err, 'append failed');
+      }
+      if (size > maxBytes) rewrite(live(parse(read()), now()));
+    },
+    load() {
+      const entries = parse(read());
+      const kept = live(entries, now());
+      if (kept.length !== entries.length) rewrite(kept);
+      return kept;
     },
   };
 }
@@ -798,6 +949,8 @@ export interface WatchDeps {
   expected?: ExpectedSignatures;
   /** Durable state (cursors...). Saved after every cycle, restored by `startWatch`. */
   journal?: Journal<SerializedWatchState>;
+  /** The signatures announced since the last state save, loaded into `expected` at start. */
+  expectedLog?: ExpectedSignatureLog;
 }
 
 export interface WatchCycleResult {
@@ -1022,10 +1175,12 @@ export async function saveWatchState(deps: WatchDeps): Promise<void> {
 }
 
 /**
- * Loads the saved state into `deps.state` (and the expected signatures). Never throws: an
- * unreadable journal is alerted and the watcher starts fresh. Returns true when state was loaded.
+ * Loads the saved state into `deps.state` (and the expected signatures, from the state and from
+ * the append-only log of the announced signatures). Never throws: an unreadable journal or log
+ * is alerted and the watcher starts fresh. Returns true when state was loaded.
  */
 export async function restoreWatchState(deps: WatchDeps): Promise<boolean> {
+  await restoreExpectedLog(deps);
   if (!deps.journal) return false;
   try {
     const saved = await deps.journal.get(WATCH_STATE_KEY);
@@ -1050,6 +1205,33 @@ export async function restoreWatchState(deps: WatchDeps): Promise<boolean> {
       /* alerting must not stop the watcher */
     }
     return false;
+  }
+}
+
+/**
+ * The signatures announced before the last state save (or ever, on a first start) come from
+ * the append-only log. Alerted, never thrown: without them the watcher could flag the signer's
+ * own last transactions, which is loud but safe.
+ */
+async function restoreExpectedLog(deps: WatchDeps): Promise<void> {
+  if (!deps.expectedLog || !deps.expected) return;
+  try {
+    const entries = deps.expectedLog.load();
+    deps.expected.restore(entries);
+    deps.logger.info({ announced: entries.length }, 'announced signatures restored');
+  } catch (err) {
+    deps.logger.error({ errorName: errorName(err) }, 'announced signatures unreadable');
+    try {
+      await deps.alerter.alert(
+        'high',
+        'WATCH_EXPECTED_LOG_UNREADABLE',
+        'The log of the signatures announced by the signer could not be read: its own last transactions may be flagged as unexpected outflows',
+        { error: errorName(err) },
+        { dedupKey: 'watch-expected-log-unreadable' },
+      );
+    } catch {
+      /* alerting must not stop the watcher */
+    }
   }
 }
 

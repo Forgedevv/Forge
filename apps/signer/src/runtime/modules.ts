@@ -73,6 +73,7 @@ import {
   parseWatchConfig,
   restoreWatchState,
   runWatchCycle,
+  type ExpectedSignatureLog,
   type ExpectedSignatures,
   type WatchDeps,
 } from '../jobs/watch.js';
@@ -119,6 +120,8 @@ export interface SignerJobContext {
   /** Payer lamports reserved by the routes' creations in flight (subtracted from its balance). */
   payerReservations: PayerReservations;
   expected: ExpectedSignatures;
+  /** Where `expected.expect()` writes each announced signature before its broadcast; loaded by the watcher at start. */
+  expectedLog: ExpectedSignatureLog;
   onBeforeSend: BeforeSendHook;
   journalDir: string;
   convertRoles: readonly ConvertRole[];
@@ -289,6 +292,7 @@ export const watchModule: SignerJobModule = {
       state: createWatchState(),
       expected: ctx.expected,
       journal: createWatchStateJournal(ctx.journalDir),
+      expectedLog: ctx.expectedLog,
     };
     return {
       init: async () => {
