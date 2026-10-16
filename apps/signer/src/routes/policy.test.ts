@@ -32,6 +32,19 @@ import { testSpec } from './testing.js';
 const FIXTURE = JSON.parse(
   readFileSync(new URL('./__fixtures__/launchpad-coin-config.json', import.meta.url), 'utf8'),
 ) as { address: string; owner: string; data: string };
+/**
+ * The captured devnet config still charged a 0.001 SOL creation fee, which the current builder no
+ * longer sets and core now refuses: the fee (`poolCreationFee`, u64 at byte 368) is set to 0.
+ */
+const POOL_CREATION_FEE_OFFSET = 368;
+{
+  const data = Buffer.from(FIXTURE.data, 'base64');
+  if (data.readBigUInt64LE(POOL_CREATION_FEE_OFFSET) !== 1_000_000n) {
+    throw new Error('launchpad coin config fixture: unexpected poolCreationFee layout');
+  }
+  data.writeBigUInt64LE(0n, POOL_CREATION_FEE_OFFSET);
+  FIXTURE.data = data.toString('base64');
+}
 const CONFIG = new PublicKey(FIXTURE.address);
 const OWNER = new PublicKey(FIXTURE.owner);
 const BLOCKHASH = new PublicKey(Buffer.alloc(32, 7)).toBase58();
