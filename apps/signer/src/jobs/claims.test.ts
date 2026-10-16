@@ -438,6 +438,33 @@ describe('claims: transaction policy (core output is checked before signing)', (
       PublicKey,
     );
   });
+
+  it("claims through core's exact layout: self-transfer, close to the payer wallet, forward from it", async () => {
+    // What core builds when the receiver (the vault) is not the fee payer: on devnet the signer's
+    // payer wallet pays and the creator wallets hold no SOL. Refused before this layout was known.
+    const t = await setup();
+    t.dbc.claimShape = 'exact';
+    const vaultBefore = t.chain.balanceOf(t.vault);
+    const report = await t.job().runOnce();
+    expect(report.outcomes[0]).toMatchObject({ result: 'claimed' });
+    expect(t.alerter.codes()).not.toContain('claim_policy_violation');
+    expect(t.chain.balanceOf(t.vault)).toBe(vaultBefore + 50_000_000n);
+    expect(t.poolState().claimableQuote).toBe(0n);
+    expect(t.chain.transfers[0]).toMatchObject({
+      from: t.payer.publicKey.toBase58(),
+      to: t.vault.toBase58(),
+      lamports: 50_000_000n,
+    });
+  });
+
+  it("claims through core's exact layout when the creator wallet pays", async () => {
+    const t = await setup({ config: { feePayer: 'creator' } });
+    t.dbc.claimShape = 'exact';
+    const vaultBefore = t.chain.balanceOf(t.vault);
+    expect((await t.job().runOnce()).outcomes[0]).toMatchObject({ result: 'claimed' });
+    expect(t.chain.balanceOf(t.vault)).toBe(vaultBefore + 50_000_000n);
+    expect(t.chain.transfers[0]).toMatchObject({ from: t.creator.publicKey.toBase58() });
+  });
 });
 
 describe('claims: in-flight idempotency, failures and retries', () => {

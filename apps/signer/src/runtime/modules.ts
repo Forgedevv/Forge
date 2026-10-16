@@ -42,6 +42,7 @@ import {
 import {
   RefundJournalEntry,
   RefundManualMark,
+  createFileRefundLedger,
   createPostgrestRefundStore,
   createRefundsJob,
   refundsConfigFromEnv,
@@ -198,6 +199,8 @@ export const refundsModule: SignerJobModule = {
         namespace: 'refund-manual',
         schema: RefundManualMark,
       }),
+      // Append-only, never deleted: the record that makes a refund happen at most once.
+      ledger: createFileRefundLedger(ctx.journalDir),
       flags: ctx.flags,
       alerter: ctx.alerter,
       logger: ctx.jobLogger('refunds'),
@@ -211,9 +214,12 @@ export const refundsModule: SignerJobModule = {
 
 export const watchModule: SignerJobModule = {
   name: 'watch',
-  create(ctx) {
+  async create(ctx) {
     const config = parseWatchConfig(ctx.env);
     const { addresses } = ctx;
+    // The buyback bot wallet exists once --init-keys ran: watched for outflows like the payer.
+    const buybackRef = await ctx.keystore.findRef('buyback');
+    const buyback = buybackRef ? (await ctx.keystore.getPublicKey(buybackRef)).toBase58() : null;
     const deps: WatchDeps = {
       rpc: createWeb3WatchRpc(ctx.connection),
       targets: createSupabaseTargetSource({
@@ -230,6 +236,7 @@ export const watchModule: SignerJobModule = {
           cashbox: addresses.cashbox.toBase58(),
           referrals: [addresses.meteoraReferral.toBase58(), addresses.jupiterReferral.toBase58()],
           payer: ctx.payer.publicKey.toBase58(),
+          ...(buyback ? { buyback } : {}),
         },
         config,
       ),

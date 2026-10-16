@@ -6,14 +6,21 @@
  * Startup fails closed, before anything is scheduled or served, when:
  * - an environment variable is missing or malformed (env.ts, the jobs' own parsers, the server);
  * - a FORGE address is missing or invalid (`requireAddresses` of @forge/core);
+ * - another signer (or the operator command) holds the instance lock of SIGNER_JOURNAL_DIR
+ *   (instance.ts: the journals, the replay cache and the locks are per process);
  * - the keystore passphrase does not open the existing keys, or the `payer` / `cashbox` keys are
  *   missing, or the cashbox key is not FORGE_CASHBOX_WALLET;
  * - the RPC endpoint is not on SOLANA_CLUSTER (genesis hash check).
  * Fee recipients that are not rent-exempt are alerted (devnet finding), not fatal: core refuses
- * to build a transaction that would fail on them.
+ * to build a transaction that would fail on them. An OPTIONAL job module (`extraJobs`, the
+ * buyback) whose configuration is refused is disabled with a high alert: the built-in jobs and
+ * the routes run without it.
+ *
+ * The keystore passphrase and the Supabase service role key are removed from the environment as
+ * soon as they are parsed (env.ts `dropParsedSecrets`).
  *
  * Shutdown: stop accepting requests, stop scheduling, wait (bounded) for the requests and runs in
- * progress, flush the queued alerts, close the keystore (zeroes the passphrase).
+ * progress, flush the queued alerts, close the keystore (zeroes the passphrase), release the lock.
  */
 import type { Server } from 'node:http';
 import { Connection } from '@solana/web3.js';
@@ -53,7 +60,8 @@ import {
   loadSignerServerEnv,
   type SignerRouteHandlers,
 } from '../server.js';
-import { parseRuntimeEnv, type EnvSource, type RuntimeEnv } from './env.js';
+import { dropParsedSecrets, parseRuntimeEnv, type EnvSource, type RuntimeEnv } from './env.js';
+import { acquireInstanceLock, type InstanceLock } from './instance.js';
 import {
   BUILTIN_JOB_MODULES,
   type SignerAddresses,
@@ -83,6 +91,8 @@ export interface SignerRuntime {
   readonly scheduler: JobScheduler;
   readonly routes: SignerRouteHandlers;
   readonly server: Server;
+  /** Optional job modules whose configuration was refused at startup (alerted, not scheduled). */
+  readonly disabledJobs: readonly string[];
   health(): SignerHealthReport;
   /** Listens and starts the job loops. */
   start(): Promise<{ host: string; port: number }>;
@@ -115,6 +125,8 @@ export async function createSignerRuntime(options: SignerRuntimeOptions): Promis
     Object.entries(options.env).filter(([, value]) => value !== undefined && value !== ''),
   );
   const config = parseRuntimeEnv(env);
+  // Parsed: the secrets leave the environment (ours, the caller's and the process one).
+  dropParsedSecrets(env, options.env, process.env);
   const serverEnv = loadSignerServerEnv(env as NodeJS.ProcessEnv);
   const a = requireAddresses(SIGNER_ADDRESS_NAMES, env);
   const addresses: SignerAddresses = {
@@ -140,11 +152,19 @@ export async function createSignerRuntime(options: SignerRuntimeOptions): Promis
   });
   const startupLog = createJobLogger(logger, 'startup');
 
-  const keystore: Keystore = await openKeystore({
-    dir: config.keystoreDir,
-    passphrase: config.keystorePassphrase,
-    logger,
-  });
+  // One signer per journal directory, taken before any key is opened.
+  const lock: InstanceLock = await acquireInstanceLock(config.journalDir, { command: 'signer' });
+  let keystore: Keystore;
+  try {
+    keystore = await openKeystore({
+      dir: config.keystoreDir,
+      passphrase: config.keystorePassphrase,
+      logger,
+    });
+  } catch (err) {
+    await lock.release().catch(() => undefined);
+    throw err;
+  }
   try {
     const payer = await requireRoleRef(keystore, 'payer');
     const cashbox = await requireRoleRef(keystore, 'cashbox', addresses.cashbox);
@@ -217,8 +237,28 @@ export async function createSignerRuntime(options: SignerRuntimeOptions): Promis
     };
 
     const scheduler = new JobScheduler({ logger: createJobLogger(logger, 'scheduler'), now });
-    for (const module of [...BUILTIN_JOB_MODULES, ...(options.extraJobs ?? [])]) {
+    for (const module of BUILTIN_JOB_MODULES) {
       scheduler.register(module.name, await module.create(context));
+    }
+    // Optional modules: a refused configuration disables that module only, loudly.
+    const disabledJobs: string[] = [];
+    for (const module of options.extraJobs ?? []) {
+      try {
+        scheduler.register(module.name, await module.create(context));
+      } catch (err) {
+        const summary = describeError(err);
+        disabledJobs.push(module.name);
+        startupLog.error({ job: module.name, err: summary }, 'optional job disabled');
+        await sendAlert(
+          alerter,
+          startupLog,
+          'high',
+          'job_module_disabled',
+          `The optional ${module.name} job is disabled: its configuration was refused at startup; the other jobs and the signing routes run without it`,
+          { job: module.name, error: summary.message },
+          `job_module_disabled:${module.name}`,
+        );
+      }
     }
 
     let running = false;
@@ -253,6 +293,7 @@ export async function createSignerRuntime(options: SignerRuntimeOptions): Promis
           computeUnitPriceMicroLamports: config.priorityFeeMicroLamports,
           paused: config.routesPaused,
           maxLaunchpadsPerDay: config.maxLaunchpadsPerDay,
+          minPaymentLamports: config.minPaymentLamports,
         },
         onBeforeSend: context.onBeforeSend,
         payerLock: context.payerLock,
@@ -287,6 +328,9 @@ export async function createSignerRuntime(options: SignerRuntimeOptions): Promis
         running = false;
         await alerter.flushPending();
         await keystore.close();
+        await lock.release().catch((err: unknown) => {
+          startupLog.warn({ err: describeError(err) }, 'instance lock not released');
+        });
         startupLog.info({}, 'signer stopped');
       })();
       return stopping;
@@ -298,6 +342,7 @@ export async function createSignerRuntime(options: SignerRuntimeOptions): Promis
       scheduler,
       routes,
       server,
+      disabledJobs,
       health,
       async start() {
         if (running) throw new Error('already started');
@@ -324,6 +369,7 @@ export async function createSignerRuntime(options: SignerRuntimeOptions): Promis
   } catch (err) {
     startupLog.error({ err: describeError(err) }, 'signer startup failed');
     await keystore.close();
+    await lock.release().catch(() => undefined);
     throw err;
   }
 }

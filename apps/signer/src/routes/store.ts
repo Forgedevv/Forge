@@ -37,6 +37,8 @@ export interface RoutePayment {
   kind: PaymentKind;
   status: PaymentStatus;
   payerWallet: string;
+  /** Dollar price of the quote (`usd_amount`): must be the shared price of the kind. */
+  usdAmount: number;
   lamports: bigint;
   /** Signature of the client's payment transaction (set when the web confirmed it). */
   txSignature: string | null;
@@ -90,12 +92,16 @@ const LaunchpadRowSchema = z.object({
   creator_wallet_ref: z.string().nullable(),
 });
 
+/** PostgREST serializes `numeric` as a JSON number or, through `::text`, as a decimal string. */
+const DbNumeric = z.union([z.number().finite(), z.string().regex(/^-?[0-9]+(\.[0-9]+)?$/)]);
+
 const PaymentRowSchema = z.object({
   id: z.string(),
   job_id: z.string(),
   kind: PaymentKind,
   status: PaymentStatus,
   payer_wallet: z.string(),
+  usd_amount: DbNumeric,
   lamports: z.union([z.string(), z.number()]),
   tx_signature: z.string().nullable(),
   refund_signature: z.string().nullable(),
@@ -153,7 +159,8 @@ export function createPostgrestRouteStore(db: PostgrestClient): RouteStore {
 
     async listPayments(jobId) {
       const rows = await db.select('payments', {
-        select: 'id,job_id,kind,status,payer_wallet,lamports::text,tx_signature,refund_signature',
+        select:
+          'id,job_id,kind,status,payer_wallet,usd_amount,lamports::text,tx_signature,refund_signature',
         job_id: eq(jobId),
         order: 'created_at.asc,id.asc',
       });
@@ -165,6 +172,7 @@ export function createPostgrestRouteStore(db: PostgrestClient): RouteStore {
         kind: r.kind,
         status: r.status,
         payerWallet: r.payer_wallet,
+        usdAmount: Number(r.usd_amount),
         lamports: parseLamports(r.lamports),
         txSignature: r.tx_signature,
         refundSignature: r.refund_signature,

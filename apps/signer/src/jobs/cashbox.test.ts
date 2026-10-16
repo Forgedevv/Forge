@@ -11,11 +11,18 @@ import {
   createCashboxJob,
   createPostgrestCashboxStore,
   planSweep,
+  sumAnomalies,
   sumLiabilities,
   type CashboxConfig,
   type CashboxDeps,
 } from './cashbox.js';
-import { RefundJournalEntry, RefundManualMark, createRefundsJob } from './refunds.js';
+import {
+  RefundJournalEntry,
+  RefundLedgerEntry,
+  RefundManualMark,
+  createRefundLedger,
+  createRefundsJob,
+} from './refunds.js';
 import {
   Mutex,
   createMemoryJournal,
@@ -211,6 +218,39 @@ describe('cashbox job', () => {
     const again = await t.job().runOnce();
     expect(again.outcome).toMatchObject({ result: 'below_reserve' });
     expect(t.chain.transfers).toHaveLength(1);
+  });
+
+  it('keeps the unresolved payment anomalies on the cashbox (money refunded by hand)', async () => {
+    const t = setup();
+    t.db.anomalies.push(
+      { id: uuid(), lamports: 300_000_000n, resolvedAt: null },
+      { id: uuid(), lamports: 50_000_000n, resolvedAt: null },
+      { id: uuid(), lamports: 700_000_000n, resolvedAt: '2026-10-01T00:00:00.000Z' }, // done
+    );
+    const floor = t.floor(350_000_000n);
+    t.chain.setBalance(cashbox, floor + 2n * SOL);
+    const report = await t.job().runOnce();
+    expect(report.outcome).toMatchObject({ result: 'swept', lamports: 2n * SOL });
+    expect(t.chain.balanceOf(cashbox)).toBe(floor - 5_000n);
+    expect(t.alerter.codes()).not.toContain('cashbox_anomaly_amount_unknown');
+
+    // Below the floor once the anomalies count: alerted with the amount, nothing swept.
+    t.chain.setBalance(cashbox, t.rent + RESERVE + 349_999_999n);
+    expect((await t.job().runOnce()).outcome).toMatchObject({ result: 'below_reserve' });
+    const low = t.alerter.alerts.find((a) => a.code === 'cashbox_low_balance');
+    expect(low?.details).toMatchObject({ anomalies: '0.35 SOL', liabilities: '0 SOL' });
+    expect(t.chain.transfers).toHaveLength(1);
+  });
+
+  it('alerts on an unresolved anomaly whose amount is unknown (not counted in the floor)', async () => {
+    const t = setup();
+    t.db.anomalies.push({ id: uuid(), lamports: null, resolvedAt: null });
+    t.chain.setBalance(cashbox, t.floor() + 2n * SOL);
+    const report = await t.job().runOnce();
+    expect(report.outcome).toMatchObject({ result: 'swept', lamports: 2n * SOL });
+    const alert = t.alerter.alerts.find((a) => a.code === 'cashbox_anomaly_amount_unknown');
+    expect(alert?.level).toBe('high');
+    expect(alert?.details).toMatchObject({ unknownAmounts: 1, unresolved: 1 });
   });
 
   it('threshold edge: one lamport short does nothing, exactly the threshold sweeps it', async () => {
@@ -473,6 +513,7 @@ describe('cashbox job', () => {
       keystore,
       journal: createMemoryJournal(RefundJournalEntry),
       manualMarks: createMemoryJournal(RefundManualMark),
+      ledger: createRefundLedger(createMemoryJournal(RefundLedgerEntry)),
       flags: memoryFlags(),
       alerter: new RecordingAlerter(),
       logger: silentJobLogger,
@@ -552,5 +593,45 @@ describe('cashbox config and store', () => {
     expect(q.get('status')).toBe('eq.confirmed');
     expect(q.get('select')).toContain('jobs!inner');
     expect(q.get('jobs.status')).toBe('in.(spec_ready,paid,building,failed)');
+  });
+
+  it('sums the unresolved anomalies with a known amount and counts the unknown ones', () => {
+    expect(
+      sumAnomalies([
+        { id: 'a', lamports: '100' },
+        { id: 'b', lamports: 7 },
+        { id: 'c', lamports: null },
+      ]),
+    ).toEqual({ lamports: 107n, count: 3, unknownAmounts: 1 });
+    expect(sumAnomalies([])).toEqual({ lamports: 0n, count: 0, unknownAmounts: 0 });
+  });
+
+  it('queries the unresolved payment anomalies, page by page', async () => {
+    const pages: unknown[][] = [
+      [
+        { id: 'a', lamports: '100' },
+        { id: 'b', lamports: null },
+      ],
+      [{ id: 'c', lamports: '7' }],
+    ];
+    const urls: string[] = [];
+    const client = createPostgrestClient({
+      url: 'https://project.supabase.co',
+      serviceRoleKey: 'service-role-key-for-tests-0123456789',
+      fetch: (async (url: string) => {
+        urls.push(url);
+        return new Response(JSON.stringify(pages.shift() ?? []), { status: 200 });
+      }) as unknown as typeof fetch,
+    });
+    expect(await createPostgrestCashboxStore(client, 2).unresolvedPaymentAnomalies()).toEqual({
+      lamports: 107n,
+      count: 3,
+      unknownAmounts: 1,
+    });
+    expect(urls).toHaveLength(2);
+    const q = new URL(urls[0]!).searchParams;
+    expect(new URL(urls[0]!).pathname).toBe('/rest/v1/payment_anomalies');
+    expect(q.get('resolved_at')).toBe('is.null');
+    expect(q.get('select')).toBe('id,lamports::text');
   });
 });

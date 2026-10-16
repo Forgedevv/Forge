@@ -15,7 +15,12 @@ import path from 'node:path';
 import { z } from 'zod';
 import { DEFAULT_KEYSTORE_DIR } from '../keystore.js';
 import { isProductionEnv } from '../server.js';
-import { DEFAULT_JOURNAL_DIR, MAX_COMPUTE_UNIT_PRICE } from '../jobs/shared.js';
+import {
+  DEFAULT_JOURNAL_DIR,
+  DEFAULT_MIN_PAYMENT_LAMPORTS,
+  MAX_COMPUTE_UNIT_PRICE,
+  type PaymentMinimums,
+} from '../jobs/shared.js';
 import { DEFAULT_MAX_LAUNCHPADS_PER_DAY, MAX_LAUNCHPADS_PER_DAY } from '../routes/budget.js';
 
 export type EnvSource = Readonly<Record<string, string | undefined>>;
@@ -48,6 +53,20 @@ const integer = (fallback: number, min: number, max: number) =>
         return z.NEVER;
       }
       return Number(v);
+    });
+
+/** Lamports: a non-negative integer of at most 18 digits (never through floating point). */
+const lamports = (fallback: bigint) =>
+  z
+    .string()
+    .optional()
+    .transform((v, ctx) => {
+      if (v === undefined || v === '') return fallback;
+      if (!/^[0-9]{1,18}$/.test(v)) {
+        ctx.addIssue({ code: 'custom', message: 'must be an integer number of lamports' });
+        return z.NEVER;
+      }
+      return BigInt(v);
     });
 
 function isLocalHost(url: URL): boolean {
@@ -94,6 +113,8 @@ const RuntimeEnvSchema = z.object({
   SIGNER_PRIORITY_FEE_MICRO_LAMPORTS: integer(0, 0, Number(MAX_COMPUTE_UNIT_PRICE)),
   SIGNER_ROUTES_PAUSED: bool(false),
   SIGNER_MAX_LAUNCHPADS_PER_DAY: integer(DEFAULT_MAX_LAUNCHPADS_PER_DAY, 1, MAX_LAUNCHPADS_PER_DAY),
+  SIGNER_MIN_CREATION_PAYMENT_LAMPORTS: lamports(DEFAULT_MIN_PAYMENT_LAMPORTS.creation),
+  SIGNER_MIN_MODIFICATION_PAYMENT_LAMPORTS: lamports(DEFAULT_MIN_PAYMENT_LAMPORTS.modification),
   SIGNER_CONVERT_ROLES: optionalString,
   SIGNER_CONVERT_INTERVAL_HOURS: integer(24, 1, 24 * 30),
   SIGNER_SHUTDOWN_TIMEOUT_SECONDS: integer(120, 1, 3_600),
@@ -118,6 +139,12 @@ export interface RuntimeEnv {
   routesPaused: boolean;
   /** New launchpads the signing routes create accounts for per UTC day (default 20). */
   maxLaunchpadsPerDay: number;
+  /**
+   * Floors on the payment rows the signer acts on, per kind (SIGNER_MIN_*_PAYMENT_LAMPORTS):
+   * the routes refuse a confirmed creation payment below its floor before any payer spend, the
+   * refunds job leaves such a payment to manual handling.
+   */
+  minPaymentLamports: PaymentMinimums;
   convertRoles: ConvertRole[];
   convertIntervalMs: number;
   shutdownTimeoutMs: number;
@@ -153,6 +180,26 @@ function parseConvertRoles(value: string | undefined): ConvertRole[] {
 
 /** The Telegram variables the operator alerts depend on (alerts.ts). */
 export const ALERTING_VARIABLES = ['TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_ID'] as const;
+
+/**
+ * Secrets the process only needs while it builds its configuration: the keystore passphrase
+ * (held by the keystore, zeroed on close) and the Supabase service role key (held by the
+ * PostgREST client). Once parsed they are removed from the environment, so a core dump, a child
+ * process or a `/proc/<pid>/environ` read no longer finds them. (Pair it with `LimitCORE=0` in
+ * the service unit: no core dump at all.)
+ */
+export const PARSED_SECRET_VARIABLES = [
+  'SIGNER_KEYSTORE_PASSPHRASE',
+  'SUPABASE_SERVICE_ROLE_KEY',
+] as const;
+
+/** Deletes `PARSED_SECRET_VARIABLES` from every given environment object (process.env included). */
+export function dropParsedSecrets(...envs: ReadonlyArray<EnvSource | undefined>): void {
+  for (const env of envs) {
+    if (!env) continue;
+    for (const name of PARSED_SECRET_VARIABLES) delete (env as Record<string, unknown>)[name];
+  }
+}
 
 /**
  * True when alerts MUST reach the operator: on mainnet-beta, and whenever NODE_ENV is not
@@ -199,6 +246,10 @@ export function parseRuntimeEnv(env: EnvSource): RuntimeEnv {
     priorityFeeMicroLamports: p.SIGNER_PRIORITY_FEE_MICRO_LAMPORTS,
     routesPaused: p.SIGNER_ROUTES_PAUSED,
     maxLaunchpadsPerDay: p.SIGNER_MAX_LAUNCHPADS_PER_DAY,
+    minPaymentLamports: {
+      creation: p.SIGNER_MIN_CREATION_PAYMENT_LAMPORTS,
+      modification: p.SIGNER_MIN_MODIFICATION_PAYMENT_LAMPORTS,
+    },
     convertRoles: parseConvertRoles(p.SIGNER_CONVERT_ROLES),
     convertIntervalMs: p.SIGNER_CONVERT_INTERVAL_HOURS * 60 * 60_000,
     shutdownTimeoutMs: p.SIGNER_SHUTDOWN_TIMEOUT_SECONDS * 1_000,

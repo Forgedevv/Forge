@@ -5,10 +5,14 @@
  *   - balance below a threshold (payer, cashbox, vault, fee wallet, creator wallets' rent SOL);
  *   - an account that is not rent-exempt (devnet finding: a fee recipient below the rent minimum
  *     makes the whole swap transaction fail);
- *   - an unexpected outflow from the vault or the cashbox, in SOL (pre/post balances) and in
- *     tokens (pre/post token balances BY OWNER, read from the owner's transactions and from each
- *     of its token accounts' transactions, so a delegate or a closed account is seen too);
+ *   - an unexpected outflow from the vault, the cashbox, the payer wallet or the buyback bot
+ *     wallet, in SOL (pre/post balances) and in tokens (pre/post token balances BY OWNER, read
+ *     from the owner's transactions and from each of its token accounts' transactions, so a
+ *     delegate or a closed account is seen too). The signer's own transactions are announced to
+ *     the watcher before their first broadcast (`ExpectedSignatures`) and never flagged;
  *   - a pool whose creator role moved (transferPoolCreator), a graduated pool, a vanished pool;
+ *   - a pool the watcher tracked (seen on-chain) whose launchpad row no longer comes back from
+ *     the database (deleted or rewritten row: the monitoring of that pool would silently stop);
  *   - a launchpad row that cannot be turned into a watch target (alerted, the others still run);
  *   - a streak of failed RPC cycles.
  *
@@ -41,7 +45,8 @@ import { createFileJournal, type Journal } from './shared.js';
 // ---------------------------------------------------------------------------------------------
 // Types
 
-export type WatchRole = 'vault' | 'platformFee' | 'cashbox' | 'creator' | 'referral' | 'payer';
+export type WatchRole =
+  'vault' | 'platformFee' | 'cashbox' | 'creator' | 'referral' | 'payer' | 'buyback';
 
 export interface WatchedAccount {
   address: string;
@@ -174,6 +179,7 @@ export interface WatchConfig {
     cashbox: bigint;
     payer: bigint;
     creator: bigint;
+    buyback: bigint;
   };
 }
 
@@ -200,12 +206,20 @@ const envSchema = z.object({
   WATCH_MIN_PLATFORM_FEE_LAMPORTS: lamportsString.default(0n),
   WATCH_MIN_CASHBOX_LAMPORTS: lamportsString.default(100_000_000n),
   WATCH_MIN_PAYER_LAMPORTS: lamportsString.default(200_000_000n),
-  WATCH_MIN_CREATOR_LAMPORTS: lamportsString.default(5_000_000n),
+  /**
+   * Default: 0 (check disabled) while the claims are paid by the payer wallet
+   * (SIGNER_CLAIMS_FEE_PAYER unset or `payer`): the creator wallets then hold no SOL by design;
+   * 0.005 SOL when the creator wallets pay their own claims.
+   */
+  WATCH_MIN_CREATOR_LAMPORTS: lamportsString.optional(),
+  /** 0 (default) disables the check: the bot wallet is empty until the buyback goes live. */
+  WATCH_MIN_BUYBACK_LAMPORTS: lamportsString.default(0n),
 });
 
 /** Reads the WATCH_* variables (all optional, with defaults). Throws on malformed values. */
 export function parseWatchConfig(env: Readonly<Record<string, string | undefined>>): WatchConfig {
   const parsed = envSchema.parse(env);
+  const creatorsPay = env.SIGNER_CLAIMS_FEE_PAYER === 'creator';
   return {
     intervalMs: parsed.WATCH_INTERVAL_MS,
     maxBackoffMs: Math.max(parsed.WATCH_MAX_BACKOFF_MS, parsed.WATCH_INTERVAL_MS),
@@ -218,7 +232,8 @@ export function parseWatchConfig(env: Readonly<Record<string, string | undefined
       platformFee: parsed.WATCH_MIN_PLATFORM_FEE_LAMPORTS,
       cashbox: parsed.WATCH_MIN_CASHBOX_LAMPORTS,
       payer: parsed.WATCH_MIN_PAYER_LAMPORTS,
-      creator: parsed.WATCH_MIN_CREATOR_LAMPORTS,
+      creator: parsed.WATCH_MIN_CREATOR_LAMPORTS ?? (creatorsPay ? 5_000_000n : 0n),
+      buyback: parsed.WATCH_MIN_BUYBACK_LAMPORTS,
     },
   };
 }
@@ -231,6 +246,8 @@ export interface ForgeWatchAddresses {
   referrals?: readonly string[];
   /** Wallet paying for configs and launch transactions. */
   payer?: string;
+  /** The $FORGE buyback bot wallet (keystore role `buyback`), when it exists. */
+  buyback?: string;
 }
 
 /** Account list for the fixed FORGE addresses (pass it as `WatchDeps.staticAccounts`). */
@@ -267,12 +284,29 @@ export function buildStaticAccounts(
     },
   ];
   if (addresses.payer) {
+    // Every payer spend (configs, nonce accounts, claims it pays for, conversions) is announced
+    // before its broadcast; anything else leaving the wallet is an outflow worth an alert.
     out.push({
       address: addresses.payer,
       label: 'payer wallet',
       role: 'payer',
       minLamports: config.minLamports.payer,
       requireRentExempt: true,
+      watchOutflows: true,
+      watchTokenAccounts: true,
+      allowedDestinations: [],
+    });
+  }
+  if (addresses.buyback) {
+    // The bot only ever swaps (announced) and returns SOL or $FORGE to the vault.
+    out.push({
+      address: addresses.buyback,
+      label: 'buyback bot wallet',
+      role: 'buyback',
+      minLamports: config.minLamports.buyback,
+      watchOutflows: true,
+      watchTokenAccounts: true,
+      allowedDestinations: [addresses.vault],
     });
   }
   (addresses.referrals ?? []).forEach((address, i) => {
@@ -317,6 +351,7 @@ const LOW_BALANCE_LEVEL: Record<WatchRole, AlertLevel> = {
   payer: 'high',
   creator: 'normal',
   referral: 'high',
+  buyback: 'high',
 };
 
 export function detectLowBalance(account: WatchedAccount, snap: AccountSnapshot): Detection | null {
@@ -550,6 +585,31 @@ export function detectPoolChanges(
       dedupKey: `migrated:${pool.address}`,
       oneShot: true,
       details: { pool: pool.address },
+    });
+  }
+  return out;
+}
+
+/**
+ * Pools remembered from an earlier cycle (seen on-chain) that the database no longer lists.
+ * Only meaningful when the targets were loaded in this cycle: a failed load lists nothing.
+ * The memory is kept (its reference creator included), so the alert stands while the row is
+ * missing and the pool is watched again, against the same reference, if the row comes back.
+ */
+export function detectMissingPoolRows(
+  remembered: ReadonlyMap<string, PoolMemory>,
+  loaded: readonly WatchedPool[],
+): Detection[] {
+  const listed = new Set(loaded.map((p) => p.address));
+  const out: Detection[] = [];
+  for (const [address, memory] of remembered) {
+    if (listed.has(address)) continue;
+    out.push({
+      code: 'POOL_ROW_MISSING',
+      level: 'high',
+      message: `A launchpad pool the watcher tracked no longer comes back from the database: its row was deleted or rewritten (pool ${address})`,
+      dedupKey: `row-missing:${address}`,
+      details: { pool: address, referenceCreator: memory.creator },
     });
   }
   return out;
@@ -1012,9 +1072,12 @@ export async function runWatchCycle(deps: WatchDeps): Promise<WatchCycleResult> 
 
   const staticAccounts = uniqueAccounts(deps.staticAccounts ?? []);
   let dynamic: WatchTargets = { accounts: [], pools: [] };
+  let targetsLoaded = false;
   await stage('targets', async () => {
     dynamic = await deps.targets.load();
+    targetsLoaded = true;
   });
+  if (targetsLoaded) detections.push(...detectMissingPoolRows(deps.state.pools, dynamic.pools));
   const staticSet = new Set(staticAccounts.map((a) => a.address));
   const dynamicAccounts = uniqueAccounts(dynamic.accounts.filter((a) => !staticSet.has(a.address)));
   for (const bad of dynamic.invalid ?? []) detections.push(detectInvalidTarget(bad));

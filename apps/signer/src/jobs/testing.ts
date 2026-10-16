@@ -11,6 +11,7 @@ import {
   TOKEN_PROGRAM_ID,
   createAssociatedTokenAccountIdempotentInstruction,
   createCloseAccountInstruction,
+  createTransferInstruction,
   getAssociatedTokenAddressSync,
 } from '@solana/spl-token';
 import { PublicKey, SystemProgram, Transaction, TransactionInstruction } from '@solana/web3.js';
@@ -24,7 +25,7 @@ import type {
   SignerCore,
 } from '../core-adapter.js';
 import { buildSolTransferTx } from '../core-adapter.js';
-import type { CashboxStore } from './cashbox.js';
+import type { CashboxStore, PaymentAnomalySummary } from './cashbox.js';
 import type { ClaimsStore, CreatorLaunchpad } from './claims.js';
 import type {
   InFlightRefund,
@@ -416,9 +417,12 @@ export interface FakePool {
  * - `close_to_receiver`: SDK `claimCreatorTradingFeeToReceiver` (temporary WSOL account of the
  *   creator, closed to the receiver);
  * - `forward_from_creator`: temporary WSOL account closed to the creator, then an exact System
- *   transfer creator -> receiver of the claimed lamports (the creator keeps the account rent).
+ *   transfer creator -> receiver of the claimed lamports (the creator keeps the account rent);
+ * - `exact`: what core really builds when the receiver is not the payer: a self-transfer of the
+ *   claimed lamports on the temporary account, closed to the FEE PAYER, then an exact System
+ *   transfer fee payer -> receiver.
  */
-export type FakeClaimShape = 'close_to_receiver' | 'forward_from_creator';
+export type FakeClaimShape = 'close_to_receiver' | 'forward_from_creator' | 'exact';
 
 export class FakeDbc {
   readonly programId = randomAddress();
@@ -513,7 +517,8 @@ export class FakeDbc {
           params.creator,
           params.receiver,
           payer,
-          this.claimShape === 'forward_from_creator' ? p.claimableQuote : null,
+          this.claimShape === 'close_to_receiver' ? null : p.claimableQuote,
+          this.claimShape === 'exact' ? { closeTo: 'payer', selfTransfer: true } : {},
         );
         this.tamper?.(tx, params);
         const { blockhash, lastValidBlockHeight } = await chain.getLatestBlockhash();
@@ -542,8 +547,10 @@ export class FakeDbc {
 
 /**
  * Same layout as `claimCreatorTradingFeeToReceiver` for a SOL-quoted pool (SDK 1.5.13). With
- * `forwardLamports`, the temporary account is closed to the creator instead and that many
- * lamports are then transferred creator -> receiver (`forward_from_creator`).
+ * `forwardLamports`, the temporary account is closed to the creator (or to the payer with
+ * `closeTo: 'payer'`) instead and that many lamports are then transferred from that wallet to
+ * the receiver; `selfTransfer` adds core's exact-amount SPL transfer on the temporary account
+ * between the claim and the close (`exact`).
  */
 export function buildFakeClaimTx(
   programId: PublicKey,
@@ -553,6 +560,7 @@ export function buildFakeClaimTx(
   receiver: PublicKey,
   payer: PublicKey,
   forwardLamports: bigint | null = null,
+  options: { closeTo?: 'creator' | 'payer'; selfTransfer?: boolean } = {},
 ): Transaction {
   const receiverBase = getAssociatedTokenAddressSync(baseMint, receiver, true, TOKEN_PROGRAM_ID);
   const tempWsol = getAssociatedTokenAddressSync(NATIVE_MINT, creator, true, TOKEN_PROGRAM_ID);
@@ -583,9 +591,13 @@ export function buildFakeClaimTx(
   if (forwardLamports === null) {
     return tx.add(createCloseAccountInstruction(tempWsol, receiver, creator));
   }
+  const closeTo = options.closeTo === 'payer' ? payer : creator;
+  if (options.selfTransfer) {
+    tx.add(createTransferInstruction(tempWsol, tempWsol, creator, forwardLamports));
+  }
   return tx.add(
-    createCloseAccountInstruction(tempWsol, creator, creator),
-    SystemProgram.transfer({ fromPubkey: creator, toPubkey: receiver, lamports: forwardLamports }),
+    createCloseAccountInstruction(tempWsol, closeTo, creator),
+    SystemProgram.transfer({ fromPubkey: closeTo, toPubkey: receiver, lamports: forwardLamports }),
   );
 }
 
@@ -599,6 +611,9 @@ export class MemoryRefundDb implements RefundStore, CashboxStore {
   readonly jobs = new Map<string, RefundJob>();
   readonly payments = new Map<string, RefundPayment>();
   readonly events: Array<{ jobId: string; message: string }> = [];
+  /** `payment_anomalies` rows (migration 0008): null lamports = amount unknown. */
+  readonly anomalies: Array<{ id: string; lamports: bigint | null; resolvedAt: string | null }> =
+    [];
   /** Throw before applying. */
   readonly failBefore = new Map<StoreMethod, Error[]>();
   /** Apply, then throw (lost response). */
@@ -737,6 +752,17 @@ export class MemoryRefundDb implements RefundStore, CashboxStore {
       if (refundable) total += p.lamports;
     }
     return total;
+  }
+
+  async unresolvedPaymentAnomalies(): Promise<PaymentAnomalySummary> {
+    const out: PaymentAnomalySummary = { lamports: 0n, count: 0, unknownAmounts: 0 };
+    for (const a of this.anomalies) {
+      if (a.resolvedAt !== null) continue;
+      out.count++;
+      if (a.lamports === null) out.unknownAmounts++;
+      else out.lamports += a.lamports;
+    }
+    return out;
   }
 }
 

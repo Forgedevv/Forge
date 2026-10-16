@@ -33,7 +33,7 @@ import {
 } from '@solana/web3.js';
 import type pino from 'pino';
 import { z } from 'zod';
-import type { FlagKey } from '@forge/shared';
+import { PRICING, type FlagKey, type PaymentKind } from '@forge/shared';
 import type { Keystore } from '../keystore.js';
 import { redactSecrets } from '../keystore.js';
 
@@ -804,6 +804,48 @@ export function parsePositiveIntEnv(
 }
 
 // ---------------------------------------------------------------------------------------
+// Payment floors (the database's word on a payment is checked against them before any spend)
+
+/** Lamports a confirmed payment row must at least hold, per payment kind. */
+export type PaymentMinimums = Readonly<Record<PaymentKind, bigint>>;
+
+/**
+ * Defaults of SIGNER_MIN_CREATION_PAYMENT_LAMPORTS / SIGNER_MIN_MODIFICATION_PAYMENT_LAMPORTS:
+ * 0.02 SOL for a creation (what a launchpad costs the payer wallet in rent, and about $33 up to
+ * SOL = $1 650), 0.003 SOL for a modification ($5.5 up to SOL = $1 833). A row below the floor
+ * cannot come from a real quote: the routes refuse it before any payer spend and the refunds job
+ * leaves it to manual handling.
+ */
+export const DEFAULT_MIN_PAYMENT_LAMPORTS: PaymentMinimums = {
+  creation: 20_000_000n,
+  modification: 3_000_000n,
+};
+
+/** Dollar price every confirmed payment row of a kind must carry (`payments.usd_amount`). */
+export const PAYMENT_USD_BY_KIND: Readonly<Record<PaymentKind, number>> = {
+  creation: PRICING.creationUsd,
+  modification: PRICING.modificationUsd,
+};
+
+/** Reads the payment floors (strict integers, defaults above). */
+export function paymentMinimumsFromEnv(
+  env: Readonly<Record<string, string | undefined>>,
+): PaymentMinimums {
+  return {
+    creation: parseLamportsEnv(
+      env.SIGNER_MIN_CREATION_PAYMENT_LAMPORTS,
+      'SIGNER_MIN_CREATION_PAYMENT_LAMPORTS',
+      DEFAULT_MIN_PAYMENT_LAMPORTS.creation,
+    ),
+    modification: parseLamportsEnv(
+      env.SIGNER_MIN_MODIFICATION_PAYMENT_LAMPORTS,
+      'SIGNER_MIN_MODIFICATION_PAYMENT_LAMPORTS',
+      DEFAULT_MIN_PAYMENT_LAMPORTS.modification,
+    ),
+  };
+}
+
+// ---------------------------------------------------------------------------------------
 // Transactions: signatures, inspection and policy
 
 const BASE58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
@@ -986,10 +1028,16 @@ function isTokenProgram(id: PublicKey): boolean {
  * - the claimed base fees go to the receiver's ATA;
  * - the claimed quote fees go to one of:
  *   a. the receiver's WSOL ATA (no close, no transfer);
- *   b. the creator's temporary WSOL ATA, closed (after the claim) to the receiver, no transfer;
- *   c. the creator's temporary WSOL ATA, closed (after the claim) to the creator, then exactly one
- *      System transfer creator -> receiver of exactly `claimedQuoteLamports` (after the close):
- *      the creator keeps the account rent instead of advancing it to the vault.
+ *   b. the creator's temporary WSOL ATA, closed (after the claim) to the receiver, no transfer
+ *      (core when the receiver pays: the claim is uncapped);
+ *   c. the creator's temporary WSOL ATA, closed (after the claim) to the creator OR to the fee
+ *      payer, then exactly one System transfer from that close destination to the receiver of
+ *      exactly `claimedQuoteLamports`, after the close (core's "exact" layout when the receiver
+ *      is not the payer: on devnet the signer's payer wallet pays, so the close goes to it). At
+ *      most one SPL Token transfer is allowed, between the claim and the close: core's
+ *      self-transfer of exactly `claimedQuoteLamports` on the temporary account (source,
+ *      destination = that account, authority = creator), which makes the claim fail on-chain
+ *      unless the full amount was collected.
  */
 export function assertCreatorClaimTx(tx: Transaction, expected: CreatorClaimExpectation): void {
   const signerSet = [expected.creator, expected.feePayer];
@@ -1002,6 +1050,13 @@ export function assertCreatorClaimTx(tx: Transaction, expected: CreatorClaimExpe
   let tokenBProgram: PublicKey | undefined;
   const closes: Array<{ index: number; account: PublicKey; destination: PublicKey }> = [];
   const transfers: Array<{ index: number; from: PublicKey; to: PublicKey; lamports: bigint }> = [];
+  const tokenTransfers: Array<{
+    index: number;
+    source: PublicKey;
+    destination: PublicKey;
+    authority: PublicKey;
+    amount: bigint;
+  }> = [];
 
   tx.instructions.forEach((ix, index) => {
     const data = Buffer.from(ix.data);
@@ -1047,18 +1102,34 @@ export function assertCreatorClaimTx(tx: Transaction, expected: CreatorClaimExpe
     } else if (isTokenProgram(ix.programId)) {
       if (data[0] === 9 && data.length === 1) {
         const destination = key(1);
-        if (!destination.equals(expected.receiver) && !destination.equals(expected.creator)) {
+        if (
+          !destination.equals(expected.receiver) &&
+          !destination.equals(expected.creator) &&
+          !destination.equals(expected.feePayer)
+        ) {
           policy('account closed to a non-receiver');
         }
         if (!key(2).equals(expected.creator)) policy('unexpected close authority');
         closes.push({ index, account: key(0), destination });
+      } else if (data[0] === 3 && data.length === 9) {
+        // SPL Token Transfer: only core's exact-amount self-transfer is accepted (checked below).
+        tokenTransfers.push({
+          index,
+          source: key(0),
+          destination: key(1),
+          authority: key(2),
+          amount: data.readBigUInt64LE(1),
+        });
       } else if (!(data[0] === 17 && data.length === 1)) {
         policy('token instruction not allowed');
       }
     } else if (ix.programId.equals(SystemProgram.programId)) {
       const t = decodeSystemTransfer(ix);
       if (!t) policy('system instruction other than a transfer');
-      if (!t.from.equals(expected.creator) || !t.to.equals(expected.receiver)) {
+      if (
+        !(t.from.equals(expected.creator) || t.from.equals(expected.feePayer)) ||
+        !t.to.equals(expected.receiver)
+      ) {
         policy('transfer between unexpected accounts');
       }
       transfers.push({ index, ...t });
@@ -1071,7 +1142,9 @@ export function assertCreatorClaimTx(tx: Transaction, expected: CreatorClaimExpe
 
   if (claimIndex === -1 || !tokenB || !tokenBProgram) policy('no claim instruction');
   if (transfers.length > 1) policy('more than one transfer in a claim');
+  if (tokenTransfers.length > 1) policy('more than one token transfer in a claim');
   const transfer = transfers[0];
+  const selfTransfer = tokenTransfers[0];
   const receiverQuote = getAssociatedTokenAddressSync(
     NATIVE_MINT,
     expected.receiver,
@@ -1081,6 +1154,7 @@ export function assertCreatorClaimTx(tx: Transaction, expected: CreatorClaimExpe
   if (tokenB.equals(receiverQuote)) {
     // a. Straight to the receiver's WSOL account: nothing to close or forward.
     if (transfer) policy('unexpected transfer in a claim');
+    if (selfTransfer) policy('unexpected token transfer in a claim');
     if (closes.length > 0) policy('unexpected token account close');
     return;
   }
@@ -1099,13 +1173,32 @@ export function assertCreatorClaimTx(tx: Transaction, expected: CreatorClaimExpe
   if (close.destination.equals(expected.receiver)) {
     // b. Closed to the receiver: the vault gets the fees plus the account rent.
     if (transfer) policy('unexpected transfer in a claim');
+    if (selfTransfer) policy('unexpected token transfer in a claim');
     return;
   }
-  // c. Closed to the creator, then the claimed lamports forwarded to the receiver.
-  if (!transfer) policy('claimed SOL not forwarded to the receiver');
-  if (transfer.index < close.index) policy('transfer before the temporary account is closed');
+  // c. Closed to the creator or to the fee payer, which forwards the claimed lamports to the
+  //    receiver; the optional self-transfer pins the claimed amount on-chain.
   if (expected.claimedQuoteLamports === undefined) policy('claimed amount unknown');
-  if (expected.claimedQuoteLamports <= 0n || transfer.lamports !== expected.claimedQuoteLamports) {
+  const claimed = expected.claimedQuoteLamports;
+  if (selfTransfer) {
+    if (!selfTransfer.source.equals(creatorTemp) || !selfTransfer.destination.equals(creatorTemp)) {
+      policy('token transfer between unexpected accounts');
+    }
+    if (!selfTransfer.authority.equals(expected.creator))
+      policy('unexpected token transfer authority');
+    if (claimed <= 0n || selfTransfer.amount !== claimed) {
+      policy('token transfer amount differs from the claimed amount');
+    }
+    if (selfTransfer.index < claimIndex || selfTransfer.index > close.index) {
+      policy('token transfer outside the claim and the close');
+    }
+  }
+  if (!transfer) policy('claimed SOL not forwarded to the receiver');
+  if (!transfer.from.equals(close.destination)) {
+    policy('claimed SOL forwarded from an account other than the close destination');
+  }
+  if (transfer.index < close.index) policy('transfer before the temporary account is closed');
+  if (claimed <= 0n || transfer.lamports !== claimed) {
     policy('forwarded amount differs from the claimed amount');
   }
 }

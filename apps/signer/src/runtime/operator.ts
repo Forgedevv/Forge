@@ -7,20 +7,22 @@
  *                             journaled in SIGNER_JOURNAL_DIR; the next prepare rebuilds.
  *
  * Same fail-closed startup checks as the service for what the command uses: the environment
- * (runtime/env.ts, Telegram required in production), the keystore passphrase, the payer key, and
- * the RPC genesis hash against SOLANA_CLUSTER. The running service's watcher does not know the
- * revocation signature in advance: its fee (two signatures) is within the default outflow
- * tolerance of the payer wallet.
+ * (runtime/env.ts, Telegram required in production), the instance lock of SIGNER_JOURNAL_DIR
+ * (instance.ts: the command refuses to run while the service, or another command, holds it: it
+ * writes the same journals), the keystore passphrase, the payer key, and the RPC genesis hash
+ * against SOLANA_CLUSTER. Stop the service first, run the command, start the service again. The
+ * secrets leave the environment once parsed (env.ts `dropParsedSecrets`).
  */
 import { Connection } from '@solana/web3.js';
 import { pino } from 'pino';
 import { CLUSTER_GENESIS_HASH } from '@forge/core';
 import { createAlerterFromEnv } from '../alerts.js';
-import { openKeystore } from '../keystore.js';
+import { openKeystore, type Keystore } from '../keystore.js';
 import { createJobLogger, requireRoleRef, rpcFromConnection } from '../jobs/shared.js';
 import { createFileRouteJournals, createForgeRouteCore } from '../routes/index.js';
 import { revokeLaunch, type RevokeResult } from '../routes/revoke.js';
-import { parseRuntimeEnv, type EnvSource } from './env.js';
+import { dropParsedSecrets, parseRuntimeEnv, type EnvSource } from './env.js';
+import { acquireInstanceLock } from './instance.js';
 
 export interface RevokeLaunchOptions {
   env: EnvSource;
@@ -37,6 +39,7 @@ export async function runRevokeLaunch(options: RevokeLaunchOptions): Promise<Rev
     Object.entries(options.env).filter(([, value]) => value !== undefined && value !== ''),
   );
   const config = parseRuntimeEnv(env);
+  dropParsedSecrets(env, options.env, process.env);
   const logger =
     options.logger ??
     pino({
@@ -50,11 +53,19 @@ export async function runRevokeLaunch(options: RevokeLaunchOptions): Promise<Rev
   const alerter = createAlerterFromEnv(logger.child({ module: 'alerts' }), env, {
     fetch: options.fetch ?? globalThis.fetch,
   });
-  const keystore = await openKeystore({
-    dir: config.keystoreDir,
-    passphrase: config.keystorePassphrase,
-    logger,
-  });
+  // Never next to the running service (same journals): the lock is taken before the keystore.
+  const lock = await acquireInstanceLock(config.journalDir, { command: 'revoke-launch' });
+  let keystore: Keystore;
+  try {
+    keystore = await openKeystore({
+      dir: config.keystoreDir,
+      passphrase: config.keystorePassphrase,
+      logger,
+    });
+  } catch (err) {
+    await lock.release().catch(() => undefined);
+    throw err;
+  }
   try {
     await requireRoleRef(keystore, 'payer');
     const connection =
@@ -77,5 +88,6 @@ export async function runRevokeLaunch(options: RevokeLaunchOptions): Promise<Rev
   } finally {
     await alerter.flushPending();
     await keystore.close();
+    await lock.release().catch(() => undefined);
   }
 }

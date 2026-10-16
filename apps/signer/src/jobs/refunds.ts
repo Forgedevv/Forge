@@ -30,6 +30,22 @@
  * Manual handling: a job that cannot be refunded automatically (anomaly, included modification
  * with nothing to pay back, refused verification...) is alerted ONCE per reason and remembered in
  * the `manualMarks` journal, instead of being re-alerted on every run.
+ *
+ * Never twice, whatever the database says. The database rows (status, refund_signature, job
+ * state) can be rewritten by anyone holding the service role key; the on-chain payment stays
+ * valid forever. Three guards that the database cannot touch, checked before any new refund:
+ * 1. the `ledger`: a local, append-only record in SIGNER_JOURNAL_DIR of every refund attempt this
+ *    signer broadcast or saw landed, keyed by the payment id AND by the original payment's
+ *    transaction signature, written (fsynced) before the first broadcast and never deleted. A
+ *    payment (or payment signature) with an attempt that landed is refused for good (alert); one
+ *    with an attempt still `sent` is settled on-chain first (landed: refused; proven expired or
+ *    failed: allowed, nothing moved);
+ * 2. the cashbox's recent history: a successful transaction carrying the refund memo
+ *    `forge:refund:<paymentId>` means the refund exists on-chain (even with every local file
+ *    lost): refused, alerted;
+ * 3. a floor per payment kind (`minPaymentLamports`): a row below it cannot come from a quote.
+ * Migration 0012 adds the database side: `refunded` is final and a refund signature is never
+ * replaced.
  */
 import { PublicKey } from '@solana/web3.js';
 import { z } from 'zod';
@@ -55,6 +71,7 @@ import {
   checkPaused,
   checkSettlement,
   createAnnouncer,
+  createFileJournal,
   describeError,
   eq,
   formatSol,
@@ -63,6 +80,7 @@ import {
   parseLamports,
   parseLamportsEnv,
   parsePositiveIntEnv,
+  paymentMinimumsFromEnv,
   realSleep,
   requireRoleRef,
   sendAlert,
@@ -77,6 +95,7 @@ import {
   type KeystoreLike,
   type Mutex,
   type PauseReason,
+  type PaymentMinimums,
   type PostgrestClient,
   type RetryOptions,
   type Settlement,
@@ -178,7 +197,141 @@ export const RefundManualMark = z.object({
 });
 export type RefundManualMark = z.infer<typeof RefundManualMark>;
 
+// ---------------------------------------------------------------------------------------
+// Refund ledger (append-only, local, keyed by payment id and by payment signature)
+
+/** `sent`: broadcast by this signer; `landed`: seen on-chain; `expired` / `failed`: proven to have moved nothing. */
+export const RefundLedgerState = z.enum(['sent', 'landed', 'expired', 'failed']);
+export type RefundLedgerState = z.infer<typeof RefundLedgerState>;
+
+export const RefundLedgerAttempt = z.object({
+  refundSignature: z.string(),
+  lamports: z.string().regex(/^[0-9]+$/),
+  recipient: z.string(),
+  lastValidBlockHeight: z.number().int().nonnegative(),
+  state: RefundLedgerState,
+  recordedAt: z.string(),
+  updatedAt: z.string(),
+});
+export type RefundLedgerAttempt = z.infer<typeof RefundLedgerAttempt>;
+
+export const RefundLedgerEntry = z.object({
+  v: z.literal(1),
+  paymentId: z.string(),
+  jobId: z.string(),
+  /** Transaction signature of the client's payment (the on-chain fact a refund is based on). */
+  paymentSignature: z.string(),
+  attempts: z.array(RefundLedgerAttempt).max(100),
+});
+export type RefundLedgerEntry = z.infer<typeof RefundLedgerEntry>;
+
+export interface RefundLedgerRecord {
+  paymentId: string;
+  jobId: string;
+  paymentSignature: string;
+  refundSignature: string;
+  lamports: bigint;
+  recipient: string;
+  lastValidBlockHeight: number;
+  state: RefundLedgerState;
+  at: string;
+}
+
+/**
+ * Every refund attempt this signer ever broadcast or saw landed, for good. Two files per
+ * payment (`refund-ledger.p-<paymentId>`, `refund-ledger.s-<paymentSignature>`) hold the same
+ * entry, so a payment row re-created under another id for the same transaction is found too.
+ * Entries are appended and an attempt only moves from `sent` to a terminal state: nothing is
+ * ever removed or moved back.
+ */
+export interface RefundLedger {
+  /** Attempts recorded under the payment id or the payment signature (merged, deduplicated). */
+  find(ids: { paymentId: string; paymentSignature: string }): Promise<RefundLedgerAttempt[]>;
+  /** Appends the attempt, or moves a `sent` attempt to the given terminal state. */
+  record(entry: RefundLedgerRecord): Promise<void>;
+}
+
+const LEDGER_PAYMENT_KEY = (paymentId: string) => `p-${paymentId}`;
+const LEDGER_SIGNATURE_KEY = (signature: string) => `s-${signature}`;
+const TERMINAL_LEDGER_STATES: ReadonlySet<RefundLedgerState> = new Set([
+  'landed',
+  'expired',
+  'failed',
+]);
+
+function mergeLedgerAttempts(entries: Array<RefundLedgerEntry | undefined>): RefundLedgerAttempt[] {
+  const byRefund = new Map<string, RefundLedgerAttempt>();
+  for (const entry of entries) {
+    for (const attempt of entry?.attempts ?? []) {
+      const known = byRefund.get(attempt.refundSignature);
+      // Two files that disagree (crash between the two writes): keep the most advanced state.
+      if (!known || (known.state === 'sent' && attempt.state !== 'sent')) {
+        byRefund.set(attempt.refundSignature, attempt);
+      }
+    }
+  }
+  return [...byRefund.values()];
+}
+
+/** A ledger over any journal (file journal in production, memory journal in tests). */
+export function createRefundLedger(journal: Journal<RefundLedgerEntry>): RefundLedger {
+  const apply = (entry: RefundLedgerEntry, r: RefundLedgerRecord): RefundLedgerEntry => {
+    const attempts = entry.attempts.map((a) => {
+      if (a.refundSignature !== r.refundSignature) return a;
+      if (a.state === 'sent' && TERMINAL_LEDGER_STATES.has(r.state)) {
+        return { ...a, state: r.state, updatedAt: r.at };
+      }
+      return a;
+    });
+    if (!attempts.some((a) => a.refundSignature === r.refundSignature)) {
+      attempts.push({
+        refundSignature: r.refundSignature,
+        lamports: r.lamports.toString(),
+        recipient: r.recipient,
+        lastValidBlockHeight: r.lastValidBlockHeight,
+        state: r.state,
+        recordedAt: r.at,
+        updatedAt: r.at,
+      });
+    }
+    return { ...entry, attempts };
+  };
+  return {
+    async find({ paymentId, paymentSignature }) {
+      return mergeLedgerAttempts([
+        await journal.get(LEDGER_PAYMENT_KEY(paymentId)),
+        await journal.get(LEDGER_SIGNATURE_KEY(paymentSignature)),
+      ]);
+    },
+    async record(r) {
+      for (const key of [
+        LEDGER_PAYMENT_KEY(r.paymentId),
+        LEDGER_SIGNATURE_KEY(r.paymentSignature),
+      ]) {
+        const current = (await journal.get(key)) ?? {
+          v: 1 as const,
+          paymentId: r.paymentId,
+          jobId: r.jobId,
+          paymentSignature: r.paymentSignature,
+          attempts: [],
+        };
+        const next = apply(current, r);
+        if (JSON.stringify(next) !== JSON.stringify(current)) await journal.put(key, next);
+      }
+    },
+  };
+}
+
+/** The production ledger: `<dir>/refund-ledger.*.json`, written atomically and fsynced. */
+export function createFileRefundLedger(dir: string): RefundLedger {
+  return createRefundLedger(
+    createFileJournal({ dir, namespace: 'refund-ledger', schema: RefundLedgerEntry }),
+  );
+}
+
 export const REFUND_MEMO_PREFIX = 'forge:refund:';
+/** Recent cashbox signatures scanned for an existing refund memo before a new refund is signed. */
+export const REFUND_SCAN_LIMIT = 200;
 
 /** Rows read per database page, and the most rows one run looks at per list. */
 const PAGE_SIZE = 100;
@@ -212,7 +365,10 @@ export type ManualReason =
   | 'payment_not_verified'
   | 'payment_mismatch'
   | 'recipient_not_rent_exempt'
-  | 'refund_failed_onchain';
+  | 'refund_failed_onchain'
+  | 'below_minimum'
+  | 'refund_already_sent'
+  | 'refund_onchain_found';
 
 export type SkipReason =
   'job_not_failed' | 'not_build_failure' | 'retry_pending' | 'job_locked' | 'in_flight';
@@ -226,6 +382,8 @@ export type RefundDecision =
 export interface DecideOptions {
   maxAttempts: number;
   maxRefundLamports: bigint;
+  /** Floor per payment kind: a confirmed row below it cannot come from a quote (manual). */
+  minPaymentLamports?: PaymentMinimums;
 }
 
 /** Decides what to do with a candidate job, from database data only (no network). */
@@ -258,6 +416,10 @@ export function decideRefund(candidate: RefundCandidate, opts: DecideOptions): R
   if (!payment.txSignature) {
     return { action: 'manual', reason: 'missing_payment_signature', paymentId: payment.id };
   }
+  const floor = opts.minPaymentLamports?.[payment.kind] ?? 0n;
+  if (payment.lamports < floor) {
+    return { action: 'manual', reason: 'below_minimum', paymentId: payment.id };
+  }
   if (payment.lamports > opts.maxRefundLamports) {
     return { action: 'manual', reason: 'above_refund_cap', paymentId: payment.id };
   }
@@ -277,6 +439,8 @@ export interface RefundsConfig {
   cashbox: PublicKey;
   /** Hard cap per refund: anything above goes to manual handling. */
   maxRefundLamports: bigint;
+  /** Floor per payment kind (SIGNER_MIN_*_PAYMENT_LAMPORTS): below it, manual handling. */
+  minPaymentLamports?: PaymentMinimums;
   /** New refund attempts per run (in-flight ones are always resumed). Default 10. */
   maxPerRun?: number;
   /** Local kill switch (env). */
@@ -292,6 +456,8 @@ export interface RefundsDeps {
   journal: Journal<RefundJournalEntry>;
   /** Jobs already alerted for manual handling (alert once per job and reason). */
   manualMarks: Journal<RefundManualMark>;
+  /** Permanent record of every refund attempt (see the header). Required. */
+  ledger: RefundLedger;
   flags: FlagsReader;
   alerter: JobAlerter;
   logger: JobLogger;
@@ -327,7 +493,7 @@ export interface RefundsJob {
 }
 
 export function createRefundsJob(deps: RefundsDeps): RefundsJob {
-  const { store, rpc, core, keystore, journal, alerter, logger: log, config } = deps;
+  const { store, rpc, core, keystore, journal, ledger, alerter, logger: log, config } = deps;
   const retry = deps.retry ?? DEFAULT_RETRY;
   const sleep = deps.sleep ?? realSleep;
   const now = deps.now ?? Date.now;
@@ -340,8 +506,33 @@ export function createRefundsJob(deps: RefundsDeps): RefundsJob {
     throw new JobError('CONFIG', 'walletLock is required (shared with the cashbox job)');
   }
   if (!deps.manualMarks) throw new JobError('CONFIG', 'manualMarks journal is required');
+  if (!ledger || typeof ledger.find !== 'function' || typeof ledger.record !== 'function') {
+    throw new JobError('CONFIG', 'refund ledger is required');
+  }
 
   const iso = () => new Date(now()).toISOString();
+
+  /** Writes an attempt (or its terminal state) to the permanent ledger. */
+  const ledgerRecord = (
+    payment: Pick<RefundPayment, 'id' | 'jobId' | 'txSignature' | 'payerWallet'>,
+    entry: Pick<
+      RefundJournalEntry,
+      'signature' | 'lamports' | 'recipient' | 'lastValidBlockHeight'
+    >,
+    state: RefundLedgerState,
+  ) =>
+    ledger.record({
+      paymentId: payment.id,
+      jobId: payment.jobId,
+      // A payment without a transaction signature is never refunded; keyed by id only then.
+      paymentSignature: payment.txSignature ?? `none-${payment.id}`,
+      refundSignature: entry.signature,
+      lamports: BigInt(entry.lamports),
+      recipient: entry.recipient,
+      lastValidBlockHeight: entry.lastValidBlockHeight,
+      state,
+      at: iso(),
+    });
   const alert = (
     level: 'immediate' | 'high' | 'normal',
     code: string,
@@ -369,8 +560,11 @@ export function createRefundsJob(deps: RefundsDeps): RefundsJob {
   async function finishRefund(
     payment: RefundPayment,
     jobId: string,
-    signature: string,
+    entry: RefundJournalEntry,
   ): Promise<RefundOutcome> {
+    const signature = entry.signature;
+    // The money moved: the ledger says so before the database is asked anything.
+    await ledgerRecord(payment, entry, 'landed');
     const recorded = await store.completeRefund({
       paymentId: payment.id,
       refundSignature: signature,
@@ -437,9 +631,10 @@ export function createRefundsJob(deps: RefundsDeps): RefundsJob {
     const signature = entry.signature;
     switch (s.kind) {
       case 'finalized':
-        return finishRefund(payment, jobId, signature);
+        return finishRefund(payment, jobId, entry);
       case 'failed': {
         // No lamport moved (a failed transaction is atomic). Conservative: no automatic retry.
+        await ledgerRecord(payment, entry, 'failed');
         await journal.put(payment.id, {
           ...entry,
           state: 'manual',
@@ -456,6 +651,8 @@ export function createRefundsJob(deps: RefundsDeps): RefundsJob {
         return { result: 'manual', jobId, paymentId: payment.id, reason: 'refund_failed_onchain' };
       }
       case 'expired': {
+        // Proven unable to land: the ledger says so before the signature is released.
+        await ledgerRecord(payment, entry, 'expired');
         const released = await store.releaseRefund({
           paymentId: payment.id,
           refundSignature: signature,
@@ -545,6 +742,8 @@ export function createRefundsJob(deps: RefundsDeps): RefundsJob {
       entry = { ...entry, state: 'sent', updatedAt: iso() };
       await journal.put(payment.id, entry);
     }
+    // `settle` may (re)broadcast the signed bytes: the ledger knows the attempt first.
+    if (entry.rawTx) await ledgerRecord(payment, entry, 'sent');
     const s = await settle(signature, entry);
     return onSettlement(payment, job.id, entry, s);
   }
@@ -567,6 +766,7 @@ export function createRefundsJob(deps: RefundsDeps): RefundsJob {
       return { result: 'skipped', paymentId: payment.id, reason: 'resumed_in_flight' };
     }
     if (payment.refundSignature === signature && payment.status === 'refunded') {
+      await ledgerRecord(payment, entry, 'landed');
       await journal.delete(entry.paymentId);
       return { result: 'skipped', paymentId: payment.id, reason: 'already_refunded' };
     }
@@ -578,11 +778,13 @@ export function createRefundsJob(deps: RefundsDeps): RefundsJob {
     // S was recorded (and possibly broadcast), but the payment now says something else.
     const s = await checkSettlement(rpc, signature, entry.lastValidBlockHeight, retry);
     if (s.kind === 'expired' || s.kind === 'failed') {
+      await ledgerRecord(payment, entry, s.kind);
       await journal.delete(entry.paymentId);
       return { result: 'skipped', paymentId: payment.id, reason: `stale_attempt_${s.kind}` };
     }
     if (s.kind === 'finalized' || s.kind === 'confirmed') {
       // Our refund S paid the client. Repair the record if possible, never pay again.
+      await ledgerRecord(payment, entry, 'landed');
       if (
         payment.status === 'confirmed' &&
         payment.refundSignature === null &&
@@ -602,7 +804,7 @@ export function createRefundsJob(deps: RefundsDeps): RefundsJob {
             `refund_record_repaired:${payment.id}`,
           );
           if (s.kind === 'finalized') {
-            const done = await finishRefund(payment, payment.jobId, signature);
+            const done = await finishRefund(payment, payment.jobId, entry);
             return done.result === 'refunded'
               ? { result: 'repaired', paymentId: payment.id, signature }
               : done;
@@ -637,6 +839,7 @@ export function createRefundsJob(deps: RefundsDeps): RefundsJob {
     const decision = decideRefund(candidate, {
       maxAttempts: PRICING.maxAttemptsBeforeRefund,
       maxRefundLamports: config.maxRefundLamports,
+      ...(config.minPaymentLamports ? { minPaymentLamports: config.minPaymentLamports } : {}),
     });
     switch (decision.action) {
       case 'skip':
@@ -675,6 +878,7 @@ export function createRefundsJob(deps: RefundsDeps): RefundsJob {
     paymentId: string | undefined,
     reason: string,
     extra: Record<string, unknown> = {},
+    custom?: { code: string; message: string },
   ) {
     let mark: RefundManualMark | undefined;
     try {
@@ -687,14 +891,18 @@ export function createRefundsJob(deps: RefundsDeps): RefundsJob {
       return;
     }
     const zero = reason === 'zero_amount';
+    const code = custom?.code ?? 'refund_manual';
+    const message =
+      custom?.message ??
+      (zero
+        ? 'A build-failed job used an included modification (nothing was paid): restore the included modification by hand if needed'
+        : 'A build-failed job cannot be refunded automatically: manual handling needed');
     await alert(
       zero ? 'normal' : 'high',
-      'refund_manual',
-      zero
-        ? 'A build-failed job used an included modification (nothing was paid): restore the included modification by hand if needed'
-        : 'A build-failed job cannot be refunded automatically: manual handling needed',
+      code,
+      message,
       { jobId, paymentId: paymentId ?? 'none', reason, ...extra },
-      `refund_manual:${jobId}:${reason}`,
+      `${code}:${jobId}:${reason}`,
     );
     try {
       await deps.manualMarks.put(jobId, {
@@ -718,8 +926,9 @@ export function createRefundsJob(deps: RefundsDeps): RefundsJob {
     const manual = async (
       reason: ManualReason,
       extra: Record<string, unknown> = {},
+      custom?: { code: string; message: string },
     ): Promise<RefundOutcome> => {
-      await alertManual(job.id, payment.id, reason, extra);
+      await alertManual(job.id, payment.id, reason, extra, custom);
       return { result: 'manual', jobId: job.id, paymentId: payment.id, reason };
     };
     if (await journal.get(payment.id)) {
@@ -730,6 +939,79 @@ export function createRefundsJob(deps: RefundsDeps): RefundsJob {
         paymentId: payment.id,
         reason: 'previous_attempt_unsettled',
       };
+    }
+
+    // The permanent ledger: a refund this signer already broadcast for this payment (by id or
+    // by payment signature) is never repeated, whatever the database rows say now.
+    const prior = await ledger.find({
+      paymentId: payment.id,
+      paymentSignature: payment.txSignature,
+    });
+    for (const attempt of prior) {
+      if (attempt.state === 'expired' || attempt.state === 'failed') continue;
+      let state: RefundLedgerState = attempt.state;
+      if (state === 'sent') {
+        // Broadcast, never settled here (journal lost?): settle it on-chain now.
+        const s = await checkSettlement(
+          rpc,
+          attempt.refundSignature,
+          attempt.lastValidBlockHeight,
+          retry,
+        );
+        if (s.kind === 'expired' || s.kind === 'failed') {
+          await ledgerRecord(payment, { ...attempt, signature: attempt.refundSignature }, s.kind);
+          continue;
+        }
+        if (s.kind !== 'finalized' && s.kind !== 'confirmed') {
+          return {
+            result: 'in_flight',
+            paymentId: payment.id,
+            signature: attempt.refundSignature,
+            state: `ledger_${s.kind}`,
+          };
+        }
+        await ledgerRecord(payment, { ...attempt, signature: attempt.refundSignature }, 'landed');
+        state = 'landed';
+      }
+      log.error(
+        { jobId: job.id, paymentId: payment.id, refundSignature: attempt.refundSignature },
+        'refund refused: the ledger holds a refund that landed for this payment',
+      );
+      return manual(
+        'refund_already_sent',
+        { refundSignature: attempt.refundSignature, ledgerState: state },
+        {
+          code: 'refund_ledger_blocked',
+          message:
+            'The local ledger records a refund that already landed for this payment, yet the database presents it for a refund again (rows rewritten?): nothing was sent, check the database and the cashbox history',
+        },
+      );
+    }
+
+    // The cashbox history: a successful transaction with this refund's memo is this refund, even
+    // when every local file was lost.
+    const recent = await withRetry(
+      () => rpc.getRecentSignatures(config.cashbox, REFUND_SCAN_LIMIT),
+      retry,
+    );
+    const expectedMemo = refundMemo(payment.id);
+    const onChain = recent.find(
+      (r) => !r.failed && r.memo !== null && r.memo.includes(expectedMemo),
+    );
+    if (onChain) {
+      log.error(
+        { jobId: job.id, paymentId: payment.id, signature: onChain.signature },
+        'refund refused: a transaction with this refund memo is already on the cashbox',
+      );
+      return manual(
+        'refund_onchain_found',
+        { signature: onChain.signature },
+        {
+          code: 'refund_onchain_duplicate',
+          message:
+            'A transaction carrying the refund memo of this payment is already on the cashbox, yet the database presents the payment for a refund (rows rewritten, local state lost?): nothing was sent, check it',
+        },
+      );
     }
 
     // The payment, re-verified on-chain at finalized commitment.
@@ -865,6 +1147,8 @@ export function createRefundsJob(deps: RefundsDeps): RefundsJob {
     }
     entry = { ...entry, state: 'sent', updatedAt: iso() };
     await journal.put(payment.id, entry);
+    // Permanent record, fsynced before the first broadcast: this payment is never refunded again.
+    await ledgerRecord(payment, entry, 'sent');
 
     if (!announce(signature)) {
       return { result: 'in_flight', paymentId: payment.id, signature, state: 'not_announced' };
@@ -1026,7 +1310,9 @@ export interface RefundsEnvConfig {
 
 /**
  * SIGNER_REFUNDS_MAX_LAMPORTS (default 2 SOL), SIGNER_REFUNDS_INTERVAL_MINUTES (default 5),
- * SIGNER_REFUNDS_PAUSED (default false). `cashbox` comes from @forge/core `requireAddresses`.
+ * SIGNER_REFUNDS_PAUSED (default false), SIGNER_MIN_CREATION_PAYMENT_LAMPORTS /
+ * SIGNER_MIN_MODIFICATION_PAYMENT_LAMPORTS (shared floors, jobs/shared.ts). `cashbox` comes from
+ * @forge/core `requireAddresses`.
  */
 export function refundsConfigFromEnv(
   env: Readonly<Record<string, string | undefined>>,
@@ -1040,6 +1326,7 @@ export function refundsConfigFromEnv(
         'SIGNER_REFUNDS_MAX_LAMPORTS',
         DEFAULT_MAX_REFUND_LAMPORTS,
       ),
+      minPaymentLamports: paymentMinimumsFromEnv(env),
       paused: parseBoolEnv(env.SIGNER_REFUNDS_PAUSED, 'SIGNER_REFUNDS_PAUSED', false),
     },
     intervalMs:

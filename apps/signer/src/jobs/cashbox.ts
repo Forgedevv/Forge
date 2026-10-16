@@ -8,6 +8,8 @@
  *          + configured reserve (refunds buffer, fees)
  *          + outstanding refund liabilities (confirmed payments of jobs that can still be
  *            refunded automatically: spec_ready / paid / building / failed at build)
+ *          + unresolved payment anomalies (migration 0008: SOL that reached the cashbox but
+ *            paid for nothing, refunded by hand; an anomaly whose amount is unknown is alerted)
  *          + fee buffer of the sweep itself
  *   excess = spendable balance (lower of confirmed and finalized) - floor
  *   sweep  = excess, capped by `maxSweepLamports`, only if excess >= `minSweepLamports`
@@ -62,12 +64,23 @@ import {
   type SolanaRpc,
 } from './shared.js';
 
+/** Unresolved rows of `payment_anomalies` (money on the cashbox owed back by hand). */
+export interface PaymentAnomalySummary {
+  /** Sum of the rows whose amount is known. */
+  lamports: bigint;
+  count: number;
+  /** Rows with a null `lamports` (amount to read on an explorer): not in the sum. */
+  unknownAmounts: number;
+}
+
 export interface CashboxStore {
   /**
    * Sum (lamports) of the payments the refunds job may still have to pay back: payments in
    * `confirmed` whose job is `spec_ready`, `paid`, `building`, or `failed` at the build stage.
    */
   outstandingRefundLiabilities(): Promise<bigint>;
+  /** Payment anomalies not resolved yet (`resolved_at is null`). */
+  unresolvedPaymentAnomalies(): Promise<PaymentAnomalySummary>;
 }
 
 /** Kept on top of the floor for the sweep's own fee (one signature = 5 000 lamports today). */
@@ -341,10 +354,21 @@ export function createCashboxJob(deps: CashboxDeps): CashboxJob {
       return { status: 'ran', outcome: { result: 'skipped', reason: 'unfinalized_sweep' } };
     }
 
-    // 2. Floor and excess.
+    // 2. Floor and excess. Money owed back by hand (payment anomalies) stays on the cashbox too.
     const balance = await spendableBalance(rpc, config.cashbox, retry);
     const rentExempt = await withRetry(() => rpc.getMinimumBalanceForRentExemption(0), retry);
-    const liabilities = await store.outstandingRefundLiabilities();
+    const refundLiabilities = await store.outstandingRefundLiabilities();
+    const anomalies = await store.unresolvedPaymentAnomalies();
+    if (anomalies.unknownAmounts > 0) {
+      await alert(
+        'high',
+        'cashbox_anomaly_amount_unknown',
+        'A payment anomaly with an unknown amount is unresolved: it is not counted in the cashbox floor, read it on an explorer and resolve it',
+        { unknownAmounts: anomalies.unknownAmounts, unresolved: anomalies.count },
+        'cashbox_anomaly_amount_unknown',
+      );
+    }
+    const liabilities = refundLiabilities + anomalies.lamports;
     const plan = planSweep({
       balance,
       rentExemptLamports: rentExempt,
@@ -359,11 +383,12 @@ export function createCashboxJob(deps: CashboxDeps): CashboxJob {
       await alert(
         'high',
         'cashbox_low_balance',
-        'The cashbox balance is below its reserve (rent + buffer + refunds owed): fund it',
+        'The cashbox balance is below its reserve (rent + buffer + refunds owed + unresolved payment anomalies): fund it',
         {
           balance: formatSol(balance),
           required: formatSol(required),
-          liabilities: formatSol(liabilities),
+          liabilities: formatSol(refundLiabilities),
+          anomalies: formatSol(anomalies.lamports),
         },
         'cashbox_low_balance:reserve',
       );
@@ -371,7 +396,8 @@ export function createCashboxJob(deps: CashboxDeps): CashboxJob {
     const planLog = {
       balance: balance.toString(),
       floor: plan.floor.toString(),
-      liabilities: liabilities.toString(),
+      liabilities: refundLiabilities.toString(),
+      anomalies: anomalies.lamports.toString(),
       excess: plan.excess.toString(),
     };
     if (!plan.sweep) {
@@ -565,6 +591,22 @@ export function sumLiabilities(rows: Array<z.infer<typeof LiabilityRow>>): bigin
   return total;
 }
 
+const AnomalyRow = z.object({
+  id: z.string(),
+  lamports: z.union([z.string(), z.number()]).nullable(),
+});
+
+/** Pure: the summary of unresolved anomaly rows (null amounts counted, not summed). */
+export function sumAnomalies(rows: Array<z.infer<typeof AnomalyRow>>): PaymentAnomalySummary {
+  const out: PaymentAnomalySummary = { lamports: 0n, count: 0, unknownAmounts: 0 };
+  for (const r of rows) {
+    out.count++;
+    if (r.lamports === null) out.unknownAmounts++;
+    else out.lamports += parseLamports(r.lamports);
+  }
+  return out;
+}
+
 export function createPostgrestCashboxStore(db: PostgrestClient, pageSize = 1000): CashboxStore {
   return {
     async outstandingRefundLiabilities() {
@@ -581,6 +623,26 @@ export function createPostgrestCashboxStore(db: PostgrestClient, pageSize = 1000
         const parsed = z.array(LiabilityRow).safeParse(rows);
         if (!parsed.success) throw new JobError('DB_RESPONSE', 'unexpected liability rows');
         total += sumLiabilities(parsed.data);
+        if (parsed.data.length < pageSize) return total;
+      }
+    },
+
+    async unresolvedPaymentAnomalies() {
+      const total: PaymentAnomalySummary = { lamports: 0n, count: 0, unknownAmounts: 0 };
+      for (let offset = 0; ; offset += pageSize) {
+        const rows = await db.select('payment_anomalies', {
+          select: 'id,lamports::text',
+          resolved_at: 'is.null',
+          order: 'detected_at.asc,id.asc',
+          limit: String(pageSize),
+          offset: String(offset),
+        });
+        const parsed = z.array(AnomalyRow).safeParse(rows);
+        if (!parsed.success) throw new JobError('DB_RESPONSE', 'unexpected anomaly rows');
+        const page = sumAnomalies(parsed.data);
+        total.lamports += page.lamports;
+        total.count += page.count;
+        total.unknownAmounts += page.unknownAmounts;
         if (parsed.data.length < pageSize) return total;
       }
     },

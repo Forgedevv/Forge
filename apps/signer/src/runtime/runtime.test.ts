@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import { request } from 'node:http';
 import os from 'node:os';
@@ -7,9 +8,11 @@ import { pino } from 'pino';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CLUSTER_GENESIS_HASH } from '@forge/core';
 import { openKeystore } from '../keystore.js';
+import { JobError } from '../jobs/shared.js';
 import { signRequest } from '../server.js';
 import { RuntimeConfigError, parseRuntimeEnv } from './env.js';
 import { buybackJobModule, type BuybackDepsLike, type BuybackLibrary } from './buyback.js';
+import { INSTANCE_LOCK_FILE } from './instance.js';
 import type { SignerJobContext, SignerJobModule } from './modules.js';
 import { runRevokeLaunch } from './operator.js';
 import { createSignerRuntime, type SignerRuntime } from './runtime.js';
@@ -244,6 +247,26 @@ describe('runtime environment', () => {
     await expect(create({ SOLANA_CLUSTER: 'mainnet-beta' })).rejects.toThrow(/TELEGRAM_CHAT_ID/);
   });
 
+  it('reads the payment floors with safe defaults, as integers only', () => {
+    const env = baseEnv();
+    expect(parseRuntimeEnv(env).minPaymentLamports).toEqual({
+      creation: 20_000_000n,
+      modification: 3_000_000n,
+    });
+    expect(
+      parseRuntimeEnv({
+        ...env,
+        SIGNER_MIN_CREATION_PAYMENT_LAMPORTS: '150000000',
+        SIGNER_MIN_MODIFICATION_PAYMENT_LAMPORTS: '0',
+      }).minPaymentLamports,
+    ).toEqual({ creation: 150_000_000n, modification: 0n });
+    for (const value of ['0.5', '-1', 'many', '1e9']) {
+      expect(() =>
+        parseRuntimeEnv({ ...env, SIGNER_MIN_CREATION_PAYMENT_LAMPORTS: value }),
+      ).toThrow(/SIGNER_MIN_CREATION_PAYMENT_LAMPORTS/);
+    }
+  });
+
   it('caps the new launchpads per day: 20 by default, bounded, never unlimited', () => {
     const env = baseEnv();
     expect(parseRuntimeEnv(env).maxLaunchpadsPerDay).toBe(20);
@@ -343,6 +366,83 @@ describe('signer runtime wiring', () => {
     expect(Object.values(runtime.health().jobs!).every((j) => j.state === 'stopped')).toBe(true);
   });
 
+  it('disables an optional job whose configuration is refused, alerts, and runs everything else', async () => {
+    const lines: string[] = [];
+    const logger = pino({ level: 'info' }, { write: (s: string) => void lines.push(s) });
+    const broken: SignerJobModule = {
+      name: 'buyback',
+      create() {
+        throw new JobError(
+          'CONFIG',
+          'live buyback refused: no Squads spending limit withdrawer is wired',
+        );
+      },
+    };
+    const seen: SignerJobContext[] = [];
+    const runtime = await createSignerRuntime({
+      env: baseEnv(),
+      connection: mockConnection(),
+      fetch: mockFetch(),
+      logger,
+      serverLogger: pino({ level: 'silent' }),
+      port: 0,
+      extraJobs: [broken, spyModule(seen)],
+    });
+    runtimes.push(runtime);
+    expect(runtime.disabledJobs).toEqual(['buyback']);
+    expect(runtime.scheduler.names()).toEqual([
+      'claims',
+      'cashbox',
+      'refunds',
+      'watch',
+      'convert',
+      'spy',
+    ]);
+    const alertLine = lines.find((l) => l.includes('"code":"job_module_disabled"'));
+    expect(alertLine).toBeDefined();
+    expect(alertLine).toContain('"level":"high"');
+    expect(alertLine).toContain('buyback');
+    await runtime.start();
+    expect(runtime.health().ok).toBe(true);
+    expect(Object.keys(runtime.health().jobs!)).not.toContain('buyback');
+  });
+
+  it('still fails closed when a built-in job is misconfigured', async () => {
+    await expect(create({ SIGNER_REFUNDS_MAX_LAMPORTS: '0.5' })).rejects.toThrow(
+      /SIGNER_REFUNDS_MAX_LAMPORTS/,
+    );
+  });
+
+  it('removes the keystore passphrase and the service role key from the process environment once parsed', async () => {
+    const env = baseEnv();
+    const previous = new Map(Object.keys(env).map((k) => [k, process.env[k]]));
+    Object.assign(process.env, env);
+    try {
+      const runtime = await createSignerRuntime({
+        env: process.env,
+        connection: mockConnection(),
+        fetch: mockFetch(),
+        logger: pino({ level: 'silent' }),
+        serverLogger: pino({ level: 'silent' }),
+        port: 0,
+      });
+      runtimes.push(runtime);
+      expect(process.env.SIGNER_KEYSTORE_PASSPHRASE).toBeUndefined();
+      expect(process.env.SUPABASE_SERVICE_ROLE_KEY).toBeUndefined();
+      expect(runtime.context.env.SIGNER_KEYSTORE_PASSPHRASE).toBeUndefined();
+      expect(runtime.context.env.SUPABASE_SERVICE_ROLE_KEY).toBeUndefined();
+      // Behaviour kept: the keystore is open and the database client holds the key.
+      expect(runtime.context.supabase.serviceRoleKey).toBe(SERVICE_KEY);
+      expect(runtime.context.cashbox.publicKey.toBase58()).toBe(cashbox);
+      expect(process.env.RPC_URL).toBe(env.RPC_URL);
+    } finally {
+      for (const [k, v] of previous) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
+  });
+
   it('fails closed at startup', async () => {
     await expect(create({ FORGE_CASHBOX_WALLET: address() })).rejects.toThrow(
       /cashbox key does not match/,
@@ -356,6 +456,46 @@ describe('signer runtime wiring', () => {
     await expect(create({ SIGNER_KEYSTORE_PASSPHRASE: `${PASSPHRASE}x` })).rejects.toThrow();
     await expect(create({ SIGNER_HMAC_SECRET: 'too-short' })).rejects.toThrow(/SIGNER_HMAC_SECRET/);
     await expect(create({ WATCH_INTERVAL_MS: 'fast' })).rejects.toThrow();
+  });
+});
+
+describe('single instance', () => {
+  const lockFile = () => path.join(dir, 'journal', INSTANCE_LOCK_FILE);
+
+  it('refuses a second signer over the same journal directory until the first one stops', async () => {
+    const first = await create();
+    await expect(create()).rejects.toThrow(/another signer instance/);
+    expect(await fs.readFile(lockFile(), 'utf8')).toMatch(new RegExp(`^${process.pid}\\n`));
+    await first.stop();
+    await expect(fs.access(lockFile())).rejects.toThrow();
+    const second = await create();
+    expect(second.config.cluster).toBe('devnet');
+  });
+
+  it('takes over a lock left by a process that is gone', async () => {
+    const gone = spawnSync(process.execPath, ['-e', '0']).pid;
+    expect(gone).toBeGreaterThan(0);
+    await fs.mkdir(path.dirname(lockFile()), { recursive: true });
+    await fs.writeFile(lockFile(), `${gone}\nsigner\n`);
+    await create();
+    expect(await fs.readFile(lockFile(), 'utf8')).toMatch(new RegExp(`^${process.pid}\\n`));
+  });
+
+  it('the operator command refuses to run next to the service and runs once it stopped', async () => {
+    const runtime = await create();
+    const run = () =>
+      runRevokeLaunch({
+        env: baseEnv(),
+        jobId: '0f8fad5b-d9cb-469f-a165-70867728950e',
+        connection: mockConnection(),
+        fetch: mockFetch(),
+        logger: pino({ level: 'silent' }),
+      });
+    await expect(run()).rejects.toThrow(/another signer instance/);
+    await runtime.stop();
+    await expect(run()).rejects.toThrow(/launch_not_prepared/);
+    // Released by the command too.
+    await expect(fs.access(lockFile())).rejects.toThrow();
   });
 });
 

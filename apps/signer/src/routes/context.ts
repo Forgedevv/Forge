@@ -15,8 +15,10 @@ import {
 import type { LaunchpadSpec } from '@forge/shared';
 import { creatorRole, type Keystore } from '../keystore.js';
 import {
+  DEFAULT_MIN_PAYMENT_LAMPORTS,
   DEFAULT_RETRY,
   Mutex,
+  PAYMENT_USD_BY_KIND,
   checkPaused,
   createAnnouncer,
   parseAddress,
@@ -28,6 +30,7 @@ import {
   type JobAlerter,
   type JobLogger,
   type KeystoreLike,
+  type PaymentMinimums,
   type RetryOptions,
   type SettleTiming,
   type SolanaRpc,
@@ -77,6 +80,13 @@ export interface SignerRoutesConfig {
    * default 20, budget.ts). Past it, new launchpads are refused (503, alerted).
    */
   maxLaunchpadsPerDay?: number;
+  /**
+   * Floors on the confirmed payment rows a route acts on, per kind (SIGNER_MIN_*_PAYMENT_LAMPORTS,
+   * default `DEFAULT_MIN_PAYMENT_LAMPORTS`): a row below its floor, or whose `usd_amount` is not
+   * the shared price of its kind, is refused (409, alerted) before any key or payer spend. The
+   * database alone must never decide how little a launchpad is worth.
+   */
+  minPaymentLamports?: PaymentMinimums;
 }
 
 export interface SignerRoutesDeps {
@@ -159,6 +169,7 @@ export interface RouteRuntime {
   /** Serializes the daily admissions of new launchpads (budget.ts). */
   admissionLock: Mutex;
   maxLaunchpadsPerDay: number;
+  minPaymentLamports: PaymentMinimums;
   maxCreateAttempts: number;
   maxLaunchBuilds: number;
   payerFeeBufferLamports: bigint;
@@ -183,6 +194,12 @@ export function createRouteRuntime(deps: SignerRoutesDeps): RouteRuntime {
       `maxLaunchpadsPerDay must be an integer between 1 and ${MAX_LAUNCHPADS_PER_DAY}`,
     );
   }
+  const minPaymentLamports = config.minPaymentLamports ?? DEFAULT_MIN_PAYMENT_LAMPORTS;
+  for (const [kind, floor] of Object.entries(minPaymentLamports)) {
+    if (typeof floor !== 'bigint' || floor < 0n) {
+      throw new Error(`minPaymentLamports.${kind} must be a non-negative bigint`);
+    }
+  }
   const log = deps.logger;
   return {
     deps,
@@ -205,6 +222,7 @@ export function createRouteRuntime(deps: SignerRoutesDeps): RouteRuntime {
     locks: new KeyedMutex(),
     admissionLock: new Mutex(),
     maxLaunchpadsPerDay,
+    minPaymentLamports,
     maxCreateAttempts: config.maxCreateAttempts ?? DEFAULT_MAX_CREATE_ATTEMPTS,
     maxLaunchBuilds: config.maxLaunchBuilds ?? DEFAULT_MAX_LAUNCH_BUILDS,
     payerFeeBufferLamports: config.payerFeeBufferLamports ?? DEFAULT_PAYER_FEE_BUFFER_LAMPORTS,
@@ -252,7 +270,9 @@ export interface OnchainSetup {
  * Re-reads and checks everything a signing route acts on (INTERFACES §7): a `create_launchpad`
  * job in `onchain_setup`, its `draft` launchpad, the spec re-validated by core with the owner
  * wallet of the row, at least one confirmed creation payment by that wallet (with its
- * transaction signature) and none refunded (status `refunded` or a `refund_signature`), and the `deploys_paused` kill switch (fail closed).
+ * transaction signature, at least the floor of its kind, priced at the shared dollar price) and
+ * none refunded (status `refunded` or a `refund_signature`), and the `deploys_paused` kill
+ * switch (fail closed).
  * The payment rows are only the database's word: `assertCreationPaid` (payment.ts) proves them
  * on-chain before anything is spent.
  */
@@ -281,9 +301,47 @@ export async function loadOnchainSetup(rt: RouteRuntime, jobId: string): Promise
     fail(409, 'payment_mismatch');
   }
   if (confirmed.some((p) => !p.txSignature)) fail(409, 'payment_signature_missing');
+  await assertPaymentRowsPlausible(rt, jobId, confirmed);
 
   await assertRoutesNotPaused(rt);
   return { job, launchpad, spec, owner, payments: confirmed };
+}
+
+/**
+ * The amount and the price of a payment row are the database's word alone (the on-chain proof
+ * checks the transaction against the row, not the row against the offer): a row below the floor
+ * of its kind, or priced at anything but the shared dollar price, is refused and alerted before
+ * any key is created or any lamport of rent is spent.
+ */
+async function assertPaymentRowsPlausible(
+  rt: RouteRuntime,
+  jobId: string,
+  payments: readonly RoutePayment[],
+): Promise<void> {
+  for (const p of payments) {
+    const floor = rt.minPaymentLamports[p.kind];
+    if (p.lamports < floor) {
+      await rt.alert(
+        'high',
+        'payment_below_minimum',
+        'A confirmed payment row is below the floor of its kind: nothing was signed, check the row and the quote',
+        { jobId, paymentId: p.id, kind: p.kind, lamports: p.lamports, floor },
+        `payment_below_minimum:${p.id}`,
+      );
+      fail(409, 'payment_below_minimum');
+    }
+    const price = PAYMENT_USD_BY_KIND[p.kind];
+    if (!Number.isFinite(p.usdAmount) || p.usdAmount !== price) {
+      await rt.alert(
+        'high',
+        'payment_price_mismatch',
+        'A confirmed payment row is not priced at the shared price of its kind: nothing was signed, check the row',
+        { jobId, paymentId: p.id, kind: p.kind, usdAmount: p.usdAmount, expected: price },
+        `payment_price_mismatch:${p.id}`,
+      );
+      fail(409, 'payment_price_mismatch');
+    }
+  }
 }
 
 /**

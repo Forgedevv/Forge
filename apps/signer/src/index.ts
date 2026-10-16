@@ -11,11 +11,14 @@
  *                  advances the launchpad's durable nonce with its creator wallet, so the launch
  *                  transaction handed out for that job can no longer land; journaled, then the
  *                  next prepare builds a new one (runtime/operator.ts, routes/revoke.ts). Same
- *                  environment as the service. Exit code 3: sent but not settled yet, run again.
+ *                  environment as the service, which must be stopped first (both take the
+ *                  instance lock of SIGNER_JOURNAL_DIR). Exit code 3: sent but not settled yet,
+ *                  run again.
  *
  * Every variable is documented in apps/signer/.env.example. Back up SIGNER_KEYSTORE_DIR and
  * SIGNER_JOURNAL_DIR together: the journals are what makes every payment and account creation
- * happen at most once.
+ * happen at most once, and the refund ledger in it (`refund-ledger.*`, append-only) what makes
+ * every refund happen at most once.
  */
 import { pino } from 'pino';
 import { keystoreOptionsFromEnv, openKeystore } from './keystore.js';

@@ -9,6 +9,7 @@ import {
   createSupabaseTargetSource,
   createWatchState,
   detectLowBalance,
+  detectMissingPoolRows,
   detectNotRentExempt,
   detectOutflows,
   detectPoolChanges,
@@ -39,6 +40,7 @@ const PAYER = Keypair.generate().publicKey.toBase58();
 const REFERRAL = Keypair.generate().publicKey.toBase58();
 const ATTACKER = Keypair.generate().publicKey.toBase58();
 const OTHER = Keypair.generate().publicKey.toBase58();
+const BOT = Keypair.generate().publicKey.toBase58();
 const SOL = 1_000_000_000n;
 const RENT_0 = 890_880n;
 
@@ -90,6 +92,25 @@ describe('configuration', () => {
     expect(config.minLamports.cashbox).toBe(100_000_000n);
   });
 
+  it('does not watch the creator wallet balances while the payer wallet pays the claims', () => {
+    // SIGNER_CLAIMS_FEE_PAYER defaults to `payer`: creator wallets hold 0 SOL by design.
+    expect(config.minLamports.creator).toBe(0n);
+    expect(parseWatchConfig({ SIGNER_CLAIMS_FEE_PAYER: 'payer' }).minLamports.creator).toBe(0n);
+    expect(parseWatchConfig({ SIGNER_CLAIMS_FEE_PAYER: 'creator' }).minLamports.creator).toBe(
+      5_000_000n,
+    );
+    // An explicit value always wins.
+    expect(
+      parseWatchConfig({ SIGNER_CLAIMS_FEE_PAYER: 'payer', WATCH_MIN_CREATOR_LAMPORTS: '7' })
+        .minLamports.creator,
+    ).toBe(7n);
+    expect(
+      parseWatchConfig({ SIGNER_CLAIMS_FEE_PAYER: 'creator', WATCH_MIN_CREATOR_LAMPORTS: '0' })
+        .minLamports.creator,
+    ).toBe(0n);
+    expect(buildCreatorAccounts([{ address: OTHER, label: 'c' }], config)[0]!.minLamports).toBe(0n);
+  });
+
   it('reads overrides and rejects malformed values', () => {
     const c = parseWatchConfig({
       WATCH_INTERVAL_MS: '30000',
@@ -123,6 +144,72 @@ describe('configuration', () => {
     expect(buildCreatorAccounts([{ address: OTHER, label: 'c' }], config)[0]!.minLamports).toBe(
       config.minLamports.creator,
     );
+  });
+});
+
+describe('payer and buyback bot wallets', () => {
+  it('watches both for outflows, the bot one with the vault as its only destination', () => {
+    const accounts = buildStaticAccounts(
+      {
+        vault: VAULT,
+        platformFee: FEE,
+        cashbox: CASHBOX,
+        payer: PAYER,
+        buyback: BOT,
+        referrals: [REFERRAL],
+      },
+      config,
+    );
+    expect(accounts.map((a) => a.role)).toEqual([
+      'vault',
+      'platformFee',
+      'cashbox',
+      'payer',
+      'buyback',
+      'referral',
+    ]);
+    expect(accounts.find((a) => a.role === 'payer')).toMatchObject({
+      watchOutflows: true,
+      watchTokenAccounts: true,
+      allowedDestinations: [],
+      requireRentExempt: true,
+    });
+    expect(accounts.find((a) => a.role === 'buyback')).toMatchObject({
+      address: BOT,
+      watchOutflows: true,
+      watchTokenAccounts: true,
+      allowedDestinations: [VAULT],
+      minLamports: 0n,
+    });
+    expect(parseWatchConfig({ WATCH_MIN_BUYBACK_LAMPORTS: '5' }).minLamports.buyback).toBe(5n);
+    // Without a bot wallet (before --init-keys): no entry for it.
+    expect(
+      buildStaticAccounts({ vault: VAULT, platformFee: FEE, cashbox: CASHBOX }, config).map(
+        (a) => a.role,
+      ),
+    ).toEqual(['vault', 'platformFee', 'cashbox']);
+  });
+});
+
+describe('detectMissingPoolRows', () => {
+  it('flags a remembered pool the database no longer lists, keeps quiet otherwise', () => {
+    const remembered = new Map([
+      ['P1', { creator: 'C', isMigrated: false }],
+      ['P2', { creator: 'D', isMigrated: true }],
+    ]);
+    const loaded: WatchedPool[] = [{ address: 'P1', label: 'alpha' }];
+    const out = detectMissingPoolRows(remembered, loaded);
+    expect(out).toHaveLength(1);
+    expect(out[0]).toMatchObject({
+      code: 'POOL_ROW_MISSING',
+      level: 'high',
+      dedupKey: 'row-missing:P2',
+      details: { pool: 'P2', referenceCreator: 'D' },
+    });
+    expect(detectMissingPoolRows(new Map(), loaded)).toEqual([]);
+    expect(
+      detectMissingPoolRows(remembered, [...loaded, { address: 'P2', label: 'beta' }]),
+    ).toEqual([]);
   });
 });
 
@@ -597,6 +684,70 @@ describe('runWatchCycle', () => {
     chain.accounts.set(CASHBOX, snap(CASHBOX, 0n));
     await runWatchCycle(deps);
     expect(JSON.stringify(alerts.mock.calls)).not.toMatch(/secret|passphrase|private/i);
+  });
+
+  it('alerts when a tracked pool row disappears from the database, not when the database is unreachable', async () => {
+    const chain = healthyChain();
+    let rows: WatchTargets = targets;
+    let down = false;
+    const { deps, alerts } = makeDeps(chain, targets, {
+      targets: {
+        load: async () => {
+          if (down) throw new TypeError('supabase down');
+          return rows;
+        },
+      },
+    });
+    await runWatchCycle(deps);
+    expect(deps.state.pools.has('P1')).toBe(true);
+
+    down = true;
+    expect((await runWatchCycle(deps)).detections.map((d) => d.code)).not.toContain(
+      'POOL_ROW_MISSING',
+    );
+    down = false;
+    rows = { ...targets, pools: [] };
+    const r = await runWatchCycle(deps);
+    expect(r.detections.map((d) => d.code)).toEqual(['POOL_ROW_MISSING']);
+    expect(alerts.mock.calls.map((c) => [c[0], c[1]])).toContainEqual(['high', 'POOL_ROW_MISSING']);
+    // The memory stays, reference creator included: the row coming back with a moved creator is
+    // still caught against the original reference.
+    expect(deps.state.pools.get('P1')?.creator).toBe('CREATOR');
+    rows = targets;
+    chain.pools.set('P1', { address: 'P1', exists: true, creator: 'THIEF', isMigrated: false });
+    expect((await runWatchCycle(deps)).detections.map((d) => d.code)).toEqual([
+      'POOL_CREATOR_CHANGED',
+    ]);
+  });
+
+  it('flags an outflow from the payer wallet unless the signer announced it, and a bot return to the vault never', async () => {
+    const chain = healthyChain();
+    chain.accounts.set(PAYER, snap(PAYER, 5n * SOL));
+    chain.accounts.set(BOT, snap(BOT, SOL));
+    chain.signatures.set(PAYER, ['p0']);
+    chain.signatures.set(BOT, ['b0']);
+    const expected = createExpectedSignatures();
+    const staticAccounts = buildStaticAccounts(
+      { vault: VAULT, platformFee: FEE, cashbox: CASHBOX, payer: PAYER, buyback: BOT },
+      config,
+    );
+    const { deps } = makeDeps(chain, { accounts: [], pools: [] }, { staticAccounts, expected });
+    expect((await runWatchCycle(deps)).detections).toEqual([]);
+
+    chain.signatures.set(PAYER, ['p2', 'p1', 'p0']);
+    // p1: a config creation paid by the payer, announced before its broadcast.
+    chain.txs.set('p1', tx('p1', { [PAYER]: [5n * SOL, 4n * SOL], [OTHER]: [0n, SOL] }));
+    expected.expect('p1');
+    // p2: nobody announced it.
+    chain.txs.set('p2', tx('p2', { [PAYER]: [4n * SOL, 3n * SOL], [ATTACKER]: [0n, SOL] }));
+    chain.signatures.set(BOT, ['b1', 'b0']);
+    chain.txs.set('b1', tx('b1', { [BOT]: [SOL, 0n], [VAULT]: [50n * SOL, 51n * SOL] }));
+
+    const r = await runWatchCycle(deps);
+    const outflows = r.detections.filter((d) => d.code === 'UNEXPECTED_OUTFLOW');
+    expect(outflows.map((d) => d.details.signature)).toEqual(['p2']);
+    expect(outflows[0]!.details).toMatchObject({ role: 'payer', account: PAYER });
+    expect(outflows[0]!.level).toBe('immediate');
   });
 });
 

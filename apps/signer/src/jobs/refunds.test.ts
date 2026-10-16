@@ -7,8 +7,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { openKeystore, type Keystore } from '../keystore.js';
 import {
   RefundJournalEntry,
+  RefundLedgerEntry,
   RefundManualMark,
+  createFileRefundLedger,
   createPostgrestRefundStore,
+  createRefundLedger,
   createRefundsJob,
   decideRefund,
   refundsConfigFromEnv,
@@ -63,6 +66,7 @@ function setup(overrides: Partial<RefundsDeps> = {}) {
   const core = dbc.core({ cashbox });
   const db = new MemoryRefundDb();
   const journal = createMemoryJournal(RefundJournalEntry);
+  const ledger = createRefundLedger(createMemoryJournal(RefundLedgerEntry));
   const alerter = new RecordingAlerter();
   const flags = memoryFlags();
   const sleeps: number[] = [];
@@ -78,6 +82,7 @@ function setup(overrides: Partial<RefundsDeps> = {}) {
       core,
       keystore,
       journal,
+      ledger,
       manualMarks: createMemoryJournal(RefundManualMark),
       walletLock: new Mutex(),
       onBeforeSend: () => undefined,
@@ -100,7 +105,21 @@ function setup(overrides: Partial<RefundsDeps> = {}) {
     return { job: j, payment: p, payer: new PublicKey(j.ownerWallet) };
   };
 
-  return { chain, dbc, core, db, journal, alerter, flags, sleeps, clock, retry, job, failedJob };
+  return {
+    chain,
+    dbc,
+    core,
+    db,
+    journal,
+    ledger,
+    alerter,
+    flags,
+    sleeps,
+    clock,
+    retry,
+    job,
+    failedJob,
+  };
 }
 
 describe('refunds: happy path and idempotency', () => {
@@ -701,6 +720,201 @@ describe('refunds: signing safety', () => {
   });
 });
 
+describe('refunds: never twice, whatever the database says', () => {
+  /** Puts the rows back as if the refund had never happened (a service-key rewrite). */
+  const rewrite = (t: ReturnType<typeof setup>, jobId: string, paymentId: string) => {
+    const row = t.db.payments.get(paymentId)!;
+    row.status = 'confirmed';
+    row.refundSignature = null;
+    t.db.jobs.get(jobId)!.status = 'failed';
+  };
+
+  it('refuses a payment the ledger knows as refunded once the rows are rewritten (alert high, nothing sent)', async () => {
+    const t = setup();
+    // The manual marks persist across restarts (file journal): shared by every run here.
+    const manualMarks = createMemoryJournal(RefundManualMark);
+    const { job, payment, payer } = t.failedJob();
+    await t.job({ manualMarks }).runOnce();
+    expect(t.chain.transfers).toHaveLength(1);
+    rewrite(t, job.id, payment.id);
+    const sends = t.chain.sendAttempts.length;
+
+    const report = await t.job({ manualMarks }).runOnce();
+    expect(report.outcomes).toContainEqual(
+      expect.objectContaining({
+        result: 'manual',
+        reason: 'refund_already_sent',
+        paymentId: payment.id,
+      }),
+    );
+    const blocked = t.alerter.alerts.find((a) => a.code === 'refund_ledger_blocked');
+    expect(blocked?.level).toBe('high');
+    expect(blocked?.details).toMatchObject({ paymentId: payment.id, ledgerState: 'landed' });
+    expect(t.chain.transfers).toHaveLength(1);
+    expect(t.chain.sendAttempts.length).toBe(sends);
+    expect(t.chain.receivedBy(payer)).toBe(PRICE);
+    expect(t.db.payments.get(payment.id)!.refundSignature).toBeNull(); // nothing recorded either
+    // Every later run: still refused, nothing sent, alerted once (remembered per job and reason).
+    await t.job({ manualMarks }).runOnce();
+    expect(t.chain.transfers).toHaveLength(1);
+    expect(t.alerter.codes().filter((c) => c === 'refund_ledger_blocked')).toHaveLength(1);
+  });
+
+  it('finds a refunded payment by its transaction signature when its row is re-created under another id', async () => {
+    const t = setup();
+    const { job, payment } = t.failedJob();
+    await t.job().runOnce();
+    t.db.payments.delete(payment.id);
+    t.db.jobs.delete(job.id);
+    const again = t.db.addJob({ ownerWallet: job.ownerWallet });
+    const copy = t.db.addPayment(again, { txSignature: payment.txSignature });
+    const report = await t.job().runOnce();
+    expect(report.outcomes).toContainEqual(
+      expect.objectContaining({
+        result: 'manual',
+        reason: 'refund_already_sent',
+        paymentId: copy.id,
+      }),
+    );
+    expect(t.alerter.codes()).toContain('refund_ledger_blocked');
+    expect(t.chain.transfers).toHaveLength(1);
+  });
+
+  it('settles a broadcast attempt the journal lost before deciding: landed means refused', async () => {
+    const t = setup();
+    const { job, payment, payer } = t.failedJob();
+    const ids = { paymentId: payment.id, paymentSignature: payment.txSignature! };
+    // The refund lands, then the settlement poll breaks before anything else is recorded.
+    t.chain.failNext('getSignatureState', new Error('rpc exploded'), 1);
+    const first = await t.job().runOnce();
+    expect(first.outcomes.some((o) => o.result === 'error')).toBe(true);
+    expect(t.chain.transfers).toHaveLength(1);
+    expect(await t.ledger.find(ids)).toMatchObject([{ state: 'sent' }]);
+
+    rewrite(t, job.id, payment.id);
+    t.chain.advance(40);
+    const report = await t.job({ journal: createMemoryJournal(RefundJournalEntry) }).runOnce();
+    expect(report.outcomes).toContainEqual(
+      expect.objectContaining({ result: 'manual', reason: 'refund_already_sent' }),
+    );
+    expect(await t.ledger.find(ids)).toMatchObject([{ state: 'landed' }]);
+    expect(t.chain.transfers).toHaveLength(1);
+    expect(t.chain.receivedBy(payer)).toBe(PRICE);
+  });
+
+  it('refuses when the cashbox history already carries the refund memo, with every local file lost', async () => {
+    const t = setup();
+    const { job, payment, payer } = t.failedJob();
+    await t.job().runOnce();
+    rewrite(t, job.id, payment.id);
+    const fresh = t.job({
+      journal: createMemoryJournal(RefundJournalEntry),
+      ledger: createRefundLedger(createMemoryJournal(RefundLedgerEntry)),
+      manualMarks: createMemoryJournal(RefundManualMark),
+    });
+    const report = await fresh.runOnce();
+    expect(report.outcomes).toContainEqual(
+      expect.objectContaining({
+        result: 'manual',
+        reason: 'refund_onchain_found',
+        paymentId: payment.id,
+      }),
+    );
+    const duplicate = t.alerter.alerts.find((a) => a.code === 'refund_onchain_duplicate');
+    expect(duplicate?.level).toBe('high');
+    expect(duplicate?.details).toMatchObject({ signature: t.chain.transfers[0]!.signature });
+    expect(t.chain.transfers).toHaveLength(1);
+    expect(t.chain.receivedBy(payer)).toBe(PRICE);
+    expect(t.chain.calls.filter((c) => c === 'sendRawTransaction')).toHaveLength(1);
+  });
+
+  it('an attempt proven expired does not block the refund: the ledger keeps both attempts', async () => {
+    const t = setup();
+    const { payment, payer } = t.failedJob();
+    const ids = { paymentId: payment.id, paymentSignature: payment.txSignature! };
+    t.chain.defaultBehavior = 'drop';
+    await t.job().runOnce(); // S recorded and sent, dropped by the network
+    expect(await t.ledger.find(ids)).toMatchObject([{ state: 'sent' }]);
+    t.chain.defaultBehavior = 'land';
+    for (let run = 0; run < 4 && t.chain.transfers.length === 0; run++) {
+      t.chain.advance(200);
+      await t.job().runOnce();
+    }
+    expect(t.chain.transfers).toHaveLength(1);
+    expect(t.chain.receivedBy(payer)).toBe(PRICE);
+    const attempts = (await t.ledger.find(ids)).map((a) => a.state).sort();
+    expect(attempts).toEqual(['expired', 'landed']);
+    expect(t.db.payments.get(payment.id)!.status).toBe('refunded');
+  });
+
+  it('leaves a confirmed payment below the floor of its kind to manual handling', async () => {
+    const t = setup({
+      config: {
+        cashbox,
+        maxRefundLamports: 2n * SOL,
+        minPaymentLamports: { creation: 100_000_000n, modification: 10_000_000n },
+      },
+    });
+    const low = t.db.addJob();
+    const payment = t.db.addPayment(low, { lamports: 99_999_999n });
+    const fine = t.failedJob();
+    const report = await t.job().runOnce();
+    expect(report.outcomes).toContainEqual(
+      expect.objectContaining({ result: 'manual', reason: 'below_minimum', paymentId: payment.id }),
+    );
+    expect(t.chain.receivedBy(fine.payer)).toBe(PRICE);
+    expect(t.chain.transfers).toHaveLength(1);
+  });
+
+  it('the file ledger keeps every attempt for good: never deleted, never moved back', async () => {
+    const ledgerDir = path.join(dir, 'ledger');
+    const ledger = createFileRefundLedger(ledgerDir);
+    const paymentId = uuid();
+    const paymentSignature = randomSignature();
+    const refundSignature = randomSignature();
+    const base = {
+      paymentId,
+      jobId: uuid(),
+      paymentSignature,
+      refundSignature,
+      lamports: PRICE,
+      recipient: randomAddress().toBase58(),
+      lastValidBlockHeight: 1_150,
+      at: '2026-10-16T00:00:00.000Z',
+    };
+    await ledger.record({ ...base, state: 'sent' });
+    await ledger.record({ ...base, state: 'landed', at: '2026-10-16T00:01:00.000Z' });
+    await ledger.record({ ...base, state: 'expired', at: '2026-10-16T00:02:00.000Z' }); // never back
+    const second = randomSignature();
+    await ledger.record({ ...base, refundSignature: second, state: 'expired' });
+
+    const byId = await ledger.find({ paymentId, paymentSignature: randomSignature() });
+    const bySignature = await ledger.find({ paymentId: uuid(), paymentSignature });
+    for (const attempts of [byId, bySignature]) {
+      expect(attempts.map((a) => [a.refundSignature, a.state])).toEqual([
+        [refundSignature, 'landed'],
+        [second, 'expired'],
+      ]);
+    }
+    const files = (await fs.readdir(ledgerDir)).filter((f) => f.startsWith('refund-ledger.'));
+    expect(files.sort()).toEqual([
+      `refund-ledger.p-${paymentId}.json`,
+      `refund-ledger.s-${paymentSignature}.json`,
+    ]);
+    // A restart reads the same record.
+    expect(
+      await createFileRefundLedger(ledgerDir).find({ paymentId, paymentSignature }),
+    ).toHaveLength(2);
+  });
+
+  it('requires the ledger', () => {
+    const t = setup();
+    expect(() => t.job({ ledger: undefined as unknown as RefundsDeps['ledger'] })).toThrow(
+      /ledger is required/,
+    );
+  });
+});
+
 describe('decideRefund', () => {
   const owner = randomAddress().toBase58();
   const jobId = uuid();
@@ -733,6 +947,16 @@ describe('decideRefund', () => {
     ],
   });
   const opts = { maxAttempts: 2, maxRefundLamports: SOL };
+
+  it('leaves a payment below the floor of its kind to manual handling', () => {
+    const atFloor = { ...opts, minPaymentLamports: { creation: 1n, modification: 50_000_000n } };
+    expect(decideRefund(candidate(), atFloor).action).toBe('refund');
+    const above = { ...opts, minPaymentLamports: { creation: 1n, modification: 50_000_001n } };
+    expect(decideRefund(candidate(), above)).toMatchObject({
+      action: 'manual',
+      reason: 'below_minimum',
+    });
+  });
 
   it('refunds exactly at the threshold and the cap', () => {
     expect(decideRefund(candidate(), opts).action).toBe('refund');
@@ -777,6 +1001,17 @@ describe('refundsConfigFromEnv', () => {
     expect(c.config.maxRefundLamports).toBe(2n * SOL);
     expect(c.config.paused).toBe(false);
     expect(c.intervalMs).toBe(5 * 60_000);
+    expect(c.config.minPaymentLamports).toEqual({
+      creation: 20_000_000n,
+      modification: 3_000_000n,
+    });
+    expect(
+      refundsConfigFromEnv({ SIGNER_MIN_MODIFICATION_PAYMENT_LAMPORTS: '7' }, cashbox).config
+        .minPaymentLamports,
+    ).toEqual({ creation: 20_000_000n, modification: 7n });
+    expect(() =>
+      refundsConfigFromEnv({ SIGNER_MIN_CREATION_PAYMENT_LAMPORTS: '0.5' }, cashbox),
+    ).toThrow(/SIGNER_MIN_CREATION_PAYMENT_LAMPORTS/);
     expect(
       refundsConfigFromEnv(
         { SIGNER_REFUNDS_MAX_LAMPORTS: '500000000', SIGNER_REFUNDS_PAUSED: 'true' },

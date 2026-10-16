@@ -34,7 +34,13 @@ import {
   type LaunchCoinSummary,
   type LaunchCoinTx,
 } from '@forge/core';
-import type { JobStatus, LaunchpadSpec, LaunchpadStatus, PaymentStatus } from '@forge/shared';
+import {
+  PRICING,
+  type JobStatus,
+  type LaunchpadSpec,
+  type LaunchpadStatus,
+  type PaymentStatus,
+} from '@forge/shared';
 import type { ExpectedPayment, PaymentVerification } from '../core-adapter.js';
 import {
   base58Encode,
@@ -785,6 +791,7 @@ export class MemoryRouteStore implements RouteStore {
     launchpadStatus?: LaunchpadStatus;
     paymentStatus?: PaymentStatus;
     paymentLamports?: bigint;
+    paymentUsd?: number;
     txSignature?: string;
   }): RoutePayment {
     this.jobs.set(input.jobId, {
@@ -810,6 +817,7 @@ export class MemoryRouteStore implements RouteStore {
       kind: 'creation',
       status: input.paymentStatus ?? 'confirmed',
       payerWallet: input.spec.ownerWallet,
+      usdAmount: input.paymentUsd ?? PRICING.creationUsd,
       lamports: input.paymentLamports ?? 300_000_000n,
       txSignature: input.txSignature ?? randomSignature(),
       refundSignature: null,

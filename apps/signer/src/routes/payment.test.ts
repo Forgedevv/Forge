@@ -1,6 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
 import { creatorRole } from '../keystore.js';
-import { dbcAccounts, ok, refused, setup, useTestKeystore, type Harness } from './harness.js';
+import {
+  METADATA,
+  dbcAccounts,
+  ok,
+  refused,
+  setup,
+  useTestKeystore,
+  type Harness,
+} from './harness.js';
 import { randomKey, randomSignature } from './testing.js';
 
 // Every FORGE signature decrypts a keystore key (scrypt): slow under a parallel test run.
@@ -65,6 +73,65 @@ describe('creation payment verified on-chain', () => {
       expect(await h.journals.payments.get(payment.id)).toBeUndefined();
     });
   }
+
+  it('refuses a payment row below the floor of its kind or not at the shared price, before any key, proof or spend', async () => {
+    const h = await setup(ks.keystore);
+    const payment = h.store.payments[0]!;
+    payment.lamports = 19_999_999n; // one lamport under the default creation floor (0.02 SOL)
+    expect(refused(await h.routes.configs({ jobId: h.jobId }))).toEqual({
+      status: 409,
+      error: 'payment_below_minimum',
+    });
+    const low = h.alerter.alerts.find((a) => a.code === 'payment_below_minimum');
+    expect(low?.level).toBe('high');
+    expect(low?.details).toMatchObject({ paymentId: payment.id, kind: 'creation' });
+    expect(h.chain.calls).not.toContain('verifyPayment');
+    expect(h.chain.built.config).toBe(0);
+    expect(h.chain.sendAttempts).toHaveLength(0);
+    expect(await ks.keystore.findRef(creatorRole(h.launchpadId))).toBeUndefined();
+
+    payment.lamports = 300_000_000n;
+    payment.usdAmount = 1;
+    expect(refused(await h.routes.configs({ jobId: h.jobId }))).toEqual({
+      status: 409,
+      error: 'payment_price_mismatch',
+    });
+    expect(
+      h.alerter.alerts.find((a) => a.code === 'payment_price_mismatch')?.details,
+    ).toMatchObject({ paymentId: payment.id, expected: 33 });
+    expect(h.chain.calls).not.toContain('verifyPayment');
+    expect(h.chain.built.config).toBe(0);
+
+    payment.usdAmount = 33;
+    ok(await h.routes.configs({ jobId: h.jobId }));
+    // The same checks guard the launch preparation.
+    payment.usdAmount = 5.5;
+    expect(refused(await h.routes.launchCoinPrepare({ jobId: h.jobId }))).toEqual({
+      status: 409,
+      error: 'payment_price_mismatch',
+    });
+    expect(h.chain.built.nonce).toBe(0);
+  });
+
+  it('takes the floors from the configuration', async () => {
+    const h = await setup(ks.keystore, {
+      config: {
+        metadataUriTemplate: METADATA,
+        minPaymentLamports: { creation: 300_000_001n, modification: 0n },
+      },
+    });
+    expect(refused(await h.routes.configs({ jobId: h.jobId }))).toEqual({
+      status: 409,
+      error: 'payment_below_minimum',
+    });
+    const exact = h.restart({
+      config: {
+        metadataUriTemplate: METADATA,
+        minPaymentLamports: { creation: 300_000_000n, modification: 0n },
+      },
+    });
+    ok(await exact.configs({ jobId: h.jobId }));
+  });
 
   it('waits (503) for a payment transaction the chain does not know', async () => {
     const h = await setup(ks.keystore);
