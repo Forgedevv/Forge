@@ -1,10 +1,40 @@
 import { Keypair } from '@solana/web3.js';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+const state = vi.hoisted(() => ({ onchain: undefined as { cluster: string } | undefined }));
+vi.mock('../../src/forge/config', () => ({
+  get onchainConfig() {
+    return state.onchain;
+  },
+}));
+
 import {
   explorerTxUrl,
+  resolveCluster,
   resolveJupiterReferral,
   resolveRelayUrl,
 } from '../../src/forge/trade/trade-config';
+
+afterEach(() => {
+  state.onchain = undefined;
+});
+
+describe('resolveCluster (devnet by default)', () => {
+  it('is devnet unless mainnet-beta is explicit', () => {
+    expect(resolveCluster({})).toBe('devnet');
+    expect(resolveCluster({ cluster: 'devnet' })).toBe('devnet');
+    expect(resolveCluster({ cluster: 'mainnet' })).toBe('devnet');
+    expect(resolveCluster({ cluster: 'testnet' })).toBe('devnet');
+    expect(resolveCluster({ cluster: 'mainnet-beta' })).toBe('mainnet-beta');
+  });
+
+  it("follows the launchpad's on-chain cluster when it is set", () => {
+    state.onchain = { cluster: 'mainnet-beta' };
+    expect(resolveCluster({ cluster: 'devnet' })).toBe('mainnet-beta');
+    state.onchain = { cluster: 'devnet' };
+    expect(resolveCluster({ cluster: 'mainnet-beta' })).toBe('devnet');
+  });
+});
 
 describe('resolveRelayUrl', () => {
   it('appends the relay path to a bare origin', () => {

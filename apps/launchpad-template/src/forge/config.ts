@@ -2,12 +2,22 @@ import { ForgeSiteConfig, toSiteConfig, type SiteConfig } from '@forge/shared';
 import rawConfig from '../../forge.config.json';
 import { resolveRelayUrl } from './relay';
 
+/** Freezes an object and everything in it (the parsed config is plain JSON data). */
+function deepFreeze<T>(value: T): T {
+  if (value !== null && typeof value === 'object' && !Object.isFrozen(value)) {
+    for (const child of Object.values(value as Record<string, unknown>)) deepFreeze(child);
+    Object.freeze(value);
+  }
+  return value;
+}
+
 /**
  * LOCKED ZONE. Reads and validates `forge.config.json` (docs/INTERFACES.md section 3).
  * The JSON file is bundled at build time: there is no filesystem or network access at runtime.
- * An invalid file fails the build.
+ * An invalid file fails the build. The result is deeply frozen: no code of the site (free zones
+ * included) can change at runtime the configs the trade panel and coin creation accept.
  */
-export const forgeConfig: ForgeSiteConfig = ForgeSiteConfig.parse(rawConfig);
+export const forgeConfig: ForgeSiteConfig = deepFreeze(ForgeSiteConfig.parse(rawConfig));
 
 /** UI-facing read-only view (no on-chain data). */
 export const siteConfig: SiteConfig = toSiteConfig(forgeConfig);
@@ -35,8 +45,13 @@ export function readPoolCreationFeeSol(value: unknown): number | undefined {
   return fee;
 }
 
-/** Solana cluster of this launchpad (explorer links). Defaults to mainnet-beta before setup. */
-export const cluster = onchainConfig?.cluster ?? 'mainnet-beta';
+/**
+ * Solana cluster of this launchpad (explorer links, wallet network). Before the on-chain setup it
+ * is devnet unless `NEXT_PUBLIC_SOLANA_CLUSTER` is explicitly `mainnet-beta` (PLANEXECUTE rule 4).
+ */
+export const cluster: 'devnet' | 'mainnet-beta' =
+  onchainConfig?.cluster ??
+  (process.env.NEXT_PUBLIC_SOLANA_CLUSTER === 'mainnet-beta' ? 'mainnet-beta' : 'devnet');
 
 /**
  * JSON-RPC endpoint of the FORGE RPC relay used by the browser (never the RPC provider directly),

@@ -1,7 +1,8 @@
-import type { Connection, PublicKey } from '@solana/web3.js';
-import { useCallback, useEffect, useState } from 'react';
+import type { Connection } from '@solana/web3.js';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { isGraduated } from './core-adapter';
 import { mapTradeError, type TradeError } from './errors';
+import { launchpadPoolKey, type LaunchpadPool } from './launchpad-pool';
 
 export type GraduationState =
   | { status: 'loading' }
@@ -11,14 +12,15 @@ export type GraduationState =
 
 /**
  * Reads whether the pool graduated, through the core. An RPC failure is reported as an error:
- * the panel never guesses a route.
+ * the panel never guesses a route. Only a pool found by `findLaunchpadPool` is read.
  */
 export function useGraduated(
   connection: Connection | null,
-  pool: PublicKey | null,
+  launchpadPool: LaunchpadPool | null,
 ): { state: GraduationState; retry: () => void; markGraduated: () => void } {
   const [state, setState] = useState<GraduationState>({ status: 'loading' });
   const [attempt, setAttempt] = useState(0);
+  const pool = useMemo(() => launchpadPoolKey(launchpadPool), [launchpadPool]);
 
   useEffect(() => {
     if (!connection || !pool) return;

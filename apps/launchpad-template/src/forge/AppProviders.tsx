@@ -15,9 +15,12 @@ import { cluster, siteConfig } from './config';
 
 type WalletConfig = ComponentProps<typeof UnifiedWalletProvider>['config'];
 
-/** Wallet adapter network of this site: the cluster configured in forge.config.json. */
+/**
+ * Wallet adapter network of this site: the cluster configured in forge.config.json. Anything but
+ * an explicit `mainnet-beta` is devnet (PLANEXECUTE rule 4).
+ */
 export function walletEnv(value: SolanaCluster): WalletConfig['env'] {
-  return value === 'devnet' ? 'devnet' : 'mainnet-beta';
+  return value === 'mainnet-beta' ? 'mainnet-beta' : 'devnet';
 }
 
 /** The site's own origin in the browser (empty during server rendering, where no wallet runs). */

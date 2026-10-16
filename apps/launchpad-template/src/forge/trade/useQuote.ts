@@ -1,9 +1,10 @@
-import type { Connection, PublicKey } from '@solana/web3.js';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import type { Connection } from '@solana/web3.js';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { isPlatformFeeConsistent } from './amounts';
 import { quoteSwap, type SwapQuote, type TradeSide } from './core-adapter';
 import { mapTradeError, TradeError } from './errors';
 import { QUOTE_DEBOUNCE_MS, QUOTE_REFRESH_MS } from './constants';
+import { launchpadPoolKey, type LaunchpadPool } from './launchpad-pool';
 
 export type QuoteState =
   | { status: 'idle'; quote: null; error: null }
@@ -13,7 +14,8 @@ export type QuoteState =
 
 export interface UseQuoteParams {
   connection: Connection | null;
-  pool: PublicKey | null;
+  /** A pool found by `findLaunchpadPool`; anything else is refused (`not_on_launchpad`). */
+  launchpadPool: LaunchpadPool | null;
   side: TradeSide;
   /** Raw input amount, or null when the input is empty/invalid (no quote is requested). */
   amountIn: bigint | null;
@@ -29,13 +31,15 @@ export interface UseQuoteParams {
  * 0.3% is rejected (`quote_invalid`) and can never be signed.
  */
 export function fetchVerifiedQuote(
-  params: Pick<UseQuoteParams, 'connection' | 'pool' | 'side'> & {
+  params: Pick<UseQuoteParams, 'connection' | 'launchpadPool' | 'side'> & {
     amountIn: bigint;
     slippageBps: number;
   },
 ): Promise<SwapQuote> {
-  const { connection, pool, side, amountIn, slippageBps } = params;
-  if (!connection || !pool) return Promise.reject(new TradeError('not_configured'));
+  const { connection, side, amountIn, slippageBps } = params;
+  if (!connection) return Promise.reject(new TradeError('not_configured'));
+  const pool = launchpadPoolKey(params.launchpadPool);
+  if (!pool) return Promise.reject(new TradeError('not_on_launchpad'));
   return quoteSwap({ connection, pool, side, amountIn, slippageBps }).then((quote) => {
     const ok =
       quote.side === side &&
@@ -61,7 +65,7 @@ export function fetchVerifiedQuote(
 export function useQuote(params: UseQuoteParams): QuoteState & { refresh: () => void } {
   const {
     connection,
-    pool,
+    launchpadPool,
     side,
     amountIn,
     slippageBps,
@@ -73,6 +77,7 @@ export function useQuote(params: UseQuoteParams): QuoteState & { refresh: () => 
   const [tick, setTick] = useState(0);
   const requestId = useRef(0);
   const lastKey = useRef<string | null>(null);
+  const pool = useMemo(() => launchpadPoolKey(launchpadPool), [launchpadPool]);
 
   const active =
     enabled && connection !== null && pool !== null && amountIn !== null && slippageBps !== null;
@@ -95,7 +100,7 @@ export function useQuote(params: UseQuoteParams): QuoteState & { refresh: () => 
     const timer = setTimeout(() => {
       fetchVerifiedQuote({
         connection,
-        pool,
+        launchpadPool,
         side,
         amountIn: amountIn as bigint,
         slippageBps: slippageBps as number,
@@ -112,7 +117,7 @@ export function useQuote(params: UseQuoteParams): QuoteState & { refresh: () => 
     }, debounceMs);
 
     return () => clearTimeout(timer);
-  }, [active, connection, pool, side, amountIn, slippageBps, debounceMs, tick]);
+  }, [active, connection, launchpadPool, pool, side, amountIn, slippageBps, debounceMs, tick]);
 
   // Periodic refresh while a quote is on screen.
   useEffect(() => {

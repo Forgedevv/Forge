@@ -25,7 +25,16 @@ vi.mock('@solana/spl-token', async (importOriginal) => {
 
 vi.mock('../../src/forge/config', async () => {
   const h = await import('./harness');
-  return { siteConfig: h.site, onchainConfig: { cluster: 'devnet' }, forgeConfig: {} };
+  return {
+    siteConfig: h.site,
+    onchainConfig: { cluster: 'devnet', launchpadConfig: h.keys.config, launchpadCoinConfig: h.keys.coinConfig },
+    forgeConfig: {},
+  };
+});
+
+vi.mock('../../src/forge/trade/pool-address', async () => {
+  const h = await import('./harness');
+  return { launchpadPoolForMint: h.derivedPool };
 });
 
 vi.mock('../../src/forge/trade/connection', async () => {
@@ -56,7 +65,7 @@ describe('BuyButton', () => {
     const onCardClick = vi.fn();
     render(
       <div onClick={onCardClick}>
-        <BuyButton mint={keys.mint} pool={keys.pool} symbol="MOON" />
+        <BuyButton mint={keys.mint} symbol="MOON" />
       </div>,
     );
     expect(screen.queryByTestId('trade-form')).toBeNull();
@@ -68,7 +77,7 @@ describe('BuyButton', () => {
   it('is disabled and opens nothing when the site is sleeping or disabled', () => {
     for (const mode of ['sleeping', 'disabled'] as const) {
       site.mode = mode;
-      const { unmount } = render(<BuyButton mint={keys.mint} pool={keys.pool} />);
+      const { unmount } = render(<BuyButton mint={keys.mint} />);
       const button = screen.getByTestId('buy-button') as HTMLButtonElement;
       expect(button.disabled).toBe(true);
       fireEvent.click(button);

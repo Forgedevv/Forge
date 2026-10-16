@@ -5,6 +5,7 @@ import { formatBps, formatUnits, parseAmount, parseSlippagePercent } from './amo
 import { DEFAULT_TOKEN_DECIMALS, PLATFORM_FEE_BPS, SLIPPAGE_BPS, SOL_DECIMALS } from './constants';
 import type { TradeSide } from './core-adapter';
 import { TradeError } from './errors';
+import { isLaunchpadPool, launchpadPoolKey, type LaunchpadPool } from './launchpad-pool';
 import { QuoteSummary } from './QuoteSummary';
 import { explorerTxUrl, resolveCluster } from './trade-config';
 import { BUSY_STATUSES, useTradeExecution } from './useTradeExecution';
@@ -15,8 +16,11 @@ import type { ConfirmOptions } from './confirm';
 
 export interface TradeFormProps {
   connection: Connection;
-  mint: string;
-  pool: string;
+  /**
+   * The coin's pool on this launchpad, as found by findLaunchpadPool (it carries the mint). There
+   * is no raw pool or mint prop: a handle that was not issued by findLaunchpadPool trades nothing.
+   */
+  launchpadPool: LaunchpadPool;
   symbol: string;
   /**
    * Decimals from a data API, for display only while the on-chain mint is being read. Raw amounts
@@ -57,8 +61,7 @@ function safeKey(value: string): PublicKey | null {
 export function TradeForm(props: TradeFormProps) {
   const {
     connection,
-    mint,
-    pool,
+    launchpadPool,
     symbol,
     displayDecimals = DEFAULT_TOKEN_DECIMALS,
     onConfirmed,
@@ -72,8 +75,11 @@ export function TradeForm(props: TradeFormProps) {
   const execution = useTradeExecution(confirmOptions);
   const { publicKey } = execution;
 
-  const poolKey = useMemo(() => safeKey(pool), [pool]);
-  const mintKey = useMemo(() => safeKey(mint), [mint]);
+  const poolKey = useMemo(() => launchpadPoolKey(launchpadPool), [launchpadPool]);
+  const mintKey = useMemo(
+    () => (isLaunchpadPool(launchpadPool) ? safeKey(launchpadPool.mint) : null),
+    [launchpadPool],
+  );
 
   const [side, setSide] = useState<TradeSide>('buy');
   const [amountText, setAmountText] = useState('');
@@ -108,7 +114,7 @@ export function TradeForm(props: TradeFormProps) {
 
   const quoteState = useQuote({
     connection,
-    pool: poolKey,
+    launchpadPool: poolKey ? launchpadPool : null,
     side,
     amountIn: amount.ok ? amount.value : null,
     slippageBps: slippage.ok ? slippage.bps : null,
@@ -164,7 +170,7 @@ export function TradeForm(props: TradeFormProps) {
     if (side === 'sell' && chainDecimals === null) return;
     const result = await execution.execute({
       connection,
-      pool: poolKey,
+      launchpadPool,
       side,
       amountIn: amount.value,
       slippageBps: slippage.bps,

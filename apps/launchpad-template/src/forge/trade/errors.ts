@@ -17,6 +17,8 @@ export type TradeErrorCode =
   | 'rate_limited'
   | 'network'
   | 'not_configured'
+  /** The coin is not on this launchpad's configs: this site does not trade it. */
+  | 'not_on_launchpad'
   | 'core_unavailable'
   | 'unknown';
 
@@ -46,6 +48,7 @@ export const TRADE_ERROR_MESSAGES: Record<TradeErrorCode, string> = {
   rate_limited: 'The network is busy. Wait a few seconds and try again.',
   network: 'Network error while reaching the Solana network. Check your connection and try again.',
   not_configured: 'Trading is not configured on this site.',
+  not_on_launchpad: 'This coin is not on this launchpad, so it cannot be traded here.',
   core_unavailable: 'Trading is temporarily unavailable.',
   unknown: 'Something went wrong. Nothing was charged unless a transaction link is shown.',
 };

@@ -1,4 +1,4 @@
-import { Connection, Keypair, VersionedTransaction } from '@solana/web3.js';
+import { Connection, Keypair, PublicKey, VersionedTransaction } from '@solana/web3.js';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -17,13 +17,27 @@ vi.mock('@forge/core', async (importOriginal) => ({
   ...core,
 }));
 
+const configs = vi.hoisted(() => ({ users: '', coin: '' }));
+
+vi.mock('../../src/forge/config', async () => {
+  const { Keypair } = await import('@solana/web3.js');
+  configs.users = Keypair.generate().publicKey.toBase58();
+  configs.coin = Keypair.generate().publicKey.toBase58();
+  return {
+    onchainConfig: { cluster: 'devnet', launchpadConfig: configs.users, launchpadCoinConfig: configs.coin },
+  };
+});
+
 import { ForgeAddressError, SwapError } from '@forge/core';
 import { TradeError } from '../../src/forge/trade/errors';
 import {
   createCoreSwapCore,
   priceImpactBps,
+  quoteSwap,
+  setSwapCore,
   translateCoreError,
 } from '../../src/forge/trade/core-adapter';
+import { createMockSwapCore } from '../../src/forge/trade/core-adapter.mock';
 
 const connection = {} as Connection;
 const pool = Keypair.generate().publicKey;
@@ -54,13 +68,29 @@ const coreQuote = (amountIn: bigint, expectedAmountOut: bigint) => ({
 });
 
 describe('swap core backed by @forge/core', () => {
-  it('reads graduation through the core pool state', async () => {
-    const state = { virtualPool: {}, config: {} };
+  it('reads graduation through the core pool state, for a pool of this launchpad only', async () => {
+    const state = { virtualPool: { poolState: { config: new PublicKey(configs.coin) } }, config: {} };
     core.getDbcPoolState.mockResolvedValue(state);
     core.isGraduated.mockReturnValue(true);
     await expect(createCoreSwapCore().isGraduated({ connection, pool })).resolves.toBe(true);
     expect(core.getDbcPoolState).toHaveBeenCalledWith(connection, pool);
     expect(core.isGraduated).toHaveBeenCalledWith(state);
+
+    const foreign = { virtualPool: { poolState: { config: Keypair.generate().publicKey } } };
+    core.getDbcPoolState.mockResolvedValue(foreign);
+    await expect(createCoreSwapCore().isGraduated({ connection, pool })).rejects.toMatchObject({
+      code: 'not_on_launchpad',
+    });
+  });
+
+  it('quotes only pools of this launchpad (allowedConfigs = its two configs)', async () => {
+    core.fetchSwapPoolState.mockRejectedValue(new SwapError('POOL_NOT_ALLOWED', 'foreign'));
+    await expect(
+      createCoreSwapCore().quoteSwap({ connection, pool, side: 'buy', amountIn: BigInt(1), slippageBps: 100 }),
+    ).rejects.toMatchObject({ code: 'not_on_launchpad' });
+    expect(core.fetchSwapPoolState).toHaveBeenCalledWith(connection, pool, 'confirmed', {
+      allowedConfigs: [configs.users, configs.coin],
+    });
   });
 
   it('maps a core quote to the panel quote without recomputing anything', async () => {
@@ -143,7 +173,57 @@ describe('swap core backed by @forge/core', () => {
       amountInLamports: BigInt(5_000_000),
       minAmountOut: BigInt(4_000),
       env: { FORGE_PLATFORM_FEE_WALLET: feeWallet, FORGE_METEORA_REFERRAL_ACCOUNT: referral },
+      allowedConfigs: [configs.users, configs.coin],
     });
+  });
+
+  it('hands the multisig vault to core when the site has it (referral holder check)', async () => {
+    const multisig = Keypair.generate().publicKey.toBase58();
+    vi.stubEnv('NEXT_PUBLIC_FORGE_MULTISIG_VAULT', multisig);
+    core.buildBuyTx.mockResolvedValue({ transaction: {} });
+    await createCoreSwapCore().buildBuyTx({
+      connection,
+      pool,
+      user,
+      amountIn: BigInt(1),
+      minAmountOut: BigInt(1),
+    });
+    expect(core.buildBuyTx.mock.calls[0]?.[0].env).toEqual({
+      FORGE_PLATFORM_FEE_WALLET: feeWallet,
+      FORGE_METEORA_REFERRAL_ACCOUNT: referral,
+      FORGE_MULTISIG_VAULT: multisig,
+    });
+  });
+
+  it('takes no fee account from its caller: createCoreSwapCore has no option', async () => {
+    core.buildBuyTx.mockResolvedValue({ transaction: {} });
+    const attacker = Keypair.generate().publicKey.toBase58();
+    const make = createCoreSwapCore as unknown as (o: unknown) => ReturnType<typeof createCoreSwapCore>;
+    await make({ env: () => ({ FORGE_PLATFORM_FEE_WALLET: attacker }) }).buildBuyTx({
+      connection,
+      pool,
+      user,
+      amountIn: BigInt(1),
+      minAmountOut: BigInt(1),
+    });
+    expect(core.buildBuyTx.mock.calls[0]?.[0].env.FORGE_PLATFORM_FEE_WALLET).toBe(feeWallet);
+  });
+
+  it('cannot be replaced outside the test environment (setSwapCore is a no-op)', async () => {
+    vi.stubEnv('NODE_ENV', 'production');
+    const mock = createMockSwapCore();
+    const restore = setSwapCore(mock);
+    core.fetchSwapPoolState.mockRejectedValue(new SwapError('POOL_NOT_ALLOWED', 'foreign'));
+    await expect(
+      quoteSwap({ connection, pool, side: 'buy', amountIn: BigInt(1), slippageBps: 100 }),
+    ).rejects.toMatchObject({ code: 'not_on_launchpad' });
+    expect(mock.calls.quote).toBe(0);
+    restore();
+    vi.stubEnv('NODE_ENV', 'test');
+    const restoreTest = setSwapCore(mock);
+    await quoteSwap({ connection, pool, side: 'buy', amountIn: BigInt(1), slippageBps: 100 });
+    expect(mock.calls.quote).toBe(1);
+    restoreTest();
   });
 
   it('builds a sell with the token amount', async () => {
@@ -183,6 +263,8 @@ describe('swap core backed by @forge/core', () => {
     expect(code('INSUFFICIENT_TOKEN_BALANCE')).toBe('insufficient_funds');
     expect(code('MIN_AMOUNT_OUT_ABOVE_QUOTE')).toBe('price_moved');
     expect(code('PLATFORM_FEE_WALLET_NOT_RENT_EXEMPT')).toBe('not_configured');
+    expect(code('PLATFORM_FEE_WALLET_MISMATCH')).toBe('not_configured');
+    expect(code('POOL_NOT_ALLOWED')).toBe('not_on_launchpad');
     expect(code('RPC_ERROR')).toBe('network');
     const missing = translateCoreError(new ForgeAddressError(['FORGE_PLATFORM_FEE_WALLET'], []));
     expect((missing as TradeError).code).toBe('not_configured');

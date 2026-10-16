@@ -24,6 +24,7 @@ import {
   sendSigned,
   setPendingTrade,
 } from './send';
+import { launchpadPoolKey, type LaunchpadPool } from './launchpad-pool';
 import { fetchVerifiedQuote } from './useQuote';
 
 export type ExecutionStatus =
@@ -45,7 +46,8 @@ export interface ExecutionState {
 
 export interface ExecuteParams {
   connection: Connection;
-  pool: PublicKey;
+  /** A pool found by findLaunchpadPool; anything else is refused (not_on_launchpad). */
+  launchpadPool: LaunchpadPool;
   side: TradeSide;
   amountIn: bigint;
   slippageBps: number;
@@ -104,7 +106,9 @@ export function useTradeExecution(confirmOptions?: ConfirmOptions) {
 
       try {
         if (!publicKey || !signTransaction) throw new TradeError('wallet_not_connected');
-        const { connection, pool, side, amountIn, slippageBps, displayedQuote } = params;
+        const { connection, launchpadPool, side, amountIn, slippageBps, displayedQuote } = params;
+        const pool = launchpadPoolKey(launchpadPool);
+        if (!pool) throw new TradeError('not_on_launchpad');
         const wallet = publicKey.toBase58();
 
         // A previous trade of this wallet with an unknown outcome blocks any rebuild.
@@ -122,7 +126,13 @@ export function useTradeExecution(confirmOptions?: ConfirmOptions) {
         }
 
         step('quoting');
-        const fresh = await fetchVerifiedQuote({ connection, pool, side, amountIn, slippageBps });
+        const fresh = await fetchVerifiedQuote({
+          connection,
+          launchpadPool,
+          side,
+          amountIn,
+          slippageBps,
+        });
         if (fresh.amountOut < displayedQuote.minAmountOut) {
           const error = new TradeError('price_moved');
           setState({ status: 'error', signature: null, error });

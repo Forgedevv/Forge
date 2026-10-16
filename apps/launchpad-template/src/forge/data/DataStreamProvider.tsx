@@ -5,6 +5,7 @@ import { useSetAtom } from 'jotai';
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef } from 'react';
 import { StreamRequest, StreamResponse } from '@/contexts/TokenChart/msg';
 import { delay } from '@/lib/utils';
+import { listedConfigs } from '../trade/launchpad-pool';
 
 const WS_URL = 'wss://trench-stream.jup.ag/ws';
 
@@ -28,10 +29,8 @@ const DataStreamContext = createContext<DataStreamContextType | null>(null);
 
 export const DataStreamProvider = ({ children }: { children: React.ReactNode }) => {
   const queryClient = useQueryClient();
-  const partnerConfigs = useMemo(
-    () => process.env.NEXT_PUBLIC_POOL_CONFIG_KEY?.split(',') || [],
-    [],
-  );
+  // This launchpad's configs only (never an empty filter: it would stream every new coin).
+  const partnerConfigs = useMemo(() => listedConfigs(), []);
   const setDataStreamMsg = useSetAtom(dataStreamMsgAtom);
 
   const ws = useRef<WebSocket | null>(null);
@@ -41,6 +40,7 @@ export const DataStreamProvider = ({ children }: { children: React.ReactNode }) 
   const subTxnsAssets = useRef<Set<string>>(new Set());
 
   const subscribeRecentTokenList = useCallback(() => {
+    if (partnerConfigs.length === 0) return;
     subRecentTokenList.current = true;
 
     if (ws?.current?.readyState === WebSocket.OPEN) {

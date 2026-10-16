@@ -4,13 +4,22 @@
  *
  * The default implementation is a thin wrapper: every quote, fee and transaction comes from
  * `@forge/core`, nothing about a swap is computed here. The wrapper only maps parameter shapes
- * (the panel works with `amountIn` / `minAmountOut`), resolves the FORGE fee accounts from the
- * public environment, and turns core errors into `TradeError`s with a user-safe message. Tests and
- * previews inject `createMockSwapCore()` from `./core-adapter.mock` through `setSwapCore`.
+ * (the panel works with `amountIn` / `minAmountOut`), and turns core errors into `TradeError`s
+ * with a user-safe message. Two things it does not let anyone change:
+ *
+ * - the FORGE fee accounts (platform fee wallet, Meteora referral, multisig vault) are read HERE,
+ *   from the build-time public environment, and nowhere else: there is no parameter to override
+ *   them, so no code of the site can redirect the 0.3% platform fee or the referral;
+ * - every pool is checked against this launchpad's configs (`allowedConfigs` of @forge/core,
+ *   `launchpadConfigs()`): a coin of another launchpad is refused before any quote.
+ *
+ * Tests inject `createMockSwapCore()` from `./core-adapter.mock` through `setSwapCore`, which is a
+ * no-op outside the test environment (`NODE_ENV === 'test'`).
  */
 import {
   ForgeAddressError,
   SwapError,
+  assertPoolConfigAllowed,
   computeSwapQuote,
   buildBuyTx as coreBuildBuyTx,
   buildSellTx as coreBuildSellTx,
@@ -23,7 +32,7 @@ import {
   type SwapQuoteRequest,
 } from '@forge/core';
 import { TradeError, type TradeErrorCode } from './errors';
-import { readTradeEnv } from './trade-config';
+import { launchpadConfigs } from './launchpad-pool';
 import type { Connection, PublicKey, Transaction, VersionedTransaction } from '@solana/web3.js';
 
 export type TradeSide = 'buy' | 'sell';
@@ -88,7 +97,9 @@ export interface SwapCore {
 
 const SWAP_ERROR_MAP: Record<string, { code: TradeErrorCode; message?: string }> = {
   POOL_GRADUATED: { code: 'pool_graduated' },
+  POOL_NOT_ALLOWED: { code: 'not_on_launchpad' },
   PLATFORM_FEE_WALLET_NOT_RENT_EXEMPT: { code: 'not_configured' },
+  PLATFORM_FEE_WALLET_MISMATCH: { code: 'not_configured' },
   REFERRAL_ACCOUNT_INVALID: { code: 'not_configured' },
   UNSUPPORTED_POOL: { code: 'quote_invalid' },
   POOL_NOT_FOUND: { code: 'quote_invalid' },
@@ -129,15 +140,18 @@ async function translated<T>(run: () => Promise<T>): Promise<T> {
 }
 
 /**
- * The FORGE addresses `@forge/core` needs, from the public environment. Core reads
- * `process.env` by default, which the browser bundle does not have, so they are handed over
- * explicitly (literal `NEXT_PUBLIC_*` reads, inlined by Next.js).
+ * The FORGE addresses `@forge/core` needs, from the public environment, read here only. Core
+ * reads `process.env` by default, which the browser bundle does not have, so they are handed over
+ * explicitly: literal `NEXT_PUBLIC_*` reads, which Next.js replaces by their build-time values,
+ * so nothing at runtime can change them. `FORGE_MULTISIG_VAULT` is optional: when FORGE provides
+ * it, core also checks that the Meteora referral account is held by the multisig.
  */
 function forgeAddressEnv(): AddressEnv {
-  const env = readTradeEnv();
+  const multisig = process.env.NEXT_PUBLIC_FORGE_MULTISIG_VAULT;
   return {
-    FORGE_PLATFORM_FEE_WALLET: env.platformFeeWallet,
-    FORGE_METEORA_REFERRAL_ACCOUNT: env.meteoraReferral,
+    FORGE_PLATFORM_FEE_WALLET: process.env.NEXT_PUBLIC_FORGE_PLATFORM_FEE_WALLET,
+    FORGE_METEORA_REFERRAL_ACCOUNT: process.env.NEXT_PUBLIC_FORGE_METEORA_REFERRAL_ACCOUNT,
+    ...(multisig ? { FORGE_MULTISIG_VAULT: multisig } : {}),
   };
 }
 
@@ -169,16 +183,25 @@ export function priceImpactBps(
   return impact > BigInt(0) ? Number(impact) : 0;
 }
 
-/** Swap core backed by `@forge/core`. */
-export function createCoreSwapCore(options: { env?: () => AddressEnv } = {}): SwapCore {
-  const env = options.env ?? forgeAddressEnv;
+/**
+ * Swap core backed by `@forge/core`. It takes no option: the fee accounts come from
+ * `forgeAddressEnv` and the allowed pools from `launchpadConfigs`, both fixed at build time.
+ */
+export function createCoreSwapCore(): SwapCore {
+  const env = forgeAddressEnv;
   return {
     isGraduated: ({ connection, pool }) =>
-      translated(async () => coreIsGraduated(await getDbcPoolState(connection, pool))),
+      translated(async () => {
+        const state = await getDbcPoolState(connection, pool);
+        assertPoolConfigAllowed(pool, state.virtualPool.poolState.config, launchpadConfigs());
+        return coreIsGraduated(state);
+      }),
 
     quoteSwap: ({ connection, pool, side, amountIn, slippageBps }) =>
       translated(async () => {
-        const state = await fetchSwapPoolState(connection, pool);
+        const state = await fetchSwapPoolState(connection, pool, 'confirmed', {
+          allowedConfigs: launchpadConfigs(),
+        });
         const request: SwapQuoteRequest = { side, amountIn, slippage: { slippageBps } };
         const quote = computeSwapQuote(state, request);
         return {
@@ -205,6 +228,7 @@ export function createCoreSwapCore(options: { env?: () => AddressEnv } = {}): Sw
               amountInLamports: amountIn,
               minAmountOut,
               env: env(),
+              allowedConfigs: launchpadConfigs(),
             })
           ).transaction,
       ),
@@ -220,6 +244,7 @@ export function createCoreSwapCore(options: { env?: () => AddressEnv } = {}): Sw
               amountInTokens: amountIn,
               minAmountOut,
               env: env(),
+              allowedConfigs: launchpadConfigs(),
             })
           ).transaction,
       ),
@@ -228,8 +253,18 @@ export function createCoreSwapCore(options: { env?: () => AddressEnv } = {}): Sw
 
 let current: SwapCore = createCoreSwapCore();
 
-/** Replaces the implementation (tests, previews). Returns a function restoring the previous one. */
+/** True only under the test runner: Next.js inlines `NODE_ENV` in every build. */
+function swapCoreReplaceable(): boolean {
+  return process.env.NODE_ENV === 'test';
+}
+
+/**
+ * Replaces the implementation, in tests only. Returns a function restoring the previous one. In
+ * any build of the site (production or development) it does nothing: the swap core is always
+ * `@forge/core`, with FORGE's fee accounts.
+ */
 export function setSwapCore(core: SwapCore): () => void {
+  if (!swapCoreReplaceable()) return () => {};
   const previous = current;
   current = core;
   return () => {

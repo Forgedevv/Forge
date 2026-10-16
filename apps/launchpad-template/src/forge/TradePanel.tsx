@@ -6,15 +6,17 @@ import { PLATFORM_FEE_BPS } from './trade/constants';
 import { getRelayConnection } from './trade/connection';
 import { TradeForm } from './trade/TradeForm';
 import { useGraduated } from './trade/useGraduated';
+import { useLaunchpadPool } from './trade/useLaunchpadPool';
 import { TradeError } from './trade/errors';
 import type { ConfirmOptions } from './trade/confirm';
-import { PublicKey } from '@solana/web3.js';
 
 export interface TradePanelProps {
-  /** Coin mint address (base58). */
+  /**
+   * Coin mint address (base58). There is no pool prop: the pool is derived from the mint and this
+   * launchpad's two configs (`forge.config.json#onchain`), then looked up on-chain, so a coin of
+   * any other launchpad cannot be traded here.
+   */
   mint: string;
-  /** Bonding curve pool address (base58). */
-  pool: string;
   /** Ticker shown in labels. */
   symbol?: string;
   /**
@@ -37,8 +39,11 @@ const shell =
  * The trade panel of a coin page.
  *
  * - `sleeping` / `disabled` sites: a disabled notice only. No RPC, no wallet, no Jupiter script.
+ * - The pool is looked up on this launchpad's configs (users' coins, then the launchpad's own
+ *   coin). A coin with no pool there gets a notice and nothing can be traded.
  * - On the bonding curve: buy/sell form with the full quote and fees shown before signing; swaps
- *   are built by `@forge/core` (through `trade/core-adapter`).
+ *   are built by `@forge/core` (through `trade/core-adapter`, which checks the pool's config
+ *   again on-chain).
  * - Graduated: the Jupiter plugin with the FORGE integrator fee.
  *
  * Styling uses the theme CSS variables (`--color-*`, `--radius`) so the free zone can restyle it
@@ -72,19 +77,28 @@ export function TradePanel(props: TradePanelProps) {
 }
 
 function LiveTradePanel(props: TradePanelProps) {
-  const { mint, pool, symbol = 'TOKEN', displayDecimals, className } = props;
+  const { mint, symbol = 'TOKEN', displayDecimals, className } = props;
   const connection = useMemo(() => getRelayConnection(), []);
-  const poolKey = useMemo(() => {
-    try {
-      return new PublicKey(pool);
-    } catch {
-      return null;
-    }
-  }, [pool]);
-  const { state, retry, markGraduated } = useGraduated(connection, poolKey);
+  const { state: poolState, retry: retryPool } = useLaunchpadPool(connection, mint);
+  const launchpadPool = poolState.status === 'ready' ? poolState.pool : null;
+  const { state, retry, markGraduated } = useGraduated(connection, launchpadPool);
+
+  const loading = (
+    <p className="text-sm text-[var(--color-text-muted)]" data-testid="trade-loading">
+      Loading trading data...
+    </p>
+  );
+  const routeError = (message: string, onRetry: () => void) => (
+    <div role="alert" className="flex flex-col gap-2 text-sm" data-testid="trade-route-error">
+      <p className="text-[var(--color-danger)]">{message}</p>
+      <button type="button" onClick={onRetry} className="self-start underline">
+        Retry
+      </button>
+    </div>
+  );
 
   let body;
-  if (!connection || !poolKey) {
+  if (!connection) {
     body = (
       <p
         role="alert"
@@ -94,21 +108,24 @@ function LiveTradePanel(props: TradePanelProps) {
         {new TradeError('not_configured').message}
       </p>
     );
-  } else if (state.status === 'loading') {
+  } else if (poolState.status === 'loading') {
+    body = loading;
+  } else if (poolState.status === 'error') {
+    body = routeError(poolState.error.message, retryPool);
+  } else if (!launchpadPool) {
     body = (
-      <p className="text-sm text-[var(--color-text-muted)]" data-testid="trade-loading">
-        Loading trading data...
+      <p
+        role="alert"
+        className="text-sm text-[var(--color-text-muted)]"
+        data-testid="trade-not-on-launchpad"
+      >
+        {new TradeError('not_on_launchpad').message}
       </p>
     );
+  } else if (state.status === 'loading') {
+    body = loading;
   } else if (state.status === 'error') {
-    body = (
-      <div role="alert" className="flex flex-col gap-2 text-sm" data-testid="trade-route-error">
-        <p className="text-[var(--color-danger)]">{state.error.message}</p>
-        <button type="button" onClick={retry} className="self-start underline">
-          Retry
-        </button>
-      </div>
-    );
+    body = routeError(state.error.message, retry);
   } else if (state.status === 'graduated') {
     body = (
       <div className="flex flex-col gap-3" data-testid="trade-jupiter">
@@ -116,15 +133,14 @@ function LiveTradePanel(props: TradePanelProps) {
           This coin graduated. Swaps run through Jupiter and include a {formatBps(PLATFORM_FEE_BPS)}{' '}
           FORGE platform fee.
         </p>
-        <JupiterTrade mint={mint} />
+        <JupiterTrade mint={launchpadPool.mint} />
       </div>
     );
   } else {
     body = (
       <TradeForm
         connection={connection}
-        mint={mint}
-        pool={pool}
+        launchpadPool={launchpadPool}
         symbol={symbol}
         displayDecimals={displayDecimals}
         onConfirmed={props.onTradeConfirmed}

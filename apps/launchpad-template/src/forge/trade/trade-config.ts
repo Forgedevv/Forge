@@ -1,6 +1,8 @@
 /**
  * Trade-specific configuration read from the public environment. Nothing FORGE-owned is hard-coded:
- * the RPC relay URL, the FORGE fee accounts and the cluster all come from the environment.
+ * the RPC relay URL, the Jupiter referral and the cluster all come from the environment. The FORGE
+ * fee accounts of a curve swap (platform fee wallet, Meteora referral, multisig) are read in
+ * `core-adapter.ts` only, and nowhere else.
  *
  * `process.env.NEXT_PUBLIC_*` must be written as literal member expressions so Next.js can inline
  * them in the browser bundle: do not pass `process.env` around.
@@ -13,10 +15,6 @@ export { resolveRelayUrl } from '../relay';
 export interface TradeEnv {
   relayUrl?: string;
   jupiterReferral?: string;
-  /** FORGE platform fee wallet: the only recipient of the 0.3% transfer in a curve swap. */
-  platformFeeWallet?: string;
-  /** FORGE Meteora referral token account expected in the DBC swap (checked when set). */
-  meteoraReferral?: string;
   cluster?: string;
 }
 
@@ -27,8 +25,6 @@ export function readTradeEnv(): TradeEnv {
       process.env.NEXT_PUBLIC_FORGE_JUPITER_REFERRAL_ACCOUNT ??
       // Not inlined in the browser; only resolves on the server and in tests.
       process.env.FORGE_JUPITER_REFERRAL_ACCOUNT,
-    platformFeeWallet: process.env.NEXT_PUBLIC_FORGE_PLATFORM_FEE_WALLET,
-    meteoraReferral: process.env.NEXT_PUBLIC_FORGE_METEORA_REFERRAL_ACCOUNT,
     cluster: process.env.NEXT_PUBLIC_SOLANA_CLUSTER,
   };
 }
@@ -45,9 +41,15 @@ export function resolveForgeAddress(raw: string | undefined): string | null {
 
 export type ExplorerCluster = 'devnet' | 'mainnet-beta';
 
+/**
+ * Cluster of the explorer links: the on-chain config's, otherwise devnet unless the environment
+ * says `mainnet-beta` explicitly (PLANEXECUTE rule 4: devnet by default).
+ */
 export function resolveCluster(env: TradeEnv = readTradeEnv()): ExplorerCluster {
-  if (onchainConfig?.cluster) return onchainConfig.cluster;
-  return env.cluster === 'devnet' ? 'devnet' : 'mainnet-beta';
+  if (onchainConfig?.cluster === 'mainnet-beta' || onchainConfig?.cluster === 'devnet') {
+    return onchainConfig.cluster;
+  }
+  return env.cluster === 'mainnet-beta' ? 'mainnet-beta' : 'devnet';
 }
 
 export function explorerTxUrl(signature: string, cluster: ExplorerCluster): string {

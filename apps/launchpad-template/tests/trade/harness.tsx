@@ -32,13 +32,38 @@ export function mintAccount(decimals: number, owner = SPL_TOKEN_PROGRAM) {
 
 export const SPL_TOKEN_PROGRAM = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
 
-/** Account reads by address: the coin mint (6 decimals by default), any other account from `others`. */
+export const DBC_PROGRAM = 'dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN';
+
+/** On-chain account of the coin's DBC pool (what findLaunchpadPool looks for). */
+export function poolAccount() {
+  return {
+    data: new Uint8Array(8),
+    owner: new PublicKey(DBC_PROGRAM),
+    lamports: 1,
+    executable: false,
+  };
+}
+
+/**
+ * Account reads by address: the coin's pool (a DBC account), the coin mint (6 decimals by
+ * default), any other account from `others`.
+ */
 export function accountsByAddress(
   others: (address: string) => unknown = () => null,
   mint: unknown = mintAccount(6),
 ) {
-  return async (address: PublicKey) =>
-    address.toBase58() === keys.mint ? mint : others(address.toBase58());
+  return async (address: PublicKey) => {
+    const key = address.toBase58();
+    if (key === keys.pool || key === keys.ownPool) return poolAccount();
+    return key === keys.mint || key === keys.ownMint ? mint : others(key);
+  };
+}
+
+/** Pools of this launchpad by `mint|config`, for the mocked `launchpadPoolForMint`. */
+export function derivedPool(mint: string, config: string | null | undefined): string | null {
+  if (mint === keys.mint && config === keys.config) return keys.pool;
+  if (mint === keys.ownMint && config === keys.coinConfig) return keys.ownPool;
+  return null;
 }
 
 export function createFakeConnection(): FakeConnection {
@@ -66,7 +91,14 @@ export function createFakeConnection(): FakeConnection {
 export const connectionRef: { current: FakeConnection | null } = { current: null };
 
 export const keys = {
+  /** This launchpad's configs (users' coins, then its own coin). */
+  config: Keypair.generate().publicKey.toBase58(),
+  coinConfig: Keypair.generate().publicKey.toBase58(),
+  /** Pool of `mint` on `config` (the derivation is mocked: jsdom breaks PDAs). */
   pool: Keypair.generate().publicKey.toBase58(),
+  /** The launchpad's own coin and its pool, on `coinConfig`. */
+  ownMint: Keypair.generate().publicKey.toBase58(),
+  ownPool: Keypair.generate().publicKey.toBase58(),
   mint: Keypair.generate().publicKey.toBase58(),
   user: Keypair.generate().publicKey,
 };

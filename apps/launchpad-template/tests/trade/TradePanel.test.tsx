@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { Keypair, type PublicKey } from '@solana/web3.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { setSwapCore } from '../../src/forge/trade/core-adapter';
 import { createMockSwapCore, type MockSwapCore } from '../../src/forge/trade/core-adapter.mock';
@@ -11,6 +12,7 @@ import {
   keys,
   mintAccount,
   okSigner,
+  poolAccount,
   SIGNED_SIGNATURE,
   site,
   wallet,
@@ -41,7 +43,21 @@ vi.mock('@solana/spl-token', async (importOriginal) => {
 
 vi.mock('../../src/forge/config', async () => {
   const h = await import('./harness');
-  return { siteConfig: h.site, onchainConfig: { cluster: 'devnet' }, forgeConfig: {} };
+  return {
+    siteConfig: h.site,
+    onchainConfig: {
+      cluster: 'devnet',
+      launchpadConfig: h.keys.config,
+      launchpadCoinConfig: h.keys.coinConfig,
+    },
+    forgeConfig: {},
+  };
+});
+
+// PDA derivation is covered in node by pool-address.test.ts and launchpad-pool.test.ts.
+vi.mock('../../src/forge/trade/pool-address', async () => {
+  const h = await import('./harness');
+  return { launchpadPoolForMint: h.derivedPool };
 });
 
 vi.mock('../../src/forge/trade/connection', async () => {
@@ -81,7 +97,6 @@ function renderPanel(extra: Partial<React.ComponentProps<typeof TradePanel>> = {
   return render(
     <TradePanel
       mint={keys.mint}
-      pool={keys.pool}
       symbol="MOON"
       quoteDebounceMs={0}
       quoteRefreshMs={0}
@@ -361,6 +376,7 @@ describe('buy and sell execution', () => {
   it('does not sell while the mint cannot be read, and retries', async () => {
     let fail = true;
     connection.getAccountInfo.mockImplementation(async (address: { toBase58(): string }) => {
+      if (address.toBase58() === keys.pool) return poolAccount();
       if (address.toBase58() === keys.mint && fail) return null;
       return address.toBase58() === keys.mint ? mintAccount(6) : null;
     });
@@ -561,5 +577,67 @@ describe('error mapping', () => {
     await screen.findByTestId('trade-success');
     expect(build).toHaveBeenCalledTimes(1);
     expect(connection.sendRawTransaction).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('pools of this launchpad only', () => {
+  it('trades the pool derived from the mint and the launchpad config, never a prop', async () => {
+    const quote = vi.spyOn(core, 'quoteSwap');
+    const foreignPool = Keypair.generate().publicKey.toBase58();
+    // `pool` is no longer a prop: even passed anyway it is ignored.
+    renderPanel({ ...({ pool: foreignPool } as object) });
+    await readyToTrade('0.1', /Buy MOON/);
+    expect(quote.mock.calls[0]?.[0].pool.toBase58()).toBe(keys.pool);
+    expect(quote.mock.calls.some((call) => call[0].pool.toBase58() === foreignPool)).toBe(false);
+  });
+
+  it("trades the launchpad's own coin, found on its coin config", async () => {
+    const quote = vi.spyOn(core, 'quoteSwap');
+    render(
+      <TradePanel
+        mint={keys.ownMint}
+        symbol="PAD"
+        quoteDebounceMs={0}
+        quoteRefreshMs={0}
+        confirmOptions={CONFIRM}
+      />,
+    );
+    await typeAmount('0.1');
+    await screen.findByTestId('quote-summary');
+    expect(quote.mock.calls[0]?.[0].pool.toBase58()).toBe(keys.ownPool);
+  });
+
+  it('refuses a coin with no pool on this launchpad, without any quote', async () => {
+    render(<TradePanel mint={Keypair.generate().publicKey.toBase58()} symbol="X" />);
+    expect((await screen.findByTestId('trade-not-on-launchpad')).textContent).toMatch(
+      /not on this launchpad/,
+    );
+    expect(core.calls).toEqual({ quote: 0, buy: 0, sell: 0, graduated: 0 });
+  });
+
+  it('refuses a derived pool address that is not a DBC account', async () => {
+    connection.getAccountInfo.mockImplementation(
+      async (address: { toBase58(): string }) =>
+        address.toBase58() === keys.pool
+          ? { ...poolAccount(), owner: Keypair.generate().publicKey }
+          : null,
+    );
+    renderPanel();
+    expect(await screen.findByTestId('trade-not-on-launchpad')).toBeTruthy();
+    expect(core.calls.graduated).toBe(0);
+  });
+
+  it('reports a relay failure during the pool lookup, and retries', async () => {
+    const lookup = accountsByAddress();
+    let fail = true;
+    connection.getAccountInfo.mockImplementation(async (address: PublicKey) => {
+      if (fail && address.toBase58() === keys.pool) throw new TypeError('Failed to fetch');
+      return lookup(address);
+    });
+    renderPanel();
+    const alert = await screen.findByTestId('trade-route-error');
+    fail = false;
+    fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByTestId('trade-form')).toBeTruthy();
   });
 });

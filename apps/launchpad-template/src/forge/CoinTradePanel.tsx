@@ -1,7 +1,4 @@
-import { useMemo } from 'react';
-import { onchainConfig } from './config';
 import { TradePanel } from './TradePanel';
-import { launchpadPoolForMint } from './trade/pool-address';
 
 export interface CoinTradePanelProps {
   /** Coin mint address (base58), e.g. from the page URL. */
@@ -17,20 +14,19 @@ export interface CoinTradePanelProps {
 }
 
 /**
- * LOCKED ZONE. Trade panel of a coin page. The pool is derived from this launchpad's config and the
- * mint (never taken from the data API), then `TradePanel` routes the trade: the FORGE buy/sell form
- * (0.3% platform fee) on the bonding curve, the Jupiter plugin once the coin graduated.
+ * LOCKED ZONE. Trade panel of a coin page. `TradePanel` derives the pool from the mint and this
+ * launchpad's two configs (`launchpadConfig` for the coins of its users, `launchpadCoinConfig`
+ * for its own coin), uses the one that exists on-chain (never a pool from the data API), then
+ * routes the trade: the FORGE buy/sell form (0.3% platform fee) on the bonding curve, the Jupiter
+ * plugin once the coin graduated.
  *
- * Without the on-chain configuration, or for a coin that is not on this launchpad, the panel shows
- * "not configured" and nothing can be traded.
+ * Without the on-chain configuration, or for a coin that is not on this launchpad, the panel says
+ * so and nothing can be traded.
  */
 export function CoinTradePanel({ mint, symbol, displayDecimals, className }: CoinTradePanelProps) {
-  const launchpadConfig = onchainConfig?.launchpadConfig;
-  const pool = useMemo(() => launchpadPoolForMint(mint, launchpadConfig), [mint, launchpadConfig]);
   return (
     <TradePanel
       mint={mint}
-      pool={pool ?? ''}
       symbol={symbol}
       displayDecimals={saneDecimals(displayDecimals)}
       className={className}
