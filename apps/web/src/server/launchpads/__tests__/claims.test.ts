@@ -4,6 +4,7 @@ import { Keypair, Transaction } from '@solana/web3.js';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { RpcUnavailableError } from '../../jobs/chain';
 import { ctx, request, spec } from '../../jobs/__tests__/fakes';
+import { officialCoinsOfCoinConfig } from '../coins';
 import { coin } from './fake-chain';
 import { launchpadsHarness } from './helpers';
 
@@ -18,12 +19,15 @@ beforeEach(() => {
   h = launchpadsHarness();
 });
 
+/** The launchpad's own coin (`launchpads.launchpad_coin_mint`), on the coin config. */
+const launchpadCoinMint = Keypair.generate().publicKey.toBase58();
+
 function seed(poolCreationFeeSol = 0) {
   return h.store.addLaunchpad(owner, {
     spec: spec(owner, { poolCreationFeeSol }),
     launchpadConfig: launchpadConfig.toBase58(),
     launchpadCoinConfig: coinConfig.toBase58(),
-    launchpadCoinMint: Keypair.generate().publicKey.toBase58(),
+    launchpadCoinMint,
   });
 }
 
@@ -52,7 +56,7 @@ describe('GET /api/launchpads/:id/claim-transaction', () => {
   it('returns the unsigned partner claim of the richest pool, paid and signed by the owner', async () => {
     const lp = seed();
     const small = coin(launchpadConfig, 1_000_000n);
-    const rich = coin(coinConfig, 9_000_000n);
+    const rich = coin(coinConfig, 9_000_000n, { baseMint: launchpadCoinMint });
     h.claimsChain.coins.set(launchpadConfig.toBase58(), [small, coin(launchpadConfig, 0n)]);
     h.claimsChain.coins.set(coinConfig.toBase58(), [rich]);
     const res = await claim(lp.id);
@@ -148,6 +152,55 @@ describe('GET /api/launchpads/:id/claim-transaction', () => {
     expect(foreign.status).toBe(404);
     expect((await claim(lp.id, owner, '?pool=nope')).status).toBe(400);
     expect((await claim(lp.id, owner, '?other=1')).status).toBe(400);
+  });
+
+  it('claims only the launchpad coin on the coin config, never a look-alike pool', async () => {
+    const lp = seed();
+    const official = coin(coinConfig, 1_000_000n, { baseMint: launchpadCoinMint });
+    // Anyone can create a pool on the coin config: richer, but not the launchpad's coin.
+    const lookalike = coin(coinConfig, 50_000_000n);
+    h.claimsChain.coins.set(coinConfig.toBase58(), [lookalike, official]);
+    const body = (await (await claim(lp.id)).json()) as ClaimBody;
+    expect(body.summary.pool).toBe(official.pool.toBase58());
+    expect(body.summary.remainingPools).toBe(0);
+    expect(h.claimsChain.calls).not.toContain(`partner:${lookalike.pool.toBase58()}`);
+    // Asked for by pool, the look-alike is not a coin of this launchpad.
+    const asked = await claim(lp.id, owner, `?pool=${lookalike.pool.toBase58()}`);
+    expect(asked.status).toBe(404);
+    expect(h.logger.entries).toContainEqual(
+      expect.objectContaining({
+        event: 'coin_config.lookalikes',
+        fields: expect.objectContaining({ launchpadId: lp.id, count: 1 }),
+      }),
+    );
+  });
+
+  it('officialCoinsOfCoinConfig keeps the launchpad coin mint only', () => {
+    const official = coin(coinConfig, 1n, { baseMint: launchpadCoinMint });
+    const others = [coin(coinConfig, 2n), coin(coinConfig, 3n)];
+    expect(
+      officialCoinsOfCoinConfig([others[0]!, official, others[1]!], launchpadCoinMint),
+    ).toEqual({ official: [official], lookalikes: 2 });
+    expect(officialCoinsOfCoinConfig([official, ...others], null)).toEqual({
+      official: [],
+      lookalikes: 3,
+    });
+    expect(officialCoinsOfCoinConfig([], launchpadCoinMint)).toEqual({
+      official: [],
+      lookalikes: 0,
+    });
+  });
+
+  it('has no official coin on the coin config before the launch', async () => {
+    const lp = h.store.addLaunchpad(owner, {
+      spec: spec(owner),
+      launchpadCoinConfig: coinConfig.toBase58(),
+      launchpadCoinMint: null,
+    });
+    h.claimsChain.coins.set(coinConfig.toBase58(), [coin(coinConfig, 7_000_000n)]);
+    const res = await claim(lp.id);
+    expect(res.status).toBe(409);
+    expect(h.claimsChain.calls.some((c) => c.startsWith('partner:'))).toBe(false);
   });
 
   it('refuses a launchpad whose spec names another owner', async () => {

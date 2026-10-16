@@ -13,13 +13,16 @@ import type { ClaimsChain } from '../chain';
 export function coin(
   config: PublicKey,
   partnerQuote: bigint,
-  overrides: { pool?: PublicKey; partnerBase?: bigint } = {},
+  overrides: { pool?: PublicKey; partnerBase?: bigint; baseMint?: PublicKey | string } = {},
 ): CoinOfConfig {
   const zero = { base: 0n, quote: 0n };
   return {
     pool: overrides.pool ?? Keypair.generate().publicKey,
     config,
-    baseMint: Keypair.generate().publicKey,
+    baseMint:
+      overrides.baseMint === undefined
+        ? Keypair.generate().publicKey
+        : new PublicKey(overrides.baseMint),
     creator: Keypair.generate().publicKey,
     graduation: 'trading',
     progress: { bps: 0, quoteReserve: 0n, migrationQuoteThreshold: 10_000_000_000n },

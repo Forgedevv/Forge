@@ -26,10 +26,11 @@ describe('GET /api/launchpads', () => {
   it("lists only the owner's launchpads with on-chain figures and quotas", async () => {
     const launchpadConfig = Keypair.generate().publicKey;
     const coinConfig = Keypair.generate().publicKey;
+    const mint = Keypair.generate().publicKey.toBase58();
     const lp = liveLaunchpad({
       launchpadConfig: launchpadConfig.toBase58(),
       launchpadCoinConfig: coinConfig.toBase58(),
-      launchpadCoinMint: 'MintAddress1111111111111111111111111111111',
+      launchpadCoinMint: mint,
     });
     const modification = h.store.addJob(lp.id, { type: 'modify_launchpad', status: 'building' });
     h.store.addLaunchpad(other, { slug: 'theirs' });
@@ -37,7 +38,11 @@ describe('GET /api/launchpads', () => {
       coin(launchpadConfig, 1_000n),
       coin(launchpadConfig, 2_000n),
     ]);
-    h.claimsChain.coins.set(coinConfig.toBase58(), [coin(coinConfig, 30_000n)]);
+    // The launchpad's own coin, and a look-alike someone created on its coin config (left out).
+    h.claimsChain.coins.set(coinConfig.toBase58(), [
+      coin(coinConfig, 30_000n, { baseMint: mint }),
+      coin(coinConfig, 400_000n),
+    ]);
 
     const res = await h.handlers.list(request('GET', '/api/launchpads', { wallet: owner }));
     expect(res.status).toBe(200);
@@ -55,7 +60,7 @@ describe('GET /api/launchpads', () => {
       coin: {
         name: 'Moon',
         symbol: 'MOON',
-        mint: 'MintAddress1111111111111111111111111111111',
+        mint,
         imageUrl: 'https://example.com/moon.png',
       },
       coinsCount: 2,
@@ -71,6 +76,13 @@ describe('GET /api/launchpads', () => {
       launchpads: { count: 1, max: LAUNCHPAD_QUOTAS.maxLaunchpadsPerWallet },
       canCreateLaunchpad: true,
     });
+    // The look-alike's fees are not the launchpad's: left out, and flagged for ops.
+    expect(h.logger.entries).toContainEqual(
+      expect.objectContaining({
+        event: 'coin_config.lookalikes',
+        fields: expect.objectContaining({ launchpadId: lp.id, count: 1 }),
+      }),
+    );
   });
 
   it('still answers when the chain cannot be read, flagging the figures', async () => {

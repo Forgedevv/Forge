@@ -26,7 +26,11 @@ import type { Cluster } from '../jobs/config';
 
 export interface ClaimsChain {
   assertCluster(): Promise<void>;
-  /** Coins (pools) of a config; an unknown config has none. Cached briefly. */
+  /**
+   * Coins (pools) of a config; an unknown config has none. Cached briefly. Every pool anyone
+   * created on the config is listed: on the launchpad coin config, keep only the launchpad's own
+   * coin (officialCoinsOfCoinConfig, coins.ts).
+   */
   listCoins(config: PublicKey): Promise<CoinOfConfig[]>;
   /** Unsigned partner trading fee claim, fee payer and receiver = the owner. */
   buildPartnerClaim(pool: PublicKey, owner: PublicKey): Promise<ClaimTxResult>;

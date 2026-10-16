@@ -14,6 +14,7 @@ import { NOT_FOUND_MESSAGES, RouteError } from '../jobs/http';
 import { errorName, type RoutesLogger } from '../jobs/log';
 import type { LaunchpadRecord, RoutesStore } from '../jobs/store';
 import type { ClaimsChain } from './chain';
+import { officialCoinsOfCoinConfig } from './coins';
 
 /*
  * GET /api/launchpads/:id/claim-transaction — the client's partner fees (docs/DECISIONS.md D19:
@@ -28,6 +29,10 @@ import type { ClaimsChain } from './chain';
  * `remainingPools` tells the dashboard whether another claim is left after this one.
  *
  * A claim that would cost the owner more than it collects (`minNetLamports: 0`) is skipped.
+ *
+ * Pools: every pool of the launchpad config, and on the coin config only the launchpad's own coin
+ * (`launchpads.launchpad_coin_mint`, coins.ts). A look-alike pool someone created on the coin
+ * config is never claimed nor accepted as `pool` (404, like a foreign pool).
  */
 
 /** Pools tried for trading fees before giving up (an empty build is cheap, but bounded). */
@@ -158,10 +163,9 @@ export function createClaimsService(deps: ClaimsServiceDeps): ClaimsService {
         'This action must be signed with the wallet that owns the launchpad.',
       );
     }
-    const configs = [key(launchpad.launchpadCoinConfig), key(launchpad.launchpadConfig)].filter(
-      (k): k is PublicKey => k !== null,
-    );
-    if (configs.length === 0) {
+    const coinConfig = key(launchpad.launchpadCoinConfig);
+    const launchpadConfig = key(launchpad.launchpadConfig);
+    if (!coinConfig && !launchpadConfig) {
       throw new RouteError(409, 'NOTHING_TO_CLAIM', 'This launchpad has no fees to claim yet.');
     }
     const owner = new PublicKey(input.wallet);
@@ -170,14 +174,29 @@ export function createClaimsService(deps: ClaimsServiceDeps): ClaimsService {
       await chain.assertCluster();
       const seen = new Set<string>();
       let coins: CoinOfConfig[] = [];
-      for (const config of configs) {
-        for (const coin of await chain.listCoins(config)) {
+      const add = (list: readonly CoinOfConfig[]) => {
+        for (const coin of list) {
           const id = coin.pool.toBase58();
           if (seen.has(id)) continue;
           seen.add(id);
           coins.push(coin);
         }
+      };
+      if (coinConfig) {
+        // The coin config's only coin is the launchpad's own (coins.ts): look-alikes are left out.
+        const launchCoins = officialCoinsOfCoinConfig(
+          await chain.listCoins(coinConfig),
+          launchpad.launchpadCoinMint,
+        );
+        if (launchCoins.lookalikes > 0) {
+          logger.log('warn', 'coin_config.lookalikes', {
+            launchpadId: launchpad.id,
+            count: launchCoins.lookalikes,
+          });
+        }
+        add(launchCoins.official);
       }
+      if (launchpadConfig) add(await chain.listCoins(launchpadConfig));
       if (input.pool !== undefined) {
         coins = coins.filter((c) => c.pool.toBase58() === input.pool);
         if (coins.length === 0) {

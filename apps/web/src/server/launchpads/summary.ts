@@ -10,6 +10,7 @@ import { errorName, type RoutesLogger } from '../jobs/log';
 import type { JobRecord, LaunchpadRecord, RefundRecord, RoutesStore } from '../jobs/store';
 import { toJobView } from '../jobs/views';
 import type { ClaimsChain } from './chain';
+import { officialCoinsOfCoinConfig } from './coins';
 import {
   byNewest,
   isOpenJob,
@@ -115,12 +116,22 @@ export function createLaunchpadReads(deps: LaunchpadReadsDeps): LaunchpadReads {
     }
     try {
       await chain.assertCluster();
-      const [coins, launchCoins] = await Promise.all([
+      const [coins, coinConfigCoins] = await Promise.all([
         launchpadConfig ? chain.listCoins(launchpadConfig) : Promise.resolve([]),
         coinConfig ? chain.listCoins(coinConfig) : Promise.resolve([]),
       ]);
+      // On the coin config, only the launchpad's own coin counts (coins.ts).
+      const launchCoins = officialCoinsOfCoinConfig(coinConfigCoins, launchpad.launchpadCoinMint);
+      if (launchCoins.lookalikes > 0) {
+        logger.log('warn', 'coin_config.lookalikes', {
+          launchpadId: launchpad.id,
+          count: launchCoins.lookalikes,
+        });
+      }
       let claimable = 0n;
-      for (const coin of [...coins, ...launchCoins]) claimable += coin.fees.claimable.partner.quote;
+      for (const coin of [...coins, ...launchCoins.official]) {
+        claimable += coin.fees.claimable.partner.quote;
+      }
       return { available: true, coinsCount: coins.length, claimablePartnerFeesLamports: claimable };
     } catch (error) {
       logger.log('warn', 'onchain.read_failed', {
