@@ -13,6 +13,7 @@ Sent by `apps/signer` and `apps/builder` via `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CH
 | Deployment blocked by the scan | builder | normal (may be an abuse attempt) |
 | Daily API budget exceeded at 80% | builder (gateway) | high |
 | Creator fees unclaimed for more than 48 h | signer | normal |
+| Creator WSOL account already holds WSOL, so a claim to a third-party payer is blocked (`creator_wsol_blocked`, once per pool): unwrap it with the creator key or let the creator pay | signer | high |
 | Repeated RPC errors | signer, builder | high |
 | A released site has no verified host (`site_host_missing:<slug>`: no verified subdomain and no `*.vercel.app` alias of its own Vercel project serves the promoted deployment; browsers of that site cannot reach the relay or create coins) | builder | high |
 
@@ -68,6 +69,9 @@ Also set an R2 lifecycle rule that deletes objects under `pending/` after 1 day,
   3. then delete the project (or remove the alias).
   If a project was already deleted with its host still recorded, clear `site_host` at once. Re-running the deploy step on a new project records its host again.
 - **No rollback of `apps/web` below "start again" once migration 0010 is applied**: from then on a launchpad may hold several creation jobs (refunded attempts plus the new one). The `apps/web` versions before "start again" (`POST /api/launchpads/:id/retry`) assume a single creation job per launchpad and can judge a started-again launchpad by its refunded attempt (spec confirmation replay, modification quotas, coin metadata). If a release must be undone, roll forward with a fix, or roll back only to a version that already has the retry route.
+- **Signer journal directory** (`SIGNER_JOURNAL_DIR`): back it up and never delete files in it. Besides the job journals it holds `refund-ledger.*` (refunds already sent, append-only), `squads.*` (spending-limit withdrawals), `watch.expected.log` (every signature the signer announced before sending it, so a restart never raises a false outflow alert) and `signer.lock` (one signer at a time; a lock left by a crash or a reboot is taken over automatically).
+- **Payment floors**: the signer refuses a payment below `SIGNER_MIN_CREATION_PAYMENT_LAMPORTS` / `SIGNER_MIN_MODIFICATION_PAYMENT_LAMPORTS`. The defaults come from the highest SOL price a quote accepts ($2,000) with a 10% margin. Raise the web price bound (`SOL_USD_PRICE_MAX`) and these floors together.
+- **Price reference**: the web keeps the last accepted SOL/USD rate in the `price_references` table, so a new server instance still refuses a rate that moved too far. An anomaly whose transaction later pays another quote is resolved automatically, with a note.
 - **Signer daily cap**: `SIGNER_MAX_LAUNCHPADS_PER_DAY` limits how many launchpads the signer prepares per day; raising it needs a restart.
 
 ## Sleep mode
