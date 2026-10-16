@@ -21,7 +21,8 @@
     "core:reads": "tsx src/core-reads.ts",
     "core:position-claim": "tsx src/core-position-claim.ts",
     "fixtures:cp-amm": "tsx src/capture-cp-amm-fixtures.ts",
-    "signer:routes": "tsx src/signer-routes.ts"
+    "signer:routes": "tsx src/signer-routes.ts",
+    "signer:buyback": "tsx src/signer-buyback.ts"
   },
   "dependencies": {
     "@forge/shared": "workspace:*",

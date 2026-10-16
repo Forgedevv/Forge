@@ -160,6 +160,8 @@ const ROLE: Record<(typeof WALLET_NAMES)[number], string> = {
   client: 'pays and signs the first buy (test 3)',
   multisigStandIn: 'receiver of the creator claims (test 2)',
   platformFee: 'receives the 30 bps platform fee (test 4)',
+  squadsCreator: 'creator and only voter of the throwaway Squads multisig (signer buyback)',
+  buybackBot: 'buyback bot: multisig member without permission, daily spending limit (signer buyback)',
 };
 
 const isMain = process.argv[1]?.replace(/\\/g, '/').endsWith('/summary.ts');

@@ -16,6 +16,8 @@ export const WALLET_NAMES = [
   'client', // test 3: pays and signs the first buy
   'multisigStandIn', // test 2: receiver of the creator claim
   'platformFee', // test 4: receives the 30 bps platform fee
+  'squadsCreator', // signer buyback proof: creator and only voter of the throwaway Squads multisig
+  'buybackBot', // signer buyback proof: the bot wallet (member without permission, spending limit)
 ] as const;
 
 export type WalletName = (typeof WALLET_NAMES)[number];
