@@ -179,6 +179,29 @@ describe('instance lock', () => {
     expect(await fs.readdir(dir)).toEqual([INSTANCE_LOCK_FILE]); // no stale leftover
   });
 
+  it('does not move away a lock taken by another process after the stale one was examined', async () => {
+    await fs.writeFile(file(), formatLockRecord({ pid: 100, command: 'signer', bootId: BOOT, startTime: '1' }));
+    live(200, '2');
+    live(300, '3');
+    let other: Awaited<ReturnType<typeof acquireInstanceLock>> | undefined;
+    // Process 200 examined the stale lock and is descheduled; process 300 takes it over first.
+    const error = await failure(() =>
+      acquireInstanceLock(dir, {
+        ...base,
+        pid: 200,
+        beforeTakeover: async () => {
+          if (!other) other = await acquireInstanceLock(dir, { ...base, pid: 300 });
+        },
+      }),
+    );
+    expect(error.holderPid).toBe(300);
+    // The live lock of 300 is in place, untouched, and nothing is left behind.
+    expect(await fs.readFile(file(), 'utf8')).toBe(`300\nsigner\nboot=${BOOT}\nstart=3\n`);
+    expect(await fs.readdir(dir)).toEqual([INSTANCE_LOCK_FILE]);
+    await other!.release();
+    await expect(fs.access(file())).rejects.toThrow();
+  });
+
   it('refuses a second acquisition in the same process, whatever pid the file holds', async () => {
     const lock = await acquireInstanceLock(dir, { ...base, pid: 100 });
     await expect(acquireInstanceLock(dir, { ...base, pid: 100 })).rejects.toThrow(

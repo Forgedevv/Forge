@@ -14,9 +14,14 @@
  *
  * Taking over is done by renaming the stale file away first: only one of several processes
  * racing for the same stale lock can win the rename, the others retry and find the winner's
- * lock. A file that is empty or unparsable may be a lock being written (created with O_EXCL,
- * then written): it counts as held for a short grace period, measured on its mtime, before it
- * is treated as garbage and taken over.
+ * lock. The rename is then checked to have moved the very file that was examined (same inode
+ * and content): a process that examined the stale lock, then was descheduled while another one
+ * took over and created its fresh lock, would otherwise move that live lock away; the moved
+ * file is put back instead and the examination starts again. (Three processes racing within
+ * that window could still displace a fresh lock: a holder's lock is never guaranteed against a
+ * concurrent takeover by two others, only against one.) A file that is empty or unparsable may
+ * be a lock being written (created with O_EXCL, then written): it counts as held for a short
+ * grace period, measured on its mtime, before it is treated as garbage and taken over.
  */
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
@@ -58,6 +63,8 @@ export interface InstanceLockOptions {
   graceMs?: number;
   /** Clock, for the grace period. Injectable for tests. */
   now?: () => number;
+  /** Called once a stale lock was examined, before it is moved away. For tests (interleavings). */
+  beforeTakeover?: () => Promise<void>;
 }
 
 /** What the lock file records about its holder. */
@@ -246,7 +253,8 @@ export async function acquireInstanceLock(
     if (record === null) {
       // Empty or garbage: a lock being written by a process that just created it, until the
       // file is older than the grace period.
-      const age = await fs.stat(file).then((s) => now() - s.mtimeMs, () => null);
+      // Clamped at 0: a filesystem timestamp may be a hair ahead of the clock.
+      const age = await fs.stat(file).then((s) => Math.max(0, now() - s.mtimeMs), () => null);
       if (age === null) continue; // gone meanwhile: retry
       if (age < graceMs) {
         throw new InstanceLockError(
@@ -261,13 +269,26 @@ export async function acquireInstanceLock(
       );
     }
     // Stale: rename it away. Only one of the processes racing for it wins the rename; the
-    // others get ENOENT and retry, to find the winner's fresh lock.
+    // others get ENOENT and retry, to find the winner's fresh lock. The file moved must be the
+    // one examined (same inode, same content): between the examination and the rename another
+    // process may have taken over and created its own, live lock, which then goes back.
+    const examined = await fs.stat(file, { bigint: true }).catch(() => null);
+    if (examined === null) continue; // gone meanwhile: retry
+    if (options.beforeTakeover) await options.beforeTakeover();
     const stale = `${file}.stale-${pid}-${now()}-${attempt}`;
     try {
       await fs.rename(file, stale);
     } catch (err) {
       if ((err as { code?: string }).code === 'ENOENT') continue;
       throw err;
+    }
+    const moved = await fs.stat(stale, { bigint: true }).catch(() => null);
+    const movedContent = await fs.readFile(stale, 'utf8').catch(() => null);
+    if (moved === null || movedContent === null) continue; // vanished: retry
+    if (moved.ino !== examined.ino || movedContent !== current) {
+      // Not the stale file but a lock taken meanwhile: put it back, then look at it again.
+      await fs.rename(stale, file);
+      continue;
     }
     await fs.rm(stale, { force: true });
   }
