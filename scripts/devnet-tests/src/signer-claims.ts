@@ -39,6 +39,7 @@ import {
 import {
   RefundJournalEntry,
   RefundManualMark,
+  createFileRefundLedger,
   createRefundsJob,
 } from '../../../apps/signer/src/jobs/refunds.js';
 import {
@@ -201,6 +202,7 @@ async function refundPart(state: State, wallets: ReturnType<typeof loadWallets>)
           schema: RefundJournalEntry,
         }),
         manualMarks: createMemoryJournal(RefundManualMark),
+        ledger: createFileRefundLedger(resolve(WORK_DIR, 'journal')),
         walletLock: new Mutex(),
         flags: memoryFlags(),
         alerter: consoleAlerter(alerts),
