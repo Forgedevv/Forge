@@ -17,8 +17,8 @@ import {
   type SignMessage,
   type SignTransaction,
 } from './create/flow';
-import { formatUnits } from './trade/amounts';
-import { DEFAULT_TOKEN_DECIMALS } from './trade/constants';
+import { formatBps, formatUnits } from './trade/amounts';
+import { DEFAULT_TOKEN_DECIMALS, PLATFORM_FEE_BPS } from './trade/constants';
 import {
   DESCRIPTION_MAX,
   FIRST_BUY_MAX_SOL,
@@ -35,7 +35,8 @@ import {
  *
  * Sequence: form -> the wallet signs the upload authorization -> prepare (image + transaction
  * built by the server; every instruction decoded and the transaction simulated here) -> REVIEW
- * (full cost summary: creation fee, first buy, metadata fee, network fee, account rent, total)
+ * (full cost summary: creation fee, first buy, FORGE platform fee on the first buy, metadata fee,
+ * network fee, account rent, total)
  * -> the user signs -> send through the RPC relay -> poll for confirmation -> success. No
  * transaction is signed before the review is displayed.
  */
@@ -57,8 +58,6 @@ export interface CreateCoinProps {
   chain?: ChainClient;
   /** Overrides the creation fee from forge.config.json, in SOL (tests). */
   poolCreationFeeSol?: number;
-  /** Overrides `forge.config.json#onchain.launchpadConfig` (tests). */
-  launchpadConfig?: string;
   confirmOptions?: ConfirmOptions;
 }
 
@@ -101,7 +100,8 @@ function CreateCoinForm(props: CreateCoinProps) {
   );
   const feeSol = props.poolCreationFeeSol ?? poolCreationFeeSol;
   const feeLamports = feeSol === undefined ? undefined : solNumberToLamports(feeSol);
-  const launchpadConfig = props.launchpadConfig ?? onchainConfig?.launchpadConfig;
+  // The config coins are created on comes from forge.config.json only (no prop can change it).
+  const launchpadConfig = onchainConfig?.launchpadConfig;
   // Without the config address and the creation fee, nothing the server prepares can be checked.
   const configured = launchpadConfig !== undefined && feeLamports !== undefined;
 
@@ -424,8 +424,9 @@ function CreateCoinForm(props: CreateCoinProps) {
           </div>
         </dl>
         <p className="pt-1 text-xs text-neutral-500">
-          The network fee and the deposit for new accounts are added in the review. You always see
-          the full total before anything is signed.
+          A first buy pays the {formatBps(PLATFORM_FEE_BPS)} FORGE platform fee, like every trade on
+          this site. The network fee and the deposit for new accounts are added in the review. You
+          always see the full total before anything is signed.
         </p>
       </div>
 
@@ -516,6 +517,13 @@ function Review(props: {
         <Row label="First buy" value={`${formatSol(summary.firstBuyLamports)} SOL`} />
         {summary.firstBuyLamports > BigInt(0) && (
           <Row
+            label={`FORGE platform fee (${formatBps(PLATFORM_FEE_BPS)} of the first buy)`}
+            value={`${formatSol(summary.platformFeeLamports)} SOL`}
+            testId="review-platform-fee"
+          />
+        )}
+        {summary.firstBuyLamports > BigInt(0) && (
+          <Row
             label="You receive at least"
             value={`${formatUnits(summary.firstBuyMinimumTokensOut, DEFAULT_TOKEN_DECIMALS)} ${summary.coinSymbol}`}
           />
@@ -581,9 +589,9 @@ function Review(props: {
   );
 }
 
-function Row({ label, value }: { label: string; value: string }) {
+function Row({ label, value, testId }: { label: string; value: string; testId?: string }) {
   return (
-    <div className="flex justify-between gap-4">
+    <div className="flex justify-between gap-4" data-testid={testId}>
       <dt className="text-neutral-400">{label}</dt>
       <dd>{value}</dd>
     </div>

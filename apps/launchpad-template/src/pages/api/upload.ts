@@ -2,6 +2,7 @@ import type { NextApiRequest, NextApiResponse } from 'next';
 import { onchainConfig, siteConfig } from '@/forge/config';
 import { solNumberToLamports } from '@/forge/create/amounts';
 import { createLaunchBuilder } from '@/forge/create/launch-builder';
+import { launchPlatformFeeWallet } from '@/forge/create/platform-fee';
 import { createPrepareHandler } from '@/forge/create/prepare-handler';
 import { createUploadClient, resolveForgeApiBase } from '@/forge/create/upload-client';
 import { currentMode, rejectIfNotLive } from '@/forge/mode-guard';
@@ -46,17 +47,22 @@ function getHandler(): ReturnType<typeof createPrepareHandler> {
   );
   const launchpadConfig = onchainConfig?.launchpadConfig;
   const poolCreationFeeLamports = launchpadFeeLamports();
+  // Same public value the browser verifies the first-buy platform fee against.
+  const platformFeeWallet = launchPlatformFeeWallet();
   handler = createPrepareHandler({
     mode: currentMode(),
     slug: siteConfig.slug,
     launchpadConfig,
     poolCreationFeeLamports,
+    platformFeeWallet,
     launchBuilder:
       relay && launchpadConfig && poolCreationFeeLamports !== undefined
         ? createLaunchBuilder({
             connection: createServerRelayConnection(relay),
             launchpadConfig,
             poolCreationFeeLamports,
+            ownerWallet: onchainConfig?.ownerWallet,
+            platformFeeWallet,
           })
         : null,
     uploadClient: apiBase

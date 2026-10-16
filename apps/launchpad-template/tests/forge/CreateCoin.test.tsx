@@ -3,10 +3,14 @@ import '../helpers/dom-setup';
 import { Keypair, PublicKey, type VersionedTransaction } from '@solana/web3.js';
 import { TOKEN_PROGRAM_ID } from '@solana/spl-token';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { LaunchApi, PrepareLaunchResponse } from '@/forge/create/api';
 import type { ChainClient } from '@/forge/create/chain';
-import { buildFixtureLaunch, FIXTURE_LAUNCHPAD_CONFIG } from '@/forge/create/test-fixtures';
+import {
+  buildFixtureLaunch,
+  FIXTURE_LAUNCHPAD_CONFIG,
+  FIXTURE_PLATFORM_FEE_WALLET,
+} from '@/forge/create/test-fixtures';
 
 const walletKp = Keypair.generate();
 const wallet = vi.hoisted(() => ({
@@ -22,6 +26,23 @@ vi.mock('@jup-ag/wallet-adapter', () => ({
   },
   useUnifiedWalletContext: () => ({ setShowModal: wallet.setShowModal }),
 }));
+
+// The launchpad config comes from forge.config.json only (there is no prop for it).
+vi.mock('@/forge/config', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/forge/config')>();
+  const fixtures = await import('@/forge/create/test-fixtures');
+  const key = () => fixtures.FIXTURE_PLATFORM_FEE_WALLET.toBase58();
+  return {
+    ...actual,
+    onchainConfig: {
+      cluster: 'devnet',
+      launchpadConfig: fixtures.FIXTURE_LAUNCHPAD_CONFIG.toBase58(),
+      launchpadCoinConfig: key(),
+      launchpadCoinMint: key(),
+      ownerWallet: key(),
+    },
+  };
+});
 
 import { CreateCoin } from '@/forge/CreateCoin';
 
@@ -61,7 +82,7 @@ function harness(
     ]),
     simulateTransaction: vi.fn().mockImplementation(async () => {
       const summary = merged.summary;
-      const total = BigInt(summary.poolCreationFeeLamports) + BigInt(summary.firstBuyLamports) +
+      const total = BigInt(summary.poolCreationFeeLamports) + BigInt(summary.firstBuyLamports) + BigInt(summary.platformFeeLamports) +
         BigInt(summary.estimatedNetworkFeeLamports) + BigInt(summary.accountRentLamports) + BigInt(summary.metadataFeeLamports);
       const token = Buffer.alloc(165);
       new PublicKey(merged.mint).toBuffer().copy(token, 0);
@@ -91,7 +112,6 @@ function renderCreate(h: Harness, props: Record<string, unknown> = {}) {
       api={h.api}
       chain={h.chain}
       poolCreationFeeSol={0.01}
-      launchpadConfig={FIXTURE_LAUNCHPAD_CONFIG.toBase58()}
       confirmOptions={{ sleep: async () => {}, intervalMs: 1 }}
       {...props}
     />,
@@ -111,6 +131,11 @@ function fillValidForm() {
 beforeEach(() => {
   wallet.setShowModal.mockReset();
   wallet.useWalletCalls = 0;
+  vi.stubEnv('NEXT_PUBLIC_FORGE_PLATFORM_FEE_WALLET', FIXTURE_PLATFORM_FEE_WALLET.toBase58());
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
 });
 
 describe('CreateCoin form', () => {
@@ -150,6 +175,27 @@ describe('CreateCoin form', () => {
   });
 });
 
+describe('CreateCoin launchpad config', () => {
+  it('takes the config from forge.config.json only: a launchpadConfig prop changes nothing', async () => {
+    const h = harness();
+    // Not part of the props any more; a caller passing one anyway must not redirect creation.
+    renderCreate(h, { launchpadConfig: Keypair.generate().publicKey.toBase58() });
+    fillValidForm();
+    fireEvent.click(screen.getByRole('button', { name: 'Review launch' }));
+    // The fixture is on FIXTURE_LAUNCHPAD_CONFIG (forge.config.json): it verifies.
+    expect(await screen.findByText('Review your launch')).toBeInTheDocument();
+  });
+
+  it('has no launchpadConfig override in its source', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    // jsdom environment: resolve from the package root (the test runner's working directory).
+    const source = readFileSync(join(process.cwd(), 'src/forge/CreateCoin.tsx'), 'utf8');
+    expect(source).not.toMatch(/props\.launchpadConfig/);
+    expect(source).not.toMatch(/launchpadConfig\?:/);
+  });
+});
+
 describe('CreateCoin summary before signing', () => {
   it('shows fees, first buy, network fee and total BEFORE the wallet is asked to sign', async () => {
     const h = harness();
@@ -169,7 +215,12 @@ describe('CreateCoin summary before signing', () => {
     expect(summary.getByText(/Network fee/)).toBeInTheDocument();
     expect(summary.getByText('0.00001 SOL')).toBeInTheDocument();
     expect(summary.getByText('0.02 SOL')).toBeInTheDocument();
-    expect(summary.getByTestId('review-total')).toHaveTextContent('0.53001 SOL');
+    // 0.3% FORGE platform fee on the 0.5 SOL first buy, shown before signing and in the total.
+    expect(summary.getByTestId('review-platform-fee')).toHaveTextContent(
+      'FORGE platform fee (0.3% of the first buy)',
+    );
+    expect(summary.getByTestId('review-platform-fee')).toHaveTextContent('0.0015 SOL');
+    expect(summary.getByTestId('review-total')).toHaveTextContent('0.53151 SOL');
 
     // The server was called once with the typed values, nothing was signed or sent yet.
     expect(h.api.prepare).toHaveBeenCalledTimes(1);

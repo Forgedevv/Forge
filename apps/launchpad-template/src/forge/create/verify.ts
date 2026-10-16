@@ -1,4 +1,5 @@
 import { PublicKey, VersionedTransaction } from '@solana/web3.js';
+import { firstBuyPlatformFee } from './platform-fee';
 import type { PrepareLaunchResponse } from './api';
 import { base64ToBytes } from './base64';
 import { describeChainError, type SimulationResult } from './chain';
@@ -45,9 +46,12 @@ import {
  *    - when there is a first buy: idempotent creation of the user's wrapped SOL and coin accounts,
  *      one SOL transfer of exactly the first buy into the user's own wrapped SOL account,
  *      `SyncNative`, one DBC `swap` of exactly the first buy into the user's coin account (minimum
- *      out as summarized), and `CloseAccount` of the wrapped SOL account back to the user.
+ *      out as summarized), `CloseAccount` of the wrapped SOL account back to the user, and, as
+ *      the LAST instruction, one SOL transfer of exactly the FORGE platform fee (0.3% of the first
+ *      buy, rounded up, computed here by @forge/core) to `FORGE_PLATFORM_FEE_WALLET` (read from
+ *      this site's build-time environment, never from the server).
  *    Anything else (token approvals, authority changes, token transfers, transfers to any other
- *    account, account creation, other programs, lookup tables) is refused;
+ *    account or of any other amount, account creation, other programs, lookup tables) is refused;
  * 3. the transaction is simulated with the user's accounts (`verifyLaunchSimulation`): it must
  *    succeed, the wallet must lose what the summary shows (only the network fee may differ) and
  *    the user's coin account must receive at least the summarized minimum.
@@ -82,11 +86,13 @@ export interface VerifiedLaunchSummary {
   firstBuyLamports: bigint;
   firstBuyExpectedTokensOut: bigint;
   firstBuyMinimumTokensOut: bigint;
+  /** FORGE platform fee on the first buy (0.3%, rounded up), computed here, not by the server. */
+  platformFeeLamports: bigint;
   /** Computed from the transaction (signatures and priority fee), not taken from the server. */
   estimatedNetworkFeeLamports: bigint;
   accountRentLamports: bigint;
   metadataFeeLamports: bigint;
-  /** Everything the wallet pays in total (fees, first buy, network fee, rent). */
+  /** Everything the wallet pays in total (fees, first buy, platform fee, network fee, rent). */
   totalLamports: bigint;
 }
 
@@ -101,6 +107,12 @@ export interface LaunchExpectations {
   poolCreationFeeLamports: bigint;
   /** FORGE Meteora referral token account, if the first buy may carry it. */
   referralTokenAccount?: string | null;
+  /**
+   * FORGE_PLATFORM_FEE_WALLET from this site's environment (`launchPlatformFeeWallet()`): the only
+   * account the platform fee of a first buy may go to. Without it, a launch with a first buy is
+   * refused.
+   */
+  platformFeeWallet?: string | null;
 }
 
 /** Addresses derived while verifying, needed to read the simulation. */
@@ -174,6 +186,17 @@ export function verifyPreparedLaunch(
     }
   }
 
+  // The platform fee is computed here (by @forge/core), never taken from the server.
+  const platformFee = firstBuyPlatformFee(firstBuy);
+  if (lamports(s.platformFeeLamports) !== platformFee) {
+    fail('The FORGE platform fee in the prepared coin is not 0.3% of your first buy.');
+  }
+  const platformFeeWallet =
+    platformFee > BigInt(0)
+      ? (canonicalAddress(expected.platformFeeWallet ?? undefined) ??
+        fail('Coins with a first buy cannot be created on this site yet (platform fee not configured).'))
+      : null;
+
   const mint = canonicalAddress(response.mint) ?? fail('The prepared coin mint is invalid.');
   if (mint === wallet) fail('The prepared coin mint is invalid.');
 
@@ -202,6 +225,8 @@ export function verifyPreparedLaunch(
     firstBuy,
     minimumTokens,
     referral: expected.referralTokenAccount ?? null,
+    platformFee,
+    platformFeeWallet,
   });
 
   // 4. Amounts. The network fee shown is the one computed from the transaction.
@@ -225,10 +250,11 @@ export function verifyPreparedLaunch(
       firstBuyLamports: firstBuy,
       firstBuyExpectedTokensOut: expectedTokens,
       firstBuyMinimumTokensOut: minimumTokens,
+      platformFeeLamports: platformFee,
       estimatedNetworkFeeLamports: network,
       accountRentLamports: rent,
       metadataFeeLamports: metadataFee,
-      totalLamports: creationFee + firstBuy + network + rent + metadataFee,
+      totalLamports: creationFee + firstBuy + platformFee + network + rent + metadataFee,
     },
   };
 }
@@ -242,6 +268,10 @@ interface LaunchCheck {
   firstBuy: bigint;
   minimumTokens: bigint;
   referral: string | null;
+  /** Platform fee of the first buy (0 without one). */
+  platformFee: bigint;
+  /** FORGE_PLATFORM_FEE_WALLET; non-null whenever `platformFee` is positive. */
+  platformFeeWallet: string | null;
 }
 
 function checkLaunchInstructions(decoded: DecodedTransaction, c: LaunchCheck): LaunchAccounts {
@@ -251,9 +281,26 @@ function checkLaunchInstructions(decoded: DecodedTransaction, c: LaunchCheck): L
   const wsolAta = associatedTokenAddress(c.wallet, WSOL_MINT, TOKEN_PROGRAM_ID);
   const coinAta = associatedTokenAddress(c.wallet, c.mint, TOKEN_PROGRAM_ID);
   const hasBuy = c.firstBuy > BigInt(0);
-  const counts = { init: 0, swap: 0, wrap: 0, sync: 0, close: 0, wsolAta: 0, coinAta: 0 };
+  const feeWallet = c.platformFee > BigInt(0) ? c.platformFeeWallet : null;
+  if (
+    feeWallet !== null &&
+    [c.wallet, c.mint, c.config, pool, wsolAta, coinAta, baseVault, quoteVault].includes(feeWallet)
+  ) {
+    fail('The platform fee wallet of this site is invalid. Nothing was signed.');
+  }
+  const counts = {
+    init: 0,
+    swap: 0,
+    wrap: 0,
+    sync: 0,
+    close: 0,
+    wsolAta: 0,
+    coinAta: 0,
+    platformFee: 0,
+  };
   let initIndex = -1;
   let swapIndex = -1;
+  let platformFeeIndex = -1;
 
   for (const ix of decoded.instructions) {
     const where = `instruction #${ix.index + 1}`;
@@ -263,10 +310,19 @@ function checkLaunchInstructions(decoded: DecodedTransaction, c: LaunchCheck): L
         break;
       case SYSTEM_PROGRAM_ID: {
         const t = parseSystemTransfer(ix);
-        if (!hasBuy || t.from !== c.wallet || t.to !== wsolAta || t.lamports !== c.firstBuy) {
+        if (hasBuy && t.from === c.wallet && t.to === wsolAta && t.lamports === c.firstBuy) {
+          counts.wrap += 1;
+        } else if (
+          feeWallet !== null &&
+          t.from === c.wallet &&
+          t.to === feeWallet &&
+          t.lamports === c.platformFee
+        ) {
+          counts.platformFee += 1;
+          platformFeeIndex = ix.index;
+        } else {
           fail(`The transaction moves SOL to an unexpected account (${where}). Nothing was signed.`);
         }
-        counts.wrap += 1;
         break;
       }
       case ASSOCIATED_TOKEN_PROGRAM_ID: {
@@ -381,6 +437,15 @@ function checkLaunchInstructions(decoded: DecodedTransaction, c: LaunchCheck): L
     if (!ok) fail('The first buy in the transaction is not shaped as expected.');
   } else if (counts.swap !== 0) {
     fail('The transaction contains a first buy you did not ask for.');
+  }
+  // Exactly one platform fee transfer, the last instruction, whenever the first buy owes one.
+  const expectedFeeTransfers = feeWallet !== null ? 1 : 0;
+  if (
+    counts.platformFee !== expectedFeeTransfers ||
+    (expectedFeeTransfers === 1 &&
+      platformFeeIndex !== decoded.instructions[decoded.instructions.length - 1]?.index)
+  ) {
+    fail('The FORGE platform fee in the transaction is not shaped as expected.');
   }
   return { pool, userWrappedSolAccount: wsolAta, userCoinAccount: coinAta };
 }

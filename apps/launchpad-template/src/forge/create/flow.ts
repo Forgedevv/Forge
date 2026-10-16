@@ -17,6 +17,7 @@ import {
   type VerifiedLaunch,
 } from './verify';
 import type { ValidatedCoin } from './validation';
+import { launchPlatformFeeWallet } from './platform-fee';
 
 /**
  * LOCKED ZONE. The coin creation sequence, free of any UI:
@@ -98,6 +99,15 @@ export async function prepareLaunch(
     // Without the on-chain configuration nothing the server returns could be checked.
     throw new TxError('prepare_failed', 'prepare', 'Coin creation is not configured on this site yet.');
   }
+  // The first buy pays the FORGE platform fee to this site's (build-time) fee wallet only.
+  const platformFeeWallet = launchPlatformFeeWallet();
+  if (coin.firstBuyLamports > BigInt(0) && !platformFeeWallet) {
+    throw new TxError(
+      'prepare_failed',
+      'prepare',
+      'Coins with a first buy cannot be created on this site yet. Try without a first buy.',
+    );
+  }
   if (!deps.signMessage) {
     throw new TxError(
       'prepare_failed',
@@ -168,6 +178,7 @@ export async function prepareLaunch(
       launchpadConfig: deps.launchpadConfig,
       poolCreationFeeLamports: deps.poolCreationFeeLamports,
       referralTokenAccount: deps.referralTokenAccount ?? null,
+      platformFeeWallet,
     });
   } catch (error) {
     if (error instanceof VerificationError) {

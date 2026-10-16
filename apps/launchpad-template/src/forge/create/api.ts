@@ -4,8 +4,9 @@ import { z } from 'zod';
  * LOCKED ZONE. Client side of the coin preparation API (`POST /api/upload`).
  *
  * The request carries a message signed by the wallet (`auth.ts`). The server checks it, generates
- * the mint, builds the launch transaction on this launchpad's config (`createPoolWithFirstBuy` when
- * there is a first buy; the user is pool creator, fee payer and buyer), signs it with the mint only,
+ * the mint, builds the launch transaction on this launchpad's config with @forge/core
+ * (`buildUserCoinLaunchTx`: the user is pool creator, fee payer and buyer; a first buy pays the
+ * 0.3% FORGE platform fee), signs it with the mint only,
  * stores the image and metadata through the FORGE upload endpoint (write-once keys named after the
  * mint, see `upload-client.ts`; the site holds no storage key) and returns the transaction with a
  * machine-readable summary. The user signs last. The browser never receives a secret key.
@@ -29,6 +30,11 @@ export const LaunchSummaryWire = z.object({
   /** Coins the first buy is quoted to deliver, and the minimum the swap accepts (raw units). */
   firstBuyExpectedTokensOut: Lamports,
   firstBuyMinimumTokensOut: Lamports,
+  /**
+   * FORGE platform fee on the first buy (0.3%, rounded up; "0" without a first buy), transferred
+   * to FORGE_PLATFORM_FEE_WALLET by the last instruction. Recomputed by the browser.
+   */
+  platformFeeLamports: Lamports,
   /** Signature fees and priority fee. Recomputed from the transaction by the browser. */
   estimatedNetworkFeeLamports: Lamports,
   /** Rent-exempt deposit of the new on-chain accounts, read from the cluster by the server. */

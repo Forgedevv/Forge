@@ -1,123 +1,152 @@
 import { BN } from '@coral-xyz/anchor';
-import type { PoolConfig } from '@meteora-ag/dynamic-bonding-curve-sdk';
-import { NATIVE_MINT, getAssociatedTokenAddressSync } from '@solana/spl-token';
 import {
+  DYNAMIC_BONDING_CURVE_PROGRAM_ID,
+  DynamicBondingCurveClient,
+  type PoolConfig,
+} from '@meteora-ag/dynamic-bonding-curve-sdk';
+import { MINT_SIZE, NATIVE_MINT, TOKEN_PROGRAM_ID } from '@solana/spl-token';
+import {
+  Connection,
   Keypair,
   PublicKey,
-  TransactionInstruction,
+  SystemInstruction,
+  SystemProgram,
   TransactionMessage,
   VersionedTransaction,
-  type Connection,
+  type AccountInfo,
 } from '@solana/web3.js';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 import {
   LaunchBuildError,
   METAPLEX_CREATE_METADATA_FEE_LAMPORTS,
   createLaunchBuilder,
-  type DbcClientLike,
+  type LaunchBuilderOptions,
 } from '@/forge/create/launch-builder';
 import { PrepareLaunchResponse } from '@/forge/create/api';
 import { base64ToBytes } from '@/forge/create/base64';
-import { FIXTURE_LAUNCHPAD_CONFIG, buildFixtureLaunch } from '@/forge/create/test-fixtures';
 import { verifyPreparedLaunch } from '@/forge/create/verify';
-import { ASSOCIATED_TOKEN_PROGRAM_ID, COMPUTE_BUDGET_PROGRAM_ID } from '@/forge/tx/programs';
+import { COMPUTE_BUDGET_PROGRAM_ID, dbcPoolAddress } from '@/forge/tx/programs';
 
+/*
+ * The launch is built by @forge/core (`buildUserCoinLaunchTx`) on a mocked relay connection. The
+ * config account is a real launchpad config created on devnet by core (public data, also the
+ * fixture of packages/core/src/pool.test.ts): 25% creator share, 75 / 25 locked liquidity,
+ * anti-sniper 9900 -> 100 bps, 0.001 SOL creation fee, fee claimer = OWNER.
+ */
+const CONFIG_FIXTURE_BASE64 =
+  'GmwOe3TmgSsGm4hX/quBhPtof2NGGMA12sQ53BrrO1WYoPAAAAAAASyEFwNSPwYU4BGg5qECMVofZ9/hgka2uj3lAj' +
+  'ZlDrPoLIQXA1I/BhTgEaDmoQIxWh9n3+GCRra6PeUCNmUOs+iAMwI7AAAAAAYAAAAAAAAAgFzXBQAAAAAKAAAAAAAA' +
+  'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' +
+  'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAQYBAABLABkAAAEZAQAAAAAAAAAAAAqW24GY1wIAAOQLVAIA' +
+  'AACY+1gh5rUAAM5N8P/UaM8BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' +
+  'AAAAAAAAAAgMakfo0DAACAxqR+jQMAAAAAAAABAABAQg8AAAAAAAAAAAAAAAAAAAAAAAAAAAA5cPuPNdpzAAAAAAAA' +
+  'AAAAzk3w/9RozwEAAAAAAAAAAM9n+RX9pKdkafqYB7cBAACbV2lOqRpchLHE/v8AAAAA/XPZVLZwQ7OS1wIAAAAAAA' +
+  'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' +
+  'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' +
+  'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' +
+  'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' +
+  'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' +
+  'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' +
+  'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' +
+  'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' +
+  'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==';
+
+const OWNER = new PublicKey('3zmm4YTrfwU76jBTHg3kQsu323zGLWP4pj9RLdzTSy75');
+const CONFIG = Keypair.generate().publicKey;
+const FEE = BigInt(1_000_000);
+const FIRST_BUY = BigInt(500_000_000);
+/** 0.3% of the 0.5 SOL first buy. */
+const PLATFORM_FEE = BigInt(1_500_000);
 const wallet = Keypair.generate().publicKey;
-const FEE = BigInt(10_000_000);
-const POOL_SIZE = 424;
-const rent = (size: number) => (128 + size) * 6960;
+const platformWallet = Keypair.generate().publicKey;
+const BLOCKHASH = new PublicKey(Buffer.alloc(32, 7)).toBase58();
 
-function poolConfig(overrides: Record<string, unknown> = {}): PoolConfig {
-  return {
-    quoteMint: NATIVE_MINT,
-    tokenType: 0,
-    poolCreationFee: new BN(FEE.toString()),
-    poolFees: {
-      baseFee: {
-        cliffFeeNumerator: new BN(1),
-        firstFactor: 0,
-        secondFactor: new BN(0),
-        thirdFactor: new BN(0),
-        baseFeeMode: 0,
-      },
-      dynamicFee: null,
-    },
-    collectFeeMode: 0,
-    sqrtStartPrice: new BN(1),
-    migrationQuoteThreshold: new BN(1),
-    curve: [],
-    migrationSqrtPrice: new BN(1),
-    ...overrides,
-  } as unknown as PoolConfig;
+/** Mainnet rent formula: (128 + size) * 3480 lamports/byte-year * 2 years. */
+const rent = (size: number) => (128 + size) * 6960;
+const account = (owner: PublicKey, data: Buffer, lamports?: number): AccountInfo<Buffer> => ({
+  owner,
+  data,
+  lamports: lamports ?? rent(data.length),
+  executable: false,
+  rentEpoch: 0,
+});
+
+const program = DynamicBondingCurveClient.create(
+  new Connection('http://127.0.0.1:8899'),
+  'confirmed',
+).pool.getProgram();
+const POOL_SIZE = program.account.virtualPool.size;
+let fixtureConfig: PoolConfig;
+
+beforeAll(() => {
+  fixtureConfig = program.coder.accounts.decode<PoolConfig>(
+    'poolConfig',
+    Buffer.from(CONFIG_FIXTURE_BASE64, 'base64'),
+  );
+});
+
+/** Re-encodes the fixture config with some fields changed (account layout, as in core's tests). */
+function encodeConfig(changes: Partial<PoolConfig> = {}): Buffer {
+  const layouts = (
+    program.coder.accounts as unknown as {
+      accountLayouts: Map<string, { layout: { encode(value: unknown, buffer: Buffer): number } }>;
+    }
+  ).accountLayouts;
+  const buffer = Buffer.alloc(2048);
+  const length = layouts.get('poolConfig')!.layout.encode({ ...fixtureConfig, ...changes }, buffer);
+  const discriminator = Buffer.from(CONFIG_FIXTURE_BASE64, 'base64').subarray(0, 8);
+  return Buffer.concat([discriminator, buffer.subarray(0, length)]);
 }
 
-function sdkInstructions(fixtureTx: string): TransactionInstruction[] {
-  const tx = VersionedTransaction.deserialize(base64ToBytes(fixtureTx));
-  return TransactionMessage.decompile(tx.message).instructions;
+/** In-memory relay connection: only what the SDK read and core's builder call. */
+function mockConnection(accounts: Map<string, AccountInfo<Buffer>>) {
+  const get = (key: PublicKey) => accounts.get(key.toBase58()) ?? null;
+  return {
+    getAccountInfo: async (key: PublicKey) => get(key),
+    getAccountInfoAndContext: async (key: PublicKey) => ({ context: { slot: 1 }, value: get(key) }),
+    getMultipleAccountsInfo: async (keys: PublicKey[]) => keys.map(get),
+    getMinimumBalanceForRentExemption: async (size: number) => rent(size),
+    getLatestBlockhash: async () => ({ blockhash: BLOCKHASH, lastValidBlockHeight: 1_000 }),
+    getFeeForMessage: async () => ({ context: { slot: 1 }, value: 10_000 }),
+  };
 }
 
 function setup(
   options: {
+    config?: Partial<PoolConfig> | null;
+    builder?: Partial<LaunchBuilderOptions>;
     firstBuy?: bigint;
-    config?: PoolConfig | null;
-    accounts?: unknown[];
-    quote?: () => { outputAmount: BN; minimumAmountOut?: BN };
-    mapInstructions?: (ixs: TransactionInstruction[]) => TransactionInstruction[];
   } = {},
 ) {
-  const firstBuy = options.firstBuy ?? BigInt(500_000_000);
-  const fixture = buildFixtureLaunch({
-    wallet,
-    name: 'Moon Coin',
-    symbol: 'MOON',
-    firstBuyLamports: firstBuy,
-    launchpadConfig: FIXTURE_LAUNCHPAD_CONFIG,
-  });
-  const instructions = sdkInstructions(fixture.response.poolTx);
-  const client = {
-    state: {
-      getPoolConfig: vi.fn(async () =>
-        options.config === undefined ? poolConfig() : options.config,
-      ),
-    },
-    pool: {
-      getQuoteFromInputAmount: vi.fn(
-        options.quote ??
-          (() => ({ outputAmount: new BN(1_000_000), minimumAmountOut: new BN(900_000) })),
-      ),
-    },
-    creator: {
-      createPoolWithFirstBuy: vi.fn(async () => ({
-        instructions: options.mapInstructions
-          ? options.mapInstructions(instructions)
-          : instructions,
-      })),
-      getProgram: () => ({ account: { virtualPool: { size: POOL_SIZE } } }),
-    },
-  } satisfies DbcClientLike;
-  const connection = {
-    getMultipleAccountsInfo: vi.fn(async () => options.accounts ?? [null, null]),
-    getLatestBlockhash: vi.fn(async () => ({
-      blockhash: Keypair.generate().publicKey.toBase58(),
-      lastValidBlockHeight: 100,
-    })),
-    getMinimumBalanceForRentExemption: vi.fn(async (size: number) => rent(size)),
-  };
+  const accounts = new Map<string, AccountInfo<Buffer>>();
+  if (options.config !== null) {
+    accounts.set(
+      CONFIG.toBase58(),
+      account(DYNAMIC_BONDING_CURVE_PROGRAM_ID, encodeConfig(options.config ?? {})),
+    );
+  }
+  accounts.set(NATIVE_MINT.toBase58(), account(TOKEN_PROGRAM_ID, Buffer.alloc(MINT_SIZE)));
+  accounts.set(platformWallet.toBase58(), account(SystemProgram.programId, Buffer.alloc(0)));
+  const connection = mockConnection(accounts);
   const builder = createLaunchBuilder({
     connection: connection as unknown as Connection,
-    launchpadConfig: FIXTURE_LAUNCHPAD_CONFIG.toBase58(),
+    launchpadConfig: CONFIG.toBase58(),
     poolCreationFeeLamports: FEE,
-    client,
+    ownerWallet: OWNER.toBase58(),
+    platformFeeWallet: platformWallet.toBase58(),
+    ...options.builder,
   });
+  const mint = Keypair.generate();
+  const firstBuy = options.firstBuy ?? FIRST_BUY;
   const input = {
-    mint: fixture.mint,
+    mint,
     wallet: wallet.toBase58(),
     name: 'Moon Coin',
     symbol: 'MOON',
     metadataUri: 'https://example.test/metadata.json',
     firstBuyLamports: firstBuy,
   };
-  return { builder, client, connection, input, firstBuy, mint: fixture.mint };
+  return { builder, accounts, input, mint, firstBuy };
 }
 
 const expectations = (firstBuy: bigint) => ({
@@ -125,167 +154,172 @@ const expectations = (firstBuy: bigint) => ({
   name: 'Moon Coin',
   symbol: 'MOON',
   firstBuyLamports: firstBuy,
-  launchpadConfig: FIXTURE_LAUNCHPAD_CONFIG.toBase58(),
+  launchpadConfig: CONFIG.toBase58(),
   poolCreationFeeLamports: FEE,
   referralTokenAccount: null,
+  platformFeeWallet: platformWallet.toBase58(),
 });
 
-describe('createLaunchBuilder', () => {
+const instructionsOf = (response: { poolTx: string }) =>
+  TransactionMessage.decompile(
+    VersionedTransaction.deserialize(base64ToBytes(response.poolTx)).message,
+  ).instructions;
+
+describe('createLaunchBuilder (launch built by @forge/core)', () => {
   it('builds a launch the browser verifier accepts, signed by the mint only', async () => {
-    const { builder, client, input, firstBuy, mint } = setup();
+    const { builder, input, firstBuy, mint } = setup();
     const response = await builder.build(await builder.loadConfig(), input);
 
     expect(PrepareLaunchResponse.safeParse(response).success).toBe(true);
     const verified = verifyPreparedLaunch(response, expectations(firstBuy));
     expect(verified.mint).toBe(mint.publicKey.toBase58());
+    expect(verified.summary.platformFeeLamports).toBe(PLATFORM_FEE);
     const tx = VersionedTransaction.deserialize(base64ToBytes(response.poolTx));
     expect(tx.signatures[0]?.every((b) => b === 0)).toBe(true);
     expect(tx.signatures[1]?.some((b) => b !== 0)).toBe(true);
+    const ixs = instructionsOf(response);
+    expect(ixs[0]?.programId.toBase58()).toBe(COMPUTE_BUDGET_PROGRAM_ID);
+  });
 
-    const call = client.creator.createPoolWithFirstBuy.mock.calls[0]?.[0] as any;
-    expect(call.createPoolParam.payer.toBase58()).toBe(wallet.toBase58());
-    expect(call.createPoolParam.poolCreator.toBase58()).toBe(wallet.toBase58());
-    expect(call.createPoolParam.config.toBase58()).toBe(FIXTURE_LAUNCHPAD_CONFIG.toBase58());
-    expect(call.firstBuyParam.buyer.toBase58()).toBe(wallet.toBase58());
-    expect(call.firstBuyParam.receiver.toBase58()).toBe(wallet.toBase58());
-    expect(call.firstBuyParam.referralTokenAccount).toBeNull();
-    expect(call.firstBuyParam.minimumAmountOut.toString()).toBe('900000');
-    expect(client.pool.getQuoteFromInputAmount.mock.calls[0]?.[0]).toMatchObject({
-      swapBaseForQuote: false,
-      eligibleForFirstSwapWithMinFee: true,
-      hasReferral: false,
-    });
+  it('ends with the 0.3% platform fee transfer to FORGE_PLATFORM_FEE_WALLET', async () => {
+    const { builder, input } = setup();
+    const response = await builder.build(await builder.loadConfig(), input);
+    const ixs = instructionsOf(response);
+    const last = ixs[ixs.length - 1]!;
+    expect(last.programId.equals(SystemProgram.programId)).toBe(true);
+    const fee = SystemInstruction.decodeTransfer(last);
+    expect(fee.fromPubkey.equals(wallet)).toBe(true);
+    expect(fee.toPubkey.equals(platformWallet)).toBe(true);
+    expect(fee.lamports).toBe(PLATFORM_FEE);
+    expect(response.summary.platformFeeLamports).toBe(PLATFORM_FEE.toString());
   });
 
   it('reads the rent from the cluster and summarizes every cost as decimal strings', async () => {
-    const { builder, connection, input } = setup();
+    const { builder, input } = setup();
     const { summary } = await builder.build(await builder.loadConfig(), input);
-    const sizes = connection.getMinimumBalanceForRentExemption.mock.calls.map((c) => c[0]);
-    expect(sizes.sort((a, b) => a - b)).toEqual([82, 165, POOL_SIZE, 607].sort((a, b) => a - b));
     // pool + mint + metadata + 2 vaults + the user's coin account.
-    const expectedRent = rent(POOL_SIZE) + rent(82) + rent(607) + 3 * rent(165);
-    expect(summary).toEqual({
+    const expectedRent = rent(POOL_SIZE) + rent(MINT_SIZE) + rent(607) + 3 * rent(165);
+    expect(summary).toMatchObject({
       coinName: 'Moon Coin',
       coinSymbol: 'MOON',
       creatorWallet: wallet.toBase58(),
-      poolCreationFeeLamports: '10000000',
-      firstBuyLamports: '500000000',
-      firstBuyExpectedTokensOut: '1000000',
-      firstBuyMinimumTokensOut: '900000',
+      poolCreationFeeLamports: FEE.toString(),
+      firstBuyLamports: FIRST_BUY.toString(),
+      platformFeeLamports: PLATFORM_FEE.toString(),
       estimatedNetworkFeeLamports: '10000',
       accountRentLamports: String(expectedRent),
       metadataFeeLamports: METAPLEX_CREATE_METADATA_FEE_LAMPORTS.toString(),
     });
-  });
-
-  it('without a first buy: no swap, no user coin account rent', async () => {
-    const { builder, client, input } = setup({ firstBuy: BigInt(0) });
-    const response = await builder.build(await builder.loadConfig(), input);
-    verifyPreparedLaunch(response, expectations(BigInt(0)));
-    expect((client.creator.createPoolWithFirstBuy.mock.calls[0]?.[0] as any).firstBuyParam).toBe(
-      undefined,
-    );
-    expect(client.pool.getQuoteFromInputAmount).not.toHaveBeenCalled();
-    expect(response.summary.firstBuyMinimumTokensOut).toBe('0');
-    expect(response.summary.accountRentLamports).toBe(
-      String(rent(POOL_SIZE) + rent(82) + rent(607) + 2 * rent(165)),
+    const expectedOut = BigInt(summary.firstBuyExpectedTokensOut);
+    expect(expectedOut).toBeGreaterThan(BigInt(0));
+    expect(BigInt(summary.firstBuyMinimumTokensOut)).toBe(
+      (expectedOut * BigInt(9_900)) / BigInt(10_000),
     );
   });
 
-  it('always creates the wrapped SOL account idempotently, once', async () => {
-    const wsol = getAssociatedTokenAddressSync(NATIVE_MINT, wallet, true);
-    const { builder, input, firstBuy } = setup({
-      // The SDK omits the creation when the account exists at build time.
-      mapInstructions: (ixs) =>
-        ixs.filter(
-          (ix) =>
-            !(
-              ix.programId.toBase58() === ASSOCIATED_TOKEN_PROGRAM_ID &&
-              ix.keys[1]?.pubkey.equals(wsol)
-            ),
-        ),
+  it('without a first buy: no swap, no platform fee, no fee wallet needed', async () => {
+    const { builder, input } = setup({
+      firstBuy: BigInt(0),
+      builder: { platformFeeWallet: null },
     });
     const response = await builder.build(await builder.loadConfig(), input);
-    verifyPreparedLaunch(response, expectations(firstBuy));
-    const tx = VersionedTransaction.deserialize(base64ToBytes(response.poolTx));
-    const ixs = TransactionMessage.decompile(tx.message).instructions;
-    expect(ixs[0]?.programId.toBase58()).toBe(COMPUTE_BUDGET_PROGRAM_ID);
+    verifyPreparedLaunch(response, { ...expectations(BigInt(0)), platformFeeWallet: null });
+    expect(response.summary.firstBuyMinimumTokensOut).toBe('0');
+    expect(response.summary.platformFeeLamports).toBe('0');
     expect(
-      ixs.filter(
-        (ix) =>
-          ix.programId.toBase58() === ASSOCIATED_TOKEN_PROGRAM_ID &&
-          ix.keys[1]?.pubkey.equals(wsol),
-      ),
-    ).toHaveLength(1);
+      instructionsOf(response).some((ix) => ix.programId.equals(SystemProgram.programId)),
+    ).toBe(false);
+    expect(response.summary.accountRentLamports).toBe(
+      String(rent(POOL_SIZE) + rent(MINT_SIZE) + rent(607) + 2 * rent(165)),
+    );
   });
 
-  it('refuses a missing, non-SPL, non-SOL or differently priced launchpad config', async () => {
+  it('refuses a missing config, another creation fee, another owner or a tampered config', async () => {
     await expect(setup({ config: null }).builder.loadConfig()).rejects.toMatchObject({
       code: 'config_not_found',
     });
     await expect(
-      setup({ config: poolConfig({ tokenType: 1 }) }).builder.loadConfig(),
-    ).rejects.toMatchObject({
-      code: 'config_unsupported',
-    });
+      setup({ builder: { poolCreationFeeLamports: BigInt(1) } }).builder.loadConfig(),
+    ).rejects.toMatchObject({ code: 'creation_fee_mismatch' });
     await expect(
       setup({
-        config: poolConfig({ quoteMint: Keypair.generate().publicKey }),
+        builder: { ownerWallet: Keypair.generate().publicKey.toBase58() },
       }).builder.loadConfig(),
     ).rejects.toMatchObject({ code: 'config_unsupported' });
-    await expect(
-      setup({ config: poolConfig({ poolCreationFee: new BN(1) }) }).builder.loadConfig(),
-    ).rejects.toMatchObject({ code: 'creation_fee_mismatch' });
+    for (const change of [
+      { migrationFeePercentage: 10 },
+      { tokenUpdateAuthority: 0 },
+      { creatorTradingFeePercentage: 10 },
+      { quoteMint: Keypair.generate().publicKey },
+    ] as Partial<PoolConfig>[]) {
+      await expect(setup({ config: change }).builder.loadConfig()).rejects.toMatchObject({
+        code: 'config_unsupported',
+      });
+    }
+  });
+
+  it('re-checks the config in the build (core), not only in loadConfig', async () => {
+    const { builder, accounts, input } = setup();
+    const loaded = await builder.loadConfig();
+    accounts.set(
+      CONFIG.toBase58(),
+      account(DYNAMIC_BONDING_CURVE_PROGRAM_ID, encodeConfig({ migrationFeePercentage: 10 })),
+    );
+    await expect(builder.build(loaded, input)).rejects.toMatchObject({
+      code: 'config_unsupported',
+    });
   });
 
   it('refuses a mint or pool that already exists', async () => {
-    const { builder, input } = setup({ accounts: [{ lamports: 1 }, null] });
+    const { builder, accounts, input, mint } = setup();
+    accounts.set(mint.publicKey.toBase58(), account(TOKEN_PROGRAM_ID, Buffer.alloc(MINT_SIZE)));
     await expect(builder.build(await builder.loadConfig(), input)).rejects.toMatchObject({
       code: 'mint_exists',
     });
+    const other = setup();
+    accounts.delete(mint.publicKey.toBase58());
+    other.accounts.set(
+      dbcPoolAddress(CONFIG.toBase58(), other.mint.publicKey.toBase58()),
+      account(DYNAMIC_BONDING_CURVE_PROGRAM_ID, Buffer.alloc(8)),
+    );
+    await expect(
+      other.builder.build(await other.builder.loadConfig(), other.input),
+    ).rejects.toMatchObject({ code: 'mint_exists' });
   });
 
   it('maps a first buy larger than the curve to a clear error', async () => {
+    // A curve that ends one step above its start price sells (almost) nothing (the migration
+    // price is derived by the program, so the config check does not look at it).
     const { builder, input } = setup({
-      quote: () => {
-        throw new Error('Insufficient liquidity');
-      },
+      config: { migrationSqrtPrice: fixtureConfig.sqrtStartPrice.add(new BN(1)) },
     });
-    const error = await builder.build(await builder.loadConfig(), input).catch((e) => e);
+    const error = await builder.build(await builder.loadConfig(), input).catch((e: unknown) => e);
     expect(error).toBeInstanceOf(LaunchBuildError);
-    expect(error.code).toBe('first_buy_too_large');
+    expect((error as LaunchBuildError).code).toBe('first_buy_too_large');
   });
 
-  it('refuses any extra signer and an oversized transaction', async () => {
-    const extra = Keypair.generate().publicKey;
-    const signer = setup({
-      mapInstructions: (ixs) => [
-        ...ixs,
-        new TransactionInstruction({
-          programId: new PublicKey(COMPUTE_BUDGET_PROGRAM_ID),
-          keys: [{ pubkey: extra, isSigner: true, isWritable: false }],
-          data: Buffer.from([]),
-        }),
-      ],
-    });
+  it('refuses a first buy when the platform fee wallet is missing or not rent-exempt', async () => {
+    const missing = setup({ builder: { platformFeeWallet: null } });
     await expect(
-      signer.builder.build(await signer.builder.loadConfig(), signer.input),
-    ).rejects.toMatchObject({ code: 'unexpected_signers' });
+      missing.builder.build(await missing.builder.loadConfig(), missing.input),
+    ).rejects.toMatchObject({ code: 'platform_fee_unavailable' });
+    const empty = setup();
+    empty.accounts.delete(platformWallet.toBase58());
+    await expect(
+      empty.builder.build(await empty.builder.loadConfig(), empty.input),
+    ).rejects.toMatchObject({ code: 'platform_fee_unavailable' });
+  });
 
-    const big = setup({
-      mapInstructions: (ixs) => [
-        ...ixs,
-        new TransactionInstruction({
-          programId: new PublicKey(COMPUTE_BUDGET_PROGRAM_ID),
-          keys: [],
-          data: Buffer.alloc(600),
-        }),
-      ],
+  it('fits the largest metadata with the platform fee (32-byte name, 10-character symbol, 200-byte URI)', async () => {
+    const { builder, input } = setup();
+    const uri = `https://example.com/${'a'.repeat(200 - 25)}.json`;
+    expect(Buffer.byteLength(uri)).toBe(200);
+    const response = await builder.build(await builder.loadConfig(), {
+      ...input,
+      name: 'N'.repeat(32),
+      symbol: 'S'.repeat(10),
+      metadataUri: uri,
     });
-    await expect(
-      big.builder.build(await big.builder.loadConfig(), big.input),
-    ).rejects.toMatchObject({
-      code: 'too_large',
-    });
+    expect(base64ToBytes(response.poolTx).length).toBeLessThanOrEqual(1232);
   });
 });

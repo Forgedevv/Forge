@@ -61,18 +61,22 @@ the optional server-only `FORGE_RPC_RELAY_TOKEN` (a rate limit tier, nothing mor
 
 | Variable | Use |
 |---|---|
-| `SOLANA_CLUSTER`, `NEXT_PUBLIC_SOLANA_CLUSTER` | `devnet` or `mainnet-beta` |
+| `SOLANA_CLUSTER`, `NEXT_PUBLIC_SOLANA_CLUSTER` | `devnet` (default) or `mainnet-beta`; anything but an explicit `mainnet-beta` is devnet |
 | `NEXT_PUBLIC_FORGE_RPC_RELAY_URL` | FORGE RPC relay, the only RPC endpoint (browser and server) |
 | `NEXT_PUBLIC_FORGE_API_URL` | FORGE API base URL for coin uploads (defaults to the relay origin) |
 | `FORGE_RPC_RELAY_TOKEN` | optional, server only (never `NEXT_PUBLIC_`): per-launchpad token sent by `/api/upload` as `X-Forge-Relay-Token` to the relay and the upload endpoint (rate limit tier only) |
 | `NEXT_PUBLIC_POOL_CONFIG_KEY` | launchpad pool config(s), filters the coin lists |
 | `R2_PUBLIC_URL`, `NEXT_PUBLIC_R2_PUBLIC_URL` | public base URL of coin images and metadata (read only) |
 | `NEXT_PUBLIC_FORGE_JUPITER_REFERRAL_ACCOUNT` | Jupiter integrator fee account (30 bps after graduation) |
-| `NEXT_PUBLIC_FORGE_PLATFORM_FEE_WALLET` | recipient of the 0.3% platform fee on curve swaps |
+| `NEXT_PUBLIC_FORGE_PLATFORM_FEE_WALLET` | recipient of the 0.3% platform fee on curve swaps and on the first buy of a coin created on the site |
 | `NEXT_PUBLIC_FORGE_METEORA_REFERRAL_ACCOUNT` | Meteora referral token account used by curve swaps |
+| `NEXT_PUBLIC_FORGE_MULTISIG_VAULT` | optional: FORGE multisig vault; when set, a curve swap is refused unless the Meteora referral account is held by it |
 
 `FORGE_JUPITER_REFERRAL_ACCOUNT`, `FORGE_PLATFORM_FEE_WALLET` and `FORGE_METEORA_REFERRAL_ACCOUNT`
-are the server-side names of the same addresses.
+are the server-side names of the same addresses. The FORGE fee accounts are read from the build-time
+`NEXT_PUBLIC_*` values only (`src/forge/trade/core-adapter.ts`, `src/forge/create/platform-fee.ts`):
+no code of the site can pass other ones. The site only trades the coins of its own two configs
+(`forge.config.json#onchain`), checked on-chain before every quote.
 
 ## API
 
@@ -82,7 +86,8 @@ nothing to the chain:
 1. the browser sends the image, the metadata and a signed wallet proof;
 2. the route validates them, uploads the files through the FORGE upload endpoint
    (`POST <FORGE API>/api/launchpads/<slug>/uploads`, presigned URLs), and builds the pool
-   transaction, reading the chain through the FORGE RPC relay;
+   transaction with `@forge/core` (`buildUserCoinLaunchTx`; a first buy pays the 0.3% FORGE
+   platform fee), reading the chain through the FORGE RPC relay;
 3. the browser verifies the transaction, the wallet signs it, and the browser sends it through the
    RPC relay and confirms it by polling `getSignatureStatuses`.
 

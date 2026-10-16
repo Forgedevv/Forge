@@ -82,6 +82,11 @@ export interface PrepareDeps {
   launchpadConfig?: string;
   /** `forge.config.json#onchain.poolCreationFeeSol` in lamports. */
   poolCreationFeeLamports?: bigint;
+  /**
+   * FORGE_PLATFORM_FEE_WALLET (`launchPlatformFeeWallet()`): the first buy pays its 0.3% fee
+   * there. Without it, a coin with a first buy is refused before anything is uploaded.
+   */
+  platformFeeWallet?: string | null;
   /** Null when the relay or the FORGE API is not configured: the route fails closed. */
   launchBuilder: LaunchBuilder | null;
   uploadClient: UploadClient | null;
@@ -208,6 +213,10 @@ export function createPrepareHandler(deps: PrepareDeps) {
     if (firstBuyLamports > BigInt(FIRST_BUY_MAX_SOL) * LAMPORTS_PER_SOL) {
       throw new HttpError(400, `First buy cannot exceed ${FIRST_BUY_MAX_SOL} SOL.`);
     }
+    if (firstBuyLamports > BigInt(0) && !deps.platformFeeWallet) {
+      // The first buy owes the FORGE platform fee and its wallet is not configured.
+      throw new HttpError(503, 'Coins with a first buy cannot be created on this site right now.');
+    }
 
     // Wallet authorization: bound to this site, this exact coin and image, fresh and single use.
     const host = (firstHeader(req.headers.host) ?? '').toLowerCase();
@@ -300,6 +309,7 @@ export function createPrepareHandler(deps: PrepareDeps) {
         launchpadConfig,
         poolCreationFeeLamports,
         referralTokenAccount: null,
+        platformFeeWallet: deps.platformFeeWallet ?? null,
       });
     } catch (error) {
       if (error instanceof VerificationError) {

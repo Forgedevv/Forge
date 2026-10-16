@@ -2,11 +2,15 @@
 import '../helpers/dom-setup';
 import { Keypair, PublicKey, type VersionedTransaction } from '@solana/web3.js';
 import { TOKEN_PROGRAM_ID } from '@solana/spl-token';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { LaunchApi } from '@/forge/create/api';
 import type { ChainClient } from '@/forge/create/chain';
 import { TxError, executeLaunch, prepareLaunch, type LaunchDeps } from '@/forge/create/flow';
-import { buildFixtureLaunch, FIXTURE_LAUNCHPAD_CONFIG } from '@/forge/create/test-fixtures';
+import {
+  buildFixtureLaunch,
+  FIXTURE_LAUNCHPAD_CONFIG,
+  FIXTURE_PLATFORM_FEE_WALLET,
+} from '@/forge/create/test-fixtures';
 import type { ValidatedCoin } from '@/forge/create/validation';
 
 const walletKp = Keypair.generate();
@@ -17,6 +21,15 @@ const coin: ValidatedCoin = {
   firstBuyLamports: BigInt(500000000),
 };
 const image = new Blob([new Uint8Array([1, 2, 3])], { type: 'image/png' });
+/** 0.3% of the 0.5 SOL first buy. */
+const PLATFORM_FEE = BigInt(1500000);
+
+beforeEach(() => {
+  vi.stubEnv('NEXT_PUBLIC_FORGE_PLATFORM_FEE_WALLET', FIXTURE_PLATFORM_FEE_WALLET.toBase58());
+});
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
 
 function setup(options: { balance?: bigint | Error; fee?: bigint } = {}) {
   const { response } = buildFixtureLaunch({
@@ -43,7 +56,7 @@ function setup(options: { balance?: bigint | Error; fee?: bigint } = {}) {
     simulateTransaction: vi.fn().mockImplementation(async (_tx: string, addresses: string[]) => {
       const balance = options.balance instanceof Error ? BigInt(10000000000) : options.balance ?? BigInt(10000000000);
       const summary = response.summary;
-      const total = BigInt(summary.poolCreationFeeLamports) + BigInt(summary.firstBuyLamports) +
+      const total = BigInt(summary.poolCreationFeeLamports) + BigInt(summary.firstBuyLamports) + BigInt(summary.platformFeeLamports) +
         BigInt(summary.estimatedNetworkFeeLamports) + BigInt(summary.accountRentLamports) + BigInt(summary.metadataFeeLamports);
       const token = Buffer.alloc(165);
       new PublicKey(response.mint).toBuffer().copy(token, 0);
@@ -92,9 +105,29 @@ describe('prepareLaunch', () => {
     });
     expect(request.tokenLogo).toMatch(/^data:image\/png;base64,/);
     expect(review.summary.totalLamports).toBe(
-      BigInt(500000000) + BigInt(10000000) + BigInt(10000) + BigInt(20000000),
+      BigInt(500000000) + PLATFORM_FEE + BigInt(10000000) + BigInt(10000) + BigInt(20000000),
     );
+    expect(review.summary.platformFeeLamports).toBe(PLATFORM_FEE);
     expect(review.insufficientBalance).toBe(false);
+  });
+
+  it('refuses a first buy before any signature when the site has no platform fee wallet', async () => {
+    vi.stubEnv('NEXT_PUBLIC_FORGE_PLATFORM_FEE_WALLET', '');
+    const { deps, api } = setup();
+    const signMessage = vi.fn(async () => new Uint8Array(64));
+    await expect(prepareLaunch(coin, image, { ...deps, signMessage })).rejects.toMatchObject({
+      code: 'prepare_failed',
+    });
+    expect(signMessage).not.toHaveBeenCalled();
+    expect(api.prepare).not.toHaveBeenCalled();
+  });
+
+  it('refuses a prepared launch paying the platform fee to another wallet', async () => {
+    vi.stubEnv('NEXT_PUBLIC_FORGE_PLATFORM_FEE_WALLET', Keypair.generate().publicKey.toBase58());
+    const { deps } = setup();
+    await expect(prepareLaunch(coin, image, deps)).rejects.toMatchObject({
+      code: 'verification_failed',
+    });
   });
 
   it('flags an insufficient balance', async () => {

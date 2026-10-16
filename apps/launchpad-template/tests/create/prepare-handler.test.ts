@@ -7,7 +7,11 @@ import { buildLaunchAuthMessage } from '@/forge/create/auth';
 import type { LaunchBuilder } from '@/forge/create/launch-builder';
 import { LaunchBuildError } from '@/forge/create/launch-builder';
 import { createPrepareHandler, type PrepareDeps } from '@/forge/create/prepare-handler';
-import { FIXTURE_LAUNCHPAD_CONFIG, buildFixtureLaunch } from '@/forge/create/test-fixtures';
+import {
+  FIXTURE_LAUNCHPAD_CONFIG,
+  FIXTURE_PLATFORM_FEE_WALLET,
+  buildFixtureLaunch,
+} from '@/forge/create/test-fixtures';
 import { UploadError, type UploadClient } from '@/forge/create/upload-client';
 import { HTML, JPEG, PNG, SVG, dataUrl } from './images';
 import { signWithKeypair } from './sign';
@@ -129,6 +133,7 @@ function setup(overrides: Partial<PrepareDeps> = {}, firstBuy = BigInt(500_000_0
     slug: 'moon',
     launchpadConfig: FIXTURE_LAUNCHPAD_CONFIG.toBase58(),
     poolCreationFeeLamports: FEE,
+    platformFeeWallet: FIXTURE_PLATFORM_FEE_WALLET.toBase58(),
     launchBuilder,
     uploadClient,
     now: () => NOW,
@@ -321,6 +326,27 @@ describe('POST /api/upload handler', () => {
       const res = await call(handle, body, { headers: { 'x-forwarded-for': `192.0.2.${i}` } });
       expect(res.statusCode, `case ${i}`).toBe(400);
     }
+  });
+
+  it('refuses a first buy without a FORGE platform fee wallet, before any upload or build', async () => {
+    for (const platformFeeWallet of [null, undefined]) {
+      const { handle, launchBuilder, uploadClient } = setup({ platformFeeWallet });
+      const res = await call(handle, signedBody());
+      expect(res.statusCode).toBe(503);
+      expect((res.body as { error: string }).error).toMatch(/first buy/);
+      expect(uploadClient.uploadCoin).not.toHaveBeenCalled();
+      expect(launchBuilder.loadConfig).not.toHaveBeenCalled();
+    }
+    // Without a first buy there is no platform fee to pay.
+    const { handle } = setup({ platformFeeWallet: null }, BigInt(0));
+    const res = await call(handle, signedBody({ firstBuy: '0' }));
+    expect(res.statusCode).toBe(200);
+  });
+
+  it('self-verifies the platform fee against its own fee wallet (500 on another one)', async () => {
+    const { handle } = setup({ platformFeeWallet: Keypair.generate().publicKey.toBase58() });
+    const res = await call(handle, signedBody());
+    expect(res.statusCode).toBe(500);
   });
 
   it('uploads nothing when the launchpad config cannot create coins', async () => {

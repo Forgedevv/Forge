@@ -1,52 +1,40 @@
 import {
   DEFAULT_FIRST_BUY_SLIPPAGE_BPS,
+  ForgeAddressError,
   LAUNCH_COIN_COMPUTE_UNITS,
+  LaunchCoinError,
   METADATA_ACCOUNT_SIZE,
   METAPLEX_CREATE_METADATA_FEE_LAMPORTS,
-  quoteConfigFromPoolConfig,
+  assertUserCoinConfig,
+  buildUserCoinLaunchTx,
+  type OnchainConfigExpectation,
 } from '@forge/core';
+import { DynamicBondingCurveClient, type PoolConfig } from '@meteora-ag/dynamic-bonding-curve-sdk';
 import {
-  DynamicBondingCurveClient,
-  type PoolConfig,
-  type SwapQuoteConfig,
-} from '@meteora-ag/dynamic-bonding-curve-sdk';
-import {
-  ACCOUNT_SIZE,
-  MINT_SIZE,
-  NATIVE_MINT,
-  TOKEN_PROGRAM_ID,
-  createAssociatedTokenAccountIdempotentInstruction,
-  getAssociatedTokenAddressSync,
-} from '@solana/spl-token';
-import {
-  ComputeBudgetProgram,
   PublicKey,
   TransactionMessage,
   VersionedTransaction,
   type Connection,
   type Keypair,
-  type TransactionInstruction,
 } from '@solana/web3.js';
-import { BN } from '@coral-xyz/anchor';
 import type { PrepareLaunchResponse } from './api';
 import { decodeTransaction } from '../tx/decode';
 import { networkFeeLamports } from '../tx/fees';
-import { ASSOCIATED_TOKEN_PROGRAM_ID, dbcPoolAddress } from '../tx/programs';
 import { MAX_FIRST_BUY_SLIPPAGE_BPS } from './verify';
 
 /**
  * LOCKED ZONE. Server-only. Builds the launch transaction of a coin created by a user on this
- * launchpad's config, with the pinned Meteora SDK (`createPoolWithFirstBuy`): the user is pool
- * creator, rent payer, fee payer and buyer; the fresh mint signs; the user signs last in the
- * browser. Every chain read goes through the FORGE RPC relay connection handed in; rent is read
- * from the cluster (`getMinimumBalanceForRentExemption`), never hardcoded.
+ * launchpad's config with `@forge/core` (`buildUserCoinLaunchTx`, PLANEXECUTE rule 6): the user is
+ * pool creator, rent payer, fee payer and buyer; the fresh mint signs; the user signs last in the
+ * browser. A first buy pays the 0.3% FORGE platform fee (one SOL transfer to
+ * `FORGE_PLATFORM_FEE_WALLET`, the last instruction, added by core). Core compares the on-chain
+ * config field by field with the launchpad config it builds (owner wallet and creation fee of
+ * this site pinned), checks the platform fee wallet, quotes the first buy and reads the rent from
+ * the cluster. Every chain read goes through the FORGE RPC relay connection handed in.
  *
- * `@forge/core` has no builder for this case yet: `buildLaunchCoinTx` is made for the FORGE-run
- * coin flow (the pool creator is the FORGE creator wallet, distinct from the owner, on a config whose
- * fee claimer is the owner), so it refuses a launchpad config and a creator equal to the buyer. This
- * module therefore keeps the SDK call, and reuses the constants and the pool config quote inputs
- * of `@forge/core`. Once core exports a user-coin builder, replace the body of `build` by it.
- * The output is checked by the same verifier as the browser (`verify.ts`) before it is returned.
+ * This module only re-encodes core's instructions as a v0 message (the format the browser
+ * verifies), signs it with the mint and maps core's summary to the wire summary. The output is
+ * checked by the same verifier as the browser (`verify.ts`) before it is returned.
  */
 
 /** Constants shared with `@forge/core` (single source of truth). */
@@ -66,7 +54,9 @@ export type LaunchBuildErrorCode =
   | 'mint_exists'
   | 'first_buy_too_large'
   | 'too_large'
-  | 'unexpected_signers';
+  | 'unexpected_signers'
+  /** FORGE_PLATFORM_FEE_WALLET is missing, invalid or not rent-exempt: no first buy possible. */
+  | 'platform_fee_unavailable';
 
 export class LaunchBuildError extends Error {
   constructor(
@@ -101,42 +91,6 @@ export interface LaunchBuilder {
   build(config: LoadedLaunchpadConfig, input: LaunchBuildInput): Promise<PrepareLaunchResponse>;
 }
 
-/** The parts of the SDK client used here (injectable in tests). */
-export interface DbcClientLike {
-  state: { getPoolConfig(config: PublicKey): Promise<PoolConfig | null> };
-  pool: {
-    getQuoteFromInputAmount(params: {
-      config: SwapQuoteConfig;
-      swapBaseForQuote: boolean;
-      amountIn: BN;
-      slippageBps?: number;
-      hasReferral?: boolean;
-      eligibleForFirstSwapWithMinFee?: boolean;
-    }): { outputAmount: BN; minimumAmountOut?: BN };
-  };
-  creator: {
-    createPoolWithFirstBuy(params: {
-      createPoolParam: {
-        name: string;
-        symbol: string;
-        uri: string;
-        payer: PublicKey;
-        poolCreator: PublicKey;
-        config: PublicKey;
-        baseMint: PublicKey;
-      };
-      firstBuyParam?: {
-        buyer: PublicKey;
-        receiver?: PublicKey;
-        buyAmount: BN;
-        minimumAmountOut: BN;
-        referralTokenAccount: PublicKey | null;
-      };
-    }): Promise<{ instructions: TransactionInstruction[] }>;
-    getProgram(): { account: { virtualPool: { size: number } } };
-  };
-}
-
 export interface LaunchBuilderOptions {
   /** Connection to the FORGE RPC relay. */
   connection: Connection;
@@ -144,39 +98,89 @@ export interface LaunchBuilderOptions {
   launchpadConfig: string;
   /** `forge.config.json#onchain.poolCreationFeeSol`, in lamports. */
   poolCreationFeeLamports: bigint;
-  client?: DbcClientLike;
+  /** `forge.config.json#onchain.ownerWallet`: the config's fee claimer and leftover receiver. */
+  ownerWallet?: string;
+  /** FORGE_PLATFORM_FEE_WALLET (`launchPlatformFeeWallet()`): recipient of the first-buy fee. */
+  platformFeeWallet: string | null;
 }
 
-const toBigInt = (value: BN | number | bigint): bigint => BigInt(value.toString());
+const toBigInt = (value: { toString(): string } | number | bigint): bigint =>
+  BigInt(value.toString());
 
-function createsAta(instructions: readonly TransactionInstruction[], ata: PublicKey): boolean {
-  return instructions.some(
-    (ix) =>
-      ix.programId.toBase58() === ASSOCIATED_TOKEN_PROGRAM_ID && ix.keys[1]?.pubkey.equals(ata),
-  );
+/** Maps a refusal of core to a builder error; anything else is a chain access failure. */
+function mapCoreError(error: unknown): unknown {
+  if (error instanceof ForgeAddressError) {
+    return new LaunchBuildError(
+      'platform_fee_unavailable',
+      'Coins with a first buy cannot be created on this site right now.',
+    );
+  }
+  if (!(error instanceof LaunchCoinError)) return error;
+  switch (error.code) {
+    case 'CONFIG_NOT_FOUND':
+      return new LaunchBuildError(
+        'config_not_found',
+        'The launchpad config was not found on-chain.',
+      );
+    case 'CONFIG_MISMATCH':
+      return /poolCreationFee is/.test(error.message)
+        ? new LaunchBuildError(
+            'creation_fee_mismatch',
+            'The on-chain creation fee differs from this site configuration.',
+          )
+        : new LaunchBuildError(
+            'config_unsupported',
+            'The launchpad config is not a FORGE launchpad config for this site.',
+          );
+    case 'POOL_EXISTS':
+    case 'MINT_EXISTS':
+      return new LaunchBuildError('mint_exists', 'The generated coin address is already in use.');
+    case 'FIRST_BUY_EXCEEDS_CURVE':
+      return new LaunchBuildError(
+        'first_buy_too_large',
+        'The first buy is larger than what the curve sells before graduation.',
+      );
+    case 'QUOTE_FAILED':
+      return new LaunchBuildError('first_buy_too_large', 'The first buy could not be quoted.');
+    case 'TX_TOO_LARGE':
+      return new LaunchBuildError(
+        'too_large',
+        'The launch transaction is too large: shorten the coin name or symbol.',
+      );
+    case 'UNEXPECTED_SIGNERS':
+      return new LaunchBuildError(
+        'unexpected_signers',
+        'The launch transaction must be signed by the wallet and the mint only.',
+      );
+    case 'PLATFORM_FEE_WALLET_NOT_READY':
+      return new LaunchBuildError(
+        'platform_fee_unavailable',
+        'Coins with a first buy cannot be created on this site right now.',
+      );
+    case 'INVALID_INPUT':
+      return new RangeError(error.message);
+    default:
+      return error;
+  }
 }
 
 export function createLaunchBuilder(options: LaunchBuilderOptions): LaunchBuilder {
   const { connection } = options;
-  const client: DbcClientLike =
-    options.client ??
-    (new DynamicBondingCurveClient(connection, 'confirmed') as unknown as DbcClientLike);
   const configKey = new PublicKey(options.launchpadConfig);
+  const expectedConfig: OnchainConfigExpectation = {
+    poolCreationFeeLamports: options.poolCreationFeeLamports,
+    ...(options.ownerWallet ? { owner: new PublicKey(options.ownerWallet) } : {}),
+  };
 
   return {
     async loadConfig() {
+      // Read only (decoded by the pinned SDK); the transaction itself is built by @forge/core.
+      const client = new DynamicBondingCurveClient(connection, 'confirmed');
       const poolConfig = await client.state.getPoolConfig(configKey);
       if (!poolConfig) {
         throw new LaunchBuildError(
           'config_not_found',
           'The launchpad config was not found on-chain.',
-        );
-      }
-      // The browser only accepts SPL coins quoted in SOL (verify.ts).
-      if (!new PublicKey(poolConfig.quoteMint).equals(NATIVE_MINT) || poolConfig.tokenType !== 0) {
-        throw new LaunchBuildError(
-          'config_unsupported',
-          'The launchpad config is not an SPL coin quoted in SOL.',
         );
       }
       const fee = toBigInt(poolConfig.poolCreationFee);
@@ -186,12 +190,16 @@ export function createLaunchBuilder(options: LaunchBuilderOptions): LaunchBuilde
           'The on-chain creation fee differs from this site configuration.',
         );
       }
+      try {
+        assertUserCoinConfig(poolConfig, expectedConfig);
+      } catch (error) {
+        throw mapCoreError(error);
+      }
       return { address: configKey, poolConfig, poolCreationFeeLamports: fee };
     },
 
     async build(config, input) {
       const wallet = new PublicKey(input.wallet);
-      const mint = input.mint.publicKey;
       const slippageBps = input.slippageBps ?? DEFAULT_FIRST_BUY_SLIPPAGE_BPS;
       if (
         !Number.isInteger(slippageBps) ||
@@ -200,100 +208,37 @@ export function createLaunchBuilder(options: LaunchBuilderOptions): LaunchBuilde
       ) {
         throw new RangeError('slippageBps out of range');
       }
-      const hasBuy = input.firstBuyLamports > BigInt(0);
-      const pool = new PublicKey(dbcPoolAddress(config.address.toBase58(), mint.toBase58()));
 
-      // A fresh mint never exists; refuse anything else rather than build on top of it.
-      const [mintInfo, poolInfo] = await connection.getMultipleAccountsInfo(
-        [mint, pool],
-        'confirmed',
-      );
-      if (mintInfo || poolInfo) {
-        throw new LaunchBuildError('mint_exists', 'The generated coin address is already in use.');
-      }
-
-      // First buy quote on the fresh pool, at the minimum fee (nothing trades before it).
-      let expectedOut = BigInt(0);
-      let minimumOut = BigInt(0);
-      if (hasBuy) {
-        let quote;
-        try {
-          quote = client.pool.getQuoteFromInputAmount({
-            config: quoteConfigFromPoolConfig(config.poolConfig),
-            swapBaseForQuote: false,
-            amountIn: new BN(input.firstBuyLamports.toString()),
-            slippageBps,
-            hasReferral: false,
-            eligibleForFirstSwapWithMinFee: true,
-          });
-        } catch (error) {
-          const text = error instanceof Error ? error.message : String(error);
-          throw new LaunchBuildError(
-            'first_buy_too_large',
-            /liquidity|complete|exceed/i.test(text)
-              ? 'The first buy is larger than what the curve sells before graduation.'
-              : 'The first buy could not be quoted.',
-          );
-        }
-        expectedOut = toBigInt(quote.outputAmount);
-        minimumOut =
-          quote.minimumAmountOut !== undefined
-            ? toBigInt(quote.minimumAmountOut)
-            : (expectedOut * BigInt(10_000 - slippageBps)) / BigInt(10_000);
-        if (expectedOut <= BigInt(0) || minimumOut <= BigInt(0) || minimumOut > expectedOut) {
-          throw new LaunchBuildError('first_buy_too_large', 'The first buy could not be quoted.');
-        }
-      }
-
-      const sdkTx = await client.creator.createPoolWithFirstBuy({
-        createPoolParam: {
+      let built;
+      try {
+        built = await buildUserCoinLaunchTx({
+          connection,
+          config: config.address,
+          wallet,
+          mint: input.mint.publicKey,
           name: input.name,
           symbol: input.symbol,
-          uri: input.metadataUri,
-          payer: wallet,
-          poolCreator: wallet,
-          config: config.address,
-          baseMint: mint,
-        },
-        ...(hasBuy
-          ? {
-              firstBuyParam: {
-                buyer: wallet,
-                receiver: wallet,
-                buyAmount: new BN(input.firstBuyLamports.toString()),
-                minimumAmountOut: new BN(minimumOut.toString()),
-                referralTokenAccount: null,
-              },
-            }
-          : {}),
-      });
-
-      const instructions: TransactionInstruction[] = [
-        ComputeBudgetProgram.setComputeUnitLimit({ units: LAUNCH_COMPUTE_UNITS }),
-      ];
-      // The SDK adds the WSOL account only when missing at build time; create it idempotently
-      // anyway so that the transaction does not depend on that account staying open.
-      const wsolAta = getAssociatedTokenAddressSync(NATIVE_MINT, wallet, true, TOKEN_PROGRAM_ID);
-      if (hasBuy && !createsAta(sdkTx.instructions, wsolAta)) {
-        instructions.push(
-          createAssociatedTokenAccountIdempotentInstruction(
-            wallet,
-            wsolAta,
-            wallet,
-            NATIVE_MINT,
-            TOKEN_PROGRAM_ID,
-          ),
-        );
+          metadataUri: input.metadataUri,
+          firstBuyLamports: input.firstBuyLamports,
+          slippageBps,
+          computeUnitLimit: LAUNCH_COMPUTE_UNITS,
+          // The fee wallet of this site's public environment, and nothing else.
+          env: { FORGE_PLATFORM_FEE_WALLET: options.platformFeeWallet ?? undefined },
+          expectedConfig,
+        });
+      } catch (error) {
+        throw mapCoreError(error);
       }
-      instructions.push(...sdkTx.instructions);
+      const { summary } = built;
 
-      const { blockhash } = await connection.getLatestBlockhash('confirmed');
+      // Same instructions, as the v0 message the browser verifies.
       const message = new TransactionMessage({
         payerKey: wallet,
-        recentBlockhash: blockhash,
-        instructions,
+        recentBlockhash: summary.recentBlockhash,
+        instructions: built.transaction.instructions,
       }).compileToV0Message();
       const tx = new VersionedTransaction(message);
+      const mint = input.mint.publicKey;
       const signers = message.staticAccountKeys.slice(0, message.header.numRequiredSignatures);
       if (signers.length !== 2 || !signers[0]?.equals(wallet) || !signers[1]?.equals(mint)) {
         throw new LaunchBuildError(
@@ -317,23 +262,10 @@ export function createLaunchBuilder(options: LaunchBuilderOptions): LaunchBuilde
       }
       if (bytes.length > MAX_TRANSACTION_BYTES) throw tooLarge();
 
-      // Costs, rent read from the cluster.
-      const rentFor = async (size: number) =>
-        BigInt(await connection.getMinimumBalanceForRentExemption(size, 'confirmed'));
-      const [poolRent, mintRent, metadataRent, tokenAccountRent] = await Promise.all([
-        rentFor(client.creator.getProgram().account.virtualPool.size),
-        rentFor(MINT_SIZE),
-        rentFor(METADATA_ACCOUNT_SIZE),
-        rentFor(ACCOUNT_SIZE),
-      ]);
       // Pool, mint, metadata, two vaults; plus the user's coin account with a first buy. The
       // wrapped SOL account is created and closed in the transaction: its rent comes back.
-      const accountRent =
-        poolRent +
-        mintRent +
-        metadataRent +
-        BigInt(2) * tokenAccountRent +
-        (hasBuy ? tokenAccountRent : BigInt(0));
+      const { costs } = summary;
+      const accountRent = costs.poolAccountsRentLamports + costs.ownerTokenAccountRentLamports;
 
       return {
         success: true,
@@ -343,13 +275,14 @@ export function createLaunchBuilder(options: LaunchBuilderOptions): LaunchBuilde
           coinName: input.name,
           coinSymbol: input.symbol,
           creatorWallet: wallet.toBase58(),
-          poolCreationFeeLamports: config.poolCreationFeeLamports.toString(),
-          firstBuyLamports: input.firstBuyLamports.toString(),
-          firstBuyExpectedTokensOut: expectedOut.toString(),
-          firstBuyMinimumTokensOut: minimumOut.toString(),
+          poolCreationFeeLamports: costs.poolCreationFeeLamports.toString(),
+          firstBuyLamports: costs.firstBuyLamports.toString(),
+          firstBuyExpectedTokensOut: summary.expectedTokensOut.toString(),
+          firstBuyMinimumTokensOut: summary.minimumTokensOut.toString(),
+          platformFeeLamports: summary.platformFeeLamports.toString(),
           estimatedNetworkFeeLamports: networkFeeLamports(decodeTransaction(tx)).toString(),
           accountRentLamports: accountRent.toString(),
-          metadataFeeLamports: METAPLEX_CREATE_METADATA_FEE_LAMPORTS.toString(),
+          metadataFeeLamports: costs.metaplexFeeLamports.toString(),
         },
       };
     },

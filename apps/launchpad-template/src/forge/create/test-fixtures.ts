@@ -14,6 +14,7 @@ import {
 import { getAssociatedTokenAddressSync, NATIVE_MINT, TOKEN_PROGRAM_ID } from '@solana/spl-token';
 import type { PrepareLaunchResponse } from './api';
 import { bytesToBase64 } from './base64';
+import { firstBuyPlatformFee } from './platform-fee';
 import {
   ASSOCIATED_TOKEN_PROGRAM_ID,
   DBC_DISCRIMINATORS,
@@ -30,6 +31,8 @@ import {
 } from '../tx/programs';
 
 export const FIXTURE_LAUNCHPAD_CONFIG = Keypair.generate().publicKey;
+/** FORGE_PLATFORM_FEE_WALLET of the fixtures (tests stub the public environment to it). */
+export const FIXTURE_PLATFORM_FEE_WALLET = Keypair.generate().publicKey;
 
 export interface FixtureTxOptions {
   payer: PublicKey;
@@ -89,6 +92,12 @@ export interface FixtureLaunchOptions {
   poolCreationFeeLamports?: bigint;
   networkFeeLamports?: bigint;
   accountRentLamports?: bigint;
+  /** Recipient of the platform fee transfer (default `FIXTURE_PLATFORM_FEE_WALLET`). */
+  platformFeeWallet?: PublicKey;
+  /** Lamports of the platform fee transfer (default: 0.3% of the first buy, rounded up). */
+  platformFeeLamports?: bigint;
+  /** Leave the platform fee transfer out (to simulate a launch that skips it). */
+  omitPlatformFee?: boolean;
 }
 
 /** A well-formed `prepare` answer: mint signed, fee payer = wallet, wallet signature missing. */
@@ -166,6 +175,15 @@ export function buildFixtureLaunch(options: FixtureLaunchOptions): {
       keys: [meta(wsol, false, true), meta(options.wallet, false, true), meta(options.wallet, true)],
       data: Buffer.from([9]),
     }));
+    if (!options.omitPlatformFee) {
+      instructions.push(
+        SystemProgram.transfer({
+          fromPubkey: options.wallet,
+          toPubkey: options.platformFeeWallet ?? FIXTURE_PLATFORM_FEE_WALLET,
+          lamports: options.platformFeeLamports ?? firstBuyPlatformFee(firstBuy),
+        }),
+      );
+    }
   }
   const message = new TransactionMessage({
     payerKey: options.wallet,
@@ -187,6 +205,7 @@ export function buildFixtureLaunch(options: FixtureLaunchOptions): {
         firstBuyLamports: String(options.firstBuyLamports),
         firstBuyExpectedTokensOut: String(expectedOut),
         firstBuyMinimumTokensOut: String(minimumOut),
+        platformFeeLamports: String(firstBuyPlatformFee(firstBuy)),
         estimatedNetworkFeeLamports: String(options.networkFeeLamports ?? BigInt(10000)),
         accountRentLamports: String(options.accountRentLamports ?? BigInt(20000000)),
         metadataFeeLamports: '0',
