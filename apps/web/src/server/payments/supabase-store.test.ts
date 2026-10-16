@@ -2,6 +2,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { describe, expect, it } from 'vitest';
 import { StoreError } from './errors';
+import { SOL_USD_PAIR, SupabasePriceReferenceStore } from './price-reference-store';
 import { parsePaymentRow } from './store';
 import { SupabasePaymentsStore } from './supabase-store';
 
@@ -40,7 +41,8 @@ function fakeDb(results: Result[]) {
       return builder;
     },
   };
-  return { store: new SupabasePaymentsStore(db as unknown as SupabaseClient), calls };
+  const client = db as unknown as SupabaseClient;
+  return { store: new SupabasePaymentsStore(client), calls, client };
 }
 
 const ROW = {
@@ -245,5 +247,58 @@ describe('parsePaymentRow', () => {
     expect(row.quoteExpiresAt).toBe(Date.parse('2026-10-09T12:02:00Z'));
     expect(() => parsePaymentRow({ ...ROW, lamports: '1.5' })).toThrow(StoreError);
     expect(() => parsePaymentRow({ ...ROW, status: 'paid' })).toThrow(StoreError);
+  });
+});
+
+describe('SupabasePriceReferenceStore (price_references, migration 0014)', () => {
+  function referenceDb(results: Result[]) {
+    const { client, calls } = fakeDb(results);
+    return { store: new SupabasePriceReferenceStore(client), calls };
+  }
+
+  it('reads the SOL/USD row, numeric as a string or a number', async () => {
+    const at = '2026-10-16T12:00:00.000Z';
+    const { store, calls } = referenceDb([
+      { data: { price: '152.25000000', accepted_at: at } },
+      { data: { price: 150, accepted_at: at } },
+      { data: null },
+      { data: { price: 'abc', accepted_at: at } },
+    ]);
+    expect(await store.load()).toEqual({ price: 152.25, at: Date.parse(at) });
+    expect(await store.load()).toEqual({ price: 150, at: Date.parse(at) });
+    expect(await store.load()).toBeNull();
+    expect(await store.load()).toBeNull();
+    expect(calls[0]).toEqual({
+      table: 'price_references',
+      ops: [
+        ['select', ['price, accepted_at']],
+        ['eq', ['pair', SOL_USD_PAIR]],
+        ['maybeSingle', []],
+      ],
+    });
+  });
+
+  it('upserts the accepted rate on the pair, and throws a StoreError with the code only', async () => {
+    const at = Date.parse('2026-10-16T12:00:00.000Z');
+    const { store, calls } = referenceDb([
+      {},
+      { error: { code: '42P01', message: 'relation does not exist' } },
+    ]);
+    await store.save({ price: 151.5, at });
+    expect(calls[0]!.ops).toEqual([
+      [
+        'upsert',
+        [
+          { pair: 'SOL/USD', price: 151.5, accepted_at: '2026-10-16T12:00:00.000Z' },
+          { onConflict: 'pair' },
+        ],
+      ],
+    ]);
+    const failed = await store.save({ price: 151.5, at }).catch((e: unknown) => e);
+    expect(failed).toBeInstanceOf(StoreError);
+    expect((failed as Error).message).toContain('42P01');
+    expect((failed as Error).message).not.toContain('relation');
+    const broken = referenceDb([{ error: { code: '42P01' } }]);
+    await expect(broken.store.load()).rejects.toBeInstanceOf(StoreError);
   });
 });

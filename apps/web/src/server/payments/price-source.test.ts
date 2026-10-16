@@ -8,7 +8,10 @@ import {
   JUPITER_PRICE_URL,
   JupiterPriceSource,
   PRICE_REFERENCE_MAX_AGE_MS,
+  PRICE_REFERENCE_SAVE_INTERVAL_MS,
   WSOL_MINT,
+  type PriceReference,
+  type PriceReferenceStore,
   type SolUsdPriceSource,
 } from './price-source';
 import { DEFAULT_SOL_USD_PRICE_GUARD } from './pricing';
@@ -165,6 +168,103 @@ describe('GuardedPriceSource', () => {
     // Without a quote for longer than the reference lifetime, the bounds alone apply again.
     now += PRICE_REFERENCE_MAX_AGE_MS + 1;
     await expect(source.getSolUsdPrice()).resolves.toBe(260);
+  });
+
+  /** In-memory reference store; `failing` makes both operations throw. */
+  function memoryReferences(initial: PriceReference | null = null) {
+    const state = {
+      stored: initial,
+      failing: false,
+      loads: 0,
+      saves: [] as PriceReference[],
+    };
+    const store: PriceReferenceStore = {
+      load: async () => {
+        state.loads += 1;
+        if (state.failing) throw new Error('database down');
+        return state.stored;
+      },
+      save: async (reference) => {
+        if (state.failing) throw new Error('database down');
+        state.saves.push({ ...reference });
+        state.stored = { ...reference };
+      },
+    };
+    return { state, store };
+  }
+
+  it('starts a fresh instance from the stored reference (cold start)', async () => {
+    const now = 10 * PRICE_REFERENCE_MAX_AGE_MS;
+    const refs = memoryReferences({ price: 150, at: now - 30 * 60_000 });
+    const refused: [string, number, number | null][] = [];
+    const fresh = new GuardedPriceSource(scripted([240, 160]), DEFAULT_SOL_USD_PRICE_GUARD, {
+      now: () => now,
+      referenceStore: refs.store,
+      onRefused: (e) => refused.push([e.reason, e.price, e.reference]),
+    });
+    // +60% from the stored 150: refused even though this instance accepted nothing yet.
+    await expect(fresh.getSolUsdPrice()).rejects.toBeInstanceOf(PriceUnavailableError);
+    expect(refused).toEqual([['deviation', 240, 150]]);
+    await expect(fresh.getSolUsdPrice()).resolves.toBe(160);
+    // Read once; the accepted rate is kept for the next instances.
+    expect(refs.state.loads).toBe(1);
+    expect(refs.state.saves).toEqual([{ price: 160, at: now }]);
+  });
+
+  it('ignores a stored reference older than the expiry, from the future or out of bounds', async () => {
+    const now = 10 * PRICE_REFERENCE_MAX_AGE_MS;
+    for (const stored of [
+      { price: 150, at: now - PRICE_REFERENCE_MAX_AGE_MS - 1 },
+      { price: 150, at: now + 60_000 },
+      { price: 5, at: now - 60_000 },
+      { price: Number.NaN, at: now - 60_000 },
+    ]) {
+      const refs = memoryReferences(stored);
+      const fresh = new GuardedPriceSource(scripted([240]), DEFAULT_SOL_USD_PRICE_GUARD, {
+        now: () => now,
+        referenceStore: refs.store,
+      });
+      await expect(fresh.getSolUsdPrice(), JSON.stringify(stored)).resolves.toBe(240);
+    }
+  });
+
+  it('works from memory when the store is unavailable, with a warning', async () => {
+    let now = 0;
+    const refs = memoryReferences({ price: 150, at: 0 });
+    refs.state.failing = true;
+    const errors: string[] = [];
+    const source = new GuardedPriceSource(scripted([240, 400, 250]), DEFAULT_SOL_USD_PRICE_GUARD, {
+      now: () => now,
+      referenceStore: refs.store,
+      onStoreError: (operation) => errors.push(operation),
+    });
+    // Current behaviour: the first rate of the instance is accepted and becomes its reference.
+    await expect(source.getSolUsdPrice()).resolves.toBe(240);
+    expect(errors).toEqual(['load', 'save']);
+    // The move limit then applies from memory, and the store is not read again.
+    await expect(source.getSolUsdPrice()).rejects.toBeInstanceOf(PriceUnavailableError);
+    now += PRICE_REFERENCE_SAVE_INTERVAL_MS;
+    await expect(source.getSolUsdPrice()).resolves.toBe(250);
+    expect(refs.state.loads).toBe(1);
+    expect(errors).toEqual(['load', 'save', 'save']);
+  });
+
+  it('writes the accepted rate at most once per interval', async () => {
+    let now = 0;
+    const refs = memoryReferences();
+    const source = new GuardedPriceSource(scripted([150, 151, 152]), DEFAULT_SOL_USD_PRICE_GUARD, {
+      now: () => now,
+      referenceStore: refs.store,
+    });
+    await source.getSolUsdPrice();
+    now += PRICE_REFERENCE_SAVE_INTERVAL_MS - 1;
+    await source.getSolUsdPrice();
+    now += 1;
+    await source.getSolUsdPrice();
+    expect(refs.state.saves).toEqual([
+      { price: 150, at: 0 },
+      { price: 152, at: PRICE_REFERENCE_SAVE_INTERVAL_MS },
+    ]);
   });
 
   it('passes the errors of its source through', async () => {

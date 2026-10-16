@@ -98,6 +98,24 @@ export class FixedPriceSource implements SolUsdPriceSource {
  */
 export const PRICE_REFERENCE_MAX_AGE_MS = 60 * 60_000;
 
+/** The accepted rate is written to the durable store at most this often (per instance). */
+export const PRICE_REFERENCE_SAVE_INTERVAL_MS = 60_000;
+
+/** A rate accepted by the guard and when (epoch ms). */
+export interface PriceReference {
+  price: number;
+  at: number;
+}
+
+/**
+ * Durable copy of the last accepted rate, shared by the server instances (price-reference-store.ts:
+ * `price_references`, migration 0014). Both methods may throw: the guard then works from memory.
+ */
+export interface PriceReferenceStore {
+  load(): Promise<PriceReference | null>;
+  save(reference: PriceReference): Promise<void>;
+}
+
 export interface GuardedPriceSourceOptions {
   now?: () => number;
   referenceMaxAgeMs?: number;
@@ -107,16 +125,30 @@ export interface GuardedPriceSourceOptions {
     price: number;
     reference: number | null;
   }) => void;
+  /**
+   * Seeds the reference of a fresh instance (cold start) and keeps the accepted rate. Without it,
+   * or while it fails, the reference lives in memory only.
+   */
+  referenceStore?: PriceReferenceStore;
+  /** Called when the reference store fails (the guard then works from memory). */
+  onStoreError?: (operation: 'load' | 'save', error: unknown) => void;
 }
 
 /**
  * The price every quote goes through (default-handlers.ts): the inner source's rate must be within
- * the configured bounds and within `maxDeviationPct` of the last accepted rate (kept in memory,
- * per server instance). Otherwise PriceUnavailableError: the route answers a retryable 503 and no
- * quote is handed out (fail closed). A refused rate never becomes the reference.
+ * the configured bounds and within `maxDeviationPct` of the last accepted rate. Otherwise
+ * PriceUnavailableError: the route answers a retryable 503 and no quote is handed out (fail
+ * closed). A refused rate never becomes the reference.
+ *
+ * The reference is kept in memory and, when a `referenceStore` is given, durably: a fresh server
+ * instance (cold start) starts from the stored rate when it is younger than `referenceMaxAgeMs`,
+ * so the move limit also holds for the first quote of an instance. When the store cannot be read,
+ * the first accepted rate of the instance becomes its reference, as without a store (warning).
  */
 export class GuardedPriceSource implements SolUsdPriceSource {
-  private reference: { price: number; at: number } | null = null;
+  private reference: PriceReference | null = null;
+  private seeded = false;
+  private lastSavedAt: number | null = null;
   private readonly now: () => number;
   private readonly referenceMaxAgeMs: number;
 
@@ -129,7 +161,48 @@ export class GuardedPriceSource implements SolUsdPriceSource {
     this.referenceMaxAgeMs = options.referenceMaxAgeMs ?? PRICE_REFERENCE_MAX_AGE_MS;
   }
 
+  /** Cold start: the stored reference, when sane and newer than the one in memory. */
+  private async seed(): Promise<void> {
+    const store = this.options.referenceStore;
+    if (!store || this.seeded || this.reference !== null) return;
+    let stored: PriceReference | null;
+    try {
+      stored = await store.load();
+    } catch (error) {
+      this.options.onStoreError?.('load', error);
+      return;
+    }
+    this.seeded = true;
+    if (!stored || !Number.isFinite(stored.at) || stored.at > this.now()) return;
+    try {
+      assertSaneSolUsdPrice(stored.price, this.guard);
+    } catch {
+      return;
+    }
+    // A concurrent call may have accepted a rate while the store was read: keep the newer one.
+    const current = this.reference as PriceReference | null;
+    if (current === null || stored.at > current.at) this.reference = { ...stored };
+  }
+
+  private async keep(reference: PriceReference): Promise<void> {
+    const store = this.options.referenceStore;
+    if (!store) return;
+    if (
+      this.lastSavedAt !== null &&
+      reference.at - this.lastSavedAt < PRICE_REFERENCE_SAVE_INTERVAL_MS
+    ) {
+      return;
+    }
+    try {
+      await store.save(reference);
+      this.lastSavedAt = reference.at;
+    } catch (error) {
+      this.options.onStoreError?.('save', error);
+    }
+  }
+
   async getSolUsdPrice(): Promise<number> {
+    await this.seed();
     const price = await this.inner.getSolUsdPrice();
     const now = this.now();
     const reference =
@@ -152,6 +225,7 @@ export class GuardedPriceSource implements SolUsdPriceSource {
       }
     }
     this.reference = { price, at: now };
+    await this.keep(this.reference);
     return price;
   }
 }
