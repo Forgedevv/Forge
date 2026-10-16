@@ -279,6 +279,43 @@ describe("creator claim policy against core's real transaction", () => {
       },
       /more than one transfer/,
     ],
+    [
+      'no self-transfer while the account is closed to the fee payer',
+      (tx) => {
+        // Without it, a claim that collected less than expected would leave the difference
+        // with the payer: the forward is fixed, the close is not.
+        tx.instructions.splice(3, 1);
+      },
+      /self-transfer required/,
+    ],
+    [
+      'a claim capped above the claimed amount',
+      (tx) => {
+        const ix = tx.instructions[2]!;
+        const data = Buffer.from(ix.data);
+        data.writeBigUInt64LE(TEST2_CREATOR_QUOTE + 1n, 16);
+        ix.data = data;
+      },
+      /claim cap differs/,
+    ],
+    [
+      'an uncapped claim in the exact layout',
+      (tx) => {
+        const ix = tx.instructions[2]!;
+        const data = Buffer.from(ix.data);
+        data.writeBigUInt64LE((1n << 64n) - 1n, 16);
+        ix.data = data;
+      },
+      /claim cap differs/,
+    ],
+    [
+      'a claim instruction without its arguments',
+      (tx) => {
+        const ix = tx.instructions[2]!;
+        ix.data = Buffer.from(ix.data).subarray(0, 8);
+      },
+      /data too short/,
+    ],
   ];
   for (const [name, deviate, rule] of deviations) {
     it(`refuses ${name}`, async () => {
@@ -288,4 +325,24 @@ describe("creator claim policy against core's real transaction", () => {
       expect(() => assertCreatorClaimTx(tx, expected)).toThrow(rule);
     });
   }
+
+  it('keeps the self-transfer optional when the creator pays its own claim (closed to itself)', async () => {
+    const { tx, expected } = await build(FORGE_CREATOR, vault);
+    tx.instructions.splice(3, 1);
+    expect(shape(tx)).toEqual(['ata', 'ata', 'claim', 'token:close', 'system:transfer']);
+    expect(() => assertCreatorClaimTx(tx, expected)).not.toThrow();
+  });
+
+  it('reads the claim cap: exact in the forwarded layouts, uncapped when closed to the receiver', async () => {
+    const payer = Keypair.generate().publicKey;
+    const exact = await build(payer, vault);
+    expect(Buffer.from(exact.tx.instructions[2]!.data).readBigUInt64LE(16)).toBe(
+      TEST2_CREATOR_QUOTE,
+    );
+    const uncapped = await build(vault, vault);
+    expect(Buffer.from(uncapped.tx.instructions[2]!.data).readBigUInt64LE(16)).toBe(
+      (1n << 64n) - 1n,
+    );
+    expect(() => assertCreatorClaimTx(uncapped.tx, uncapped.expected)).not.toThrow();
+  });
 });

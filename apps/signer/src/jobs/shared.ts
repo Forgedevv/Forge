@@ -810,15 +810,41 @@ export function parsePositiveIntEnv(
 export type PaymentMinimums = Readonly<Record<PaymentKind, bigint>>;
 
 /**
- * Defaults of SIGNER_MIN_CREATION_PAYMENT_LAMPORTS / SIGNER_MIN_MODIFICATION_PAYMENT_LAMPORTS:
- * 0.02 SOL for a creation (what a launchpad costs the payer wallet in rent, and about $33 up to
- * SOL = $1 650), 0.003 SOL for a modification ($5.5 up to SOL = $1 833). A row below the floor
- * cannot come from a real quote: the routes refuse it before any payer spend and the refunds job
- * leaves it to manual handling.
+ * The most dollars per SOL the web accepts when it quotes a payment (its SOL_USD_PRICE_MAX
+ * default, `DEFAULT_SOL_USD_PRICE_GUARD.max` in apps/web): no real quote is made above it.
+ */
+export const MAX_QUOTED_SOL_USD_PRICE = 2_000;
+
+/** Margin under the smallest possible quote kept by the default floors, in basis points. */
+export const PAYMENT_FLOOR_MARGIN_BPS = 9_000;
+
+/**
+ * Lamports a payment of `usd` dollars is worth at `maxSolUsdPrice` dollars per SOL, times the
+ * margin: the smallest amount a real quote can produce, with room for rounding.
+ */
+export function paymentFloorLamports(
+  usd: number,
+  maxSolUsdPrice: number,
+  marginBps: number = PAYMENT_FLOOR_MARGIN_BPS,
+): bigint {
+  if (!(usd > 0) || !Number.isInteger(maxSolUsdPrice) || maxSolUsdPrice <= 0) {
+    throw new JobError('CONFIG', 'invalid payment floor inputs');
+  }
+  const cents = BigInt(Math.round(usd * 100));
+  return (cents * 1_000_000_000n * BigInt(marginBps)) / (100n * BigInt(maxSolUsdPrice) * 10_000n);
+}
+
+/**
+ * Defaults of SIGNER_MIN_CREATION_PAYMENT_LAMPORTS / SIGNER_MIN_MODIFICATION_PAYMENT_LAMPORTS,
+ * derived from the price of each kind at the web's highest quotable SOL price ($2 000) with a
+ * 10% margin: about 0.01485 SOL for a creation ($33), 0.002475 SOL for a modification ($5.5).
+ * A row below the floor cannot come from a real quote: the routes refuse it before any payer
+ * spend and the refunds job leaves it to manual handling. A fixed floor would start refusing
+ * legitimate payments once SOL rose past the price it was computed at.
  */
 export const DEFAULT_MIN_PAYMENT_LAMPORTS: PaymentMinimums = {
-  creation: 20_000_000n,
-  modification: 3_000_000n,
+  creation: paymentFloorLamports(PRICING.creationUsd, MAX_QUOTED_SOL_USD_PRICE),
+  modification: paymentFloorLamports(PRICING.modificationUsd, MAX_QUOTED_SOL_USD_PRICE),
 };
 
 /** Dollar price every confirmed payment row of a kind must carry (`payments.usd_amount`). */
@@ -1034,11 +1060,15 @@ function isTokenProgram(id: PublicKey): boolean {
  *   c. the creator's temporary WSOL ATA, closed (after the claim) to the creator OR to the fee
  *      payer, then exactly one System transfer from that close destination to the receiver of
  *      exactly `claimedQuoteLamports`, after the close (core's "exact" layout when the receiver
- *      is not the payer: on devnet the signer's payer wallet pays, so the close goes to it). At
- *      most one SPL Token transfer is allowed, between the claim and the close: core's
- *      self-transfer of exactly `claimedQuoteLamports` on the temporary account (source,
- *      destination = that account, authority = creator), which makes the claim fail on-chain
- *      unless the full amount was collected.
+ *      is not the payer: on devnet the signer's payer wallet pays, so the close goes to it). The
+ *      claim instruction's `max_quote_amount` must be exactly `claimedQuoteLamports` (a larger
+ *      cap would let more than the forwarded amount reach the close destination). At most one
+ *      SPL Token transfer is allowed, between the claim and the close: core's self-transfer of
+ *      exactly `claimedQuoteLamports` on the temporary account (source, destination = that
+ *      account, authority = creator), which makes the claim fail on-chain unless the full
+ *      amount was collected. It is required when the close goes to a fee payer other than the
+ *      creator (the payer would otherwise keep whatever the claim collected short), optional
+ *      when the creator pays its own claim.
  */
 export function assertCreatorClaimTx(tx: Transaction, expected: CreatorClaimExpectation): void {
   const signerSet = [expected.creator, expected.feePayer];
@@ -1049,6 +1079,8 @@ export function assertCreatorClaimTx(tx: Transaction, expected: CreatorClaimExpe
   let claimIndex = -1;
   let tokenB: PublicKey | undefined;
   let tokenBProgram: PublicKey | undefined;
+  /** The claim's `max_quote_amount` argument (u64 after `max_base_amount`). */
+  let claimMaxQuote: bigint | undefined;
   const closes: Array<{ index: number; account: PublicKey; destination: PublicKey }> = [];
   const transfers: Array<{ index: number; from: PublicKey; to: PublicKey; lamports: bigint }> = [];
   const tokenTransfers: Array<{
@@ -1073,6 +1105,9 @@ export function assertCreatorClaimTx(tx: Transaction, expected: CreatorClaimExpe
       }
       if (claimIndex !== -1) policy('more than one claim instruction');
       claimIndex = index;
+      // Arguments: max_base_amount (u64), max_quote_amount (u64).
+      if (data.length < 24) policy('claim instruction data too short');
+      claimMaxQuote = data.readBigUInt64LE(16);
       if (!key(CLAIM_IX.pool).equals(expected.pool)) policy('claim on an unexpected pool');
       if (!key(CLAIM_IX.baseMint).equals(expected.baseMint)) policy('unexpected base mint');
       if (!key(CLAIM_IX.quoteMint).equals(NATIVE_MINT)) policy('quote mint is not SOL');
@@ -1178,9 +1213,16 @@ export function assertCreatorClaimTx(tx: Transaction, expected: CreatorClaimExpe
     return;
   }
   // c. Closed to the creator or to the fee payer, which forwards the claimed lamports to the
-  //    receiver; the optional self-transfer pins the claimed amount on-chain.
+  //    receiver; the self-transfer pins the claimed amount on-chain, and the claim's cap keeps
+  //    the close destination from receiving more than it forwards.
   if (expected.claimedQuoteLamports === undefined) policy('claimed amount unknown');
   const claimed = expected.claimedQuoteLamports;
+  if (claimMaxQuote !== claimed) policy('claim cap differs from the claimed amount');
+  const closedToPayer =
+    close.destination.equals(expected.feePayer) && !expected.feePayer.equals(expected.creator);
+  if (closedToPayer && !selfTransfer) {
+    policy('self-transfer required when the account is closed to the fee payer');
+  }
   if (selfTransfer) {
     if (!selfTransfer.source.equals(creatorTemp) || !selfTransfer.destination.equals(creatorTemp)) {
       policy('token transfer between unexpected accounts');
