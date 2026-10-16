@@ -16,6 +16,28 @@ export const formatSol: WebClient['formatSol'] = (lamports, opts = {}) => {
     return `<${(1 / 10 ** digits).toFixed(digits)}${unit}`;
   return `${whole}${fraction ? `.${fraction}` : ''}${unit}`;
 };
+
+/** Decimals of $FORGE, like every FORGE coin (FORGE_TOKEN_SETTINGS.tokenBaseDecimal, @forge/core). */
+export const FORGE_TOKEN_DECIMALS = 6;
+
+/**
+ * Raw token units (a decimal string, as the API sends them) in whole tokens, for display only:
+ * integer math on the digits, never a float. Exact: every significant fraction digit is kept,
+ * trailing zeros are dropped and thousands are grouped (`1234500000` with 6 decimals is
+ * `1,234.5`). Anything but digits shows a dash.
+ */
+export function formatTokenAmount(raw: string, decimals: number): string {
+  if (!/^\d+$/.test(raw) || !Number.isInteger(decimals) || decimals < 0 || decimals > 18) {
+    return '—';
+  }
+  const value = BigInt(raw);
+  const base = 10n ** BigInt(decimals);
+  const whole = (value / base).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  const fraction =
+    decimals === 0 ? '' : (value % base).toString().padStart(decimals, '0').replace(/0+$/, '');
+  return fraction ? `${whole}.${fraction}` : whole;
+}
+
 export const formatUsd: WebClient['formatUsd'] = (value) =>
   new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(value);
 export const shortAddress: WebClient['shortAddress'] = (value) =>

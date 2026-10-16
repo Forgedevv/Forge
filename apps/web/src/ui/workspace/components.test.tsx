@@ -224,6 +224,11 @@ describe('screen interactions', () => {
       </GatingScreen>,
     );
     expect(screen.queryByText('Chat unlocked')).not.toBeInTheDocument();
+    // Raw units from the API (required 1000000, balance 250000) shown in whole $FORGE.
+    expect(screen.getByText('1 $FORGE')).toBeInTheDocument();
+    expect(screen.getByText('0.25 $FORGE')).toBeInTheDocument();
+    expect(screen.queryByText('250000')).not.toBeInTheDocument();
+    expect(screen.queryByText(/raw token units/)).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Recheck balance' }));
     await advance(500);
     fireEvent.click(screen.getByRole('button', { name: /Continue to the chat/ }));

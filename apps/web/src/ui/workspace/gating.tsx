@@ -4,6 +4,12 @@ import { useState, type ReactNode } from 'react';
 import { useWebClient } from './provider';
 import { Button, Card, ErrorNotice, Heading, Loading, readableError } from './components';
 import { gatingCopy as copy } from './content/gating';
+import { FORGE_TOKEN_DECIMALS, formatTokenAmount } from './format';
+
+/** A raw $FORGE amount of the gating answer, in whole tokens (display only). */
+function forgeAmount(raw: string): string {
+  return `${formatTokenAmount(raw, FORGE_TOKEN_DECIMALS)} ${copy.unit}`;
+}
 
 export function GatingScreen({ children }: { children?: ReactNode }) {
   const { gating, loading, recheck } = useWebClient().useGating();
@@ -22,14 +28,13 @@ export function GatingScreen({ children }: { children?: ReactNode }) {
             <div className="fw-balance-grid">
               <div>
                 <span>{copy.required}</span>
-                <strong>{gating.required}</strong>
+                <strong>{forgeAmount(gating.required)}</strong>
               </div>
               <div>
                 <span>{copy.balance}</span>
-                <strong>{gating.balance}</strong>
+                <strong>{forgeAmount(gating.balance)}</strong>
               </div>
             </div>
-            <p className="fw-caption">{copy.units}</p>
             {!gating.enabled && <p className="fw-notice">{copy.disabled}</p>}
             {gating.ok ? (
               <Button onClick={() => setContinued(true)}>{copy.continue} ↗</Button>

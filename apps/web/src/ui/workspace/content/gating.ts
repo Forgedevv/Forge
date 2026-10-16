@@ -11,5 +11,5 @@ export const gatingCopy = {
   recheck: 'Recheck balance',
   acquire: 'How to get $FORGE',
   continue: 'Continue to the chat',
-  units: 'Balances are shown in raw token units until token display metadata is available.',
+  unit: '$FORGE',
 } as const;
