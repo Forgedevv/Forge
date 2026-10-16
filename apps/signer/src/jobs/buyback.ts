@@ -924,6 +924,15 @@ function sameState(a: AccountStateLite | null, b: AccountStateLite | null): bool
   return a.owner === b.owner && a.lamports === b.lamports && a.data.equals(b.data);
 }
 
+/**
+ * A simulation reports an account closed by the transaction as a zero-lamport, empty, system-owned
+ * stub rather than `null` (devnet finding): that is a missing account.
+ */
+export function closedAsMissing(state: AccountStateLite | null): AccountStateLite | null {
+  if (state && state.lamports === 0n && state.data.length === 0) return null;
+  return state;
+}
+
 /** The owner's wSOL ATA and $FORGE ATAs (both token programs): the only accounts a buy may create. */
 export function buyCreatableAccounts(owner: PublicKey, forgeMint: PublicKey): string[] {
   return [
@@ -963,7 +972,12 @@ export function compareBuybackStates(
   let forgePre = 0n;
   let forgePost = 0n;
   let sawOwner = false;
-  for (const d of deltas) {
+  for (const raw of deltas) {
+    const d: AccountDelta = {
+      address: raw.address,
+      pre: closedAsMissing(raw.pre),
+      post: closedAsMissing(raw.post),
+    };
     if (d.address === owner) {
       sawOwner = true;
       if (!d.pre || !d.post || d.post.owner !== system || d.post.data.length !== 0) {

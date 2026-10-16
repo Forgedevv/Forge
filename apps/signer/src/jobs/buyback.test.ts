@@ -411,6 +411,18 @@ describe('compareBuybackStates', () => {
     expect(compareBuybackStates(bot.toBase58(), expected, 10_000n, good())).toBeNull();
   });
 
+  it('treats the closed wrapped SOL account reported as a zero-lamport stub as gone', () => {
+    const wsolAta = getAssociatedTokenAddressSync(NATIVE_MINT, bot, true, TOKEN_PROGRAM_ID);
+    const closedStub = { owner: SystemProgram.programId.toBase58(), lamports: 0n, data: Buffer.alloc(0) };
+    const deltas: AccountDelta[] = [...good(), { address: wsolAta.toBase58(), pre: null, post: closedStub }];
+    expect(compareBuybackStates(bot.toBase58(), expected, 10_000n, deltas)).toBeNull();
+    // Any other account left as a stub is still a change.
+    const other = { address: randomAddress().toBase58(), pre: tokenAccount(randomAddress(), bot, 5n), post: closedStub };
+    expect(compareBuybackStates(bot.toBase58(), expected, 10_000n, [...good(), other])).toBe(
+      'token_account_changed',
+    );
+  });
+
   it('refuses a swap that pays out another mint', () => {
     const other = randomAddress();
     const otherAta = getAssociatedTokenAddressSync(other, bot, true, TOKEN_PROGRAM_ID);

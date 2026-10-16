@@ -1535,7 +1535,12 @@ export function compareSwapStates(
   let inputPre = 0n;
   let inputPost = 0n;
   let sawOwner = false;
-  for (const d of deltas) {
+  for (const raw of deltas) {
+    // An account closed by the swap (the temporary wrapped SOL account) comes back from the
+    // simulation as a zero-lamport, empty, system-owned stub: a missing account.
+    const closed = (s: AccountStateLite | null) =>
+      s && s.lamports === 0n && s.data.length === 0 ? null : s;
+    const d: AccountDelta = { address: raw.address, pre: closed(raw.pre), post: closed(raw.post) };
     if (d.address === owner) {
       sawOwner = true;
       if (!d.pre || !d.post || d.post.owner !== system || d.post.data.length !== 0) {
