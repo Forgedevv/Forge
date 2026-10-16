@@ -2,7 +2,12 @@
 import { createHmac, generateKeyPairSync, sign, type KeyObject } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { base58Decode, base58Encode } from './base58';
-import { getSessionSecret, getSupabaseJwtSecret, resolveSignInScheme } from './config';
+import {
+  getSessionSecret,
+  getSupabaseJwtSecret,
+  isAllowedOrigin,
+  resolveSignInScheme,
+} from './config';
 import {
   handleLogout,
   handleNonce,
@@ -409,6 +414,44 @@ describe('sign-in', () => {
     );
     expect(crossSite.status).toBe(403);
     expect((await handleLogout(post('/api/auth/logout', {}, { origin: 'null' }))).status).toBe(403);
+  });
+
+  it('compares the whole origin (scheme, host and port) with the app URL', async () => {
+    const wallet = newWallet();
+    const nonce = async (origin: string) =>
+      (await handleNonce(post('/api/auth/nonce', { wallet: wallet.address }, { origin }))).status;
+    // Same host, another scheme or port: another site.
+    expect(await nonce('http://forge.app')).toBe(403);
+    expect(await nonce('https://forge.app:8443')).toBe(403);
+    expect(await nonce('https://forge.app.evil.example')).toBe(403);
+    // Not a canonical origin (browsers send `scheme://host[:port]`, lower case).
+    expect(await nonce('https://forge.app/')).toBe(403);
+    expect(await nonce('https://FORGE.app')).toBe(403);
+    expect(await nonce('javascript:alert(1)')).toBe(403);
+    expect(await nonce(APP)).toBe(200);
+    expect(await nonce('https://forge.app:443')).toBe(403);
+
+    // An app served on an explicit port: exactly that port.
+    vi.stubEnv('NEXT_PUBLIC_APP_URL', 'https://forge.app:8443');
+    expect(await nonce('https://forge.app:8443')).toBe(200);
+    expect(await nonce(APP)).toBe(403);
+    vi.stubEnv('NEXT_PUBLIC_APP_URL', APP);
+
+    // Local origins outside production only.
+    expect(await nonce('http://localhost:3000')).toBe(200);
+    expect(await nonce('http://127.0.0.1:5173')).toBe(200);
+    vi.stubEnv('NODE_ENV', 'production');
+    expect(await nonce('http://localhost:3000')).toBe(403);
+    expect(await nonce(APP)).toBe(200);
+  });
+
+  it('isAllowedOrigin matches the app origin exactly', () => {
+    expect(isAllowedOrigin(APP)).toBe(true);
+    expect(isAllowedOrigin('http://forge.app')).toBe(false);
+    expect(isAllowedOrigin('https://forge.app:444')).toBe(false);
+    expect(isAllowedOrigin('https://sub.forge.app')).toBe(false);
+    expect(isAllowedOrigin('null')).toBe(false);
+    expect(isAllowedOrigin('')).toBe(false);
   });
 });
 

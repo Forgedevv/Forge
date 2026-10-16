@@ -74,6 +74,26 @@ export function isAllowedHost(host: string): boolean {
 }
 
 /**
+ * Whether `origin` (a request Origin header) may make state-changing requests: exactly the origin
+ * of NEXT_PUBLIC_APP_URL (scheme, host and port), plus http(s) local origins outside production.
+ * The header must be a canonical origin (`scheme://host[:port]`, as browsers send it): another
+ * scheme or port on the same host is a different site (e.g. a plain-http page or another service
+ * of the same host) and is refused.
+ */
+export function isAllowedOrigin(origin: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(origin);
+  } catch {
+    return false;
+  }
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') return false;
+  if (url.origin !== origin) return false;
+  if (url.origin === getAppUrl().origin) return true;
+  return process.env.NODE_ENV !== 'production' && isLocalHostname(url.hostname);
+}
+
+/**
  * Domain shown in the sign-in message: the request host when it is allowed, otherwise the
  * host of NEXT_PUBLIC_APP_URL. Never an arbitrary client-supplied value.
  */

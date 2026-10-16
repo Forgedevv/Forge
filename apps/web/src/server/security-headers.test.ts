@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest';
 import nextConfig from '../../next.config';
-import { buildCspDirectives, originOf, securityHeaders } from './security-headers';
+import { buildCspDirectives, HSTS_VALUE, originOf, securityHeaders } from './security-headers';
 
 const ENV = {
   NEXT_PUBLIC_APP_URL: 'https://forge.example/app',
@@ -24,6 +24,25 @@ describe('securityHeaders', () => {
     expect(header(headers, 'Permissions-Policy')).toBe(
       'camera=(), microphone=(), geolocation=(), payment=()',
     );
+  });
+
+  it('sends Strict-Transport-Security on https deployments only', () => {
+    expect(header(securityHeaders(false, ENV), 'Strict-Transport-Security')).toBe(
+      'max-age=31536000; includeSubDomains',
+    );
+    expect(HSTS_VALUE).toBe('max-age=31536000; includeSubDomains');
+    // Never in development, for a plain-http app URL (a local production build) or without one.
+    expect(header(securityHeaders(true, ENV), 'Strict-Transport-Security')).toBeUndefined();
+    for (const url of ['http://localhost:3000', 'http://forge.example', 'not a url', '']) {
+      expect(
+        header(
+          securityHeaders(false, { ...ENV, NEXT_PUBLIC_APP_URL: url }),
+          'Strict-Transport-Security',
+        ),
+        url,
+      ).toBeUndefined();
+    }
+    expect(header(securityHeaders(false, {}), 'Strict-Transport-Security')).toBeUndefined();
   });
 
   it('reports (without enforcing) the source allowlist of the app', () => {

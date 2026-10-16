@@ -2,7 +2,8 @@
  * HTTP security headers of the FORGE site, applied to every route by next.config.ts.
  *
  * Enforced: framing is forbidden (`frame-ancestors 'none'` and X-Frame-Options DENY), no MIME
- * sniffing, a strict referrer policy and a minimal Permissions-Policy.
+ * sniffing, a strict referrer policy, a minimal Permissions-Policy and, on https deployments,
+ * Strict-Transport-Security (one year, subdomains included).
  *
  * Content-Security-Policy-Report-Only: the full source allowlist (scripts, connections, frames,
  * images) is reported by browsers but not enforced yet, so that a missing origin shows up as a
@@ -92,6 +93,23 @@ export function serializeCsp(directives: Directives): string {
     .join('; ');
 }
 
+/** One year, subdomains included (the FORGE site is served over https only). */
+export const HSTS_VALUE = 'max-age=31536000; includeSubDomains';
+
+/**
+ * HTTPS deployments only: a production build whose NEXT_PUBLIC_APP_URL is an https URL. Never in
+ * development or for a plain-http app URL (a local production build), where pinning https would
+ * lock the browser out of the host.
+ */
+export function isHttpsDeployment(isDev: boolean, env: Env): boolean {
+  if (isDev) return false;
+  try {
+    return new URL(env.NEXT_PUBLIC_APP_URL?.trim() ?? '').protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
 export function securityHeaders(isDev: boolean, env: Env = process.env): Header[] {
   return [
     // Enforced now: nobody may frame the site (clickjacking of the payment and launch steps).
@@ -107,5 +125,9 @@ export function securityHeaders(isDev: boolean, env: Env = process.env): Header[
       key: 'Permissions-Policy',
       value: 'camera=(), microphone=(), geolocation=(), payment=()',
     },
+    // The browser only ever reaches the site over https (sign-in, payments, launch signing).
+    ...(isHttpsDeployment(isDev, env)
+      ? [{ key: 'Strict-Transport-Security', value: HSTS_VALUE }]
+      : []),
   ];
 }

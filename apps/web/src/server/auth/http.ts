@@ -1,4 +1,4 @@
-import { AuthConfigError, isAllowedHost } from './config';
+import { AuthConfigError, isAllowedOrigin } from './config';
 
 /*
  * HTTP helpers shared by the auth routes. Error bodies follow the ClientError shape
@@ -36,7 +36,8 @@ export function serverErrorResponse(error: unknown): Response {
 
 /**
  * Cross-site request guard for state-changing routes (login CSRF): rejects requests whose
- * Origin is not an allowed host, or that the browser flags as cross-site.
+ * Origin is not exactly the FORGE site's origin (scheme, host and port; isAllowedOrigin), or that
+ * the browser flags as cross-site.
  */
 export function checkOrigin(request: Request): Response | null {
   if (request.headers.get('sec-fetch-site') === 'cross-site') {
@@ -44,13 +45,7 @@ export function checkOrigin(request: Request): Response | null {
   }
   const origin = request.headers.get('origin');
   if (origin === null) return null;
-  let host: string;
-  try {
-    host = new URL(origin).host;
-  } catch {
-    return errorResponse(403, 'FORBIDDEN_ORIGIN', 'Cross-site request rejected.');
-  }
-  if (!isAllowedHost(host)) {
+  if (!isAllowedOrigin(origin)) {
     return errorResponse(403, 'FORBIDDEN_ORIGIN', 'Cross-site request rejected.');
   }
   return null;
