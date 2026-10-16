@@ -7,8 +7,8 @@ import { gatingCopy as copy } from './content/gating';
 import { FORGE_TOKEN_DECIMALS, formatTokenAmount } from './format';
 
 /** A raw $FORGE amount of the gating answer, in whole tokens (display only). */
-function forgeAmount(raw: string): string {
-  return `${formatTokenAmount(raw, FORGE_TOKEN_DECIMALS)} ${copy.unit}`;
+function forgeAmount(raw: string, decimals = FORGE_TOKEN_DECIMALS): string {
+  return `${formatTokenAmount(raw, decimals)} ${copy.unit}`;
 }
 
 export function GatingScreen({ children }: { children?: ReactNode }) {
@@ -28,11 +28,11 @@ export function GatingScreen({ children }: { children?: ReactNode }) {
             <div className="fw-balance-grid">
               <div>
                 <span>{copy.required}</span>
-                <strong>{forgeAmount(gating.required)}</strong>
+                <strong>{forgeAmount(gating.required, gating.decimals)}</strong>
               </div>
               <div>
                 <span>{copy.balance}</span>
-                <strong>{forgeAmount(gating.balance)}</strong>
+                <strong>{forgeAmount(gating.balance, gating.decimals)}</strong>
               </div>
             </div>
             {!gating.enabled && <p className="fw-notice">{copy.disabled}</p>}

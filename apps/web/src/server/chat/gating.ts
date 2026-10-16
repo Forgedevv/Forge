@@ -26,6 +26,8 @@ export interface GatingStatus extends GatingResult {
   required: bigint;
   /** The wallet's raw balance; 0 when gating is disabled or nothing is required (no RPC read). */
   balance: bigint;
+  /** Decimals of the $FORGE mint, when its balance was read on-chain. */
+  decimals?: number;
 }
 
 export type GatingCheck = (wallet: string) => Promise<GatingResult>;
@@ -67,6 +69,7 @@ export function createGatingCheck(
     ok: passesForgeGate(balance, required),
     required,
     balance: balance.enabled ? balance.balance : 0n,
+    ...(balance.enabled ? { decimals: balance.decimals } : {}),
   });
 
   return async (wallet) => {

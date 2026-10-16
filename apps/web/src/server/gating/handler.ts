@@ -62,6 +62,7 @@ export async function handleGating(
       required: status.required.toString(),
       balance: status.balance.toString(),
       enabled: status.enabled,
+      ...(status.decimals !== undefined ? { decimals: status.decimals } : {}),
     };
     return Response.json(body, { status: 200, headers: { 'Cache-Control': 'no-store' } });
   } catch (error) {

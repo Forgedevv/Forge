@@ -116,6 +116,8 @@ export const GatingResponse = z.object({
   /** Wallet raw balance (smallest units). */
   balance: RawTokenAmount,
   enabled: z.boolean(),
+  /** Decimals of the $FORGE mint, read on-chain with the balance; absent when nothing was read. */
+  decimals: z.number().int().min(0).max(18).optional(),
 });
 export type GatingResponse = z.infer<typeof GatingResponse>;
 

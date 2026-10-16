@@ -56,6 +56,17 @@ describe('GET /api/gating', () => {
     expect(d.calls).toEqual([WALLET]);
   });
 
+  it('passes the decimals of the $FORGE mint through', async () => {
+    const res = await handleGating(get(), deps({ ...ENABLED, decimals: 9 }));
+    expect(GatingResponse.parse(await res.json())).toEqual({
+      ok: false,
+      required: '1000',
+      balance: '999',
+      enabled: true,
+      decimals: 9,
+    });
+  });
+
   it('answers enabled: false, ok: true when gating is disabled', async () => {
     const res = await handleGating(
       get(),

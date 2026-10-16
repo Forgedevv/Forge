@@ -185,6 +185,7 @@ describe('createGatingCheck', () => {
       ok: true,
       required: 1000n,
       balance: 1000n,
+      decimals: 6,
     });
     await check(WALLET);
     expect(read).toHaveBeenCalledTimes(1);
@@ -201,6 +202,7 @@ describe('createGatingCheck', () => {
       ok: false,
       required: 1000n,
       balance: 999n,
+      decimals: 6,
     });
   });
 
