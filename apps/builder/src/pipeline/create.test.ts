@@ -784,6 +784,55 @@ describe('create: onchain_setup', () => {
       expect(h.github.commits.size).toBe(commits);
     });
 
+    it('rewrites the mint on a re-run after the commit of the rebuilt mint failed', async () => {
+      const h = harness();
+      await prepareOnchain(h);
+      const before = h.github.repos.get(REPO)!.branches.get(BRANCH)!;
+      const previous = JSON.parse(h.github.text(REPO, BRANCH, 'forge.config.json')!);
+      rebuildingSigner(h);
+      h.github.fail('commitFiles', 'before');
+
+      // The signer rebuilt and recorded the new mint, then the commit failed.
+      await expect(runStep(h, onchainJob({ owner_tx: null }))).rejects.toThrow(/commitFiles/);
+      expect(h.store.get(LAUNCHPAD_ID).launchpad_coin_mint).toBe(REBUILT_MINT);
+      expect(h.github.repos.get(REPO)!.branches.get(BRANCH)).toBe(before);
+      expect(JSON.parse(h.github.text(REPO, BRANCH, 'forge.config.json')!)).toEqual(previous);
+
+      // The team puts the job back: the row already holds the new mint, the branch the old one.
+      const { outcome } = await runStep(h, onchainJob({ owner_tx: null }));
+      expect(outcome).toEqual({
+        patch: { owner_tx: REBUILT_TX, owner_tx_details: REBUILT_DETAILS },
+      });
+      const config = JSON.parse(h.github.text(REPO, BRANCH, 'forge.config.json')!);
+      expect(config).toEqual({
+        ...previous,
+        onchain: { ...previous.onchain, launchpadCoinMint: REBUILT_MINT },
+      });
+      const head = h.github.repos.get(REPO)!.branches.get(BRANCH)!;
+      expect(h.github.commits.get(head)!.parents).toEqual([before]);
+      expect(h.github.commits.get(head)!.message).toMatch(/rebuilt launch coin mint/);
+      expect(h.store.get(LAUNCHPAD_ID).launchpad_coin_mint).toBe(REBUILT_MINT);
+
+      // Still refused on such a re-run: any other changed address, or a mint the row does not hold.
+      const other = harness();
+      await prepareOnchain(other);
+      rebuildingSigner(other);
+      other.github.fail('commitFiles', 'before');
+      await expect(runStep(other, onchainJob({ owner_tx: null }))).rejects.toThrow();
+      other.signer.configs = { ...other.signer.configs, launchpadConfig: address(44) };
+      await expect(runStep(other, onchainJob({ owner_tx: null }))).rejects.toThrow(
+        /launchpad config that differs from the recorded one/,
+      );
+      other.signer.configs = { ...other.signer.configs, launchpadConfig: LAUNCHPAD_CONFIG };
+      // The row held another mint when the signer replaced it: the branch must hold that one.
+      other.store.get(LAUNCHPAD_ID).launchpad_coin_mint = address(45);
+      const commits = other.github.commits.size;
+      await expect(runStep(other, onchainJob({ owner_tx: null }))).rejects.toThrow(
+        /already holds different on-chain addresses/,
+      );
+      expect(other.github.commits.size).toBe(commits);
+    });
+
     it('refuses a new mint the signer did not record on the launchpad row', async () => {
       const h = harness();
       await prepareOnchain(h);

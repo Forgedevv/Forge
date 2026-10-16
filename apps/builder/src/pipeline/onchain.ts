@@ -32,8 +32,10 @@ import type { LaunchpadPatch } from './store.js';
  * clears `owner_tx` / `owner_tx_details` and puts the job back), prepare builds a new launch with
  * a NEW mint and records it on the launchpad row itself. The row is re-read after the call: a mint
  * the signer replaced that way is accepted, and `onchain.launchpadCoinMint` is rewritten in a
- * builder-owned commit. Any other difference (a config address, a mint the row does not hold)
- * stops the step.
+ * builder-owned commit. When that commit failed, the re-run finds the new mint already on the row
+ * (so this call rebuilds nothing) while the branch still holds the replaced one: a config that
+ * differs only by the mint, the row holding the mint the signer returned, is rewritten the same
+ * way. Any other difference (a config address, a mint the row does not hold) stops the step.
  */
 export async function runOnchainStep(
   deps: PipelineDeps,
@@ -127,16 +129,21 @@ export async function runOnchainStep(
   }
 
   let message: string | null = `Record the on-chain addresses (job ${job.id})`;
+  let staleMint = false;
   if (typed.onchain !== undefined) {
     if (sameOnchain(typed.onchain, onchain)) {
       message = null;
     } else if (
-      rebuilt &&
-      typed.onchain.launchpadCoinMint === launchpad.launchpad_coin_mint &&
+      current.launchpad_coin_mint === onchain.launchpadCoinMint &&
+      // Rebuilt by this call: the branch must hold the mint the signer just replaced.
+      (!rebuilt || typed.onchain.launchpadCoinMint === launchpad.launchpad_coin_mint) &&
       sameOnchain({ ...typed.onchain, launchpadCoinMint: onchain.launchpadCoinMint }, onchain)
     ) {
-      // Only the mint of the rebuilt launch changes; any other address stays refused.
+      // Only the mint of a rebuilt launch changes, to the one the signer recorded on the row; any
+      // other address stays refused. Without a rebuild in this call, the signer replaced the mint
+      // in an earlier run whose commit failed: the branch still holds the replaced mint.
       message = `Record the rebuilt launch coin mint (job ${job.id})`;
+      staleMint = !rebuilt;
     } else {
       throw new PipelineError('forge.config.json already holds different on-chain addresses');
     }
@@ -160,6 +167,12 @@ export async function runOnchainStep(
     jobCtx.logger.warn(
       jobFields(job, { mint: onchain.launchpadCoinMint }),
       'the signer rebuilt the launch transaction with a new mint (previous one revoked)',
+    );
+  }
+  if (staleMint) {
+    jobCtx.logger.warn(
+      jobFields(job, { mint: onchain.launchpadCoinMint }),
+      'forge.config.json held the mint of a revoked launch: rewritten with the recorded one',
     );
   }
 
