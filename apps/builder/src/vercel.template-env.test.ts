@@ -19,8 +19,6 @@ const OPTIONAL_TEMPLATE_ENV: Readonly<Record<string, string>> = {
     'Vercel system variable, set by Vercel itself; the template falls back to the page origin',
   NEXT_PUBLIC_FORGE_API_URL:
     'optional override of the FORGE upload API; the template falls back to the RPC relay origin',
-  NEXT_PUBLIC_FORGE_MULTISIG_VAULT:
-    'optional referral holder check; set it only once the Meteora referral account is held by the vault',
 };
 
 function sourceFiles(dir: string): string[] {
