@@ -17,6 +17,17 @@ export {
   type CoinImageRehoster,
   type ImageField,
 } from './rehost';
+export {
+  asConfirmedImages,
+  copiedImages,
+  IMAGE_FIELDS,
+  parseImageSources,
+  readImageUrl,
+  sourcesOf,
+  withImageUrls,
+  type CopiedImage,
+  type ImageSources,
+} from './sources';
 
 let cached: CoinImageRehoster | null = null;
 

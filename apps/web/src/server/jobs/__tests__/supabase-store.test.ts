@@ -122,6 +122,33 @@ describe('SupabaseRoutesStore owner filters', () => {
     expect(ownerFilters(calls[0]!.ops)).toContainEqual(['owner_wallet', W]);
   });
 
+  it('reads the recorded image sources of a launchpad with the owner filter (migration 0014)', async () => {
+    const source = 'https://cdn.example.com/moon.png';
+    const { store, calls } = fakeDb([
+      {
+        data: {
+          image_sources: { 'launchpadCoin.imageUrl': source, other: 'x', 'theme.logoUrl': 3 },
+        },
+      },
+      { data: { image_sources: null } },
+      { data: null },
+      { error: { code: '42703', message: 'column launchpads.image_sources does not exist' } },
+    ]);
+    expect(await store.getLaunchpadImageSources('lp1', W)).toEqual({
+      'launchpadCoin.imageUrl': source,
+    });
+    expect(await store.getLaunchpadImageSources('lp1', W)).toEqual({});
+    expect(await store.getLaunchpadImageSources('lp1', W)).toEqual({});
+    const failed = await store.getLaunchpadImageSources('lp1', W).catch((e: unknown) => e);
+    expect(failed).toBeInstanceOf(StoreError);
+    expect(String((failed as Error).message)).not.toContain('does not exist');
+    expect(calls[0]!.table).toBe('launchpads');
+    expect(ownerFilters(calls[0]!.ops)).toEqual([
+      ['id', 'lp1'],
+      ['owner_wallet', W],
+    ]);
+  });
+
   it('drops a row whose launchpad belongs to someone else (defense in depth)', async () => {
     const { store } = fakeDb([{ data: { ...JOB, launchpads: { ...LP, owner_wallet: 'other' } } }]);
     expect(await store.getOwnedJob('j1', W)).toBeNull();

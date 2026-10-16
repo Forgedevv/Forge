@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { checkOrigin, requireSession } from '@/server/auth';
 import {
   CoinImageUnavailableError,
+  copiedImages,
   getDefaultCoinImageRehoster,
   imageUnavailableMessage,
   type CoinImageRehoster,
@@ -26,6 +27,10 @@ import { DRAFT_POLICY, StoreError } from './store';
  * Before anything is written, the coin image and the logo are copied into FORGE's R2 bucket and
  * the stored spec keeps the bucket URLs (coin-images/rehost.ts). An image that cannot be copied
  * answers 422 IMAGE_UNAVAILABLE (the owner gives another URL in the chat) and creates nothing.
+ * Once confirmed, the owner's URLs are recorded as the sources of the copies and the
+ * conversation's draft points at the copies (ChatStore.confirmSpec), so a retried confirmation is
+ * answered without downloading anything (ChatStore.findConfirmation, checked first) and a later
+ * modification does not take the original URL for a new image.
  */
 
 const CONFIRM_PER_WINDOW = 20;
@@ -142,14 +147,23 @@ export async function handleSpecConfirm(
       );
     }
 
-    const spec = await rehostImages(deps, checked.spec);
-    if (spec instanceof Response) return spec;
-
-    const outcome = await store.confirmSpec({
+    const confirmation = {
       wallet: session.wallet,
       conversationId: parsed.data.conversationId,
-      spec,
-    });
+    };
+    // A retry of a confirmation already made (its response was lost) is answered from the
+    // launchpad, without downloading the images again: their host may be down (422) or serve
+    // another image by now (409).
+    let outcome = await store.findConfirmation({ ...confirmation, spec: checked.spec });
+    if (!outcome) {
+      const spec = await rehostImages(deps, checked.spec);
+      if (spec instanceof Response) return spec;
+      outcome = await store.confirmSpec({
+        ...confirmation,
+        spec,
+        images: copiedImages(checked.spec, spec),
+      });
+    }
     switch (outcome.status) {
       case 'created':
       case 'existing': {

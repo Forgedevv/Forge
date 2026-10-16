@@ -1,6 +1,16 @@
 import type { LaunchpadSpec, LaunchpadSpecDraft } from '@forge/shared';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { z } from 'zod';
+import {
+  asConfirmedImages,
+  copiedImages,
+  parseImageSources,
+  readImageUrl,
+  sourcesOf,
+  withImageUrls,
+  type CopiedImage,
+  type ImageSources,
+} from '../coin-images/sources';
 import { draftKey } from './spec-draft';
 
 /*
@@ -72,12 +82,30 @@ export interface ChatStore {
    */
   walletSpendSince(wallet: string, since: Date): Promise<number>;
   getFlag(key: 'signups_paused'): Promise<boolean>;
-  /** Creates the launchpad (draft) and its `create_launchpad` job, idempotently. */
+  /**
+   * Creates the launchpad (draft) and its `create_launchpad` job, idempotently. `images` are the
+   * bucket copies `spec` holds instead of the owner's URLs: once confirmed, their sources are
+   * recorded on the launchpad (`launchpads.image_sources`) and the conversation's draft is pointed
+   * at the copies, so neither a retry nor a later modification downloads them again. Both writes
+   * are best effort (a warning when they fail): the launchpad is confirmed either way.
+   */
   confirmSpec(input: {
     wallet: string;
     conversationId: string;
     spec: LaunchpadSpec;
+    images?: readonly CopiedImage[];
   }): Promise<ConfirmOutcome>;
+  /**
+   * The answer of an earlier confirmation of this conversation with this same spec, found without
+   * downloading any image: an owner URL recorded as the source of one of the launchpad's copies
+   * counts as that copy. Null when the conversation has no launchpad yet or the spec differs (the
+   * caller then copies the images and calls `confirmSpec`).
+   */
+  findConfirmation(input: {
+    wallet: string;
+    conversationId: string;
+    spec: LaunchpadSpec;
+  }): Promise<ConfirmOutcome | null>;
 }
 
 /**
@@ -341,6 +369,132 @@ export class SupabaseChatStore implements ChatStore {
     wallet: string;
     conversationId: string;
     spec: LaunchpadSpec;
+    images?: readonly CopiedImage[];
+  }): Promise<ConfirmOutcome> {
+    const outcome = await this.confirmOnce(input);
+    if ((outcome.status === 'created' || outcome.status === 'existing') && input.images?.length) {
+      await this.keepImageCopies(
+        outcome.launchpadId,
+        input.conversationId,
+        input.wallet,
+        input.images,
+      );
+    }
+    return outcome;
+  }
+
+  async findConfirmation(input: {
+    wallet: string;
+    conversationId: string;
+    spec: LaunchpadSpec;
+  }): Promise<ConfirmOutcome | null> {
+    const { wallet, conversationId, spec } = input;
+    const conversation = await this.getConversation(conversationId, wallet);
+    if (!conversation?.launchpadId) return null;
+    const row = await this.readLaunchpad(conversation.launchpadId, wallet);
+    const existing = row ? parseDraft(row.spec) : null;
+    if (!row || !existing) return null;
+    const sources = await this.readImageSources(row.id, wallet);
+    const confirmed = asConfirmedImages(spec, existing, sources);
+    if (draftKey(existing) !== draftKey(confirmed as LaunchpadSpecDraft)) return null;
+    if (row.status === 'disabled') return { status: 'draft_released' };
+    const jobId = await this.ensureCreateJob(row.id);
+    // A draft write that failed the first time is done again.
+    const images = copiedImages(spec, confirmed);
+    if (images.length > 0) await this.pointDraftAtCopies(conversationId, wallet, images);
+    return { status: 'existing', launchpadId: row.id, jobId };
+  }
+
+  /** Records the sources of the copies and points the conversation's draft at the copies. */
+  private async keepImageCopies(
+    launchpadId: string,
+    conversationId: string,
+    wallet: string,
+    images: readonly CopiedImage[],
+  ): Promise<void> {
+    // Write once: the first confirmation's sources are the ones its copies were made from.
+    const { error } = await this.sb
+      .from('launchpads')
+      .update({ image_sources: sourcesOf(images) })
+      .eq('id', launchpadId)
+      .eq('owner_wallet', wallet)
+      .is('image_sources', null);
+    if (error) {
+      console.warn(
+        `[spec] could not record the image sources${error.code ? ` (${error.code})` : ''}`,
+      );
+    }
+    await this.pointDraftAtCopies(conversationId, wallet, images);
+  }
+
+  /**
+   * Replaces, in the conversation's draft, each image URL that still is an owner URL of `images`
+   * by its bucket copy (`conversations.spec` then matches `launchpads.spec`). Best effort.
+   */
+  private async pointDraftAtCopies(
+    conversationId: string,
+    wallet: string,
+    images: readonly CopiedImage[],
+  ): Promise<void> {
+    const warn = (error: { code?: string } | null) =>
+      console.warn(
+        `[spec] could not point the draft at the image copies${error?.code ? ` (${error.code})` : ''}`,
+      );
+    const read = await this.sb
+      .from('conversations')
+      .select('spec')
+      .eq('id', conversationId)
+      .eq('owner_wallet', wallet)
+      .maybeSingle();
+    if (read.error) return warn(read.error);
+    const draft = parseDraft((read.data as { spec?: unknown } | null)?.spec ?? null);
+    if (!draft) return;
+    const urls: ImageSources = {};
+    for (const image of images) {
+      if (readImageUrl(draft, image.field) === image.source) urls[image.field] = image.url;
+    }
+    if (Object.keys(urls).length === 0) return;
+    const write = await this.sb
+      .from('conversations')
+      .update({ spec: withImageUrls(draft, urls) })
+      .eq('id', conversationId)
+      .eq('owner_wallet', wallet);
+    if (write.error) warn(write.error);
+  }
+
+  /** `launchpads.image_sources` (migration 0014); none when it cannot be read (warning). */
+  private async readImageSources(launchpadId: string, wallet: string): Promise<ImageSources> {
+    const { data, error } = await this.sb
+      .from('launchpads')
+      .select('image_sources')
+      .eq('id', launchpadId)
+      .eq('owner_wallet', wallet)
+      .maybeSingle();
+    if (error) {
+      console.warn(`[spec] image sources unavailable${error.code ? ` (${error.code})` : ''}`);
+      return {};
+    }
+    return parseImageSources((data as { image_sources?: unknown } | null)?.image_sources);
+  }
+
+  private async readLaunchpad(
+    launchpadId: string,
+    wallet: string,
+  ): Promise<z.infer<typeof LaunchpadStatusRow> | null> {
+    const { data, error } = await this.sb
+      .from('launchpads')
+      .select('id, spec, status')
+      .eq('id', launchpadId)
+      .eq('owner_wallet', wallet)
+      .maybeSingle();
+    if (error) fail('launchpad select', error);
+    return data ? LaunchpadStatusRow.parse(data) : null;
+  }
+
+  private async confirmOnce(input: {
+    wallet: string;
+    conversationId: string;
+    spec: LaunchpadSpec;
   }): Promise<ConfirmOutcome> {
     const { wallet, conversationId, spec } = input;
     const conversation = await this.getConversation(conversationId, wallet);
@@ -391,15 +545,8 @@ export class SupabaseChatStore implements ChatStore {
     wallet: string,
     spec: LaunchpadSpec,
   ): Promise<ConfirmOutcome> {
-    const { data, error } = await this.sb
-      .from('launchpads')
-      .select('id, spec, status')
-      .eq('id', launchpadId)
-      .eq('owner_wallet', wallet)
-      .maybeSingle();
-    if (error) fail('launchpad select', error);
-    if (!data) return { status: 'conflict' };
-    const row = LaunchpadStatusRow.parse(data);
+    const row = await this.readLaunchpad(launchpadId, wallet);
+    if (!row) return { status: 'conflict' };
     const existing = parseDraft(row.spec);
     if (!existing || draftKey(existing) !== draftKey(spec as LaunchpadSpecDraft)) {
       return { status: 'conflict' };

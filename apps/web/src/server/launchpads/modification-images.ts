@@ -1,8 +1,10 @@
 import {
   CoinImageUnavailableError,
   imageUnavailableMessage,
+  readImageUrl,
   type CoinImageRehoster,
   type ImageField,
+  type ImageSources,
 } from '../coin-images';
 import { RouteError } from '../jobs/http';
 import type { RoutesLogger } from '../jobs/log';
@@ -15,7 +17,8 @@ import { StorageError } from '../uploads/storage';
  * In a modification chat the owner may give a new logo (`theme.logoUrl`; the coin image is locked
  * after launch, but `launchpadCoin.imageUrl` is handled the same way). The change lives in the
  * conversation's draft (`conversations.spec`), while the builder only receives the request text.
- * Before the job is written, each image URL of the draft that differs from the launchpad's is
+ * Before the job is written, each image URL of the draft that differs from the launchpad's, and
+ * is not the owner's URL the launchpad was confirmed from (`launchpads.image_sources`), is
  * copied into FORGE's bucket exactly as at confirmation (coin-images/rehost.ts: same SSRF rules,
  * same content-addressed write-once `coin-images/<sha256>.<ext>` key). A URL that already is a
  * `coin-images/` object of the bucket is kept as is. The request is then rewritten: every
@@ -43,19 +46,7 @@ export interface StoredImage {
   url: string;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-/** The non-empty string at `field` of a stored spec or draft (both unparsed jsonb). */
-export function readImageUrl(spec: unknown, field: ImageField): string | undefined {
-  const [group, key] = field.split('.') as [string, string];
-  if (!isRecord(spec)) return undefined;
-  const section = spec[group];
-  if (!isRecord(section)) return undefined;
-  const value = section[key];
-  return typeof value === 'string' && value.length > 0 ? value : undefined;
-}
+export { readImageUrl };
 
 export interface ModificationImageDeps {
   images: () => CoinImageRehoster;
@@ -63,21 +54,27 @@ export interface ModificationImageDeps {
 }
 
 /**
- * Copies the images of `draft` that differ from the launchpad's `current` spec. An image whose
- * copy is the launchpad's current URL (a creation conversation still holding the owner's original
- * URL) is not a change and is left out. Throws RouteError (422 IMAGE_UNAVAILABLE, 503).
+ * Copies the images of `draft` that differ from the launchpad's `current` spec. Not a change, and
+ * left out without downloading anything: the owner's URL the launchpad was confirmed from
+ * (`confirmedSources`, read only when an image differs; a creation conversation confirmed before
+ * its draft was pointed at the copies). Not a change either: an image whose copy is the launchpad's
+ * current URL. Throws RouteError (422 IMAGE_UNAVAILABLE, 503).
  */
 export async function storeChangedImages(
   deps: ModificationImageDeps,
   current: unknown,
   draft: unknown,
+  confirmedSources: () => Promise<ImageSources> = () => Promise.resolve({}),
 ): Promise<StoredImage[]> {
-  const changed = IMAGE_FIELDS.flatMap(({ field }) => {
+  const candidates = IMAGE_FIELDS.flatMap(({ field }) => {
     const source = readImageUrl(draft, field);
     return source !== undefined && source !== readImageUrl(current, field)
       ? [{ field, source }]
       : [];
   });
+  if (candidates.length === 0) return [];
+  const sources = await confirmedSources();
+  const changed = candidates.filter(({ field, source }) => source !== sources[field]);
   if (changed.length === 0) return [];
   const stored: StoredImage[] = [];
   try {

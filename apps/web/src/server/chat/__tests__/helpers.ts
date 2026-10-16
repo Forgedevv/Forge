@@ -3,7 +3,16 @@ import type { ModelEvent, ModelRequest, ModelStreamer } from '../anthropic';
 import { DEFAULT_LIMITS, type ChatConfig, type ChatLimits } from '../config';
 import { MemoryRateLimiter } from '../rate-limit';
 import { createSessionToken } from '@/server/auth/session';
+import {
+  asConfirmedImages,
+  readImageUrl,
+  sourcesOf,
+  withImageUrls,
+  type CopiedImage,
+  type ImageSources,
+} from '@/server/coin-images/sources';
 import type { ChatDeps } from '../handler';
+import { draftKey } from '../spec-draft';
 import type {
   ChatStore,
   ConfirmOutcome,
@@ -136,7 +145,12 @@ export class MemoryStore implements ChatStore {
   launchpads = new Map<string, { owner: string; spec: LaunchpadSpecDraft }>();
   flags: Record<string, boolean> = {};
   users = new Set<string>();
-  confirmed: { wallet: string; conversationId: string; spec: LaunchpadSpec }[] = [];
+  confirmed: {
+    wallet: string;
+    conversationId: string;
+    spec: LaunchpadSpec;
+    images?: readonly CopiedImage[];
+  }[] = [];
   confirmOutcome: ConfirmOutcome = { status: 'created', launchpadId: 'lp-1', jobId: 'job-1' };
   /** Every cost increment, in order (to assert per-round persistence). */
   costWrites: { conversationId: string; deltaUsd: number }[] = [];
@@ -232,9 +246,66 @@ export class MemoryStore implements ChatStore {
     wallet: string;
     conversationId: string;
     spec: LaunchpadSpec;
+    images?: readonly CopiedImage[];
   }): Promise<ConfirmOutcome> {
     this.confirmed.push(input);
-    return Promise.resolve(this.confirmOutcome);
+    const outcome = this.confirmOutcome;
+    if (outcome.status === 'created' || outcome.status === 'existing') {
+      const images = input.images ?? [];
+      // Same bookkeeping as SupabaseChatStore: sources recorded once, draft pointed at the copies.
+      if (!this.confirmations.has(input.conversationId)) {
+        this.confirmations.set(input.conversationId, {
+          wallet: input.wallet,
+          spec: structuredClone(input.spec),
+          sources: sourcesOf(images),
+          launchpadId: outcome.launchpadId,
+          jobId: outcome.jobId,
+        });
+      }
+      const c = this.conversations.get(input.conversationId);
+      if (c && c.owner === input.wallet && c.spec) {
+        const urls: ImageSources = {};
+        for (const image of images) {
+          if (readImageUrl(c.spec, image.field) === image.source) urls[image.field] = image.url;
+        }
+        if (Object.keys(urls).length > 0) c.spec = withImageUrls(c.spec, urls);
+      }
+    }
+    return Promise.resolve(outcome);
+  }
+
+  /** Confirmations made, by conversation (what `findConfirmation` answers from). */
+  confirmations = new Map<
+    string,
+    {
+      wallet: string;
+      spec: LaunchpadSpec;
+      sources: ImageSources;
+      launchpadId: string;
+      jobId: string;
+    }
+  >();
+  findCalls: { wallet: string; conversationId: string; spec: LaunchpadSpec }[] = [];
+
+  findConfirmation(input: {
+    wallet: string;
+    conversationId: string;
+    spec: LaunchpadSpec;
+  }): Promise<ConfirmOutcome | null> {
+    this.findCalls.push(input);
+    const earlier = this.confirmations.get(input.conversationId);
+    if (!earlier || earlier.wallet !== input.wallet) return Promise.resolve(null);
+    const confirmed = asConfirmedImages(input.spec, earlier.spec, earlier.sources);
+    if (
+      draftKey(confirmed as LaunchpadSpecDraft) !== draftKey(earlier.spec as LaunchpadSpecDraft)
+    ) {
+      return Promise.resolve(null);
+    }
+    return Promise.resolve({
+      status: 'existing',
+      launchpadId: earlier.launchpadId,
+      jobId: earlier.jobId,
+    });
   }
 
   /** Messages of a conversation as stored, by role. */

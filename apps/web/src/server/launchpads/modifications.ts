@@ -89,6 +89,19 @@ export function createModificationsService(deps: ModificationsServiceDeps): Modi
     };
   }
 
+  /** Recorded image sources; none when they cannot be read (the image is then compared by copy). */
+  async function confirmedImageSources(launchpadId: string, wallet: string) {
+    try {
+      return await store.getLaunchpadImageSources(launchpadId, wallet);
+    } catch (error) {
+      logger.log('warn', 'modification.image_sources_unavailable', {
+        launchpadId,
+        detail: error instanceof StoreError ? error.message : 'unexpected error',
+      });
+      return {};
+    }
+  }
+
   async function request(input: {
     wallet: string;
     launchpadId: string;
@@ -147,11 +160,13 @@ export function createModificationsService(deps: ModificationsServiceDeps): Modi
       );
     }
 
-    // The request as the builder will read it: a changed image points at the bucket copy.
+    // The request as the builder will read it: a changed image points at the bucket copy. The
+    // owner's URL the launchpad was confirmed from is not a change (never downloaded again).
     const images = await storeChangedImages(
       { images: deps.images, logger },
       launchpad.spec,
       conversation.draft,
+      () => confirmedImageSources(launchpad.id, input.wallet),
     );
     const text = requestWithStoredImages(typed, images);
     if (images.length > 0) {

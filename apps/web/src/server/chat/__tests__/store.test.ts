@@ -585,3 +585,161 @@ describe('SupabaseChatStore.confirmSpec', () => {
     expect(ctx.db.rows('jobs')).toHaveLength(0);
   });
 });
+
+describe('SupabaseChatStore image copies (sources and draft)', () => {
+  const SOURCE = 'https://cdn.example.com/moon.png';
+  const COPY = 'https://images.forge.test/coin-images/' + 'a'.repeat(64) + '.png';
+  const copied = LaunchpadSpec.parse(
+    validSpec({ launchpadCoin: { ...(validSpec().launchpadCoin as object), imageUrl: COPY } }),
+  );
+  const images = [{ field: 'launchpadCoin.imageUrl' as const, source: SOURCE, url: COPY }];
+  let warnings: string[];
+
+  beforeEach(() => {
+    warnings = [];
+    vi.spyOn(console, 'info').mockImplementation(() => undefined);
+    vi.spyOn(console, 'warn').mockImplementation((line: unknown) => warnings.push(String(line)));
+  });
+
+  async function confirmed(ctx: Ctx) {
+    const id = await ctx.conversation();
+    await ctx.store.saveDraft(id, WALLET, validSpec());
+    const out = await ctx.store.confirmSpec({
+      wallet: WALLET,
+      conversationId: id,
+      spec: copied,
+      images,
+    });
+    if (out.status !== 'created') throw new Error(`unexpected ${out.status}`);
+    return { id, out };
+  }
+
+  it('records the sources once and points the draft at the copies', async () => {
+    const ctx = setup();
+    const { id, out } = await confirmed(ctx);
+    const [lp] = ctx.db.rows('launchpads');
+    expect(lp).toMatchObject({
+      id: out.launchpadId,
+      image_sources: { 'launchpadCoin.imageUrl': SOURCE },
+    });
+    const [conversation] = ctx.db.rows('conversations');
+    expect(conversation?.spec).toMatchObject({ launchpadCoin: { imageUrl: COPY } });
+    expect(conversation?.spec).toMatchObject({ name: 'MoonPad', slug: 'moonpad' });
+    // A later confirmation with other sources keeps the first ones.
+    const other = [{ ...images[0]!, source: 'https://cdn.example.com/again.png' }];
+    await ctx.store.confirmSpec({
+      wallet: WALLET,
+      conversationId: id,
+      spec: copied,
+      images: other,
+    });
+    expect(ctx.db.rows('launchpads')[0]?.image_sources).toEqual({
+      'launchpadCoin.imageUrl': SOURCE,
+    });
+    expect(warnings).toEqual([]);
+  });
+
+  it('finds the earlier confirmation from the owner URLs, without the images', async () => {
+    const ctx = setup();
+    const { id, out } = await confirmed(ctx);
+    // The draft write was lost: the retry points it at the copies again.
+    ctx.db.rows('conversations')[0]!.spec = validSpec();
+    expect(await ctx.store.findConfirmation({ wallet: WALLET, conversationId: id, spec })).toEqual({
+      status: 'existing',
+      launchpadId: out.launchpadId,
+      jobId: out.jobId,
+    });
+    expect(ctx.db.rows('conversations')[0]?.spec).toMatchObject({
+      launchpadCoin: { imageUrl: COPY },
+    });
+    // The copies themselves match too; anything else is not this confirmation.
+    expect(
+      (await ctx.store.findConfirmation({ wallet: WALLET, conversationId: id, spec: copied }))
+        ?.status,
+    ).toBe('existing');
+    const otherImage = LaunchpadSpec.parse(
+      validSpec({
+        launchpadCoin: {
+          ...(validSpec().launchpadCoin as object),
+          imageUrl: 'https://x.example/y.png',
+        },
+      }),
+    );
+    const otherFee = LaunchpadSpec.parse(validSpec({ tradingFeeBps: 150 }));
+    for (const changed of [otherImage, otherFee]) {
+      expect(
+        await ctx.store.findConfirmation({ wallet: WALLET, conversationId: id, spec: changed }),
+      ).toBeNull();
+    }
+    expect(createJobs(ctx.db)).toHaveLength(1);
+  });
+
+  it('finds nothing before the confirmation or for another wallet', async () => {
+    const ctx = setup();
+    const id = await ctx.conversation();
+    expect(
+      await ctx.store.findConfirmation({ wallet: WALLET, conversationId: id, spec }),
+    ).toBeNull();
+    await ctx.store.confirmSpec({ wallet: WALLET, conversationId: id, spec: copied, images });
+    expect(
+      await ctx.store.findConfirmation({
+        wallet: OTHER_WALLET,
+        conversationId: id,
+        spec: otherSpec,
+      }),
+    ).toBeNull();
+  });
+
+  it('answers a released draft as released', async () => {
+    const ctx = setup();
+    const { id } = await confirmed(ctx);
+    ctx.db.rows('launchpads')[0]!.status = 'disabled';
+    expect(await ctx.store.findConfirmation({ wallet: WALLET, conversationId: id, spec })).toEqual({
+      status: 'draft_released',
+    });
+  });
+
+  it('still confirms when the sources or the draft cannot be written (warnings)', async () => {
+    const ctx = setup();
+    const id = await ctx.conversation();
+    await ctx.store.saveDraft(id, WALLET, validSpec());
+    let claimed = false;
+    ctx.db.beforeStatement = (op, table) => {
+      if (op === 'update' && table === 'conversations') {
+        // The first conversations update is the claim; the next one is the draft write.
+        if (!claimed) {
+          claimed = true;
+          return undefined;
+        }
+        return { code: '40001' };
+      }
+      return op === 'update' && table === 'launchpads' ? { code: '42703' } : undefined;
+    };
+    const out = await ctx.store.confirmSpec({
+      wallet: WALLET,
+      conversationId: id,
+      spec: copied,
+      images,
+    });
+    expect(out.status).toBe('created');
+    expect(warnings.join('\n')).toContain('could not record the image sources (42703)');
+    expect(warnings.join('\n')).toContain('could not point the draft at the image copies (40001)');
+    expect(warnings.join('\n')).not.toContain(SOURCE);
+  });
+
+  it('reads no sources when the column cannot be read (before migration 0014)', async () => {
+    const ctx = setup();
+    const { id } = await confirmed(ctx);
+    let selects = 0;
+    ctx.db.beforeStatement = (op, table) => {
+      if (op !== 'select' || table !== 'launchpads') return undefined;
+      selects += 1;
+      // The launchpad read passes; the image sources read fails.
+      return selects === 2 ? { code: '42703' } : undefined;
+    };
+    expect(
+      await ctx.store.findConfirmation({ wallet: WALLET, conversationId: id, spec }),
+    ).toBeNull();
+    expect(warnings.join('\n')).toContain('image sources unavailable (42703)');
+  });
+});

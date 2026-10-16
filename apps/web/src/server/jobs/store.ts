@@ -8,6 +8,7 @@ import {
   type FlagKey,
 } from '@forge/shared';
 import { z } from 'zod';
+import type { ImageSources } from '../coin-images/sources';
 
 /*
  * Storage seam of the job and launchpad routes. Every read is scoped to the session wallet
@@ -110,6 +111,11 @@ export interface RoutesStore {
   /** Kill switch value; throws when it cannot be read (callers fail closed). */
   getFlag(key: FlagKey): Promise<boolean>;
   getOwnedLaunchpad(launchpadId: string, wallet: string): Promise<LaunchpadRecord | null>;
+  /**
+   * The owner's image URLs the launchpad of `wallet` was confirmed from
+   * (`launchpads.image_sources`, migration 0014; coin-images/sources.ts). None when not recorded.
+   */
+  getLaunchpadImageSources(launchpadId: string, wallet: string): Promise<ImageSources>;
   /** Launchpads of `wallet`, newest first. */
   listOwnedLaunchpads(wallet: string): Promise<LaunchpadRecord[]>;
   /** Jobs of the given launchpads, restricted to those of `wallet`. */

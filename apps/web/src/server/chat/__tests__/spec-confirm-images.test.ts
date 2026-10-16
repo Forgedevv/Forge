@@ -14,7 +14,8 @@ import { fetchPublicImage, MAX_BYTES } from '@/server/coin-images/fetch-image';
 import { createCoinImageRehoster, IMMUTABLE_CACHE_CONTROL } from '@/server/coin-images/rehost';
 import { UploadConfigError } from '@/server/uploads/config';
 import { handleSpecConfirm, type SpecConfirmDeps } from '../spec-confirm';
-import { makeDeps, MemoryStore, postJson, setTestEnv, validSpec } from './helpers';
+import type { LaunchpadSpecDraft } from '@forge/shared';
+import { makeDeps, MemoryStore, postJson, setTestEnv, validSpec, WALLET } from './helpers';
 
 /*
  * POST /api/spec/confirm with the real image copy (fetch-image.ts + rehost.ts) over fake DNS,
@@ -110,12 +111,67 @@ describe('POST /api/spec/confirm: coin image copy', () => {
     expect(h.r2.puts).toEqual([]);
   });
 
-  it('confirms the same stored spec again when the same image is given again', async () => {
-    const h = harness({ [SOURCE]: png() });
+  it('records the source of each copy for the store', async () => {
+    const bytes = pngBytes(2048);
+    const h = harness({ [SOURCE]: png(bytes), [LOGO]: png(pngBytes(900, 3)) });
+    expect((await confirm(h.deps, withImages(SOURCE, LOGO))).status).toBe(201);
+    const [confirmed] = h.store.confirmed;
+    expect(confirmed?.images).toEqual([
+      {
+        field: 'launchpadCoin.imageUrl',
+        source: SOURCE,
+        url: confirmed?.spec.launchpadCoin.imageUrl,
+      },
+      { field: 'theme.logoUrl', source: LOGO, url: confirmed?.spec.theme.logoUrl },
+    ]);
+    // A URL already in the bucket is not a copy: nothing to record.
+    const stored = `${PUBLIC_BASE}/coin-images/${sha(bytes)}.png`;
+    const again = harness({});
+    expect((await confirm(again.deps, withImages(stored))).status).toBe(201);
+    expect(again.store.confirmed[0]?.images).toEqual([]);
+  });
+
+  it("points the conversation's draft at the R2 copies once confirmed", async () => {
+    const bytes = pngBytes(2048);
+    const h = harness({ [SOURCE]: png(bytes) });
+    const id = await h.store.createConversation(WALLET, null);
+    expect(id).toBe(CONVERSATION);
+    await h.store.saveDraft(id, WALLET, validSpec() as LaunchpadSpecDraft);
     expect((await confirm(h.deps)).status).toBe(201);
+    const draft = h.store.conversations.get(id)!.spec!;
+    expect(draft.launchpadCoin?.imageUrl).toBe(`${PUBLIC_BASE}/coin-images/${sha(bytes)}.png`);
+    expect(JSON.stringify(draft)).not.toContain(SOURCE);
+  });
+
+  it('answers a retried confirmation without downloading the images again', async () => {
+    const replies: Record<string, FakeReply> = { [SOURCE]: png() };
+    const h = harness(replies);
+    const first = await confirm(h.deps);
+    expect(first.status).toBe(201);
+    const ids = await json(first);
+    const downloads = h.transport.calls.length;
+    // The response was lost; meanwhile the image host went down, then served another image.
+    for (const reply of [{ status: 503 }, png(pngBytes(4096, 7))]) {
+      replies[SOURCE] = reply;
+      const retry = await confirm(h.deps);
+      expect(retry.status).toBe(200);
+      expect(await json(retry)).toEqual(ids);
+    }
+    expect(h.transport.calls).toHaveLength(downloads);
+    expect(h.store.confirmed).toHaveLength(1);
+    expect(h.r2.puts).toHaveLength(1);
+  });
+
+  it('copies the images again for a retry that changed the spec', async () => {
+    const other = 'https://cdn.example.com/other.png';
+    const h = harness({ [SOURCE]: png(), [other]: png(pngBytes(3000, 5)) });
     expect((await confirm(h.deps)).status).toBe(201);
-    const [first, second] = h.store.confirmed;
-    expect(second?.spec).toEqual(first?.spec);
+    h.store.confirmOutcome = { status: 'conflict' };
+    const res = await confirm(h.deps, withImages(other));
+    expect(res.status).toBe(409);
+    expect(h.store.findCalls).toHaveLength(2);
+    expect(h.store.confirmed).toHaveLength(2);
+    expect(h.transport.calls.map((c) => c.url)).toEqual([SOURCE, other]);
   });
 
   async function expectRefused(

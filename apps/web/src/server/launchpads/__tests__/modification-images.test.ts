@@ -207,6 +207,55 @@ describe('POST /api/launchpads/:id/modifications: changed images', () => {
     expect(t.h.store.jobs.get(jobId)!.request).toBe('Bigger title');
   });
 
+  it('never downloads again the URL the launchpad was confirmed from (its host may be down)', async () => {
+    // A creation conversation confirmed before its draft was pointed at the copy.
+    const t = setup({ [COIN]: { status: 503 } });
+    const current = spec(owner, {
+      launchpadCoin: { ...spec(owner).launchpadCoin, imageUrl: stored(bytes) },
+    });
+    const { lp, conversation } = seed(t.h, draftWith({ imageUrl: COIN }), current);
+    t.h.store.imageSources.set(lp.id, { 'launchpadCoin.imageUrl': COIN });
+    const res = await modify(t.h, lp.id, conversation.id, 'Bigger title');
+    expect(res.status).toBe(201);
+    const { jobId } = (await res.json()) as { jobId: string };
+    expect(t.h.store.jobs.get(jobId)!.request).toBe('Bigger title');
+    expect(t.created()).toBe(0);
+    expect(t.transport.calls).toEqual([]);
+    expect(t.r2.puts).toEqual([]);
+  });
+
+  it('still copies a new image next to a confirmed source', async () => {
+    const t = setup({ [LOGO]: png(bytes) });
+    const { lp, conversation } = seed(t.h, draftWith({ imageUrl: COIN, logoUrl: LOGO }));
+    t.h.store.imageSources.set(lp.id, { 'launchpadCoin.imageUrl': COIN });
+    const res = await modify(t.h, lp.id, conversation.id, 'New logo');
+    const { jobId } = (await res.json()) as { jobId: string };
+    expect(t.h.store.jobs.get(jobId)!.request).toBe(
+      `New logo\n\nNew logo image URL: ${stored(bytes)}`,
+    );
+    expect(t.transport.calls.map((c) => c.url)).toEqual([LOGO]);
+  });
+
+  it('reads the recorded sources only when an image of the draft differs', async () => {
+    const t = setup({});
+    const { lp, conversation } = seed(t.h, spec(owner));
+    expect((await modify(t.h, lp.id, conversation.id, 'Make it blue')).status).toBe(201);
+    expect(t.h.store.imageSourceReads).toBe(0);
+  });
+
+  it('compares the copy when the sources cannot be read (warning)', async () => {
+    const t = setup({ [COIN]: png(bytes) });
+    const current = spec(owner, {
+      launchpadCoin: { ...spec(owner).launchpadCoin, imageUrl: stored(bytes) },
+    });
+    const { lp, conversation } = seed(t.h, draftWith({ imageUrl: COIN }), current);
+    t.h.store.failImageSources = true;
+    const res = await modify(t.h, lp.id, conversation.id, 'Bigger title');
+    const { jobId } = (await res.json()) as { jobId: string };
+    expect(t.h.store.jobs.get(jobId)!.request).toBe('Bigger title');
+    expect(JSON.stringify(t.h.logger.entries)).toContain('modification.image_sources_unavailable');
+  });
+
   it('is idempotent: the same request again returns the same job, unchanged', async () => {
     const t = setup({ [LOGO]: png(bytes) });
     const { lp, conversation } = seed(t.h, draftWith({ logoUrl: LOGO }));

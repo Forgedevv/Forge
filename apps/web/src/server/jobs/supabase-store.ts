@@ -1,5 +1,6 @@
 import type { FlagKey, JobStatus, LaunchpadStatus } from '@forge/shared';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
+import { parseImageSources, type ImageSources } from '../coin-images/sources';
 import {
   JOB_COLUMNS,
   LAUNCHPAD_COLUMNS,
@@ -146,6 +147,17 @@ export class SupabaseRoutesStore implements RoutesStore {
       .maybeSingle();
     if (res.error) fail('read launchpad', res.error);
     return res.data ? parseLaunchpadRow(res.data) : null;
+  }
+
+  async getLaunchpadImageSources(launchpadId: string, wallet: string): Promise<ImageSources> {
+    const res = await this.db
+      .from('launchpads')
+      .select('image_sources')
+      .eq('id', launchpadId)
+      .eq('owner_wallet', wallet)
+      .maybeSingle();
+    if (res.error) fail('read launchpad image sources', res.error);
+    return parseImageSources((res.data as { image_sources?: unknown } | null)?.image_sources);
   }
 
   async listOwnedLaunchpads(wallet: string): Promise<LaunchpadRecord[]> {

@@ -6,6 +6,7 @@ import {
   type Transaction as TransactionType,
 } from '@solana/web3.js';
 import { createSessionToken } from '@/server/auth/session';
+import type { ImageSources } from '../../coin-images/sources';
 import { MemoryRateLimiter } from '../../payments/rate-limit';
 import {
   ClusterMismatchError,
@@ -114,6 +115,10 @@ export class MemoryRoutesStore implements RoutesStore {
   anomalies: { jobId: string; resolved: boolean }[] = [];
   flags = new Map<FlagKey, boolean>();
   failFlags = false;
+  /** `launchpads.image_sources` by launchpad id. */
+  imageSources = new Map<string, ImageSources>();
+  imageSourceReads = 0;
+  failImageSources = false;
   /** Called before a conditional job update applies (simulates a concurrent writer). */
   beforeTransition: ((jobId: string) => void) | null = null;
   /** Called right after a modification job is inserted (simulates a concurrent insert). */
@@ -225,6 +230,13 @@ export class MemoryRoutesStore implements RoutesStore {
 
   async getOwnedLaunchpad(launchpadId: string, wallet: string): Promise<LaunchpadRecord | null> {
     return this.owned(launchpadId, wallet);
+  }
+
+  async getLaunchpadImageSources(launchpadId: string, wallet: string): Promise<ImageSources> {
+    this.imageSourceReads += 1;
+    if (this.failImageSources) throw new Error('image sources unavailable');
+    if (!this.owned(launchpadId, wallet)) return {};
+    return { ...this.imageSources.get(launchpadId) };
   }
 
   async listOwnedLaunchpads(wallet: string): Promise<LaunchpadRecord[]> {
