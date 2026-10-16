@@ -357,8 +357,9 @@ function policy(rule: string): never {
 /**
  * Withdrawal policy: fee payer and only signer = the bot; exactly one instruction, of the Squads
  * program, `spending_limit_use` on the expected multisig and spending limit, from the expected
- * vault, to the bot, of exactly `lamports` with 9 decimals and the funding memo; the six accounts
- * in the SDK's order with the SDK's flags. Nothing else (no compute budget, no memo program).
+ * vault, to the bot, of exactly `lamports` with 9 decimals and the funding memo; the accounts in
+ * the SDK's order with the SDK's flags, the four optional token accounts left as the program id
+ * placeholders (no token path). Nothing else (no compute budget, no memo program).
  */
 export function assertSpendingLimitUseTx(
   tx: Transaction,
@@ -374,7 +375,8 @@ export function assertSpendingLimitUseTx(
   if (tx.instructions.length !== 1) policy('exactly one instruction expected');
   const ix = tx.instructions[0]!;
   if (!ix.programId.equals(expected.programId)) policy('program not allowed in a withdrawal');
-  if (ix.keys.length !== 6) policy('unexpected account count');
+  if (ix.keys.length !== 10) policy('unexpected account count');
+  // A SOL use: the four optional token accounts are the program id placeholders of the SDK.
   const want: Array<[PublicKey, boolean, boolean, string]> = [
     [expected.multisig, false, false, 'multisig'],
     [expected.bot, true, false, 'member'],
@@ -382,6 +384,10 @@ export function assertSpendingLimitUseTx(
     [expected.vault, false, true, 'vault'],
     [expected.bot, false, true, 'destination'],
     [SystemProgram.programId, false, false, 'system program'],
+    [expected.programId, false, false, 'mint placeholder'],
+    [expected.programId, false, false, 'vault token account placeholder'],
+    [expected.programId, false, false, 'destination token account placeholder'],
+    [expected.programId, false, false, 'token program placeholder'],
   ];
   want.forEach(([key, signer, writable, name], i) => {
     const meta = ix.keys[i]!;
