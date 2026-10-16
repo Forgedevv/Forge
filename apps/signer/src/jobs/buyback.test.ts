@@ -185,6 +185,22 @@ describe('buybackConfigFromEnv', () => {
     expect(config.paused).toBe(false);
     expect(tickMs).toBe(60_000);
   });
+  it('takes the cluster the runtime resolved, devnet by default, over the raw variable', () => {
+    // Unset or empty SOLANA_CLUSTER: the runtime runs on devnet, so does the mode decision.
+    expect(buybackConfigFromEnv({}, addresses).config.cluster).toBe('devnet');
+    expect(buybackConfigFromEnv({ SOLANA_CLUSTER: '' }, addresses).config.cluster).toBe('devnet');
+    expect(
+      buybackConfigFromEnv({ SOLANA_CLUSTER: 'mainnet-beta' }, addresses).config.cluster,
+    ).toBe('mainnet-beta');
+    // The runtime's resolution wins over the raw variable.
+    expect(
+      buybackConfigFromEnv({ SOLANA_CLUSTER: 'mainnet-beta' }, addresses, { cluster: 'devnet' })
+        .config.cluster,
+    ).toBe('devnet');
+    expect(
+      buybackConfigFromEnv({}, addresses, { cluster: 'mainnet-beta' }).config.cluster,
+    ).toBe('mainnet-beta');
+  });
   it('refuses a slippage above 100 bps and malformed values', () => {
     expect(() => buybackConfigFromEnv({ BUYBACK_SLIPPAGE_BPS: '101' }, addresses)).toThrow(
       /too large/,
@@ -977,7 +993,10 @@ describe('buyback job, live flow', () => {
     await fs.rm(dir, { recursive: true, force: true });
   });
 
-  function liveHarness(prepare?: BuybackSwapPreparer['prepare']) {
+  function liveHarness(
+    prepare?: BuybackSwapPreparer['prepare'],
+    options: { remainingLamports?: bigint } = {},
+  ) {
     const order: string[] = [];
     const rpc = new FakeRpc(order);
     rpc.balances.set(bot.toBase58(), 30_000_000n);
@@ -998,7 +1017,7 @@ describe('buyback job, live flow', () => {
       },
     );
     const withdrawer: SpendingLimitWithdrawer = {
-      remainingLamports: async () => 5n * SOL,
+      remainingLamports: async () => options.remainingLamports ?? 5n * SOL,
       withdraw,
     };
     let forgeBalance = 0n;
@@ -1132,6 +1151,28 @@ describe('buyback job, live flow', () => {
     expect(h.withdraw.mock.calls[0]![0]).toMatchObject({
       lamports: total + 150_000n * BigInt(planned.length) - 10_000_000n,
     });
+  });
+
+  it('plans a day the wallet and a binding spending limit can fund, fee allowance included', async () => {
+    // 0.2 SOL left on the limit today, 0.01 SOL in the wallet above the reserve: the limit binds.
+    const fee = 150_000n;
+    const allowance = 200_000_000n;
+    const available = 30_000_000n - 20_000_000n;
+    const h = liveHarness(undefined, { remainingLamports: allowance });
+    await h.make({ orderFeeAllowanceLamports: fee, minOrderLamports: 10_000_000n }).runOnce();
+    const p = await plan(h.journal);
+    // The fee allowance of every order comes out of the same money: not planned as orders.
+    expect(BigInt(p.budgetLamports)).toBe(available + allowance - 6n * fee);
+    const planned = p.slots.filter((s) => s.status === 'planned');
+    const total = planned.reduce((a, s) => a + BigInt(s.lamports), 0n);
+    expect(planned).toHaveLength(6);
+    expect(total).toBeLessThanOrEqual(BigInt(p.budgetLamports));
+    // One withdrawal, within the limit, that covers every order and its fee allowance.
+    expect(h.withdraw).toHaveBeenCalledTimes(1);
+    const withdrawn = h.withdraw.mock.calls[0]![0].lamports;
+    expect(withdrawn).toBeLessThanOrEqual(allowance);
+    expect(withdrawn + available).toBeGreaterThanOrEqual(total + fee * BigInt(planned.length));
+    expect(p.funding?.status).toBe('confirmed');
   });
 
   it('binds the swap transaction check to the validated quote and the slippage cap', async () => {

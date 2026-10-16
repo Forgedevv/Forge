@@ -550,8 +550,10 @@ describe('buyback module', () => {
     type Cfg = { maxPriorityFeeLamports: bigint; route: 'jupiter'; devnetPool: null };
     const captured: Array<BuybackDepsLike<Cfg>> = [];
     const lib: BuybackLibrary<Cfg> = {
-      buybackConfigFromEnv: (_env, addresses) => {
+      buybackConfigFromEnv: (_env, addresses, options) => {
         expect(addresses.forgeMint).toBeNull();
+        // The runtime's resolved cluster (devnet by default), not the raw SOLANA_CLUSTER.
+        expect(options).toEqual({ cluster: 'devnet' });
         return {
           config: { maxPriorityFeeLamports: 100_000n, route: 'jupiter', devnetPool: null },
           tickMs: 45_000,

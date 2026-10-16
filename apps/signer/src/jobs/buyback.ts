@@ -230,7 +230,7 @@ export function resolveBuybackMode(input: BuybackModeInput): BuybackModeDecision
 // Configuration
 
 export interface BuybackConfig {
-  /** SOLANA_CLUSTER. */
+  /** The runtime's resolved cluster (SOLANA_CLUSTER, devnet by default). */
   cluster: string | undefined;
   /** FORGE_BUYBACK_LIVE === "true". */
   live: boolean;
@@ -358,10 +358,15 @@ const LIVE_RE = /^(true|false)?$/;
  * BUYBACK_DEVNET_DBC_POOL (required by the dbc-devnet route), JUPITER_API_URL / JUPITER_API_KEY
  * (shared with the conversion job), BUYBACK_REQUEST_INTERVAL_MS (1100),
  * BUYBACK_REQUEST_TIMEOUT_MS (15 000).
+ *
+ * The mode decision (live, devnet test or simulation) uses `options.cluster`, the cluster the
+ * runtime resolved (devnet unless SOLANA_CLUSTER is mainnet-beta), not the raw variable; without
+ * it (direct callers) SOLANA_CLUSTER is read with the same default.
  */
 export function buybackConfigFromEnv(
   env: Readonly<Record<string, string | undefined>>,
   addresses: { vault: PublicKey; forgeMint: PublicKey | null },
+  options: { cluster?: string } = {},
 ): { config: BuybackConfig; tickMs: number; jupiter: BuybackJupiterSettings } {
   const liveRaw = env.FORGE_BUYBACK_LIVE ?? '';
   if (!LIVE_RE.test(liveRaw))
@@ -400,7 +405,7 @@ export function buybackConfigFromEnv(
   if (parsedUrl.protocol !== 'https:')
     throw new JobError('CONFIG', 'JUPITER_API_URL must use https');
   const config: BuybackConfig = {
-    cluster: env.SOLANA_CLUSTER,
+    cluster: options.cluster ?? (env.SOLANA_CLUSTER || 'devnet'),
     live: liveRaw === 'true',
     forgeMint: addresses.forgeMint,
     vault: addresses.vault,
@@ -1520,7 +1525,13 @@ export function createBuybackJob(deps: BuybackDeps): BuybackJob {
       if (typeof allowance !== 'bigint' || allowance < 0n) {
         throw new JobError('INVALID_AMOUNT', 'spending limit returned an invalid amount');
       }
-      if (available + allowance < budget) budget = available + allowance;
+      // What the wallet and the spending limit can put behind the day, minus the fee allowance
+      // of every order: `ensureFunding` withdraws the orders plus that allowance, so a budget
+      // that used the whole limit would leave the last orders unfunded (skipped as
+      // insufficient_funds) once the limit binds.
+      const fees = BigInt(config.ordersPerDay) * config.orderFeeAllowanceLamports;
+      const fundable = available + allowance > fees ? available + allowance - fees : 0n;
+      if (fundable < budget) budget = fundable;
     }
     return budget;
   }

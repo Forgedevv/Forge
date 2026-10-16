@@ -86,6 +86,8 @@ export interface BuybackLibrary<Config extends BuybackConfigLike> {
   buybackConfigFromEnv(
     env: EnvSource,
     addresses: { vault: PublicKey; forgeMint: PublicKey | null },
+    /** The runtime's resolved cluster: the mode decision must not read the raw variable. */
+    options: { cluster: string },
   ): { config: Config; tickMs: number; jupiter: BuybackJupiterSettingsLike };
   createBuybackJournal(dir: string): unknown;
   createJupiterBuybackClient(
@@ -149,10 +151,11 @@ export function buybackJobModule<Config extends BuybackConfigLike>(
   return {
     name: 'buyback',
     create(ctx) {
-      const { config, tickMs, jupiter } = lib.buybackConfigFromEnv(ctx.env, {
-        vault: ctx.addresses.vault,
-        forgeMint: ctx.addresses.forgeMint,
-      });
+      const { config, tickMs, jupiter } = lib.buybackConfigFromEnv(
+        ctx.env,
+        { vault: ctx.addresses.vault, forgeMint: ctx.addresses.forgeMint },
+        { cluster: ctx.cluster },
+      );
       const logger = ctx.jobLogger('buyback');
 
       // Squads v4 spending limit of the bot (optional: simulation without it).
