@@ -311,7 +311,8 @@ The screens (agent 6) do not call these routes directly: they go through `apps/w
 
 HTTP on the private network. Each request carries:
 - `X-Forge-Timestamp`: unix time in seconds; rejected if it differs from the signer's clock by more than 60 s;
-- `X-Forge-Signature`: hex HMAC-SHA256 with `SIGNER_HMAC_SECRET` over `"<timestamp>.<raw body>"` (the timestamp is signed too, so it cannot be swapped on a replayed request). The signer also rejects a signature it has already seen within the 60 s window.
+- `X-Forge-Nonce`: 32 lowercase hex characters (16 random bytes), fresh for every request, retries included;
+- `X-Forge-Signature`: hex HMAC-SHA256 with `SIGNER_HMAC_SECRET` over `signerSignedPayload` (`packages/shared/src/api.ts`) = `forge-signer-v2\n<METHOD>\n<path?query>\n<timestamp>\n<nonce>\n<sha256 hex of the raw body>`. Every field has a strict format and none can hold a line feed, so a signature is bound to one method, one route and one body. The signer rejects a nonce it has already seen within the 60 s window (recorded only after the signature verifies).
 
 | Route | Input | Output | Signer checks |
 |---|---|---|---|

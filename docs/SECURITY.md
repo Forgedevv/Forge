@@ -48,7 +48,7 @@ Every protection below is **mandatory** in the MVP. Agents that touch one of the
 
 ## 6. Signer called by anyone
 
-**Protections** (agent 5): API reachable only from VPS 1's IP (firewall), HMAC-signed requests with a timestamp, and the signer **rereads everything in Supabase** (job, spec, confirmed payment) instead of trusting the request body.
+**Protections** (agent 5): API reachable only from VPS 1's IP (firewall), HMAC-signed requests bound to the method, the path, a timestamp, a single-use nonce and the body, and the signer **rereads everything in Supabase** (job, spec, confirmed payment) instead of trusting the request body.
 
 ## 7. Treasury drained
 

@@ -37,6 +37,10 @@ Kept up to date by the lead session. Agents read it, do not modify it.
 | D29 | Claims while sleeping | coin creators can still claim their creator fees while a launchpad is sleeping: the sleeping page keeps the claim widget |
 | D30 | Client site host | until `<slug>.<CLIENTS_DOMAIN>` is verified on Vercel (none in the devnet beta), a client site is served at a production `*.vercel.app` alias of its own Vercel project. The builder records the exact host it reads from the Vercel API for that project and deployment in `launchpads.site_host` (verified subdomain preferred); the relay, the upload route, the dashboard and the coin metadata trust that exact host only, with the launchpad's status rules, and only when it is `<one label>.vercel.app` or exactly `<own slug>.<CLIENTS_DOMAIN>`. Vercel URLs are never trusted by pattern (look-alike project names) |
 
+| D31 | Referral accounts | the Meteora referral WSOL account and the Jupiter referral account belong to the multisig vault; client sites receive `NEXT_PUBLIC_FORGE_MULTISIG_VAULT` and refuse a swap whose referral account is held by anyone else |
+| D32 | Fees after graduation | the signer claims the fees of the FORGE creator's permanently locked DAMM v2 position to the multisig, like the DBC creator share before graduation; the position itself is never moved or unlocked |
+| D33 | Buyback funding | the buyback bot is a multisig member with no permission and a daily SOL spending limit whose only destination is itself; the team sets the amount (D8) |
+
 ## Open (to be decided by the team)
 
 | # | Question | Blocks |
