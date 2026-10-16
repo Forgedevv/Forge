@@ -40,6 +40,8 @@ export class MemoryPaymentsStore implements PaymentsStore {
   readonly flags = new Map<FlagKey, boolean>();
   /** `payment_anomalies`, keyed by signature (UNIQUE in the database). */
   readonly anomalies = new Map<string, NewPaymentAnomaly>();
+  /** Anomalies resolved (`resolved_at` set), by signature: the resulting note. */
+  readonly resolutions = new Map<string, string>();
   readonly events: { jobId: string; message: string }[] = [];
   /** Number of job transitions actually applied (to assert exactly-once). */
   transitions: { jobId: string; from: JobStatus; to: JobStatus }[] = [];
@@ -141,6 +143,24 @@ export class MemoryPaymentsStore implements PaymentsStore {
     if (this.anomalies.has(anomaly.signature)) return 'exists';
     this.anomalies.set(anomaly.signature, { ...anomaly });
     return 'recorded';
+  }
+
+  async resolvePaidAnomaly(
+    signature: string,
+    paidPaymentId: string,
+    note: string,
+  ): Promise<number> {
+    await this.statement('resolvePaidAnomaly');
+    const row = this.anomalies.get(signature);
+    if (!row || row.paymentId === paidPaymentId || this.resolutions.has(signature)) return 0;
+    this.resolutions.set(
+      signature,
+      [row.note, note]
+        .filter((n) => n)
+        .join('; ')
+        .slice(0, 1000),
+    );
+    return 1;
   }
 
   async insertQuote(payment: NewPayment): Promise<PaymentRecord> {

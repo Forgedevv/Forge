@@ -160,6 +160,41 @@ describe('SupabasePaymentsStore', () => {
     await expect(broken.store.recordPaymentAnomaly(anomaly)).rejects.toBeInstanceOf(StoreError);
   });
 
+  it('resolves the open anomaly of a signature recorded for another payment, keeping its note', async () => {
+    const open = { id: 'a1', payment_id: 'pA', note: 'confirmation rejected (memo_mismatch)' };
+    const { store, calls } = fakeDb([{ data: open }, { data: [{ id: 'a1' }] }]);
+    await expect(store.resolvePaidAnomaly('sig', 'pB', 'paid pB')).resolves.toBe(1);
+    expect(calls[0]!.ops).toEqual([
+      ['select', ['id, payment_id, note']],
+      ['eq', ['signature', 'sig']],
+      ['is', ['resolved_at', null]],
+      ['maybeSingle', []],
+    ]);
+    const [update, ...filters] = calls[1]!.ops;
+    expect(update![0]).toBe('update');
+    expect(update![1][0]).toMatchObject({ note: 'confirmation rejected (memo_mismatch); paid pB' });
+    expect(Date.parse((update![1][0] as { resolved_at: string }).resolved_at)).not.toBeNaN();
+    expect(filters).toEqual([
+      ['eq', ['id', 'a1']],
+      ['is', ['resolved_at', null]],
+      ['select', ['id']],
+    ]);
+    // Nothing open, or the anomaly of that same payment (a duplicate): nothing written.
+    for (const data of [null, { ...open, payment_id: 'pB' }]) {
+      const none = fakeDb([{ data }]);
+      await expect(none.store.resolvePaidAnomaly('sig', 'pB', 'paid pB')).resolves.toBe(0);
+      expect(none.calls).toHaveLength(1);
+    }
+    // The note stays within the column limit.
+    const long = fakeDb([{ data: { ...open, note: 'x'.repeat(995) } }, { data: [] }]);
+    await expect(long.store.resolvePaidAnomaly('sig', 'pB', 'paid pB')).resolves.toBe(0);
+    expect((long.calls[1]!.ops[0]![1][0] as { note: string }).note).toHaveLength(1000);
+    const broken = fakeDb([{ error: { code: '42501', message: 'denied' } }]);
+    await expect(broken.store.resolvePaidAnomaly('sig', 'pB', 'x')).rejects.toBeInstanceOf(
+      StoreError,
+    );
+  });
+
   it('finds the oldest open paid quote of a job and payer', async () => {
     const { store, calls } = fakeDb([{ data: [ROW] }]);
     const found = await store.findOpenQuote({

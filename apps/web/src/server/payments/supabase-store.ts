@@ -21,6 +21,8 @@ import {
  */
 
 const UNIQUE_VIOLATION = '23505';
+/** `payment_anomalies.note` is at most 1000 characters (migration 0008). */
+const MAX_ANOMALY_NOTE = 1000;
 
 interface DbError {
   code?: string;
@@ -148,6 +150,34 @@ export class SupabasePaymentsStore implements PaymentsStore {
       fail('record payment anomaly', res.error);
     }
     return 'recorded';
+  }
+
+  async resolvePaidAnomaly(
+    signature: string,
+    paidPaymentId: string,
+    note: string,
+  ): Promise<number> {
+    const read = await this.db
+      .from('payment_anomalies')
+      .select('id, payment_id, note')
+      .eq('signature', signature)
+      .is('resolved_at', null)
+      .maybeSingle();
+    if (read.error) fail('read payment anomaly', read.error);
+    const row = read.data as { id?: unknown; payment_id?: unknown; note?: unknown } | null;
+    if (!row || typeof row.id !== 'string' || row.payment_id === paidPaymentId) return 0;
+    const previous = typeof row.note === 'string' && row.note.length > 0 ? `${row.note}; ` : '';
+    const res = await this.db
+      .from('payment_anomalies')
+      .update({
+        resolved_at: new Date().toISOString(),
+        note: `${previous}${note}`.slice(0, MAX_ANOMALY_NOTE),
+      })
+      .eq('id', row.id)
+      .is('resolved_at', null)
+      .select('id');
+    if (res.error) fail('resolve payment anomaly', res.error);
+    return (res.data ?? []).length;
   }
 
   async insertQuote(payment: NewPayment): Promise<PaymentRecord> {

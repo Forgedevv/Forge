@@ -9,6 +9,7 @@ import { FixedPriceSource, type SolUsdPriceSource } from './price-source';
 import {
   BEFORE_WINDOW_NOTE,
   createPaymentsService,
+  PAID_ELSEWHERE_NOTE,
   QUOTE_TIMING,
   receivedLamports,
   REFUND_CHECK_NOTE,
@@ -1296,6 +1297,81 @@ describe('payment anomalies (docs/DECISIONS.md D20)', () => {
     expect([...ctx.store.anomalies.values()].map((a) => [a.paymentId, a.reason])).toEqual([
       [q2.paymentId, 'duplicate'],
     ]);
+    // A retry of the duplicate payment's confirmation keeps its anomaly open (money owed back).
+    await confirm(ctx, q2.paymentId, s2);
+    expect(ctx.store.resolutions.size).toBe(0);
+  });
+
+  /** Quote A of the job and quote B of another job of the same owner. */
+  async function twoQuotes() {
+    const ctx = setup();
+    const other = ctx.store.addLaunchpad({ ownerWallet: OWNER_WALLET });
+    const otherJob = ctx.store.addJob({ launchpadId: other.id, type: 'create_launchpad' });
+    const a = await quoteCreation(ctx);
+    const b = await quoteCreation(ctx, otherJob.id);
+    // The transaction pays quote B (its memo), and is presented for quote A first.
+    const signature = pay(ctx, b, otherJob.id);
+    return { ctx, a, b, otherJob, signature };
+  }
+
+  it('resolves the anomaly of a rejected confirmation once its transaction pays another quote', async () => {
+    const { ctx, a, b, otherJob, signature } = await twoQuotes();
+    await expect(confirm(ctx, a.paymentId, signature)).rejects.toMatchObject({
+      code: 'PAYMENT_INVALID',
+    });
+    const rejection = `confirmation rejected (memo_mismatch); ${REFUND_CHECK_NOTE}`;
+    expect(ctx.store.anomalies.get(signature)).toMatchObject({
+      paymentId: a.paymentId,
+      note: rejection,
+    });
+    expect(ctx.store.resolutions.size).toBe(0);
+
+    await expect(confirm(ctx, b.paymentId, signature)).resolves.toEqual({
+      httpStatus: 200,
+      status: 'confirmed',
+    });
+    expect(ctx.store.jobs.get(otherJob.id)!.status).toBe('paid');
+    expect(ctx.store.resolutions.get(signature)).toBe(
+      `${rejection}; ${PAID_ELSEWHERE_NOTE} ${b.paymentId}`,
+    );
+    expect(ctx.logger.entries.map((e) => e.event)).toContain('payment.anomaly_resolved');
+    // Replays change nothing.
+    await confirm(ctx, b.paymentId, signature);
+    await expect(confirm(ctx, a.paymentId, signature)).rejects.toMatchObject({
+      code: 'SIGNATURE_ALREADY_USED',
+    });
+    expect(ctx.store.anomalies.size).toBe(1);
+    expect(ctx.store.resolutions.size).toBe(1);
+  });
+
+  it('resolves it too when the other quote is confirmed while the rejection is recorded', async () => {
+    const { ctx, a, b, signature } = await twoQuotes();
+    let raced = false;
+    ctx.store.beforeStatement = async (name) => {
+      if (name !== 'recordPaymentAnomaly' || raced) return;
+      raced = true;
+      // Quote B is confirmed between the rejection of A and the write of its anomaly.
+      await confirm(ctx, b.paymentId, signature);
+    };
+    await expect(confirm(ctx, a.paymentId, signature)).rejects.toMatchObject({
+      code: 'PAYMENT_INVALID',
+    });
+    expect(raced).toBe(true);
+    expect(ctx.store.payments.get(b.paymentId)!.txSignature).toBe(signature);
+    expect(ctx.store.anomalies.get(signature)?.paymentId).toBe(a.paymentId);
+    expect(ctx.store.resolutions.get(signature)).toContain(`${PAID_ELSEWHERE_NOTE} ${b.paymentId}`);
+  });
+
+  it('keeps open the anomaly of a second payment of a quote already paid', async () => {
+    const ctx = setup();
+    const quote = await quoteCreation(ctx);
+    await confirm(ctx, quote.paymentId, pay(ctx, quote, ctx.job.id));
+    const second = pay(ctx, quote, ctx.job.id);
+    await expect(confirm(ctx, quote.paymentId, second)).rejects.toMatchObject({
+      code: 'PAYMENT_ALREADY_CONFIRMED',
+    });
+    expect(ctx.store.anomalies.get(second)?.reason).toBe('duplicate');
+    expect(ctx.store.resolutions.size).toBe(0);
   });
 
   it('records a paid quote confirmed for a job paid by an included modification', async () => {

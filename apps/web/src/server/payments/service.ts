@@ -28,7 +28,9 @@ import type { JobContext, PaymentAnomalyReason, PaymentRecord, PaymentsStore } f
  *   by the payer, with exactly one transfer from the payer to the cashbox; or, for any other
  *   rejection made after the payer's signature was checked (memo, transfers, payer, window), a
  *   transaction whose cashbox balance grew (what it grew by is recorded, with the rejection in
- *   the note);
+ *   the note). A transaction rejected for one quote may validly pay another: once it does, its
+ *   open anomaly is resolved with a note (never deleted), so neither the cashbox floor nor a
+ *   manual refund counts money that paid a job;
  * - the quote window (with the block time tolerance) is passed to the core verification, so that
  *   a transaction served without its block time gets the core's `getBlockTime` fallback instead
  *   of staying pending forever.
@@ -154,6 +156,8 @@ const SIGNED_BY_PAYER_REJECTIONS: ReadonlySet<string> = new Set([
 export const REFUND_CHECK_NOTE =
   'check that the transaction paid no other quote (payments.tx_signature) before refunding';
 export const BEFORE_WINDOW_NOTE = 'landed before the quote window';
+/** Note of an anomaly closed because its transaction paid another payment (then its id). */
+export const PAID_ELSEWHERE_NOTE = 'resolved: nothing to refund, the transaction paid payment';
 
 /** Quote window accepted for the block time of a payment (validity plus tolerance, both ends). */
 export function quoteWindow(payment: Pick<PaymentRecord, 'quoteExpiresAt'>): {
@@ -503,6 +507,27 @@ export function createPaymentsService(deps: PaymentsServiceDeps): PaymentsServic
       lamports: lamports === null ? null : lamports.toString(),
       outcome,
     });
+    // Written first, then checked: when another payment was confirmed meanwhile with this same
+    // transaction, the row is closed here; otherwise that confirmation closes it
+    // (settlePaidAnomaly). Whichever runs last sees the other.
+    const holder = await store.findPaymentBySignature(signature);
+    if (holder && holder.id !== payment.id) await settlePaidAnomaly(holder.id, signature);
+  }
+
+  /**
+   * The transaction of a confirmed payment pays that payment: an anomaly recorded for it under
+   * another quote (a rejected confirmation, a duplicate presented for a quote already paid) is
+   * closed, so neither the cashbox floor nor a manual refund counts money that paid a job.
+   */
+  async function settlePaidAnomaly(paymentId: string, signature: string): Promise<void> {
+    const closed = await store.resolvePaidAnomaly(
+      signature,
+      paymentId,
+      `${PAID_ELSEWHERE_NOTE} ${paymentId}`,
+    );
+    if (closed > 0) {
+      logger.log('info', 'payment.anomaly_resolved', { paymentId, signature, closed });
+    }
   }
 
   /**
@@ -701,6 +726,7 @@ export function createPaymentsService(deps: PaymentsServiceDeps): PaymentsServic
         );
       }
       if (payment.status === 'confirmed') {
+        await settlePaidAnomaly(payment.id, signature);
         await recordDuplicates(payment.jobId);
         await markJobPaid(payment.jobId, 'confirm_retry');
       }
@@ -822,6 +848,7 @@ export function createPaymentsService(deps: PaymentsServiceDeps): PaymentsServic
       });
     }
 
+    await settlePaidAnomaly(payment.id, signature);
     await recordDuplicates(payment.jobId);
     await markJobPaid(payment.jobId, 'payment_confirmed');
     return { httpStatus: 200, status: 'confirmed' };

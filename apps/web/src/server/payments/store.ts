@@ -113,6 +113,13 @@ export interface PaymentsStore {
   findOpenQuote(query: OpenQuoteQuery): Promise<PaymentRecord | null>;
   /** Inserts an anomaly; idempotent on the signature (UNIQUE `payment_anomalies.signature`). */
   recordPaymentAnomaly(anomaly: NewPaymentAnomaly): Promise<AnomalyWriteResult>;
+  /**
+   * Closes the open anomaly of `signature` (at most one, UNIQUE) when it was recorded for another
+   * payment than `paidPaymentId`: the transaction pays that payment, so nothing is owed back for
+   * it. Sets `resolved_at` and appends `note` (rows are never deleted: the service role has no
+   * delete privilege on `payment_anomalies`, migration 0008). Returns the number of rows closed.
+   */
+  resolvePaidAnomaly(signature: string, paidPaymentId: string, note: string): Promise<number>;
   /** Inserts a payment in status `quoted`. */
   insertQuote(payment: NewPayment): Promise<PaymentRecord>;
   /** quoted|expired + no signature -> confirmed + signature. */
