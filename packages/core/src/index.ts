@@ -187,3 +187,32 @@ export {
   type GatingErrorCode,
   type GatingOptions,
 } from './gating.js';
+// Jupiter referral fee claim (mainnet-beta only): the integrator fees collected after graduation
+// go to the referral account's partner, the FORGE multisig vault (jupiter-referral.ts).
+export {
+  JUPITER_CLAIM_DISCRIMINATOR,
+  JUPITER_CLAIM_V2_DISCRIMINATOR,
+  JUPITER_CREATE_ADMIN_TOKEN_ACCOUNT_DISCRIMINATOR,
+  JUPITER_PROJECT_DISCRIMINATOR,
+  JUPITER_REFERRAL_ACCOUNT_DISCRIMINATOR,
+  JUPITER_REFERRAL_PROGRAM_ID,
+  JupiterReferralError,
+  buildJupiterCreateAdminTokenAccountIx,
+  buildJupiterReferralClaimIx,
+  buildJupiterReferralClaimTx,
+  decodeJupiterProject,
+  decodeJupiterReferralAccount,
+  deriveJupiterProjectAuthority,
+  deriveJupiterReferralTokenAccount,
+  deriveJupiterReferralTokenAccountV2,
+  type BuildJupiterReferralClaimTxParams,
+  type JupiterClaimAccounts,
+  type JupiterCreateAdminTokenAccountAccounts,
+  type JupiterProject,
+  type JupiterReferralAccount,
+  type JupiterReferralClaimItem,
+  type JupiterReferralClaimSummary,
+  type JupiterReferralClaimTx,
+  type JupiterReferralClaimVersion,
+  type JupiterReferralErrorCode,
+} from './jupiter-referral.js';

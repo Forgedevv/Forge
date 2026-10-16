@@ -101,6 +101,10 @@ function baseConfig(over: Partial<BuybackConfig> = {}): BuybackConfig {
     maxLatenessMs: 30 * 60_000,
     dayMarginMs: 10 * 60_000,
     maxPriorityFeeLamports: 100_000n,
+    orderFeeAllowanceLamports: 0n,
+    route: 'jupiter',
+    devnetTest: false,
+    devnetPool: null,
     settle: { timeoutMs: 10_000, pollMs: 1_000, rebroadcastMs: 3_000 },
     ...over,
   };

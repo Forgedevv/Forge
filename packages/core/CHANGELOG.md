@@ -52,6 +52,15 @@ First version meant for publication on npm as `@forgedevv/core` (with `@forgedev
   expectedOwner?)`, new `assertPoolConfigAllowed`, `readOptionalAddress` (addresses.ts);
   `swapFeeAddresses` also returns `multisigVault`.
 - `checkPaymentTransaction` / `verifyPayment`: `transferLamports` on `amount_mismatch` when the transfer amount differs.
+- Jupiter referral fee claim (`jupiter-referral.ts`, mainnet-beta only): `buildJupiterReferralClaimTx`
+  reads the referral account, its project and the two collection accounts of a mint (classic
+  `referral_ata` PDA and the referral account's associated token account) and builds the
+  permissionless `claim` / `claim_v2` instructions to the referral account's partner (the FORGE
+  multisig vault, asserted with `expectedPartner`). Raw instructions from the referral program IDL
+  (no Anchor dependency), with the pure pieces exported (`decodeJupiterReferralAccount`,
+  `decodeJupiterProject`, `deriveJupiterReferralTokenAccount[V2]`, `buildJupiterReferralClaimIx`,
+  `buildJupiterCreateAdminTokenAccountIx`). Any cluster but mainnet-beta is refused
+  (`JupiterReferralError` `wrong_cluster`).
 
 ### Added (DAMM v2 position fee claims)
 

@@ -537,12 +537,13 @@ describe('operator command --revoke-launch', () => {
 
 describe('buyback module', () => {
   it('wires the buyback job with the shared lock, the watcher hook and its own tick', async () => {
-    const captured: Array<BuybackDepsLike<{ maxPriorityFeeLamports: bigint }>> = [];
-    const lib: BuybackLibrary<{ maxPriorityFeeLamports: bigint }> = {
+    type Cfg = { maxPriorityFeeLamports: bigint; route: 'jupiter'; devnetPool: null };
+    const captured: Array<BuybackDepsLike<Cfg>> = [];
+    const lib: BuybackLibrary<Cfg> = {
       buybackConfigFromEnv: (_env, addresses) => {
         expect(addresses.forgeMint).toBeNull();
         return {
-          config: { maxPriorityFeeLamports: 100_000n },
+          config: { maxPriorityFeeLamports: 100_000n, route: 'jupiter', devnetPool: null },
           tickMs: 45_000,
           jupiter: { baseUrl: 'https://jup.test', minRequestIntervalMs: 1_100, timeoutMs: 15_000 },
         };
@@ -555,6 +556,10 @@ describe('buyback module', () => {
         captured.push(deps);
         return { mode: 'simulation', runOnce: async () => ({ status: 'paused' }) };
       },
+      squadsConfigFromEnv: () => null,
+      createSquadsJournal: (journalDir) => ({ journalDir }),
+      createSquadsSpendingLimitWithdrawer: () => ({ withdrawer: true }),
+      createDbcDevnetBuybackRoute: () => ({ quotes: null, swapPreparer: null }),
     };
     const runtime = await create({}, { extraJobs: [buybackJobModule(lib)] });
     expect(runtime.scheduler.names()).toContain('buyback');

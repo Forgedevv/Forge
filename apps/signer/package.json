@@ -17,6 +17,7 @@
     "@meteora-ag/dynamic-bonding-curve-sdk": "1.5.13",
     "@solana/spl-token": "0.4.15",
     "@solana/web3.js": "1.99.0",
+    "@sqds/multisig": "2.1.4",
     "bn.js": "5.2.5",
     "pino": "10.4.0",
     "zod": "4.6.5"

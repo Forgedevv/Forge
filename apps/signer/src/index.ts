@@ -28,8 +28,11 @@ import { createSignerRuntime } from './runtime/runtime.js';
 import type { SignerJobModule } from './runtime/modules.js';
 import { buybackJobModule } from './runtime/buyback.js';
 
-/** Optional job modules: the $FORGE buyback (simulation until a spending-limit withdrawer exists). */
-const EXTRA_JOBS: SignerJobModule[] = [buybackJobModule(await import('./jobs/buyback.js'))];
+/**
+ * Optional job modules: the $FORGE buyback (simulation unless the Squads spending limit is
+ * configured and live mode is enabled, runtime/buyback.ts).
+ */
+const EXTRA_JOBS: SignerJobModule[] = [buybackJobModule()];
 
 const log = pino({ name: 'signer-main' });
 

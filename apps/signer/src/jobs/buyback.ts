@@ -16,26 +16,38 @@
  *      budget into N random amounts in [min order, max order] (`planDay`, injectable RNG). The plan
  *      is written to the journal before anything else, so a restart reuses it (never re-rolls).
  *      Slots already in the past when the plan is created are `missed` (no catch-up burst).
- *   3. Funding (live). Once per day the missing SOL is withdrawn from the vault to the bot wallet
- *      through the injected `SpendingLimitWithdrawer` (not implemented yet: live mode is refused
- *      without one). The request is journaled BEFORE it is made and never repeated that day.
- *   4. Orders. Each run executes at most one due slot. A slot later than `maxLatenessMs` is
- *      `missed`. Simulation: quote (if $FORGE and a quote source exist) and log the would-be order.
- *      Live: quote (ExactIn SOL -> FORGE_MINT, slippage <= 100 bps), swap transaction from Jupiter,
- *      static allowlist (`verifySwapTransaction` from convert.ts, Jupiter route arguments
- *      decoded and bound to the quote and the slippage cap), simulation with the post-state
- *      of every account the bot holds (`compareBuybackStates`), kill switch re-read, sign, journal
- *      (signature + bytes), `onBeforeSend`, send, settle by polling. One attempt per slot: a slot
- *      that may have reached the network is never retried.
+ *   3. Funding (live). Once per day the missing SOL (the planned orders plus a fee allowance per
+ *      order, minus what the bot already holds above its reserve) is withdrawn from the vault to
+ *      the bot wallet through the `SpendingLimitWithdrawer` (jobs/squads.ts: the bot's own Squads
+ *      v4 spending limit, SECURITY.md 7). The request is journaled BEFORE it is made and never
+ *      repeated that day.
+ *   4. Orders. Each run executes at most one due slot (TWAP: the day's budget in several slices
+ *      at random times). A slot later than `maxLatenessMs` is `missed`. Simulation: quote (if
+ *      $FORGE and a quote source exist) and log the would-be order. Live: quote (ExactIn SOL ->
+ *      FORGE_MINT, slippage <= 100 bps, price impact <= cap), swap transaction from the route,
+ *      static allowlist (Jupiter: `verifySwapTransaction` from convert.ts with the route arguments
+ *      decoded and bound to the quote and the slippage cap; devnet DBC: `assertDbcBuyTx` in
+ *      buyback-dbc.ts), simulation with the post-state of every account the bot holds
+ *      (`compareBuybackStates`), kill switch re-read, sign, journal (signature + bytes),
+ *      `onBeforeSend`, send, settle by polling. One attempt per slot: a slot that may have reached
+ *      the network is never retried.
  *   5. Return. Any $FORGE on the bot wallet is transferred to the vault's associated token
- *      account (`assertForgeReturnTx` policy, preflight simulation, journaled in flight).
+ *      account (`assertForgeReturnTx` policy, preflight simulation, journaled in flight). The
+ *      leftover SOL stays on the bot within its fee reserve.
  *
- * Modes: `simulation` is the default and is forced unless SOLANA_CLUSTER = mainnet-beta AND
- * FORGE_BUYBACK_LIVE = true AND FORGE_MINT is set AND a withdrawer is wired. Asking for live
- * without a withdrawer (or any other live dependency) is a startup error. Simulation never reads
- * the keystore, never signs and never sends. Kill switches: env BUYBACK_PAUSED and the
- * `buyback_paused` flag, fail closed (missing row or unreadable flags = paused), re-read before
- * every withdrawal and every signature.
+ * Routes (BUYBACK_ROUTE): `jupiter` (default, the only route allowed on mainnet-beta) and
+ * `dbc-devnet` (devnet only: Jupiter does not index devnet, so a devnet test buys the stand-in
+ * coin straight from its DBC pool with @forge/core `buildBuyTx`; a startup error on mainnet-beta).
+ *
+ * Modes: `simulation` is the default. Live needs FORGE_BUYBACK_LIVE = true, FORGE_MINT and a
+ * withdrawer, and either SOLANA_CLUSTER = mainnet-beta with the Jupiter route, or SOLANA_CLUSTER =
+ * devnet with FORGE_BUYBACK_DEVNET_TEST = true and the dbc-devnet route (the devnet proof,
+ * scripts/devnet-tests/src/signer-buyback.ts). FORGE_BUYBACK_DEVNET_TEST on mainnet-beta is a
+ * startup error, so the devnet gate can never loosen mainnet. Asking for live without a withdrawer
+ * (or any other live dependency) is a startup error. Simulation never reads the keystore, never
+ * signs and never sends. Kill switches: env BUYBACK_PAUSED and the `buyback_paused` flag, fail
+ * closed (missing row or unreadable flags = paused), re-read before every withdrawal and every
+ * signature.
  */
 import { randomInt } from 'node:crypto';
 import {
@@ -59,6 +71,7 @@ import {
   type Connection,
 } from '@solana/web3.js';
 import { z } from 'zod';
+import { PLATFORM_FEE_BPS, platformFeeLamports } from '@forge/core';
 import type { FlagKey } from '@forge/shared';
 import {
   DEFAULT_JUPITER_URL,
@@ -89,6 +102,7 @@ import {
   createFileJournal,
   describeError,
   formatSol,
+  parseAddress,
   parseLamportsEnv,
   parsePositiveIntEnv,
   realSleep,
@@ -133,12 +147,20 @@ const WEIGHT_RANGE = 1_000_000;
 
 export type BuybackMode = 'simulation' | 'live';
 
+/** `jupiter` on mainnet-beta; `dbc-devnet` (core `buildBuyTx` on a DBC pool) on devnet only. */
+export type BuybackRouteKind = 'jupiter' | 'dbc-devnet';
+export const BUYBACK_ROUTES: readonly BuybackRouteKind[] = ['jupiter', 'dbc-devnet'];
+
 export interface BuybackModeInput {
   cluster: string | undefined;
   /** FORGE_BUYBACK_LIVE parsed (exactly "true"). */
   live: boolean;
   forgeMint: PublicKey | null;
   hasWithdrawer: boolean;
+  /** BUYBACK_ROUTE (default jupiter). */
+  route?: BuybackRouteKind;
+  /** FORGE_BUYBACK_DEVNET_TEST parsed (exactly "true"): the devnet live gate. */
+  devnetTest?: boolean;
 }
 
 export interface BuybackModeDecision {
@@ -148,12 +170,29 @@ export interface BuybackModeDecision {
   liveRequested: boolean;
 }
 
-/** Live only on mainnet-beta, with FORGE_BUYBACK_LIVE=true, a $FORGE mint and a withdrawer. */
+/**
+ * Live on mainnet-beta with FORGE_BUYBACK_LIVE=true, a $FORGE mint, a withdrawer and the Jupiter
+ * route; or on devnet with FORGE_BUYBACK_DEVNET_TEST=true on top of the same, with the dbc-devnet
+ * route. The devnet route or the devnet-test flag on mainnet-beta throws (CONFIG): neither can
+ * ever apply there. Anything else is simulation.
+ */
 export function resolveBuybackMode(input: BuybackModeInput): BuybackModeDecision {
-  if (input.cluster !== 'mainnet-beta') {
+  const route = input.route ?? 'jupiter';
+  const devnetTest = input.devnetTest ?? false;
+  if (input.cluster === 'mainnet-beta') {
+    if (route !== 'jupiter') {
+      throw new JobError('CONFIG', `BUYBACK_ROUTE=${route} is refused on mainnet-beta`);
+    }
+    if (devnetTest) {
+      throw new JobError('CONFIG', 'FORGE_BUYBACK_DEVNET_TEST cannot be set on mainnet-beta');
+    }
+  } else if (input.cluster !== 'devnet' || !devnetTest) {
     return {
       mode: 'simulation',
-      reason: `cluster is ${input.cluster ?? 'unset'}, not mainnet-beta`,
+      reason:
+        input.cluster === 'devnet'
+          ? 'cluster is devnet without FORGE_BUYBACK_DEVNET_TEST=true'
+          : `cluster is ${input.cluster ?? 'unset'}, not mainnet-beta`,
       liveRequested: false,
     };
   }
@@ -162,6 +201,13 @@ export function resolveBuybackMode(input: BuybackModeInput): BuybackModeDecision
   }
   if (!input.forgeMint) {
     return { mode: 'simulation', reason: 'FORGE_MINT is not set', liveRequested: false };
+  }
+  if (input.cluster === 'devnet' && route !== 'dbc-devnet') {
+    return {
+      mode: 'simulation',
+      reason: 'a devnet live test needs BUYBACK_ROUTE=dbc-devnet (Jupiter does not index devnet)',
+      liveRequested: true,
+    };
   }
   if (!input.hasWithdrawer) {
     return {
@@ -172,7 +218,10 @@ export function resolveBuybackMode(input: BuybackModeInput): BuybackModeDecision
   }
   return {
     mode: 'live',
-    reason: 'mainnet-beta, FORGE_BUYBACK_LIVE=true, FORGE_MINT set',
+    reason:
+      input.cluster === 'mainnet-beta'
+        ? 'mainnet-beta, FORGE_BUYBACK_LIVE=true, FORGE_MINT set, Jupiter route'
+        : 'devnet test: FORGE_BUYBACK_DEVNET_TEST=true, FORGE_BUYBACK_LIVE=true, dbc-devnet route',
     liveRequested: true,
   };
 }
@@ -207,6 +256,18 @@ export interface BuybackConfig {
   dayMarginMs: number;
   /** Highest priority fee a swap transaction may carry (lamports). */
   maxPriorityFeeLamports: bigint;
+  /**
+   * Lamports withdrawn on top of each planned order to cover its fees (network and priority fees
+   * of the buy and of the return; on the devnet route the 30 bps platform fee core adds), so the
+   * reserve is never eaten by the day's orders.
+   */
+  orderFeeAllowanceLamports: bigint;
+  /** BUYBACK_ROUTE: jupiter (mainnet) or dbc-devnet (devnet only). */
+  route: BuybackRouteKind;
+  /** FORGE_BUYBACK_DEVNET_TEST === "true": allows live mode on devnet (never on mainnet-beta). */
+  devnetTest: boolean;
+  /** BUYBACK_DEVNET_DBC_POOL: the DBC pool of the devnet stand-in coin (dbc-devnet route). */
+  devnetPool: PublicKey | null;
   /** Local kill switch (BUYBACK_PAUSED). */
   paused?: boolean;
   settle?: Partial<SettleTiming>;
@@ -251,9 +312,26 @@ export function validateBuybackConfig(config: BuybackConfig): void {
     fail('day margin leaves no room for the orders');
   }
   if (config.maxPriorityFeeLamports < 0n) fail('negative priority fee');
+  if (config.orderFeeAllowanceLamports < 0n) fail('negative order fee allowance');
   if (config.forgeMint) {
     if (config.forgeMint.equals(NATIVE_MINT)) fail('FORGE_MINT must not be wrapped SOL');
     if (config.forgeMint.equals(config.vault)) fail('FORGE_MINT must differ from the vault');
+  }
+  if (!BUYBACK_ROUTES.includes(config.route)) fail('BUYBACK_ROUTE must be jupiter or dbc-devnet');
+  if (config.cluster === 'mainnet-beta') {
+    if (config.route !== 'jupiter') fail('BUYBACK_ROUTE=dbc-devnet is refused on mainnet-beta');
+    if (config.devnetTest) fail('FORGE_BUYBACK_DEVNET_TEST cannot be set on mainnet-beta');
+    if (config.devnetPool) fail('BUYBACK_DEVNET_DBC_POOL cannot be set on mainnet-beta');
+  }
+  if (config.route === 'dbc-devnet') {
+    const pool = config.devnetPool;
+    if (!pool) throw new JobError('CONFIG', 'BUYBACK_ROUTE=dbc-devnet needs BUYBACK_DEVNET_DBC_POOL');
+    if (pool.equals(config.vault) || pool.equals(NATIVE_MINT)) {
+      fail('BUYBACK_DEVNET_DBC_POOL is not a pool');
+    }
+    if (config.forgeMint && pool.equals(config.forgeMint)) {
+      fail('BUYBACK_DEVNET_DBC_POOL must differ from FORGE_MINT');
+    }
   }
 }
 
@@ -273,9 +351,13 @@ const LIVE_RE = /^(true|false)?$/;
  * (0.01 SOL), BUYBACK_MAX_ORDER_LAMPORTS (0.25 SOL), BUYBACK_SLIPPAGE_BPS (50, max 100),
  * BUYBACK_MAX_PRICE_IMPACT_BPS (100, max 100), BUYBACK_FEE_RESERVE_LAMPORTS (0.02 SOL),
  * BUYBACK_MAX_LATENESS_MINUTES (30), BUYBACK_DAY_MARGIN_MINUTES (10),
- * BUYBACK_MAX_PRIORITY_FEE_LAMPORTS (100 000), BUYBACK_TICK_SECONDS (60), BUYBACK_PAUSED (false),
- * JUPITER_API_URL / JUPITER_API_KEY (shared with the conversion job),
- * BUYBACK_REQUEST_INTERVAL_MS (1100), BUYBACK_REQUEST_TIMEOUT_MS (15 000).
+ * BUYBACK_MAX_PRIORITY_FEE_LAMPORTS (100 000), BUYBACK_ORDER_FEE_ALLOWANCE_LAMPORTS (priority fee
+ * cap + 10 000; the dbc-devnet route adds the 30 bps platform fee of the largest order),
+ * BUYBACK_TICK_SECONDS (60), BUYBACK_PAUSED (false), BUYBACK_ROUTE (jupiter | dbc-devnet),
+ * FORGE_BUYBACK_DEVNET_TEST (exactly "true" or "false", default false, refused on mainnet-beta),
+ * BUYBACK_DEVNET_DBC_POOL (required by the dbc-devnet route), JUPITER_API_URL / JUPITER_API_KEY
+ * (shared with the conversion job), BUYBACK_REQUEST_INTERVAL_MS (1100),
+ * BUYBACK_REQUEST_TIMEOUT_MS (15 000).
  */
 export function buybackConfigFromEnv(
   env: Readonly<Record<string, string | undefined>>,
@@ -284,6 +366,21 @@ export function buybackConfigFromEnv(
   const liveRaw = env.FORGE_BUYBACK_LIVE ?? '';
   if (!LIVE_RE.test(liveRaw))
     throw new JobError('CONFIG', 'FORGE_BUYBACK_LIVE must be true or false');
+  const devnetTestRaw = env.FORGE_BUYBACK_DEVNET_TEST ?? '';
+  if (!LIVE_RE.test(devnetTestRaw)) {
+    throw new JobError('CONFIG', 'FORGE_BUYBACK_DEVNET_TEST must be true or false');
+  }
+  const routeRaw = env.BUYBACK_ROUTE ?? '';
+  if (routeRaw !== '' && !(BUYBACK_ROUTES as readonly string[]).includes(routeRaw)) {
+    throw new JobError('CONFIG', 'BUYBACK_ROUTE must be jupiter or dbc-devnet');
+  }
+  const route: BuybackRouteKind = routeRaw === '' ? 'jupiter' : (routeRaw as BuybackRouteKind);
+  const poolRaw = env.BUYBACK_DEVNET_DBC_POOL ?? '';
+  let devnetPool: PublicKey | null = null;
+  if (poolRaw !== '') {
+    devnetPool = parseAddress(poolRaw);
+    if (!devnetPool) throw new JobError('CONFIG', 'BUYBACK_DEVNET_DBC_POOL is not an address');
+  }
   const pausedRaw = env.BUYBACK_PAUSED ?? '';
   if (!/^(true|false|1|0)?$/.test(pausedRaw)) {
     throw new JobError('CONFIG', 'BUYBACK_PAUSED must be true or false');
@@ -341,8 +438,24 @@ export function buybackConfigFromEnv(
       'BUYBACK_MAX_PRIORITY_FEE_LAMPORTS',
       100_000n,
     ),
+    orderFeeAllowanceLamports: 0n,
+    route,
+    devnetTest: devnetTestRaw === 'true',
+    devnetPool,
     paused: pausedRaw === 'true' || pausedRaw === '1',
   };
+  config.orderFeeAllowanceLamports = parseLamportsEnv(
+    env.BUYBACK_ORDER_FEE_ALLOWANCE_LAMPORTS,
+    'BUYBACK_ORDER_FEE_ALLOWANCE_LAMPORTS',
+    config.maxPriorityFeeLamports + 10_000n,
+  );
+  if (route === 'dbc-devnet') {
+    // Core adds the 30 bps platform fee on top of every buy (docs/METEORA.md).
+    config.orderFeeAllowanceLamports += platformFeeLamports(
+      config.maxOrderLamports,
+      PLATFORM_FEE_BPS,
+    );
+  }
   validateBuybackConfig(config);
   const tickSeconds = intEnv('BUYBACK_TICK_SECONDS', 60, 3_600);
   if (tickSeconds < 5) throw new JobError('CONFIG', 'BUYBACK_TICK_SECONDS must be at least 5');
@@ -1307,6 +1420,8 @@ export function createBuybackJob(deps: BuybackDeps): BuybackJob {
     live: config.live,
     forgeMint: config.forgeMint,
     hasWithdrawer: deps.withdrawer !== undefined,
+    route: config.route,
+    devnetTest: config.devnetTest,
   });
   if (decision.liveRequested && decision.mode !== 'live') {
     throw new JobError('CONFIG', `live buyback refused: ${decision.reason}`);
@@ -1357,7 +1472,12 @@ export function createBuybackJob(deps: BuybackDeps): BuybackJob {
   let running = false;
 
   log.info(
-    { mode, reason: decision.reason, forgeMint: config.forgeMint?.toBase58() ?? null },
+    {
+      mode,
+      reason: decision.reason,
+      route: config.route,
+      forgeMint: config.forgeMint?.toBase58() ?? null,
+    },
     'buyback job configured',
   );
 
@@ -1658,9 +1778,10 @@ export function createBuybackJob(deps: BuybackDeps): BuybackJob {
       );
       return next;
     }
+    // The planned orders plus a fee allowance each: the reserve is not what pays the day's fees.
     const remaining = entry.slots
       .filter((s) => s.status === 'planned')
-      .reduce((a, s) => a + BigInt(s.lamports), 0n);
+      .reduce((a, s) => a + BigInt(s.lamports) + config.orderFeeAllowanceLamports, 0n);
     const spendable = await spendableBalance(l.rpc, bot, retry);
     const available =
       spendable > config.feeReserveLamports ? spendable - config.feeReserveLamports : 0n;
