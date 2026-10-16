@@ -18,7 +18,9 @@
  * What the output differs in:
  * - every `workspace:*` dependency becomes an npm alias of its public package, pinned to the exact
  *   version given with `--pin name=x.y.z`: `"@forge/core": "npm:@forgedevv/core@x.y.z"` (decision
- *   D26), so the site keeps importing `@forge/core` and installs from the public npm registry;
+ *   D26), so the site keeps importing `@forge/core` and installs from the public npm registry. The
+ *   pin of `@forge/core` and `@forge/shared` must be the version of `packages/core/package.json` /
+ *   `packages/shared/package.json`: the template builds against the core it was tested with;
  * - `tsconfig.json` no longer extends the monorepo base (its options are inlined);
  * - tests, test tooling, the monorepo lint config, mocks, caches and this `scripts/` folder are left out;
  * - `typescript` is added (the monorepo root provides it, a standalone repository does not);
@@ -27,7 +29,7 @@
  *   repository (a tracked `.npmrc` is always left out).
  *
  * Usage:
- *   node scripts/prepare-template-repo.mjs --out <dir> --pin @forge/core=0.1.0 --pin @forge/shared=0.1.0
+ *   node scripts/prepare-template-repo.mjs --out <dir> --pin @forge/core=0.2.0 --pin @forge/shared=0.2.0
  *     [--typescript 6.0.3] [--dry-run]
  */
 import { execFileSync } from 'node:child_process';
@@ -150,6 +152,54 @@ export const NPM_PACKAGES = Object.freeze({
   '@forge/core': '@forgedevv/core',
   '@forge/shared': '@forgedevv/shared',
 });
+
+/** Folders of the FORGE packages in the monorepo (`packages/<folder>/package.json`). */
+const WORKSPACE_PACKAGE_DIRS = Object.freeze({
+  '@forge/core': 'core',
+  '@forge/shared': 'shared',
+});
+
+/**
+ * Versions of the FORGE packages in the monorepo `sourceDir` belongs to (`packages/core` and
+ * `packages/shared`), the ones the template is built and tested against. A package whose
+ * `package.json` is missing or names another package is left out.
+ */
+export function readWorkspaceVersions(sourceDir) {
+  const versions = {};
+  for (const [name, folder] of Object.entries(WORKSPACE_PACKAGE_DIRS)) {
+    const path = resolve(sourceDir, '..', '..', 'packages', folder, 'package.json');
+    if (!existsSync(path)) continue;
+    let pkg;
+    try {
+      pkg = JSON.parse(readFileSync(path, 'utf8'));
+    } catch {
+      throw new PrepareError(`packages/${folder}/package.json is not valid JSON.`);
+    }
+    if (pkg?.name === name && typeof pkg.version === 'string') versions[name] = pkg.version;
+  }
+  return versions;
+}
+
+/**
+ * Throws unless the pin of each FORGE package is its workspace version: the template must build
+ * against the core it was tested with, never an older or newer one.
+ */
+export function assertPinsMatchWorkspace(pins, workspaceVersions) {
+  for (const name of Object.keys(NPM_PACKAGES)) {
+    if (!Object.hasOwn(pins, name)) continue;
+    const expected = workspaceVersions[name];
+    if (expected === undefined) {
+      throw new PrepareError(
+        `The workspace version of ${name} could not be read (packages/${WORKSPACE_PACKAGE_DIRS[name]}/package.json): --pin ${name} cannot be checked.`,
+      );
+    }
+    if (pins[name] !== expected) {
+      throw new PrepareError(
+        `--pin ${name}=${pins[name]} differs from the workspace version ${expected}: the template must build against the ${name} it was tested with.`,
+      );
+    }
+  }
+}
 
 /** Dependency spec of a workspace package in the template repository: `npm:<name>@<exact>`. */
 export function npmAlias(name, version) {
@@ -407,11 +457,14 @@ export function prepareTemplateRepo(options) {
     // Returns a Map rel -> Buffer for the regular files among `rels`. Symlinks are never followed:
     // a tracked link could point at a secret outside the folder.
     readFiles = readIndexFiles,
+    // Versions of packages/core and packages/shared (tests give them for fixture folders).
+    workspaceVersions = readWorkspaceVersions(sourceDir),
   } = options;
   if (options.registry !== undefined || options.scope !== undefined) {
     throw new PrepareError(REGISTRY_REMOVED);
   }
   if (!out) throw new PrepareError('--out <dir> is required.');
+  assertPinsMatchWorkspace(pins, workspaceVersions);
   const outDir = resolve(out);
   if (isInside(sourceDir, outDir) || isInside(outDir, sourceDir)) {
     throw new PrepareError('The output folder must be outside the template folder.');

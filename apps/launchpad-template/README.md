@@ -101,7 +101,7 @@ runs git, never pushes, never tags and never publishes. Pushing the output is a 
 
 ```
 node scripts/prepare-template-repo.mjs --out ../template-out \
-  --pin @forge/core=0.1.0 --pin @forge/shared=0.1.0
+  --pin @forge/core=0.2.0 --pin @forge/shared=0.2.0
 
 # preview without writing anything:
 #   --dry-run
@@ -109,10 +109,12 @@ node scripts/prepare-template-repo.mjs --out ../template-out \
 
 The output differs from this folder as follows:
 
-- every `workspace:*` dependency is replaced by the exact version given with `--pin` (the script
-  fails if one is missing or not an exact `x.y.z`);
-- `.npmrc` exists only when `--registry` and `--scope` are given, with the scope line alone (never
-  a token);
+- every `workspace:*` dependency is replaced by an npm alias of its public package
+  (`npm:@forgedevv/core@x.y.z`) at the exact version given with `--pin` (the script fails if one is
+  missing or not an exact `x.y.z`). The pins of `@forge/core` and `@forge/shared` must be the
+  versions of `packages/core/package.json` and `packages/shared/package.json`: the template builds
+  against the core it was tested with;
+- there is no `.npmrc` (`--registry` and `--scope` are refused): no registry setting and no token;
 - `vercel.json` contains `{ "git": { "deploymentEnabled": false } }`, so a push to the template
   repository never deploys it;
 - `tsconfig.json` no longer extends the monorepo base, and `typescript` is added to the dev

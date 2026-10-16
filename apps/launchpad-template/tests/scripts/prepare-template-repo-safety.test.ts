@@ -21,6 +21,7 @@ import {
   listTrackedFiles,
   prepareTemplateRepo,
   readIndexFiles,
+  readWorkspaceVersions,
   // @ts-expect-error plain ES module without type declarations
 } from '../../scripts/prepare-template-repo.mjs';
 
@@ -108,6 +109,7 @@ function run(f: ReturnType<typeof fixture>, options: Record<string, unknown> = {
   return prepareTemplateRepo({
     out: f.out,
     pins: PINS,
+    workspaceVersions: PINS,
     typescriptVersion: TYPESCRIPT,
     sourceDir: f.sourceDir,
     listFiles: () => f.tracked,
@@ -192,6 +194,7 @@ describe('prepare-template-repo: git ls-files', () => {
       const result = prepareTemplateRepo({
         out,
         pins: PINS,
+        workspaceVersions: PINS,
         typescriptVersion: TYPESCRIPT,
         sourceDir,
       });
@@ -215,6 +218,7 @@ describe('prepare-template-repo: git ls-files', () => {
       prepareTemplateRepo({
         out: join(tempDir('forge-template-out-'), 'out'),
         pins: PINS,
+        workspaceVersions: PINS,
         typescriptVersion: TYPESCRIPT,
         sourceDir,
       });
@@ -315,13 +319,10 @@ describe('prepare-template-repo: secret scan', () => {
 
   it('keeps the real template clean', () => {
     const out = join(tempDir('forge-template-out-'), 'out');
-    expect(() =>
-      prepareTemplateRepo({
-        out,
-        pins: { '@forge/core': '1.0.0', '@forge/shared': '1.0.0' },
-        dryRun: true,
-      }),
-    ).not.toThrow();
+    // Pinned to the workspace versions (the only ones accepted for the real template).
+    const pins = readWorkspaceVersions(fileURLToPath(new URL('../../', import.meta.url)));
+    expect(Object.keys(pins).sort()).toEqual(['@forge/core', '@forge/shared']);
+    expect(() => prepareTemplateRepo({ out, pins, dryRun: true })).not.toThrow();
   });
 
   it('names every pattern', () => {

@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -8,6 +9,7 @@ import {
   PrepareError,
   NPM_PACKAGES,
   VERCEL_JSON,
+  assertPinsMatchWorkspace,
   assertPublicDependencies,
   inlineTsconfig,
   isIncluded,
@@ -16,12 +18,19 @@ import {
   parsePins,
   pinWorkspaceDependencies,
   prepareTemplateRepo,
+  readWorkspaceVersions,
   // @ts-expect-error plain ES module without type declarations
 } from '../../scripts/prepare-template-repo.mjs';
 
 const appDir = fileURLToPath(new URL('../../', import.meta.url));
 const scriptPath = join(appDir, 'scripts', 'prepare-template-repo.mjs');
-const PINS = { '@forge/core': '1.2.3', '@forge/shared': '1.2.4' };
+/** The versions the template is tested with: packages/core and packages/shared of this repo. */
+const workspaceVersion = (folder: string): string =>
+  JSON.parse(readFileSync(join(appDir, '..', '..', 'packages', folder, 'package.json'), 'utf8'))
+    .version;
+const CORE_VERSION = workspaceVersion('core');
+const SHARED_VERSION = workspaceVersion('shared');
+const PINS = { '@forge/core': CORE_VERSION, '@forge/shared': SHARED_VERSION };
 
 const tmpDirs: string[] = [];
 function freshOut(): string {
@@ -79,8 +88,8 @@ describe('prepare-template-repo: written output', () => {
     prepareTemplateRepo({ out, pins: PINS });
     const pkg = readJson(join(out, 'package.json'));
     // The site keeps importing @forge/core and @forge/shared; npm installs @forgedevv/*.
-    expect(pkg.dependencies['@forge/core']).toBe('npm:@forgedevv/core@1.2.3');
-    expect(pkg.dependencies['@forge/shared']).toBe('npm:@forgedevv/shared@1.2.4');
+    expect(pkg.dependencies['@forge/core']).toBe(`npm:@forgedevv/core@${CORE_VERSION}`);
+    expect(pkg.dependencies['@forge/shared']).toBe(`npm:@forgedevv/shared@${SHARED_VERSION}`);
     expect(pkg.dependencies['@forgedevv/core']).toBeUndefined();
     expect(JSON.stringify(pkg)).not.toContain('workspace:');
     expect(pkg.dependencies['@aws-sdk/client-s3']).toBeUndefined();
@@ -148,6 +157,48 @@ describe('prepare-template-repo: helpers', () => {
     expect(() => prepareTemplateRepo({ out: freshOut(), pins: {}, dryRun: true })).toThrow(
       /Missing --pin/,
     );
+  });
+
+  it('refuses a core or shared pin other than the workspace version the template was tested with', () => {
+    expect(readWorkspaceVersions(appDir)).toEqual(PINS);
+    for (const [name, pinned] of [
+      ['@forge/core', '0.1.0'],
+      ['@forge/shared', '9.9.9'],
+    ] as const) {
+      const pins = { ...PINS, [name]: pinned };
+      expect(() => prepareTemplateRepo({ out: freshOut(), pins, dryRun: true })).toThrow(
+        new RegExp(
+          `--pin ${name}=${pinned.replace(/\./g, '\\.')} differs from the workspace version`,
+        ),
+      );
+    }
+    // Same check from the command line, before anything is read or written.
+    const out = freshOut();
+    let stderr = '';
+    try {
+      execFileSync(
+        process.execPath,
+        [
+          scriptPath,
+          '--out',
+          out,
+          '--pin',
+          '@forge/core=0.1.0',
+          '--pin',
+          `@forge/shared=${SHARED_VERSION}`,
+        ],
+        { stdio: 'pipe' },
+      );
+    } catch (error) {
+      stderr = String((error as { stderr?: Buffer }).stderr ?? '');
+    }
+    expect(stderr).toMatch(/differs from the workspace version/);
+    expect(existsSync(out)).toBe(false);
+    // A pin that cannot be checked is refused too.
+    expect(() => assertPinsMatchWorkspace({ '@forge/core': CORE_VERSION }, {})).toThrow(
+      /could not be read/,
+    );
+    expect(() => assertPinsMatchWorkspace({ other: '1.0.0' }, {})).not.toThrow();
   });
 
   it('only accepts exact versions', () => {
