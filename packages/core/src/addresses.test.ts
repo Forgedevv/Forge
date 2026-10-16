@@ -234,6 +234,26 @@ describe('readSquadsAddresses', () => {
     const error = squadsError(() => readSquadsAddresses({ FORGE_SQUADS_VAULT_INDEX: '1' }));
     expect(error.problem).toBe('index_without_multisig');
     expect(error.message).toMatch(/needs FORGE_SQUADS_MULTISIG/);
+    expect(
+      squadsError(() => readSquadsAddresses({ FORGE_SQUADS_VAULT_INDEX: '255' })).problem,
+    ).toBe('index_without_multisig');
+  });
+
+  it('tolerates the default vault index 0 spelled out without the addresses', () => {
+    // The .env.example used to ship FORGE_SQUADS_VAULT_INDEX=0 next to empty addresses: that
+    // is the default, not a configuration, and must not disable the buyback at startup.
+    expect(readSquadsAddresses({ FORGE_SQUADS_VAULT_INDEX: '0' })).toBeNull();
+    expect(
+      readSquadsAddresses({
+        FORGE_SQUADS_MULTISIG: '',
+        FORGE_SQUADS_SPENDING_LIMIT: '',
+        FORGE_SQUADS_VAULT_INDEX: '0',
+      }),
+    ).toBeNull();
+    // Only the exact spelling `0` is the default: `00` or ` 0` is a mistake to report.
+    expect(
+      squadsError(() => readSquadsAddresses({ FORGE_SQUADS_VAULT_INDEX: '00' })).problem,
+    ).toBe('index_without_multisig');
   });
 
   it.each(['-1', '256', '1.5', 'a', '01', ' 1', '1 ', '0x1'])(

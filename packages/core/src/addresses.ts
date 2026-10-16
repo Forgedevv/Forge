@@ -188,7 +188,7 @@ export interface SquadsAddresses {
 export type SquadsAddressProblem =
   /** One of the two addresses without the other. */
   | 'incomplete'
-  /** FORGE_SQUADS_VAULT_INDEX without the addresses. */
+  /** FORGE_SQUADS_VAULT_INDEX other than the default 0 without the addresses. */
   | 'index_without_multisig'
   /** FORGE_SQUADS_VAULT_INDEX is not an integer between 0 and 255. */
   | 'invalid_index'
@@ -211,10 +211,11 @@ const VAULT_INDEX_RE = /^(0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])$/;
 /**
  * FORGE_SQUADS_MULTISIG, FORGE_SQUADS_SPENDING_LIMIT and FORGE_SQUADS_VAULT_INDEX. Returns `null`
  * when both addresses are absent (no withdrawer: the buyback stays in simulation). Rules: the
- * two addresses are set together or not at all; an index needs them; the index is an integer
- * between 0 and 255 (default 0); the spending limit is a distinct account. Deriving the vault from
- * the multisig and the index, and comparing it with FORGE_MULTISIG_VAULT, needs the Squads
- * program id (pinned SDK): the caller (the signer) does it.
+ * two addresses are set together or not at all; an index other than the default `0` needs them
+ * (a lone `0` is the default spelled out, not a configuration); the index is an integer between
+ * 0 and 255 (default 0); the spending limit is a distinct account. Deriving the vault from the
+ * multisig and the index, and comparing it with FORGE_MULTISIG_VAULT, needs the Squads program
+ * id (pinned SDK): the caller (the signer) does it.
  *
  * @throws ForgeAddressError (invalid address, names only), ForgeSquadsConfigError (other rules).
  */
@@ -223,7 +224,7 @@ export function readSquadsAddresses(env: AddressEnv = defaultEnv()): SquadsAddre
   const limitRaw = env.FORGE_SQUADS_SPENDING_LIMIT ?? '';
   const indexRaw = env.FORGE_SQUADS_VAULT_INDEX ?? '';
   if (multisigRaw === '' && limitRaw === '') {
-    if (indexRaw !== '') {
+    if (indexRaw !== '' && indexRaw !== '0') {
       throw new ForgeSquadsConfigError(
         'index_without_multisig',
         'FORGE_SQUADS_VAULT_INDEX needs FORGE_SQUADS_MULTISIG',
