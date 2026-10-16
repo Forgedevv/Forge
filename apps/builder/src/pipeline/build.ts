@@ -224,6 +224,10 @@ async function codeAndCheck(
         jobFields(job, {
           violations: unique.length,
           rules: [...new Set(unique.map((v) => v.rule))],
+          // The agent's workdir is gone after the job: keep what each violation was about.
+          details: unique
+            .slice(0, 10)
+            .map((v) => `${v.file}:${v.line ?? '-'} ${v.rule}: ${v.reason}`.slice(0, 300)),
         }),
         'scan blocked the changes',
       );

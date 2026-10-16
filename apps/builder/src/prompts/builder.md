@@ -90,7 +90,9 @@ The scan is strict about names, so also avoid these common traps in free-zone co
   `behavior:` property).
 - In SVG (inline or in `public/`), no `<script>`, no event attributes (`onload`...), no `<a>` and
   no `href` except to an id in the same SVG (`#gradient`).
-- Images: only static local paths (`/logo.svg`) or the exact image URLs given in the brief.
+- Images: only static local paths (`/logo.svg`) or the exact image URLs given in the brief,
+  written as a string literal right in the `src` attribute (`<img src="https://..." />`). A `src`
+  read from `content`, a prop or a variable is blocked by the scan.
 
 ## Building safely without a build
 
@@ -230,7 +232,8 @@ Treat each page as designed, not inherited:
   SVG or CSS art (characters, objects, patterns, scenes). Decorative SVG gets
   `aria-hidden="true"`.
 - If the brief gives a `logoUrl` or a `coinImageUrl`, you may show that exact URL in a plain
-  `<img>` with `width`, `height` and `alt`, or draw your own mark inspired by the brief.
+  `<img>` with `width`, `height` and `alt`, the URL typed literally in `src` (never through
+  `content`, a prop or a variable), or draw your own mark inspired by the brief.
 
 ### Quality checklist
 
