@@ -24,13 +24,20 @@ export const FORGE_ADDRESS_NAMES = [
   'FORGE_JUPITER_REFERRAL_ACCOUNT',
   'FORGE_CASHBOX_WALLET',
   'FORGE_MINT',
+  'FORGE_SQUADS_MULTISIG',
+  'FORGE_SQUADS_SPENDING_LIMIT',
 ] as const;
 
 export type ForgeAddressName = (typeof FORGE_ADDRESS_NAMES)[number];
 
-/** Addresses that may be absent. `FORGE_MINT` is absent before the $FORGE launch. */
+/**
+ * Addresses that may be absent. `FORGE_MINT` is absent before the $FORGE launch; the Squads
+ * accounts are absent while the buyback stays in simulation (see `readSquadsAddresses`).
+ */
 export const OPTIONAL_FORGE_ADDRESS_NAMES = [
   'FORGE_MINT',
+  'FORGE_SQUADS_MULTISIG',
+  'FORGE_SQUADS_SPENDING_LIMIT',
 ] as const satisfies readonly ForgeAddressName[];
 
 export type OptionalForgeAddressName = (typeof OPTIONAL_FORGE_ADDRESS_NAMES)[number];
@@ -163,4 +170,90 @@ export function getCashboxWallet(env?: AddressEnv): PublicKey {
 /** $FORGE mint, or `null` before the $FORGE launch (token-gating off, buyback simulated). */
 export function getForgeMint(env?: AddressEnv): PublicKey | null {
   return requireAddresses(['FORGE_MINT'], env).FORGE_MINT;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Squads v4 accounts of the buyback (docs/SECURITY.md 7)
+
+/** Squads v4 accounts the buyback withdraws through, read from the environment. */
+export interface SquadsAddresses {
+  /** FORGE_SQUADS_MULTISIG: the multisig account. */
+  multisig: PublicKey;
+  /** FORGE_SQUADS_SPENDING_LIMIT: the spending limit account of the buyback wallet. */
+  spendingLimit: PublicKey;
+  /** FORGE_SQUADS_VAULT_INDEX (default 0): the vault index of the treasury vault. */
+  vaultIndex: number;
+}
+
+export type SquadsAddressProblem =
+  /** One of the two addresses without the other. */
+  | 'incomplete'
+  /** FORGE_SQUADS_VAULT_INDEX without the addresses. */
+  | 'index_without_multisig'
+  /** FORGE_SQUADS_VAULT_INDEX is not an integer between 0 and 255. */
+  | 'invalid_index'
+  /** The spending limit account is the multisig account. */
+  | 'not_distinct';
+
+/** Thrown by `readSquadsAddresses` on a rule the names alone cannot express. Names only. */
+export class ForgeSquadsConfigError extends Error {
+  readonly problem: SquadsAddressProblem;
+
+  constructor(problem: SquadsAddressProblem, message: string) {
+    super(message);
+    this.name = 'ForgeSquadsConfigError';
+    this.problem = problem;
+  }
+}
+
+const VAULT_INDEX_RE = /^(0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])$/;
+
+/**
+ * FORGE_SQUADS_MULTISIG, FORGE_SQUADS_SPENDING_LIMIT and FORGE_SQUADS_VAULT_INDEX. Returns `null`
+ * when both addresses are absent (no withdrawer: the buyback stays in simulation). Rules: the
+ * two addresses are set together or not at all; an index needs them; the index is an integer
+ * between 0 and 255 (default 0); the spending limit is a distinct account. Deriving the vault from
+ * the multisig and the index, and comparing it with FORGE_MULTISIG_VAULT, needs the Squads
+ * program id (pinned SDK): the caller (the signer) does it.
+ *
+ * @throws ForgeAddressError (invalid address, names only), ForgeSquadsConfigError (other rules).
+ */
+export function readSquadsAddresses(env: AddressEnv = defaultEnv()): SquadsAddresses | null {
+  const multisigRaw = env.FORGE_SQUADS_MULTISIG ?? '';
+  const limitRaw = env.FORGE_SQUADS_SPENDING_LIMIT ?? '';
+  const indexRaw = env.FORGE_SQUADS_VAULT_INDEX ?? '';
+  if (multisigRaw === '' && limitRaw === '') {
+    if (indexRaw !== '') {
+      throw new ForgeSquadsConfigError(
+        'index_without_multisig',
+        'FORGE_SQUADS_VAULT_INDEX needs FORGE_SQUADS_MULTISIG',
+      );
+    }
+    return null;
+  }
+  if (multisigRaw === '' || limitRaw === '') {
+    throw new ForgeSquadsConfigError(
+      'incomplete',
+      'FORGE_SQUADS_MULTISIG and FORGE_SQUADS_SPENDING_LIMIT must be set together',
+    );
+  }
+  const multisig = readOptionalAddress('FORGE_SQUADS_MULTISIG', env) as PublicKey;
+  const spendingLimit = readOptionalAddress('FORGE_SQUADS_SPENDING_LIMIT', env) as PublicKey;
+  let vaultIndex = 0;
+  if (indexRaw !== '') {
+    if (!VAULT_INDEX_RE.test(indexRaw)) {
+      throw new ForgeSquadsConfigError(
+        'invalid_index',
+        'FORGE_SQUADS_VAULT_INDEX must be an integer between 0 and 255',
+      );
+    }
+    vaultIndex = Number(indexRaw);
+  }
+  if (spendingLimit.equals(multisig)) {
+    throw new ForgeSquadsConfigError(
+      'not_distinct',
+      'FORGE_SQUADS_SPENDING_LIMIT must be a distinct account',
+    );
+  }
+  return { multisig, spendingLimit, vaultIndex };
 }

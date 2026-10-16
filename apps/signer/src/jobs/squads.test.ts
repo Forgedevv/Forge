@@ -190,6 +190,43 @@ describe('squadsConfigFromEnv', () => {
     expect(() => squadsConfigFromEnv({ ...env, FORGE_SQUADS_MULTISIG: 'nope' }, VAULT)).toThrow(
       /not an address/,
     );
+    expect(() =>
+      squadsConfigFromEnv({ ...env, FORGE_SQUADS_SPENDING_LIMIT: 'nope' }, VAULT),
+    ).toThrow(/FORGE_SQUADS_SPENDING_LIMIT is not an address/);
+  });
+  it('accepts an explicit index that derives the vault and refuses malformed ones', () => {
+    const vault1 = deriveSquadsVault(MULTISIG, 1);
+    const env = {
+      FORGE_SQUADS_MULTISIG: MULTISIG.toBase58(),
+      FORGE_SQUADS_SPENDING_LIMIT: LIMIT.toBase58(),
+      FORGE_SQUADS_VAULT_INDEX: '1',
+    };
+    expect(squadsConfigFromEnv(env, vault1)).toMatchObject({ vaultIndex: 1, vault: vault1 });
+    for (const bad of ['256', '-1', '01', 'x']) {
+      expect(() =>
+        squadsConfigFromEnv({ ...env, FORGE_SQUADS_VAULT_INDEX: bad }, vault1),
+      ).toThrow(/between 0 and 255/);
+    }
+  });
+  it('refuses a spending limit equal to the multisig or the vault', () => {
+    const env = { FORGE_SQUADS_MULTISIG: MULTISIG.toBase58() };
+    expect(() =>
+      squadsConfigFromEnv({ ...env, FORGE_SQUADS_SPENDING_LIMIT: MULTISIG.toBase58() }, VAULT),
+    ).toThrow(/distinct/);
+    expect(() =>
+      squadsConfigFromEnv({ ...env, FORGE_SQUADS_SPENDING_LIMIT: VAULT.toBase58() }, VAULT),
+    ).toThrow(/distinct/);
+  });
+  it('never puts a value in a configuration error', () => {
+    const secret = MULTISIG.toBase58();
+    let message = '';
+    try {
+      squadsConfigFromEnv({ FORGE_SQUADS_MULTISIG: secret }, VAULT);
+    } catch (err) {
+      message = (err as Error).message;
+    }
+    expect(message).toMatch(/set together/);
+    expect(message).not.toContain(secret);
   });
 });
 

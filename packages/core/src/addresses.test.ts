@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import {
   FORGE_ADDRESS_NAMES,
   ForgeAddressError,
+  ForgeSquadsConfigError,
   getCashboxWallet,
   getForgeMint,
   getJupiterReferralAccount,
@@ -11,6 +12,7 @@ import {
   getMultisigVault,
   getPlatformFeeWallet,
   readOptionalAddress,
+  readSquadsAddresses,
   requireAddresses,
   type ForgeAddressName,
 } from './addresses.js';
@@ -25,6 +27,8 @@ function fullEnv(): Record<ForgeAddressName, string> {
     FORGE_JUPITER_REFERRAL_ACCOUNT: key(),
     FORGE_CASHBOX_WALLET: key(),
     FORGE_MINT: key(),
+    FORGE_SQUADS_MULTISIG: key(),
+    FORGE_SQUADS_SPENDING_LIMIT: key(),
   };
 }
 
@@ -181,5 +185,89 @@ describe('readOptionalAddress', () => {
     );
     expect(error.invalid).toEqual(['FORGE_MULTISIG_VAULT']);
     expect(error.message).not.toContain('not-a-key');
+  });
+});
+
+describe('readSquadsAddresses', () => {
+  const MULTISIG = key();
+  const LIMIT = key();
+  const both = { FORGE_SQUADS_MULTISIG: MULTISIG, FORGE_SQUADS_SPENDING_LIMIT: LIMIT };
+
+  function squadsError(fn: () => unknown): ForgeSquadsConfigError {
+    try {
+      fn();
+    } catch (error) {
+      expect(error).toBeInstanceOf(ForgeSquadsConfigError);
+      return error as ForgeSquadsConfigError;
+    }
+    throw new Error('expected a ForgeSquadsConfigError');
+  }
+
+  it('is null when both addresses are absent or empty', () => {
+    expect(readSquadsAddresses({})).toBeNull();
+    expect(
+      readSquadsAddresses({ FORGE_SQUADS_MULTISIG: '', FORGE_SQUADS_SPENDING_LIMIT: '' }),
+    ).toBeNull();
+    expect(readSquadsAddresses({ ...both, FORGE_SQUADS_MULTISIG: '', FORGE_SQUADS_SPENDING_LIMIT: '', FORGE_SQUADS_VAULT_INDEX: '' })).toBeNull();
+  });
+
+  it('reads both with the default vault index 0, or an explicit index up to 255', () => {
+    const read = readSquadsAddresses(both);
+    expect(read?.multisig.toBase58()).toBe(MULTISIG);
+    expect(read?.spendingLimit.toBase58()).toBe(LIMIT);
+    expect(read?.vaultIndex).toBe(0);
+    expect(readSquadsAddresses({ ...both, FORGE_SQUADS_VAULT_INDEX: '7' })?.vaultIndex).toBe(7);
+    expect(readSquadsAddresses({ ...both, FORGE_SQUADS_VAULT_INDEX: '255' })?.vaultIndex).toBe(255);
+  });
+
+  it('refuses one address without the other', () => {
+    const error = squadsError(() => readSquadsAddresses({ FORGE_SQUADS_MULTISIG: MULTISIG }));
+    expect(error.problem).toBe('incomplete');
+    expect(error.message).toMatch(/set together/);
+    expect(error.message).not.toContain(MULTISIG);
+    expect(
+      squadsError(() => readSquadsAddresses({ FORGE_SQUADS_SPENDING_LIMIT: LIMIT })).problem,
+    ).toBe('incomplete');
+  });
+
+  it('refuses a vault index without the addresses', () => {
+    const error = squadsError(() => readSquadsAddresses({ FORGE_SQUADS_VAULT_INDEX: '1' }));
+    expect(error.problem).toBe('index_without_multisig');
+    expect(error.message).toMatch(/needs FORGE_SQUADS_MULTISIG/);
+  });
+
+  it.each(['-1', '256', '1.5', 'a', '01', ' 1', '1 ', '0x1'])(
+    'refuses the vault index %j',
+    (index) => {
+      const error = squadsError(() =>
+        readSquadsAddresses({ ...both, FORGE_SQUADS_VAULT_INDEX: index }),
+      );
+      expect(error.problem).toBe('invalid_index');
+    },
+  );
+
+  it('refuses an invalid address through ForgeAddressError, names only', () => {
+    const error = catchError(() =>
+      readSquadsAddresses({ ...both, FORGE_SQUADS_MULTISIG: 'nope-not-a-key' }),
+    );
+    expect(error.invalid).toEqual(['FORGE_SQUADS_MULTISIG']);
+    expect(error.message).not.toContain('nope-not-a-key');
+    expect(
+      catchError(() => readSquadsAddresses({ ...both, FORGE_SQUADS_SPENDING_LIMIT: 'x' })).invalid,
+    ).toEqual(['FORGE_SQUADS_SPENDING_LIMIT']);
+  });
+
+  it('refuses a spending limit equal to the multisig', () => {
+    const error = squadsError(() =>
+      readSquadsAddresses({ ...both, FORGE_SQUADS_SPENDING_LIMIT: MULTISIG }),
+    );
+    expect(error.problem).toBe('not_distinct');
+  });
+
+  it('is served by requireAddresses as optional names', () => {
+    expect(requireAddresses(['FORGE_SQUADS_MULTISIG'], {}).FORGE_SQUADS_MULTISIG).toBeNull();
+    expect(
+      requireAddresses(['FORGE_SQUADS_SPENDING_LIMIT'], both).FORGE_SQUADS_SPENDING_LIMIT?.toBase58(),
+    ).toBe(LIMIT);
   });
 });

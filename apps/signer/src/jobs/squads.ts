@@ -9,9 +9,11 @@
  * limit per day, only to itself; everything else on the vault still needs the multisig threshold.
  *
  * Environment: FORGE_SQUADS_MULTISIG (the multisig account), FORGE_SQUADS_SPENDING_LIMIT (the
- * spending limit account), FORGE_SQUADS_VAULT_INDEX (default 0). The vault derived from the
- * multisig and the index must be FORGE_MULTISIG_VAULT: a mismatch is a startup error. Without the
- * two addresses no withdrawer is wired and the buyback stays in simulation.
+ * spending limit account), FORGE_SQUADS_VAULT_INDEX (default 0), read and format-checked by
+ * `readSquadsAddresses` of @forge/core (addresses.ts, PLANEXECUTE rule 7). The vault derived
+ * here from the multisig and the index (the program id comes from the pinned SDK) must be
+ * FORGE_MULTISIG_VAULT: a mismatch is a startup error. Without the two addresses no withdrawer
+ * is wired and the buyback stays in simulation.
  *
  * Policy, checked before anything is signed, on every withdrawal and on every allowance read:
  * - the spending limit account is owned by the Squads program, belongs to the configured
@@ -40,6 +42,12 @@ import {
   type Connection,
 } from '@solana/web3.js';
 import { z } from 'zod';
+import {
+  ForgeAddressError,
+  ForgeSquadsConfigError,
+  readSquadsAddresses,
+  type SquadsAddresses,
+} from '@forge/core';
 import type { SpendingLimitWithdrawer, WithdrawResult } from './buyback.js';
 import {
   DEFAULT_RETRY,
@@ -50,7 +58,6 @@ import {
   checkSettlement,
   createFileJournal,
   describeError,
-  parseAddress,
   realSleep,
   requireRoleRef,
   requiredSigners,
@@ -128,9 +135,10 @@ export function deriveSquadsVault(
 }
 
 /**
- * Reads FORGE_SQUADS_MULTISIG, FORGE_SQUADS_SPENDING_LIMIT and FORGE_SQUADS_VAULT_INDEX. Returns
- * null when both addresses are absent (no withdrawer: simulation only). One without the other,
- * an invalid address, or a vault that is not FORGE_MULTISIG_VAULT is a CONFIG error.
+ * Reads FORGE_SQUADS_MULTISIG, FORGE_SQUADS_SPENDING_LIMIT and FORGE_SQUADS_VAULT_INDEX through
+ * @forge/core `readSquadsAddresses`. Returns null when both addresses are absent (no withdrawer:
+ * simulation only). One without the other, an invalid address, an index outside 0..255, or a
+ * vault that is not FORGE_MULTISIG_VAULT is a CONFIG error (names only, never values).
  */
 export function squadsConfigFromEnv(
   env: Readonly<Record<string, string | undefined>>,
@@ -139,26 +147,18 @@ export function squadsConfigFromEnv(
   const fail = (rule: string): never => {
     throw new JobError('CONFIG', rule);
   };
-  const multisigRaw = env.FORGE_SQUADS_MULTISIG ?? '';
-  const limitRaw = env.FORGE_SQUADS_SPENDING_LIMIT ?? '';
-  const indexRaw = env.FORGE_SQUADS_VAULT_INDEX ?? '';
-  if (multisigRaw === '' && limitRaw === '') {
-    if (indexRaw !== '') fail('FORGE_SQUADS_VAULT_INDEX needs FORGE_SQUADS_MULTISIG');
-    return null;
-  }
-  if (multisigRaw === '' || limitRaw === '') {
-    fail('FORGE_SQUADS_MULTISIG and FORGE_SQUADS_SPENDING_LIMIT must be set together');
-  }
-  const multisigKey = parseAddress(multisigRaw) ?? fail('FORGE_SQUADS_MULTISIG is not an address');
-  const spendingLimit =
-    parseAddress(limitRaw) ?? fail('FORGE_SQUADS_SPENDING_LIMIT is not an address');
-  let vaultIndex = 0;
-  if (indexRaw !== '') {
-    if (!/^(0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])$/.test(indexRaw)) {
-      fail('FORGE_SQUADS_VAULT_INDEX must be an integer between 0 and 255');
+  let read: SquadsAddresses | null;
+  try {
+    read = readSquadsAddresses(env);
+  } catch (err) {
+    if (err instanceof ForgeAddressError) {
+      fail(`${err.invalid.join(', ')} is not an address`);
     }
-    vaultIndex = Number(indexRaw);
+    if (err instanceof ForgeSquadsConfigError) fail(err.message);
+    throw err;
   }
+  if (!read) return null;
+  const { multisig: multisigKey, spendingLimit, vaultIndex } = read;
   if (!deriveSquadsVault(multisigKey, vaultIndex).equals(vault)) {
     fail('FORGE_SQUADS_MULTISIG and FORGE_SQUADS_VAULT_INDEX do not derive FORGE_MULTISIG_VAULT');
   }

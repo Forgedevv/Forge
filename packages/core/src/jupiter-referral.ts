@@ -330,6 +330,9 @@ export interface JupiterReferralClaimSummary {
   partner: PublicKey;
   partnerTokenAccount: PublicKey;
   project: PublicKey;
+  /** The project's admin (receives the project's share) and its authority PDA (pays its rent). */
+  admin: PublicKey;
+  projectAuthority: PublicKey;
   mint: PublicKey;
   tokenProgram: PublicKey;
   /** The funded referral token accounts claimed by the transaction (empty: nothing to claim). */
@@ -453,11 +456,14 @@ export async function buildJupiterReferralClaimTx(
   const v2Amount = tokenAmount(v2Account, v2Info ?? null, tokenProgram);
   if (v2Amount > 0n) claims.push({ version: 'v2', referralTokenAccount: v2Account, amount: v2Amount });
 
+  const projectAuthority = deriveJupiterProjectAuthority(project.base, programId);
   const summary: JupiterReferralClaimSummary = {
     referralAccount: p.referralAccount,
     partner: referral.partner,
     partnerTokenAccount,
     project: referral.project,
+    admin: project.admin,
+    projectAuthority,
     mint: p.mint,
     tokenProgram,
     claims,
@@ -483,7 +489,7 @@ export async function buildJupiterReferralClaimTx(
       buildJupiterCreateAdminTokenAccountIx(
         {
           project: referral.project,
-          projectAuthority: deriveJupiterProjectAuthority(project.base, programId),
+          projectAuthority,
           admin: project.admin,
           projectAdminTokenAccount: adminTokenAccount,
           mint: p.mint,

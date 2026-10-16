@@ -377,6 +377,8 @@ describe('buildJupiterReferralClaimTx', () => {
     ]);
     expect(r.summary.createsPartnerTokenAccount).toBe(true);
     expect(r.summary.createsAdminTokenAccount).toBe(true);
+    expect(r.summary.admin.equals(admin)).toBe(true);
+    expect(r.summary.projectAuthority.equals(deriveJupiterProjectAuthority(base))).toBe(true);
     const ixs = r.transaction!.instructions;
     expect(ixs.map((ix) => ix.programId.toBase58())).toEqual([
       ASSOCIATED_TOKEN_PROGRAM_ID.toBase58(),

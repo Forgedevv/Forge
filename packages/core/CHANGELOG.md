@@ -60,7 +60,14 @@ First version meant for publication on npm as `@forgedevv/core` (with `@forgedev
   (no Anchor dependency), with the pure pieces exported (`decodeJupiterReferralAccount`,
   `decodeJupiterProject`, `deriveJupiterReferralTokenAccount[V2]`, `buildJupiterReferralClaimIx`,
   `buildJupiterCreateAdminTokenAccountIx`). Any cluster but mainnet-beta is refused
-  (`JupiterReferralError` `wrong_cluster`).
+  (`JupiterReferralError` `wrong_cluster`). The summary also carries the project's `admin` and
+  `projectAuthority`, so a caller can pin every account of the built claim.
+- Squads accounts of the buyback read in addresses.ts (PLANEXECUTE rule 7): `FORGE_SQUADS_MULTISIG`
+  and `FORGE_SQUADS_SPENDING_LIMIT` join `FORGE_ADDRESS_NAMES` as optional names;
+  `readSquadsAddresses(env)` returns them with `FORGE_SQUADS_VAULT_INDEX` (default 0) or `null`
+  when both are absent, and refuses half a configuration, an index without them, an index outside
+  0..255 or a spending limit equal to the multisig (`ForgeSquadsConfigError`). Deriving the vault
+  needs the Squads program id: the signer keeps that check.
 
 ### Added (DAMM v2 position fee claims)
 
