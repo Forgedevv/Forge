@@ -7,8 +7,8 @@
 - [ ] The devnet integration flow (`tasks/06`) passes entirely.
 - [ ] Mainnet Squads multisig created, members and threshold validated (Q1).
 - [ ] Anthropic spending limit set; per-job budget verified.
-- [ ] Helius and Supabase moved to a paid plan; Jupiter key created; Jupiter referral account created with a name under Jupiter's Ultra project (`docs/METEORA.md`, "The platform fee") and SOL + USDC token accounts created, held by the multisig.
-- [ ] Meteora referral account (WSOL) held by the multisig.
+- [ ] Helius and Supabase moved to a paid plan; Jupiter key created; Jupiter referral account created with a name under Jupiter's Ultra project (`docs/METEORA.md`, "The platform fee") with the FORGE revenue wallet (D34) as its partner, and SOL + USDC token accounts created, held by the revenue wallet.
+- [ ] Meteora referral account (WSOL) held by the revenue wallet (D34), which is also `FORGE_PLATFORM_FEE_WALLET`.
 - [ ] `SOLANA_CLUSTER=mainnet-beta` only on production environments.
 
 ## Mainnet tests (small amounts)
@@ -16,9 +16,9 @@
 - [ ] Create a complete test launchpad (real payment ~$33, or a temporarily reduced price in an env variable for the test).
 - [ ] Template interface: coin list via Jupiter, `BuyButton` on a coin on the curve.
 - [ ] **Display in Phantom and Backpack**: the 0.3% transfer and the swap show up without a blocking warning.
-- [ ] Meteora referral and platform fee received in the multisig's accounts.
+- [ ] Meteora referral and platform fee received in the revenue wallet (D34); the revenue job then unwraps, converts and forwards them to the multisig.
 - [ ] Graduate a test coin (10 SOL threshold: use a low-threshold test launchpad if possible, otherwise test graduation on devnet only with the manual tool); trade via `JupiterTrade`; integrator fee received (amount, currency).
-- [ ] Automatic claims to the multisig; partner claim by the client.
+- [ ] Automatic Jupiter referral claims to the revenue wallet (partner of the referral account), converted to SOL and forwarded to the multisig by the revenue job; partner claim by the client.
 - [ ] Telegram alerts received (simulate a low balance).
 
 ## $FORGE launch

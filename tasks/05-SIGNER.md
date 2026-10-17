@@ -19,7 +19,9 @@ apps/signer/src/
 │   ├── cashbox.ts     # every 24 h: cashbox surplus → multisig; keeps a buffer
 │   ├── refunds.ts     # failed jobs, failed_stage = 'build', attempts = 2 → refund → refunded
 │   ├── buyback.ts     # small random $FORGE buys, max slippage 1%, tokens → multisig
-│   ├── convert.ts     # Jupiter fees received in other currencies → SOL
+│   ├── convert.ts     # every 24 h: non-SOL balances of the SIGNER_CONVERT_ROLES wallets → SOL
+│   ├── jupiter-claims.ts # every 24 h (mainnet): Jupiter referral fees → revenue wallet (D34)
+│   ├── revenue.ts     # every 24 h: revenue wallet unwrap, conversion to SOL, forward → multisig
 │   └── watch.ts       # monitoring: creator transfer, unexpected outflows, low balances
 └── alerts.ts          # Telegram
 ```
@@ -33,7 +35,7 @@ apps/signer/src/
 - [ ] `claims.ts`: `buildCreatorClaimTx` to `FORGE_MULTISIG_VAULT` for each pool where FORGE is creator, including liquidity fees after graduation (depending on the result of test 2).
 - [ ] `refunds.ts`: refunds from the cashbox the exact amount paid, to the payer wallet, only once (idempotent via `payments.refund_signature`).
 - [ ] `buyback.ts`: withdraws the day's amount from the multisig via the Squads spending limit to the bot's wallet, buys $FORGE in several small amounts at random times, sends the tokens back to the vault. Respects `buyback_paused`. Before the $FORGE launch: simulation mode that logs without buying.
-- [ ] `convert.ts`: converts Jupiter fees received in other currencies to SOL.
+- [ ] `convert.ts`: swaps to SOL the non-SOL token balances of the wallets in `SIGNER_CONVERT_ROLES` (the cashbox by default; never the buyback or revenue wallet). The revenue wallet, which holds the Jupiter referral fees received in other currencies (D34), is handled by `revenue.ts`: it unwraps its WSOL, converts its other balances to SOL through the same machinery and forwards the native SOL to the multisig.
 - [ ] `watch.ts`: immediate alert on any `transferPoolCreator` touching one of our pools, any unexpected outflow from the vault or the cashbox, low payer balance.
 - [ ] The signer **never** calls `transferPoolCreator`.
 
