@@ -1522,6 +1522,36 @@ describe('verifyLaunchCoinTransaction — refusals', () => {
     );
   });
 
+  it('refuses a duplicated or other compute budget instruction around a priced launch', async () => {
+    const launch = await signedLaunch({ priority: {} });
+    const extra = [
+      ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 1 }),
+      ComputeBudgetProgram.setComputeUnitLimit({ units: 1_000 }),
+      ComputeBudgetProgram.requestHeapFrame({ bytes: 64 * 1024 }),
+    ];
+    for (const ix of extra) {
+      const tx = tampered(launch, (ixs) => {
+        ixs.splice(3, 0, ix);
+      });
+      expect(checkCode(() => verifyLaunchCoinTransaction(tx, launch.expected))).toBe(
+        'UNEXPECTED_INSTRUCTION',
+      );
+    }
+    // A price alone (no limit) is bounded for 1.4M CU: 0.01 SOL at most.
+    const priceOnly = tampered(launch, (ixs) =>
+      ixs
+        .filter((ix) => !(ix.programId.equals(ComputeBudgetProgram.programId) && ix.data[0] === 2))
+        .map((ix) =>
+          ix.programId.equals(ComputeBudgetProgram.programId)
+            ? ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 7_200_000 })
+            : ix,
+        ),
+    );
+    expect(checkCode(() => verifyLaunchCoinTransaction(priceOnly, launch.expected))).toBe(
+      'UNEXPECTED_INSTRUCTION',
+    );
+  });
+
   it('refuses a versioned (v0) message and garbage', async () => {
     const launch = await signedLaunch();
     const v0 = new VersionedTransaction(
