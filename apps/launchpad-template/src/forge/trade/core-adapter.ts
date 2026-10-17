@@ -7,7 +7,7 @@
  * (the panel works with `amountIn` / `minAmountOut`), and turns core errors into `TradeError`s
  * with a user-safe message. Two things it does not let anyone change:
  *
- * - the FORGE fee accounts (platform fee wallet, Meteora referral, multisig vault) are read HERE,
+ * - the FORGE fee accounts (platform fee wallet, Meteora referral, revenue wallet) are read HERE,
  *   from the build-time public environment, and nowhere else: there is no parameter to override
  *   them, so no code of the site can redirect the 0.3% platform fee or the referral;
  * - every pool is checked against this launchpad's configs (`allowedConfigs` of @forge/core,
@@ -143,15 +143,16 @@ async function translated<T>(run: () => Promise<T>): Promise<T> {
  * The FORGE addresses `@forge/core` needs, from the public environment, read here only. Core
  * reads `process.env` by default, which the browser bundle does not have, so they are handed over
  * explicitly: literal `NEXT_PUBLIC_*` reads, which Next.js replaces by their build-time values,
- * so nothing at runtime can change them. `FORGE_MULTISIG_VAULT` is optional: when FORGE provides
- * it, core also checks that the Meteora referral account is held by the multisig.
+ * so nothing at runtime can change them. `FORGE_REVENUE_WALLET` is optional: when FORGE provides
+ * it, core also checks that the Meteora referral account is held by the revenue wallet and that
+ * the platform fee wallet is that wallet (D34).
  */
 function forgeAddressEnv(): AddressEnv {
-  const multisig = process.env.NEXT_PUBLIC_FORGE_MULTISIG_VAULT;
+  const revenue = process.env.NEXT_PUBLIC_FORGE_REVENUE_WALLET;
   return {
     FORGE_PLATFORM_FEE_WALLET: process.env.NEXT_PUBLIC_FORGE_PLATFORM_FEE_WALLET,
     FORGE_METEORA_REFERRAL_ACCOUNT: process.env.NEXT_PUBLIC_FORGE_METEORA_REFERRAL_ACCOUNT,
-    ...(multisig ? { FORGE_MULTISIG_VAULT: multisig } : {}),
+    ...(revenue ? { FORGE_REVENUE_WALLET: revenue } : {}),
   };
 }
 

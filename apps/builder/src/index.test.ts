@@ -37,7 +37,7 @@ function baseEnv(
     GITHUB_APP_ID: '12345',
     GITHUB_ORG: 'forge-org',
     VERCEL_TEAM_ID: 'team_abcdefgh12',
-    FORGE_MULTISIG_VAULT: address(10),
+    FORGE_REVENUE_WALLET: address(10),
     FORGE_METEORA_REFERRAL_ACCOUNT: address(11),
     FORGE_PLATFORM_FEE_WALLET: address(12),
     FORGE_JUPITER_REFERRAL_ACCOUNT: address(13),
@@ -133,11 +133,11 @@ describe('builder environment', () => {
   it('checks the FORGE addresses with @forge/core', () => {
     const message = errorOf(() =>
       checkStartupConfig(
-        baseEnv({ FORGE_PLATFORM_FEE_WALLET: undefined, FORGE_MULTISIG_VAULT: 'not-a-key' }),
+        baseEnv({ FORGE_PLATFORM_FEE_WALLET: undefined, FORGE_REVENUE_WALLET: 'not-a-key' }),
       ),
     );
     expect(message).toMatch(/missing: FORGE_PLATFORM_FEE_WALLET/);
-    expect(message).toMatch(/invalid Solana public key: FORGE_MULTISIG_VAULT/);
+    expect(message).toMatch(/invalid Solana public key: FORGE_REVENUE_WALLET/);
     expect(message).not.toContain('not-a-key');
   });
 

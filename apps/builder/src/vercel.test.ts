@@ -242,7 +242,7 @@ describe('names, domain and env selection', () => {
   });
 
   it('classifies variables: every allowed one is public (plain)', () => {
-    expect(envTypeFor('FORGE_MULTISIG_VAULT')).toBe('plain');
+    expect(envTypeFor('FORGE_REVENUE_WALLET')).toBe('plain');
     expect(envTypeFor('SOLANA_CLUSTER')).toBe('plain');
     expect(envTypeFor('NEXT_PUBLIC_FORGE_RPC_RELAY_URL')).toBe('plain');
     expect(envTypeFor('JUPITER_API_KEY')).toBe('sensitive');
@@ -296,16 +296,16 @@ describe('names, domain and env selection', () => {
       ANTHROPIC_API_KEY: 'must-not-leak',
       SIGNER_HMAC_SECRET: 'must-not-leak',
       GITHUB_APP_ID: '1',
-      FORGE_MULTISIG_VAULT: ADDR,
+      FORGE_REVENUE_WALLET: ADDR,
       FORGE_JUPITER_REFERRAL_ACCOUNT: ADDR,
       NEXT_PUBLIC_FORGE_RPC_RELAY_URL: 'https://relay.forge.example/rpc',
       R2_PUBLIC_URL: '',
     });
     expect(Object.keys(vars).sort()).toEqual([
       'FORGE_JUPITER_REFERRAL_ACCOUNT',
-      'FORGE_MULTISIG_VAULT',
+      'FORGE_REVENUE_WALLET',
       'NEXT_PUBLIC_FORGE_JUPITER_REFERRAL_ACCOUNT',
-      'NEXT_PUBLIC_FORGE_MULTISIG_VAULT',
+      'NEXT_PUBLIC_FORGE_REVENUE_WALLET',
       'NEXT_PUBLIC_FORGE_RPC_RELAY_URL',
       'NEXT_PUBLIC_SOLANA_CLUSTER',
       'SOLANA_CLUSTER',
@@ -319,7 +319,7 @@ describe('names, domain and env selection', () => {
   });
 
   it('refuses a relay URL that is the raw RPC provider or carries a key', () => {
-    const base = { SOLANA_CLUSTER: 'devnet', FORGE_MULTISIG_VAULT: ADDR };
+    const base = { SOLANA_CLUSTER: 'devnet', FORGE_REVENUE_WALLET: ADDR };
     const sameHost = pickProjectEnv({
       ...base,
       RPC_URL: 'https://devnet.helius-rpc.com/?api-key=abc',
@@ -340,7 +340,7 @@ describe('names, domain and env selection', () => {
     expect(projectEnvProblem('NEXT_PUBLIC_FORGE_RPC_RELAY_URL', 'https://relay.example/rpc')).toBe(
       undefined,
     );
-    expect(projectEnvProblem('FORGE_MULTISIG_VAULT', 'not-an-address')).toMatch(/invalid/);
+    expect(projectEnvProblem('FORGE_REVENUE_WALLET', 'not-an-address')).toMatch(/invalid/);
     expect(projectEnvProblem('NEXT_PUBLIC_POOL_CONFIG_KEY', `${ADDR},${ADDR}`)).toBe(undefined);
     expect(projectEnvProblem('SOLANA_CLUSTER', 'testnet')).toMatch(/invalid/);
   });
@@ -1080,7 +1080,7 @@ describe('setEnv', () => {
     const { client, stub } = make(route(() => json({ created: [], failed: [] })));
     const out = await client.setEnv('prj_123', {
       SOLANA_CLUSTER: 'devnet',
-      FORGE_MULTISIG_VAULT: ADDR,
+      FORGE_REVENUE_WALLET: ADDR,
       NEXT_PUBLIC_FORGE_RPC_RELAY_URL: 'https://relay.example',
     });
     expect(out.count).toBe(3);
@@ -1089,7 +1089,7 @@ describe('setEnv', () => {
     expect(call?.body).toEqual([
       { key: 'SOLANA_CLUSTER', value: 'devnet', type: 'plain', target: ['production', 'preview'] },
       {
-        key: 'FORGE_MULTISIG_VAULT',
+        key: 'FORGE_REVENUE_WALLET',
         value: ADDR,
         type: 'plain',
         target: ['production', 'preview'],

@@ -70,7 +70,7 @@ the optional server-only `FORGE_RPC_RELAY_TOKEN` (a rate limit tier, nothing mor
 | `NEXT_PUBLIC_FORGE_JUPITER_REFERRAL_ACCOUNT` | Jupiter integrator fee account (30 bps after graduation) |
 | `NEXT_PUBLIC_FORGE_PLATFORM_FEE_WALLET` | recipient of the 0.3% platform fee on curve swaps and on the first buy of a coin created on the site |
 | `NEXT_PUBLIC_FORGE_METEORA_REFERRAL_ACCOUNT` | Meteora referral token account used by curve swaps |
-| `NEXT_PUBLIC_FORGE_MULTISIG_VAULT` | optional: FORGE multisig vault; when set, a curve swap is refused unless the Meteora referral account is held by it |
+| `NEXT_PUBLIC_FORGE_REVENUE_WALLET` | optional: FORGE revenue wallet; when set, a curve swap is refused unless the Meteora referral account is held by it and the platform fee wallet is that wallet |
 
 `FORGE_JUPITER_REFERRAL_ACCOUNT`, `FORGE_PLATFORM_FEE_WALLET` and `FORGE_METEORA_REFERRAL_ACCOUNT`
 are the server-side names of the same addresses. The FORGE fee accounts are read from the build-time

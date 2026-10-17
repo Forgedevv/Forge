@@ -22,7 +22,7 @@ import {
 export const TEST_PROJECT_ENV: Record<string, string> = {
   SOLANA_CLUSTER: 'devnet',
   NEXT_PUBLIC_SOLANA_CLUSTER: 'devnet',
-  FORGE_MULTISIG_VAULT: address(10),
+  FORGE_REVENUE_WALLET: address(10),
   FORGE_METEORA_REFERRAL_ACCOUNT: address(11),
   FORGE_PLATFORM_FEE_WALLET: address(12),
   FORGE_JUPITER_REFERRAL_ACCOUNT: address(13),
