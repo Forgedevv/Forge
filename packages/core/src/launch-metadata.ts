@@ -66,6 +66,8 @@ export const METADATA_LIMITS = { name: 32, symbol: 10, uri: 200 } as const;
  * buy): every byte of the three strings is one byte of the transaction, and a 32-byte name, a
  * 10-byte symbol and a 106-byte URI land at exactly 1,232 bytes (pool.test.ts, "size"). A smaller
  * launch (no first buy, no nonce) has more room; this is the bound for the signer's shape.
+ * A priority fee never shrinks it: up to 136 bytes the launch carries the unit limit and the
+ * price, up to 144 the price alone, beyond that no price (`priorityFeePlacement`, pool.ts).
  */
 export const LAUNCH_METADATA_BUDGET_BYTES = 148;
 

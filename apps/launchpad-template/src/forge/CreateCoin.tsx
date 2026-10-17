@@ -532,7 +532,10 @@ function Review(props: {
           label="Metadata fee (Metaplex)"
           value={`${formatSol(summary.metadataFeeLamports)} SOL`}
         />
-        <Row label="Network fee" value={`${formatSol(summary.estimatedNetworkFeeLamports)} SOL`} />
+        <Row
+          label="Network fee (priority fee included)"
+          value={`${formatSol(summary.estimatedNetworkFeeLamports)} SOL`}
+        />
         <Row
           label="Deposit for new accounts"
           value={`${formatSol(summary.accountRentLamports)} SOL`}

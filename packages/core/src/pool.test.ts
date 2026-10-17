@@ -36,6 +36,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { OwnerTransactionSummary, type LaunchpadSpec } from '@forge/shared';
 import { ForgeAddressError } from './addresses.js';
 import { MIGRATION_THRESHOLD_LAMPORTS, SOL_QUOTE_MINT, solToLamports } from './constants.js';
+import { MAX_TRANSACTION_COMPUTE_UNITS } from './priority-fee.js';
 import { platformFeeLamports } from './swap.js';
 import {
   LaunchTransactionCheckError,
@@ -176,6 +177,18 @@ function mockConnection(options: MockOptions = {}) {
       calls.push('getFeeForMessage');
       if (options.feeForMessage instanceof Error) throw options.feeForMessage;
       return { context: { slot: 1 }, value: options.feeForMessage ?? null };
+    },
+    /** Answer of getRecentPrioritizationFees (micro-lamports per slot; an Error is thrown). */
+    priorityFees: [] as number[] | Error,
+    priorityFeeAccounts: [] as string[],
+    getRecentPrioritizationFees: async (config?: { lockedWritableAccounts?: PublicKey[] }) => {
+      calls.push('getRecentPrioritizationFees');
+      connection.priorityFeeAccounts = (config?.lockedWritableAccounts ?? []).map(String);
+      if (connection.priorityFees instanceof Error) throw connection.priorityFees;
+      return connection.priorityFees.map((prioritizationFee, slot) => ({
+        slot,
+        prioritizationFee,
+      }));
     },
   };
   return connection;
@@ -1509,6 +1522,36 @@ describe('verifyLaunchCoinTransaction — refusals', () => {
     );
   });
 
+  it('refuses a duplicated or other compute budget instruction around a priced launch', async () => {
+    const launch = await signedLaunch({ priority: {} });
+    const extra = [
+      ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 1 }),
+      ComputeBudgetProgram.setComputeUnitLimit({ units: 1_000 }),
+      ComputeBudgetProgram.requestHeapFrame({ bytes: 64 * 1024 }),
+    ];
+    for (const ix of extra) {
+      const tx = tampered(launch, (ixs) => {
+        ixs.splice(3, 0, ix);
+      });
+      expect(checkCode(() => verifyLaunchCoinTransaction(tx, launch.expected))).toBe(
+        'UNEXPECTED_INSTRUCTION',
+      );
+    }
+    // A price alone (no limit) is bounded for 1.4M CU: 0.01 SOL at most.
+    const priceOnly = tampered(launch, (ixs) =>
+      ixs
+        .filter((ix) => !(ix.programId.equals(ComputeBudgetProgram.programId) && ix.data[0] === 2))
+        .map((ix) =>
+          ix.programId.equals(ComputeBudgetProgram.programId)
+            ? ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 7_200_000 })
+            : ix,
+        ),
+    );
+    expect(checkCode(() => verifyLaunchCoinTransaction(priceOnly, launch.expected))).toBe(
+      'UNEXPECTED_INSTRUCTION',
+    );
+  });
+
   it('refuses a versioned (v0) message and garbage', async () => {
     const launch = await signedLaunch();
     const v0 = new VersionedTransaction(
@@ -1780,6 +1823,150 @@ describe('buildUserCoinLaunchTx — first buy and costs', () => {
     });
     const { summary } = await buildUserCoinLaunchTx(params);
     expect(summary.txBytes).toBeLessThanOrEqual(MAX_TRANSACTION_BYTES);
+  });
+});
+
+describe('launch builders — priority fee', () => {
+  const isBudget = (ix: TransactionInstruction) =>
+    ix.programId.equals(ComputeBudgetProgram.programId);
+  const uri = (bytes: number) => `https://example.com/${'a'.repeat(bytes - 25)}.json`;
+  /** A 32-byte name and a 10-character symbol: `total` bytes of metadata in all. */
+  const metadata = (total: number) => ({
+    name: 'N'.repeat(32),
+    symbol: 'S'.repeat(10),
+    metadataUri: uri(total - 42),
+  });
+
+  it('prices the launchpad coin launch right after the nonce advance', async () => {
+    const { params, connection } = await setup(
+      { priority: {} },
+      { feeForMessage: new Error('unavailable') },
+    );
+    connection.priorityFees = [0, 100_000, 100_000, 100_000];
+    const { transaction, summary } = await buildLaunchCoinTx(params);
+    const [advance, limit, price] = transaction.instructions;
+    expect(SystemInstruction.decodeInstructionType(advance!)).toBe('AdvanceNonceAccount');
+    expect(limit!.data.readUInt32LE(1)).toBe(LAUNCH_COIN_COMPUTE_UNITS);
+    expect(price!.data.readBigUInt64LE(1)).toBe(100_000n);
+    expect(transaction.instructions.filter(isBudget)).toHaveLength(2);
+    expect(summary.priorityFeePlacement).toBe('limit_and_price');
+    expect(summary.priorityFee).toEqual({
+      computeUnitLimit: LAUNCH_COIN_COMPUTE_UNITS,
+      microLamports: 100_000,
+      priorityFeeLamports: 30_000n,
+      maxLamports: 500_000n,
+      source: 'recent_fees',
+    });
+    expect(summary.computeUnitPriceMicroLamports).toBe(100_000);
+    // 12 bytes for the price instruction (1,120 without it).
+    expect(summary.txBytes).toBe(1132);
+    // Without the cluster's figure, the estimate counts the priority fee.
+    expect(summary.costs.networkFeeSource).toBe('estimate');
+    expect(summary.costs.networkFeeLamports).toBe(3n * 5000n + 30_000n);
+    // The fees were read for the accounts the launch writes (the pool among them).
+    expect(connection.priorityFeeAccounts).toContain(summary.pool.toBase58());
+  });
+
+  it('passes the browser check of the launch', async () => {
+    const launch = await signedLaunch({ priority: { maxLamports: 1_000_000n } });
+    expect(() => verifyLaunchCoinTransaction(launch.transaction, launch.expected)).not.toThrow();
+    expect(launch.summary.priorityFee.source).toBe('no_recent_fees');
+    expect(launch.summary.computeUnitPriceMicroLamports).toBe(10_000);
+  });
+
+  it('keeps both instructions while they fit (136 bytes of metadata: 1,232 bytes)', async () => {
+    const { params, connection } = await setup({ ...metadata(136), priority: {} });
+    connection.priorityFees = [50_000];
+    const { summary, transaction } = await buildLaunchCoinTx(params);
+    expect(summary.priorityFeePlacement).toBe('limit_and_price');
+    expect(summary.txBytes).toBe(MAX_TRANSACTION_BYTES);
+    expect(transaction.instructions.filter(isBudget)).toHaveLength(2);
+  });
+
+  it('puts the price alone when both do not fit, bounded for 1.4M CU', async () => {
+    const { params, connection } = await setup({ ...metadata(144), priority: {} });
+    connection.priorityFees = [2_000_000];
+    const { summary, transaction } = await buildLaunchCoinTx(params);
+    expect(summary.priorityFeePlacement).toBe('price_only');
+    expect(summary.txBytes).toBe(MAX_TRANSACTION_BYTES);
+    const budget = transaction.instructions.filter(isBudget);
+    expect(budget).toHaveLength(1);
+    expect(budget[0]!.data[0]).toBe(3);
+    expect(transaction.instructions.indexOf(budget[0]!)).toBe(1);
+    // 0.0005 SOL / 1.4M CU: the fee stays within the cap whatever limit the runtime applies.
+    expect(summary.priorityFee.computeUnitLimit).toBe(MAX_TRANSACTION_COMPUTE_UNITS);
+    expect(summary.priorityFee.microLamports).toBe(357_142);
+    expect(summary.priorityFee.priorityFeeLamports).toBeLessThanOrEqual(500_000n);
+    const launch = await signedLaunch({ ...metadata(144), priority: {} });
+    expect(launch.summary.priorityFeePlacement).toBe('price_only');
+    expect(() => verifyLaunchCoinTransaction(launch.transaction, launch.expected)).not.toThrow();
+  });
+
+  it('keeps the unpriced shape at the full metadata budget, and says so', async () => {
+    const { params, connection } = await setup({ ...metadata(148), priority: {} });
+    connection.priorityFees = [2_000_000];
+    const { summary, transaction } = await buildLaunchCoinTx(params);
+    expect(summary.priorityFeePlacement).toBe('omitted_for_size');
+    expect(summary.txBytes).toBe(MAX_TRANSACTION_BYTES);
+    const budget = transaction.instructions.filter(isBudget);
+    expect(budget).toHaveLength(1);
+    expect(budget[0]!.data[0]).toBe(2);
+    expect(summary.priorityFee.microLamports).toBe(0);
+    expect(summary.computeUnitPriceMicroLamports).toBe(0);
+  });
+
+  it('prices at the floor when the fees cannot be read', async () => {
+    const { params, connection } = await setup({ priority: {} });
+    connection.priorityFees = new Error('fetch failed');
+    const { summary } = await buildLaunchCoinTx(params);
+    expect(summary.priorityFee).toMatchObject({ microLamports: 10_000, source: 'rpc_unavailable' });
+  });
+
+  it('refuses a fixed price with a setting, and a bad setting', async () => {
+    const both = await setup({ priority: {}, computeUnitPriceMicroLamports: 1 });
+    await expectLaunchError(buildLaunchCoinTx(both.params), 'INVALID_INPUT');
+    const bad = await setup({ priority: { maxLamports: 10n ** 9n } });
+    await expectLaunchError(buildLaunchCoinTx(bad.params), 'INVALID_INPUT');
+    const user = await userSetup({ priority: { percentile: -1 } });
+    await expectLaunchError(buildUserCoinLaunchTx(user.params), 'INVALID_INPUT');
+  });
+
+  it('prices a user coin launch: limit then price first, 12 bytes more', async () => {
+    const { params, connection } = await userSetup({
+      name: 'Moon',
+      symbol: 'MOON',
+      metadataUri: 'https://example.com/moon.json',
+      priority: {},
+    });
+    connection.priorityFees = [70_000];
+    const { transaction, summary } = await buildUserCoinLaunchTx(params);
+    const [limit, price] = transaction.instructions;
+    expect(limit!.data.readUInt32LE(1)).toBe(LAUNCH_COIN_COMPUTE_UNITS);
+    expect(price!.data.readBigUInt64LE(1)).toBe(70_000n);
+    expect(summary.priorityFeePlacement).toBe('limit_and_price');
+    expect(summary.priorityFee.priorityFeeLamports).toBe(21_000n);
+    expect(summary.txBytes).toBe(USER_COIN_STANDARD_TX_BYTES + 12);
+  });
+
+  it('fits a priced user coin launch with the largest metadata', async () => {
+    const { params, connection } = await userSetup({
+      name: 'N'.repeat(32),
+      symbol: 'S'.repeat(10),
+      metadataUri: uri(200),
+      priority: {},
+    });
+    connection.priorityFees = [70_000];
+    const { summary } = await buildUserCoinLaunchTx(params);
+    expect(summary.priorityFeePlacement).toBe('limit_and_price');
+    expect(summary.txBytes).toBeLessThanOrEqual(MAX_TRANSACTION_BYTES);
+  });
+
+  it('reads nothing and keeps the legacy shape without a setting', async () => {
+    const { params, connection } = await setup();
+    const { summary } = await buildLaunchCoinTx(params);
+    expect(connection.calls).not.toContain('getRecentPrioritizationFees');
+    expect(summary.priorityFee).toMatchObject({ microLamports: 0, source: 'fixed' });
+    expect(summary.priorityFeePlacement).toBe('limit_and_price');
   });
 });
 

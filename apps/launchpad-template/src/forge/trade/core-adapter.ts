@@ -11,7 +11,9 @@
  *   from the build-time public environment, and nowhere else: there is no parameter to override
  *   them, so no code of the site can redirect the 0.3% platform fee or the referral;
  * - every pool is checked against this launchpad's configs (`allowedConfigs` of @forge/core,
- *   `launchpadConfigs()`): a coin of another launchpad is refused before any quote.
+ *   `launchpadConfigs()`): a coin of another launchpad is refused before any quote;
+ * - the priority fee of a trade is `SITE_PRIORITY_FEE` (../priority-fee.ts): priced by core from
+ *   the recent fees of the accounts the swap writes, at most `SWAP_MAX_PRIORITY_FEE_LAMPORTS`.
  *
  * Tests inject `createMockSwapCore()` from `./core-adapter.mock` through `setSwapCore`, which is a
  * no-op outside the test environment (`NODE_ENV === 'test'`).
@@ -31,6 +33,7 @@ import {
   type SwapQuote as CoreSwapQuote,
   type SwapQuoteRequest,
 } from '@forge/core';
+import { SITE_PRIORITY_FEE } from '../priority-fee';
 import { TradeError, type TradeErrorCode } from './errors';
 import { launchpadConfigs } from './launchpad-pool';
 import type { Connection, PublicKey, Transaction, VersionedTransaction } from '@solana/web3.js';
@@ -230,6 +233,7 @@ export function createCoreSwapCore(): SwapCore {
               minAmountOut,
               env: env(),
               allowedConfigs: launchpadConfigs(),
+              priority: SITE_PRIORITY_FEE,
             })
           ).transaction,
       ),
@@ -246,6 +250,7 @@ export function createCoreSwapCore(): SwapCore {
               minAmountOut,
               env: env(),
               allowedConfigs: launchpadConfigs(),
+              priority: SITE_PRIORITY_FEE,
             })
           ).transaction,
       ),

@@ -12,11 +12,13 @@
  * (jobs/*.ts) are only imported and configured here, from their own `...FromEnv` parsers.
  */
 import type { Connection, VersionedTransaction } from '@solana/web3.js';
+import { CLAIM_COMPUTE_UNITS, positionClaimComputeUnits } from '@forge/core';
 import type pino from 'pino';
 import type { QueueingAlerter } from '../alerts.js';
 import type { SignerCore } from '../core-adapter.js';
 import type { Keystore } from '../keystore.js';
 import type { PayerReservations } from '../jobs/reservations.js';
+import type { PriorityFees } from '../jobs/priority.js';
 import {
   createCashboxJob,
   cashboxConfigFromEnv,
@@ -122,8 +124,11 @@ export interface SignerJobContext {
    * mainnet-beta a refused wiring stops the startup (runtime.ts).
    */
   revenue: KeyHandle | null;
-  /** SIGNER_PRIORITY_FEE_MICRO_LAMPORTS, for the jobs' own transactions. */
-  priorityFeeMicroLamports: number;
+  /**
+   * Priority fees of the jobs' own transactions (SIGNER_PRIORITY_FEE_*, jobs/priority.ts); the
+   * core builders get the same setting through `core`.
+   */
+  priorityFees: PriorityFees;
   db: PostgrestClient;
   supabase: { url: string; serviceRoleKey: string };
   flags: FlagsReader;
@@ -159,7 +164,15 @@ export interface SignerJobModule {
 export const claimsModule: SignerJobModule = {
   name: 'claims',
   create(ctx) {
-    const { config, intervalMs } = claimsConfigFromEnv(ctx.env, ctx.addresses.vault);
+    const parsed = claimsConfigFromEnv(ctx.env, ctx.addresses.vault);
+    const { intervalMs } = parsed;
+    // Core prices the claims (ctx.core); the fee payer keeps their cap on top of its buffer.
+    const config = {
+      ...parsed.config,
+      maxPriorityFeeLamports: ctx.priorityFees.maxFeeLamports(
+        Math.max(CLAIM_COMPUTE_UNITS, positionClaimComputeUnits(1)),
+      ),
+    };
     const job = createClaimsJob({
       store: createPostgrestClaimsStore(ctx.db),
       core: ctx.core,
@@ -214,6 +227,7 @@ export const jupiterClaimsModule: SignerJobModule = {
       onBeforeSend: ctx.onBeforeSend,
       payerLock: ctx.payerLock,
       payerReservations: ctx.payerReservations,
+      priorityFees: ctx.priorityFees,
     });
     logger.info({ mints: config.mints.length }, 'jupiter referral claims wired');
     return { runOnce: () => job.runOnce(), delayMs: () => intervalMs };
@@ -243,6 +257,7 @@ export const cashboxModule: SignerJobModule = {
       config,
       walletLock: ctx.walletLock,
       onBeforeSend: ctx.onBeforeSend,
+      priorityFees: ctx.priorityFees,
     });
     return { runOnce: () => job.runOnce(), delayMs: () => intervalMs };
   },
@@ -275,6 +290,7 @@ export const refundsModule: SignerJobModule = {
       config,
       walletLock: ctx.walletLock,
       onBeforeSend: ctx.onBeforeSend,
+      priorityFees: ctx.priorityFees,
     });
     return { runOnce: () => job.runOnce(), delayMs: () => intervalMs };
   },
@@ -435,7 +451,8 @@ export const revenueModule: SignerJobModule = {
       revenue: ctx.addresses.revenue,
       vault: ctx.addresses.vault,
       meteoraReferral: ctx.addresses.meteoraReferral,
-      computeUnitPriceMicroLamports: ctx.priorityFeeMicroLamports,
+      // Priced per transaction by `priorityFees` (deps below), never a fixed price.
+      computeUnitPriceMicroLamports: 0,
     });
     const logger = ctx.jobLogger('revenue');
     const revenue = ctx.revenue;
@@ -494,6 +511,7 @@ export const revenueModule: SignerJobModule = {
       cluster: ctx.cluster,
       convert,
       onBeforeSend: ctx.onBeforeSend,
+      priorityFees: ctx.priorityFees,
     });
     logger.info({ dryRun: config.dryRun, conversions: convert !== null }, 'revenue job wired');
     return { runOnce: () => job.runOnce(), delayMs: () => intervalMs };

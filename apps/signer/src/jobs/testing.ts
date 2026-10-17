@@ -15,6 +15,7 @@ import {
   getAssociatedTokenAddressSync,
 } from '@solana/spl-token';
 import { PublicKey, SystemProgram, Transaction, TransactionInstruction } from '@solana/web3.js';
+import { checkComputeBudgetInstructions } from '@forge/core';
 import { MEMO_PROGRAM_ID } from './shared.js';
 import type {
   ClaimTxResult,
@@ -97,6 +98,10 @@ export interface LandedTx {
   accounts: string[];
   /** Memo as the RPC reports it (`[len] text`), null when none. */
   memo: string | null;
+  /** Program id of each instruction, in order. */
+  programs: string[];
+  /** Priority fee paid (compute budget instructions), lamports. */
+  priorityFeeLamports: bigint;
 }
 
 type RpcMethod = keyof SolanaRpc;
@@ -281,8 +286,12 @@ export class FakeChain implements SolanaRpc {
     }
   }
 
+  /** Signature fees plus the priority fee of the compute budget instructions, like the runtime. */
   private feeOf(tx: Transaction): bigint {
-    return 5_000n * BigInt(tx.signatures.length);
+    return (
+      5_000n * BigInt(tx.signatures.length) +
+      checkComputeBudgetInstructions(tx.instructions).priorityFeeLamports
+    );
   }
 
   /** Runs the transaction on a copy of the balances; returns them, or throws a simulation error. */
@@ -384,6 +393,8 @@ export class FakeChain implements SolanaRpc {
       err,
       accounts: tx.compileMessage().accountKeys.map((k) => k.toBase58()),
       memo: memos.length > 0 ? memos.join('; ') : null,
+      programs: tx.instructions.map((ix) => ix.programId.toBase58()),
+      priorityFeeLamports: checkComputeBudgetInstructions(tx.instructions).priorityFeeLamports,
     });
     this.height += 1;
   }

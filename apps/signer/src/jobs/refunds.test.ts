@@ -1,7 +1,7 @@
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { PublicKey, SystemProgram, Transaction } from '@solana/web3.js';
+import { ComputeBudgetProgram, PublicKey, SystemProgram, Transaction } from '@solana/web3.js';
 import pino from 'pino';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { openKeystore, type Keystore } from '../keystore.js';
@@ -18,6 +18,7 @@ import {
   type RefundCandidate,
   type RefundsDeps,
 } from './refunds.js';
+import { createPriorityFees } from './priority.js';
 import {
   createJobLogger,
   createMemoryJournal,
@@ -151,6 +152,29 @@ describe('refunds: happy path and idempotency', () => {
     await t.job().runOnce();
     expect(t.chain.transfers).toHaveLength(1);
     expect(t.chain.sendAttempts.length).toBe(sendsAfterFirst);
+  });
+
+  it('prices the refund from the recent fees of the cashbox and the payer, budget first', async () => {
+    const reader = {
+      getRecentPrioritizationFees: vi.fn(async () => [{ slot: 1, prioritizationFee: 50_000 }]),
+    };
+    const t = setup({ priorityFees: createPriorityFees(reader) });
+    const { payer } = t.failedJob();
+    const before = t.chain.balanceOf(cashbox);
+
+    const report = await t.job().runOnce();
+
+    expect(report.outcomes.find((o) => o.result === 'refunded')).toMatchObject({
+      lamports: PRICE,
+    });
+    const [landed] = [...t.chain.landed.values()];
+    expect(landed!.programs[0]).toBe(ComputeBudgetProgram.programId.toBase58());
+    // 30,000 CU at 50,000 micro-lamports.
+    expect(landed!.priorityFeeLamports).toBe(1_500n);
+    expect(t.chain.balanceOf(cashbox)).toBe(before - PRICE - 5_000n - 1_500n);
+    expect(reader.getRecentPrioritizationFees).toHaveBeenCalledWith({
+      lockedWritableAccounts: [cashbox, payer],
+    });
   });
 
   it('memos the payment id and calls onBeforeSend before the first broadcast', async () => {

@@ -13,6 +13,8 @@ import {
   DBC_POOL_CONFIG_OFFSET as CORE_CONFIG_OFFSET,
   DBC_POOL_CREATOR_OFFSET as CORE_CREATOR_OFFSET,
   LAUNCH_CHECK_DBC_PROGRAM_ID,
+  MAX_PRIORITY_FEE_ACCOUNTS as CORE_MAX_PRIORITY_FEE_ACCOUNTS,
+  estimatePriorityFee,
   listCoinsOfCreator,
   listPoolStatesOfConfig,
 } from '@forge/core';
@@ -29,9 +31,11 @@ import {
   decodeBase58,
   isConfigPoolsScan,
   MAX_MULTIPLE_ACCOUNTS,
+  MAX_PRIORITY_FEE_ACCOUNTS,
   MAX_SIGNATURE_STATUSES,
   METHODS,
   PACKET_DATA_SIZE,
+  PRIORITY_FEES_WEIGHT,
   SLEEPING_SITE_METHODS,
 } from '../methods';
 import {
@@ -81,6 +85,7 @@ describe('method allowlist', () => {
         'getFeeForMessage',
         'getEpochInfo',
         'getProgramAccounts',
+        'getRecentPrioritizationFees',
       ].sort(),
     );
     for (const spec of Object.values(METHODS)) expect(spec.usedBy.length).toBeGreaterThan(10);
@@ -90,6 +95,8 @@ describe('method allowlist', () => {
     for (const method of SLEEPING_SITE_METHODS) expect(ALLOWED_METHODS).toContain(method);
     expect(SLEEPING_SITE_METHODS.has('simulateTransaction')).toBe(false);
     expect(SLEEPING_SITE_METHODS.has('getTokenAccountsByOwner')).toBe(false);
+    // The creator fee claim of a sleeping site is priced too.
+    expect(SLEEPING_SITE_METHODS.has('getRecentPrioritizationFees')).toBe(true);
   });
 
   it.each([
@@ -152,6 +159,10 @@ describe('param validation', () => {
     ]);
     expectValid('getFeeForMessage', [base64OfSize(200), { commitment: 'confirmed' }]);
     expectValid('getEpochInfo', []);
+    expectValid('getRecentPrioritizationFees', []);
+    expectValid('getRecentPrioritizationFees', undefined);
+    expectValid('getRecentPrioritizationFees', [[PK, PK2]]);
+    expectValid('getRecentPrioritizationFees', [Array(MAX_PRIORITY_FEE_ACCOUNTS).fill(PK)]);
   });
 
   it.each<[string, unknown, string]>([
@@ -205,6 +216,16 @@ describe('param validation', () => {
     ['sendTransaction', [base64OfSize(PACKET_DATA_SIZE + 3), { encoding: 'base64' }], 'oversized'],
     ['getFeeForMessage', [base64OfSize(PACKET_DATA_SIZE + 3)], 'oversized message'],
     ['getEpochInfo', [{ commitment: 'confirmed' }, {}], 'too many params'],
+    ['getRecentPrioritizationFees', [[]], 'empty account list'],
+    [
+      'getRecentPrioritizationFees',
+      [Array(MAX_PRIORITY_FEE_ACCOUNTS + 1).fill(PK)],
+      'too many accounts',
+    ],
+    ['getRecentPrioritizationFees', [PK], 'not a list'],
+    ['getRecentPrioritizationFees', [['not-a-key']], 'bad pubkey'],
+    ['getRecentPrioritizationFees', [[PK], { commitment: 'confirmed' }], 'too many params'],
+    ['getRecentPrioritizationFees', [{ lockedWritableAccounts: [PK] }], 'object param'],
   ])('%s refuses %j (%s) with -32602', (method, params) => {
     expectCode(method, params, -32602);
   });
@@ -217,6 +238,10 @@ describe('param validation', () => {
     expect(weight('getSignatureStatuses', [[SIG], { searchTransactionHistory: true }])).toBe(3);
     expect(weight('simulateTransaction', [TX, { encoding: 'base64' }])).toBe(5);
     expect(weight('sendTransaction', [TX, { encoding: 'base64' }])).toBe(10);
+    expect(weight('getRecentPrioritizationFees', [[PK]])).toBe(PRIORITY_FEES_WEIGHT);
+    expect(PRIORITY_FEES_WEIGHT).toBe(2);
+    expect(MAX_PRIORITY_FEE_ACCOUNTS).toBe(CORE_MAX_PRIORITY_FEE_ACCOUNTS);
+    expect(METHODS.getRecentPrioritizationFees!.retryable).toBe(true);
     expect(METHODS.sendTransaction!.isSend).toBe(true);
     expect(METHODS.sendTransaction!.retryable).toBe(false);
     expect(Object.values(METHODS).filter((m) => m.isSend)).toHaveLength(1);
@@ -482,6 +507,15 @@ describe('compatibility with @solana/web3.js', () => {
           minContextSlot: 5,
         }),
       () => connection.sendRawTransaction(versioned.serialize()),
+      () => connection.getRecentPrioritizationFees(),
+      () => connection.getRecentPrioritizationFees({ lockedWritableAccounts: [key] }),
+      // What core sends for a transaction: its writable accounts, deduplicated and bounded.
+      () =>
+        estimatePriorityFee({
+          connection,
+          writableAccounts: Array.from({ length: 40 }, () => Keypair.generate().publicKey),
+          computeUnitLimit: 150_000,
+        }),
     ];
     for (const run of calls) await run().catch(() => undefined);
 

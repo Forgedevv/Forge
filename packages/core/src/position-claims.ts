@@ -22,7 +22,9 @@
  *      until the transaction executes, so the exact forward of the DBC claim is not possible
  *      here: the rent (~0.002 SOL) moves from the payer to the receiver with every claim.
  * The transaction never removes liquidity, never closes, locks, splits or transfers the position
- * or its NFT, and contains no other program.
+ * or its NFT, and contains no other program. With `ClaimOptions.priority`, two compute budget
+ * instructions come first (`setComputeUnitLimit` of `positionClaimComputeUnits`, then
+ * `setComputeUnitPrice`, bounded: priority-fee.ts), counted in the network fee.
  */
 import {
   ACCOUNT_SIZE,
@@ -58,10 +60,13 @@ import { getMultisigVault, type AddressEnv } from './addresses.js';
 import {
   CLAIM_LAMPORTS_PER_SIGNATURE,
   ClaimError,
+  assertClaimPriority,
   assertClaimReceiver,
   assertSolQuotedPool,
+  claimPriorityFee,
   type ClaimOptions,
 } from './claims.js';
+import { MAX_TRANSACTION_COMPUTE_UNITS, type PriorityFeeQuote } from './priority-fee.js';
 import {
   READ_COMMITMENT,
   getDbcPoolState,
@@ -407,9 +412,17 @@ function assertDammPoolMatches(
 // Claim builder
 // ---------------------------------------------------------------------------------------------
 
+/**
+ * Compute unit limit of a position fee claim with a priority fee: two idempotent token account
+ * creations and a close (about 60,000 CU), plus about 40,000 CU per `claim_position_fee`, doubled.
+ */
+export function positionClaimComputeUnits(positions: number): number {
+  return Math.min(MAX_TRANSACTION_COMPUTE_UNITS, 120_000 + 80_000 * Math.max(1, positions));
+}
+
 /** Lamport costs of a position fee claim, as bigint. */
 export interface PositionClaimCosts {
-  /** Signature fees (signers x 5000 lamports; no priority fee), paid by the payer. */
+  /** Signature fees (signers x 5000 lamports) plus the priority fee, if any; paid by the payer. */
   networkFeeLamports: bigint;
   /**
    * Rent of the receiver's coin account, created on the first claim of a pool (paid by the
@@ -461,6 +474,8 @@ export interface PositionClaimSummary {
   costs: PositionClaimCosts;
   /** `receiverQuoteLamports - costs.payerTotalLamports`. Coin fees are not valued. */
   netLamports: bigint;
+  /** The priority fee of the transaction (price, fee, cap), or null without one. */
+  priorityFee: PriorityFeeQuote | null;
 }
 
 export type PositionClaimSkipReason = 'no_position' | 'nothing_to_claim' | 'not_worthwhile';
@@ -524,6 +539,7 @@ export async function buildCreatorPositionFeeClaimTx(
   const commitment = options.commitment ?? READ_COMMITMENT;
   const readOptions: ReadOptions = { commitment, retry: options.retry };
   assertClaimReceiver(params.receiver);
+  assertClaimPriority(options);
   if (params.expectedReceiver && !params.expectedReceiver.equals(params.receiver)) {
     throw new ClaimError(
       'receiver_mismatch',
@@ -606,6 +622,7 @@ export async function buildCreatorPositionFeeClaimTx(
       existingWsolLamports: 0n,
       costs: ZERO_COSTS,
       netLamports: 0n,
+      priorityFee: null,
     },
   });
   if (positions.length === 0) return skip('no_position');
@@ -712,16 +729,23 @@ export async function buildCreatorPositionFeeClaimTx(
     ...claimIxs,
     createCloseAccountInstruction(creatorWsol, receiver, params.creator),
   ];
+  const priority = await claimPriorityFee(
+    connection,
+    instructions,
+    positionClaimComputeUnits(claimIxs.length),
+    options.priority,
+  );
   const { blockhash, lastValidBlockHeight } = await retryRpc(
     () => connection.getLatestBlockhash(commitment),
     options.retry,
   );
   const transaction = new Transaction({ feePayer: payer, blockhash, lastValidBlockHeight });
-  transaction.add(...instructions);
+  transaction.add(...priority.instructions, ...instructions);
 
   // 4. Costs and net.
   const signatures = BigInt(transaction.compileMessage().header.numRequiredSignatures);
-  const networkFeeLamports = signatures * CLAIM_LAMPORTS_PER_SIGNATURE;
+  const networkFeeLamports =
+    signatures * CLAIM_LAMPORTS_PER_SIGNATURE + (priority.quote?.priorityFeeLamports ?? 0n);
   const receiverTokenAccountRentLamports = receiverBaseInfo ? 0n : BigInt(tokenAccountRent);
   const unwrapAccountRentLamports = creatorWsolInfo ? 0n : BigInt(tokenAccountRent);
   const payerTotalLamports =
@@ -744,6 +768,7 @@ export async function buildCreatorPositionFeeClaimTx(
     existingWsolLamports,
     costs,
     netLamports: receiverQuoteLamports - payerTotalLamports,
+    priorityFee: priority.quote,
   };
   if (
     options.minNetLamports !== undefined &&

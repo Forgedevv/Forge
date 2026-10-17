@@ -59,7 +59,14 @@ import {
   FORGE_TOKEN_SETTINGS,
   forgeFeeSchedulerParam,
 } from './settings.js';
-import { computeBudgetInstructions } from './tx.js';
+import {
+  estimatePriorityFee,
+  fixedPriorityFee,
+  priorityFeeInstructions,
+  resolvePriorityFeePolicy,
+  type PriorityFeeQuote,
+  type PriorityFeeSetting,
+} from './priority-fee.js';
 import {
   ValidationError,
   assertValid,
@@ -818,6 +825,11 @@ export interface BuildCreateConfigTxParams {
   payer: PublicKey;
   /** Priority fee, in micro-lamports per compute unit (default 0). */
   computeUnitPriceMicroLamports?: number;
+  /**
+   * Priority fee read from the cluster for the payer and the config account, bounded by this
+   * setting (priority-fee.ts). Not with `computeUnitPriceMicroLamports`.
+   */
+  priority?: PriorityFeeSetting;
   /** Blockhash to use; fetched from the cluster when absent. */
   recentBlockhash?: { blockhash: string; lastValidBlockHeight: number };
 }
@@ -833,6 +845,8 @@ export interface CreateConfigTx {
   lastValidBlockHeight: number;
   /** Who must sign: the payer (fee payer) and the config keypair. */
   signers: PublicKey[];
+  /** The priority fee (price, fee, cap; `fixed` without a `priority` setting). */
+  priorityFee: PriorityFeeQuote;
 }
 
 /**
@@ -845,6 +859,12 @@ export async function buildCreateConfigTx(
 ): Promise<CreateConfigTx> {
   const configAddress =
     params.config instanceof PublicKey ? params.config : params.config.publicKey;
+  if (params.priority !== undefined) {
+    if (params.computeUnitPriceMicroLamports !== undefined) {
+      throw new RangeError('pass either priority or computeUnitPriceMicroLamports, not both');
+    }
+    resolvePriorityFeePolicy(params.priority);
+  }
   const configParams = buildConfigParams(
     params.spec,
     params.kind,
@@ -885,14 +905,17 @@ export async function buildCreateConfigTx(
   const { blockhash, lastValidBlockHeight } =
     params.recentBlockhash ?? (await connection.getLatestBlockhash('confirmed'));
 
+  const priorityFee =
+    params.priority === undefined
+      ? fixedPriorityFee(CREATE_CONFIG_COMPUTE_UNITS, params.computeUnitPriceMicroLamports ?? 0)
+      : await estimatePriorityFee({
+          connection,
+          writableAccounts: [params.payer, configAddress],
+          computeUnitLimit: CREATE_CONFIG_COMPUTE_UNITS,
+          setting: params.priority,
+        });
   const transaction = new Transaction({ feePayer: params.payer, blockhash, lastValidBlockHeight });
-  transaction.add(
-    ...computeBudgetInstructions({
-      units: CREATE_CONFIG_COMPUTE_UNITS,
-      microLamports: params.computeUnitPriceMicroLamports ?? 0,
-    }),
-    ...sdkTx.instructions,
-  );
+  transaction.add(...priorityFeeInstructions(priorityFee), ...sdkTx.instructions);
 
   return {
     transaction,
@@ -901,5 +924,6 @@ export async function buildCreateConfigTx(
     rentLamports,
     lastValidBlockHeight,
     signers: [params.payer, configAddress],
+    priorityFee,
   };
 }

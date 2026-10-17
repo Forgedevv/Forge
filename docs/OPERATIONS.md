@@ -46,6 +46,19 @@ Each service rereads the flags at least every minute, and the money jobs reread 
 
 The builder logs `visual review discarded, first pass kept` with the reason (`capture_failed`, `agent_failed`, `scan_blocked`, `build_failed`, `timeout`, `budget`...) when a review does not apply; a scan block of the second pass also sends a normal alert (`review_scan_blocked`). To test site quality on a laptop: `pnpm --filter @forge/builder site-test` (apps/builder/README.md).
 
+## Priority fees
+
+Every transaction FORGE builds carries a priority fee read from the network (core `priority-fee.ts`): the 75th percentile of the recent fees of the accounts it writes, bounded. Without it, payments, launches and claims are dropped under congestion (a late payment becomes a manual anomaly).
+
+| Where | Setting | Cap |
+|---|---|---|
+| Client sites (trades, coin creations, creator fee claims) | core defaults, fixed in the template (`src/forge/priority-fee.ts`) | 1,000,000 micro-lamports per CU, 0.0005 SOL per transaction (0.00015 SOL per swap, shown with the quote) |
+| FORGE site (payments, partner fee claims) | core defaults (`PAYMENT_PRIORITY_FEE`, `CLAIM_PRIORITY_FEE`) | same |
+| Signer (claims, refunds, cashbox sweeps, revenue unwrap and forward, configs, nonce accounts, launches, revocations, Jupiter referral claims) | `SIGNER_PRIORITY_FEE_*` | `SIGNER_PRIORITY_FEE_MAX_MICRO_LAMPORTS` per CU (default 1,000,000), `SIGNER_PRIORITY_FEE_MAX_LAMPORTS` per transaction (default 0.0005 SOL, at most 0.001 SOL) |
+| Signer Jupiter swaps (conversion, buyback) | Jupiter `priorityLevelWithMaxLamports` | `CONVERT_MAX_PRIORITY_FEE_LAMPORTS`, `BUYBACK_MAX_PRIORITY_FEE_LAMPORTS` |
+
+Mainnet: keep the defaults and set `SIGNER_PRIORITY_FEE_MICRO_LAMPORTS=10000` (a floor for quiet accounts). When transactions still land late, raise `SIGNER_PRIORITY_FEE_PERCENTILE` (90) before the caps. Devnet: the defaults cost next to nothing (devnet fees are mostly zero); `SIGNER_PRIORITY_FEE_MAX_MICRO_LAMPORTS=0` turns the signer's priority fees off. The signer's wallets keep the cap of a transaction on top of their fee buffers (cashbox floor, revenue forward floor, claim payer). The launchpad coin launch puts the price alone when its metadata leaves no room for both instructions, and no price at all for the longest metadata (summary `priorityFeePlacement`): it uses a durable nonce, so it stays valid until it lands.
+
 ## Automatic tasks
 
 | Task | Frequency | Service |

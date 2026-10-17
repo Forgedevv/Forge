@@ -15,7 +15,8 @@
  *   sweep  = excess, capped by `maxSweepLamports`, only if excess >= `minSweepLamports`
  *
  * The balance never goes below the floor: the amount is computed from the lowest balance, the
- * transaction is a single policy-checked transfer whose fee is covered by the fee buffer, a sweep
+ * transaction is a single policy-checked transfer whose fee (priority fee at its cap included)
+ * is covered by the fee buffer, priced from the recent fees of the cashbox and the vault, a sweep
  * in flight blocks the next one until it is FINALIZED (a confirmed sweep is not recorded yet),
  * a recent unfinalized `forge:cashbox-sweep` transaction on the cashbox (e.g. sent by another
  * instance or before a lost journal) blocks planning, and the refunds job (the only other
@@ -27,6 +28,12 @@ import { PublicKey } from '@solana/web3.js';
 import { z } from 'zod';
 import { OPS } from '@forge/shared';
 import type { SignerCore } from '../core-adapter.js';
+import {
+  NO_PRIORITY_FEES,
+  SOL_TRANSFER_COMPUTE_UNITS,
+  signerBudgetInstructions,
+  type PriorityFees,
+} from './priority.js';
 import {
   DEFAULT_RETRY,
   DEFAULT_SETTLE,
@@ -177,6 +184,8 @@ export interface CashboxDeps {
   walletLock: Mutex;
   /** Called with each sweep signature right before it is (re)broadcast by this process. Required. */
   onBeforeSend: BeforeSendHook;
+  /** Priority fee of the sweep (SIGNER_PRIORITY_FEE_*, jobs/priority.ts). Default: none. */
+  priorityFees?: PriorityFees;
 }
 
 export type CashboxOutcome =
@@ -205,6 +214,7 @@ export function createCashboxJob(deps: CashboxDeps): CashboxJob {
   const sleep = deps.sleep ?? realSleep;
   const now = deps.now ?? Date.now;
   const settleTiming = { ...DEFAULT_SETTLE, ...config.settle };
+  const priorityFees = deps.priorityFees ?? NO_PRIORITY_FEES;
   let running = false;
 
   if (config.cashbox.equals(config.vault)) {
@@ -374,7 +384,9 @@ export function createCashboxJob(deps: CashboxDeps): CashboxJob {
       rentExemptLamports: rentExempt,
       reserveLamports: config.reserveLamports,
       liabilitiesLamports: liabilities,
-      feeBufferLamports: SWEEP_FEE_BUFFER_LAMPORTS,
+      // The sweep's own fee: signature and priority fee at its cap.
+      feeBufferLamports:
+        SWEEP_FEE_BUFFER_LAMPORTS + priorityFees.maxFeeLamports(SOL_TRANSFER_COMPUTE_UNITS),
       minSweepLamports: config.minSweepLamports,
       maxSweepLamports: config.maxSweepLamports ?? null,
     });
@@ -426,13 +438,18 @@ export function createCashboxJob(deps: CashboxDeps): CashboxJob {
     }
     if (!cashboxRef) throw new JobError('CONFIG', 'cashbox key missing');
 
-    // 4. Build, check, sign, journal, send, confirm.
+    // 4. Build, check, sign, journal, send, confirm. The compute budget comes first.
+    const priorityFee = await priorityFees.quote(
+      [config.cashbox, config.vault],
+      SOL_TRANSFER_COMPUTE_UNITS,
+    );
     const tx = core.buildSolTransferTx({
       from: config.cashbox,
       to: config.vault,
       lamports: plan.amount,
       memo: SWEEP_MEMO,
     });
+    tx.instructions.unshift(...signerBudgetInstructions(priorityFee));
     const { blockhash, lastValidBlockHeight } = await withRetry(
       () => rpc.getLatestBlockhash(),
       retry,

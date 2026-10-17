@@ -22,6 +22,7 @@ import {
   readNonce as coreReadNonce,
   type ConfigKind,
   type LaunchCoinTx,
+  type PriorityFeeSetting,
 } from '@forge/core';
 import {
   DYNAMIC_BONDING_CURVE_PROGRAM_ID,
@@ -151,6 +152,11 @@ export function sha256Hex(text: string): string {
 
 export interface ForgeRouteCoreOptions {
   connection: Connection;
+  /**
+   * Priority fee of the launch transactions (jobs/priority.ts `PriorityFees.setting`), priced by
+   * core and placed where it fits (`priorityFeePlacement`). Without it, no price.
+   */
+  priority?: PriorityFeeSetting;
 }
 
 /**
@@ -235,6 +241,7 @@ export function createForgeRouteCore(options: ForgeRouteCoreOptions): RouteCore 
         rentPayer: 'owner',
         referralTokenAccount: firstBuyReferral,
         env: {},
+        ...(options.priority ? { priority: options.priority } : {}),
       });
     },
 

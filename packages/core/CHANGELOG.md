@@ -46,6 +46,55 @@ Changes after 0.2.0. Publish `@forgedevv/shared` 0.3.0 with it (new kill switch 
   receive `NEXT_PUBLIC_FORGE_REVENUE_WALLET` instead of `NEXT_PUBLIC_FORGE_MULTISIG_VAULT`.
 - `buildJupiterReferralClaimTx` is unchanged: `expectedPartner` is now the revenue wallet.
 
+### Added (priority fees)
+
+- **`priority-fee.ts`** (browser-safe, re-exported by the index): `computePriorityFee` (pure: the
+  nearest-rank `percentile` of `getRecentPrioritizationFees`, at least `floorMicroLamports`, at
+  most `maxMicroLamports` per CU and `maxLamports` for the whole transaction; an empty list or a
+  failed read prices at the floor, reported in `source`), `estimatePriorityFee` (reads the fees
+  for the transaction's writable accounts, at most `MAX_PRIORITY_FEE_ACCOUNTS` = 32),
+  `readRecentPriorityFees`, `resolvePriorityFeePolicy`, `feePercentile`, `maxPriceForBudget`,
+  `maxPriorityFeeLamports` (the worst case of a setting, to show before building),
+  `fixedPriorityFee`, `priorityFeeInstructions` (unit limit then price; `priceOnly`),
+  `writableAccountsOf`, and `checkComputeBudgetInstructions` / `ComputeBudgetCheckError` for
+  transaction policies (no account, `SetComputeUnitLimit` / `SetComputeUnitPrice` only, at most
+  one of each, bounded values and fee; without a limit the fee is counted for 1.4M CU).
+  `DEFAULT_PRIORITY_FEE_POLICY`: 75th percentile, floor 10,000 micro-lamports per CU, at most
+  1,000,000 per CU and 500,000 lamports (0.0005 SOL) per transaction; hard ceilings
+  `MAX_PRIORITY_FEE_MICRO_LAMPORTS` (10 lamports per CU) and `MAX_PRIORITY_FEE_LAMPORTS`
+  (0.01 SOL). Types `PriorityFeeSetting`, `PriorityFeePolicy`, `PriorityFeeQuote`,
+  `PriorityFeeSource`, `RecentPrioritizationFee`.
+- **Builders accept an optional `priority` setting** (exclusive with their fixed price, if any),
+  which puts `setComputeUnitLimit` then `setComputeUnitPrice` first (after the nonce advance):
+  `buildBuyTx` / `buildSellTx` (`SwapBuildOptions.priority`; the pure `buildSwapTransaction`
+  refuses it), `buildPaymentTx` (`PaymentTxOptions.priority`, limit `PAYMENT_COMPUTE_UNITS` =
+  50,000), `buildLaunchCoinTx` and `buildUserCoinLaunchTx`, `buildCreateConfigTx`, the creator,
+  partner and pool creation fee claims (`ClaimOptions.priority`, limits `CLAIM_COMPUTE_UNITS` =
+  200,000 and `POOL_CREATION_FEE_CLAIM_COMPUTE_UNITS` = 100,000), the DAMM v2 position claim
+  (`positionClaimComputeUnits`) and `buildJupiterReferralClaimTx`
+  (`JUPITER_REFERRAL_CLAIM_COMPUTE_UNITS` = 300,000). Their results report the quote
+  (`priorityFee`), and the claim costs count the fee. `CREATE_NONCE_ACCOUNT_COMPUTE_UNITS`
+  (10,000) names the limit of the nonce account builders.
+- **Launch sizes.** The launchpad coin launch keeps the 148-byte metadata budget: with a priority
+  fee it carries the unit limit and the price up to 136 bytes of metadata, the price alone up to
+  144 (priced for `MAX_TRANSACTION_COMPUTE_UNITS`), and no price beyond
+  (`LaunchCoinSummary.priorityFeePlacement`: `limit_and_price`, `price_only`,
+  `omitted_for_size`). A priced swap or user coin launch is 12 bytes larger.
+
+### Changed (priority fees)
+
+- `BuiltSwapTransaction.priorityFee`, `PaymentTxResult.priorityFee`, `CreateConfigTx.priorityFee`,
+  `ClaimSummary.priorityFee`, `PoolCreationFeeClaimSummary.priorityFee`,
+  `PositionClaimSummary.priorityFee`, `JupiterReferralClaimTx.priorityFee` and
+  `LaunchCoinSummary` / `UserCoinLaunchSummary` `.priorityFee` and `.priorityFeePlacement` are new
+  required fields: code that builds these objects itself (test fakes) must set them. Without a
+  `priority` setting every transaction is byte for byte what 0.2.0 built.
+- `ClaimCosts.networkFeeLamports` and `PositionClaimCosts.networkFeeLamports` include the
+  priority fee (0 without a setting).
+- Consumers: the launchpad template prices its trades, coin creations and creator fee claims with
+  the defaults, so client sites need this version, and the FORGE RPC relay must serve
+  `getRecentPrioritizationFees` (apps/web, same release).
+
 ### Added (on-chain fallback of the coin data)
 
 - `listPoolStatesOfConfig(connection, config, options?)` (reads.ts): the decoded pools of a config

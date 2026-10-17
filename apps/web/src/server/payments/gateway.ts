@@ -17,6 +17,7 @@ import {
   type PaymentCluster,
   type PaymentParams,
   type PaymentVerification,
+  type PriorityFeeSetting,
   type RetryOptions,
 } from './core-adapter';
 import { ClusterMismatchError, PaymentConfigError, RpcUnavailableError } from './errors';
@@ -37,6 +38,15 @@ import { ClusterMismatchError, PaymentConfigError, RpcUnavailableError } from '.
  * answers 202 and the client asks again with the same signature.
  */
 export const PAYMENT_COMMITMENT: Finality = 'finalized';
+
+/**
+ * Priority fee of the payment transactions: the defaults of @forge/core (75th percentile of the
+ * recent fees of the payer and the cashbox, floor 10,000 micro-lamports per CU, at most 0.0005 SOL
+ * per payment). Without it a payment can be dropped under congestion and land after its quote
+ * expired (a manual anomaly). The wallet shows the fee before signing; the browser check refuses
+ * more than 0.01 SOL (client/verify.ts).
+ */
+export const PAYMENT_PRIORITY_FEE: PriorityFeeSetting = {};
 
 export interface BuiltPayment {
   /** Unsigned transaction, base64 wire format (docs/INTERFACES.md §6 encodings). */
@@ -120,7 +130,10 @@ export function createCorePaymentGateway(options: CorePaymentGatewayOptions): Pa
       try {
         // buildPaymentTx does not check the cluster: never hand out a transaction for another one.
         await assertCluster(connection, cluster, options.retry);
-        const built = await buildPaymentTx(connection, params, common);
+        const built = await buildPaymentTx(connection, params, {
+          ...common,
+          priority: PAYMENT_PRIORITY_FEE,
+        });
         const wire = built.transaction.serialize({
           requireAllSignatures: false,
           verifySignatures: false,

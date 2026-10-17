@@ -3,7 +3,11 @@
  * what core builds, which policy checks it, and how its on-chain existence is proven.
  */
 import { NONCE_ACCOUNT_LENGTH, SystemProgram, type PublicKey } from '@solana/web3.js';
-import type { ConfigKind } from '@forge/core';
+import {
+  CREATE_CONFIG_COMPUTE_UNITS,
+  CREATE_NONCE_ACCOUNT_COMPUTE_UNITS,
+  type ConfigKind,
+} from '@forge/core';
 import type { LaunchpadSpec } from '@forge/shared';
 import type { CreationTarget } from './accounts.js';
 import type { RouteRuntime } from './context.js';
@@ -30,14 +34,17 @@ export function configCreationTarget(
     label: CONFIG_LABELS[input.kind],
     launchpadId: input.launchpadId,
     paramsHash: core.configParamsHash(input.spec, input.kind),
-    build: (address) =>
-      core.buildCreateConfigTx({
+    build: async (address) => {
+      // Priced for the two accounts it writes (SIGNER_PRIORITY_FEE_*, jobs/priority.ts).
+      const fee = await rt.priorityFees.quote([input.payer, address], CREATE_CONFIG_COMPUTE_UNITS);
+      return core.buildCreateConfigTx({
         spec: input.spec,
         kind: input.kind,
         config: address,
         payer: input.payer,
-        computeUnitPriceMicroLamports: rt.computeUnitPriceMicroLamports,
-      }),
+        computeUnitPriceMicroLamports: fee.microLamports,
+      });
+    },
     check: (tx, address) =>
       assertCreateConfigTx(tx, {
         dbcProgramId: core.dbcProgramId,
@@ -66,13 +73,18 @@ export function nonceCreationTarget(
     label: 'nonce_account',
     launchpadId: input.launchpadId,
     paramsHash: nonceParamsHash(input.authority),
-    build: (address) =>
-      core.buildCreateNonceAccountTx({
+    build: async (address) => {
+      const fee = await rt.priorityFees.quote(
+        [input.payer, address],
+        CREATE_NONCE_ACCOUNT_COMPUTE_UNITS,
+      );
+      return core.buildCreateNonceAccountTx({
         payer: input.payer,
         nonceAccount: address,
         authority: input.authority,
-        computeUnitPriceMicroLamports: rt.computeUnitPriceMicroLamports,
-      }),
+        computeUnitPriceMicroLamports: fee.microLamports,
+      });
+    },
     check: (tx, address, rentLamports) =>
       assertCreateNonceTx(tx, {
         payer: input.payer,

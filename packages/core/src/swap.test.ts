@@ -1182,6 +1182,10 @@ interface MockChain {
   accounts: Map<string, AccountInfo<Buffer>>;
   calls: string[];
   failOnce?: string;
+  /** Answer of getRecentPrioritizationFees (an Error is thrown). */
+  priorityFees?: { slot: number; prioritizationFee: number }[] | Error;
+  /** Writable accounts the priority fees were asked for. */
+  priorityFeeAccounts?: string[];
 }
 
 function mockConnection(chain: MockChain) {
@@ -1210,6 +1214,12 @@ function mockConnection(chain: MockChain) {
     getBlockTime: () => track('getBlockTime', () => laterPoint(state.virtualPool).toNumber()),
     getMinimumBalanceForRentExemption: (size: number) =>
       track('getMinimumBalanceForRentExemption', () => (size === 0 ? 890_880 : 2_039_280)),
+    getRecentPrioritizationFees: (config?: { lockedWritableAccounts?: PublicKey[] }) =>
+      track('getRecentPrioritizationFees', () => {
+        chain.priorityFeeAccounts = (config?.lockedWritableAccounts ?? []).map((k) => k.toBase58());
+        if (chain.priorityFees instanceof Error) throw chain.priorityFees;
+        return chain.priorityFees ?? [];
+      }),
   } as unknown as Connection;
 }
 
@@ -1260,6 +1270,153 @@ function feeEnv() {
     },
   };
 }
+
+describe('buildBuyTx / buildSellTx — priority fee', () => {
+  const recent = (values: number[]) =>
+    values.map((prioritizationFee, i) => ({ slot: 10 + i, prioritizationFee }));
+
+  async function buy(chain: MockChain, f: ReturnType<typeof feeEnv>, user: PublicKey, extra = {}) {
+    return buildBuyTx({
+      connection: mockConnection(chain),
+      pool: ACTIVE_POOL,
+      user,
+      amountInLamports: SOL / 100n,
+      slippageBps: 100,
+      env: f.env,
+      ...extra,
+    });
+  }
+
+  it('reads the recent fees of the accounts the swap writes and prices the swap', async () => {
+    const f = feeEnv();
+    const user = key();
+    const chain = chainWithFeeAccounts(f, user);
+    chain.priorityFees = recent([0, 0, 50_000, 60_000, 70_000, 80_000, 90_000, 100_000]);
+    const plain = await buy(chainWithFeeAccounts(f, user), f, user);
+    const built = await buy(chain, f, user, { priority: {} });
+
+    const ixs = instructionsOf(built);
+    expect(ixs[0]!.programId.equals(ComputeBudgetProgram.programId)).toBe(true);
+    expect([...ixs[0]!.data.subarray(0, 1)]).toEqual([2]);
+    expect(ixs[0]!.data.readUInt32LE(1)).toBe(DEFAULT_SWAP_COMPUTE_UNIT_LIMIT);
+    expect(ixs[1]!.programId.equals(ComputeBudgetProgram.programId)).toBe(true);
+    expect(ixs[1]!.data[0]).toBe(3);
+    expect(ixs[1]!.data.readBigUInt64LE(1)).toBe(80_000n);
+    expect(ixs.filter((ix) => ix.programId.equals(ComputeBudgetProgram.programId))).toHaveLength(2);
+    // Everything else is the same swap.
+    expect(ixs.slice(2).map((ix) => ix.programId.toBase58())).toEqual(
+      instructionsOf(plain)
+        .slice(1)
+        .map((ix) => ix.programId.toBase58()),
+    );
+
+    expect(built.priorityFeeMicroLamports).toBe(80_000);
+    expect(built.priorityFee).toEqual({
+      computeUnitLimit: DEFAULT_SWAP_COMPUTE_UNIT_LIMIT,
+      microLamports: 80_000,
+      priorityFeeLamports: 12_000n,
+      maxLamports: 500_000n,
+      source: 'recent_fees',
+    });
+    expect(built.estimatedNetworkFeeLamports).toBe(5_000n + 12_000n);
+    expect(built.requiredLamports - plain.requiredLamports).toBe(12_000n);
+    // The price instruction costs 12 bytes: the swap stays far below 1,232 bytes.
+    expect(built.sizeBytes).toBe(plain.sizeBytes + 12);
+    expect(built.sizeBytes).toBeLessThan(SWAP_MAX_TRANSACTION_BYTES - 300);
+
+    const asked = chain.priorityFeeAccounts!;
+    for (const shared of [ACTIVE_POOL, f.platform, f.referral]) {
+      expect(asked).toContain(shared.toBase58());
+    }
+    expect(asked).not.toContain(DYNAMIC_BONDING_CURVE_PROGRAM_ID.toBase58());
+  });
+
+  it('bounds the price by the setting (cost guard)', async () => {
+    const f = feeEnv();
+    const user = key();
+    const chain = chainWithFeeAccounts(f, user);
+    chain.priorityFees = recent([9_000_000]);
+    const built = await buy(chain, f, user, { priority: { maxLamports: 30_000n } });
+    expect(built.priorityFee.microLamports).toBe(200_000);
+    expect(built.priorityFee.priorityFeeLamports).toBe(30_000n);
+    expect(built.priorityFee.maxLamports).toBe(30_000n);
+  });
+
+  it('prices a sell the same way', async () => {
+    const f = feeEnv();
+    const user = key();
+    const chain = chainWithFeeAccounts(f, user);
+    const state = activeState();
+    const coinAta = getAssociatedTokenAddressSync(state.virtualPool.poolState.baseMint, user, true);
+    chain.accounts.set(coinAta.toBase58(), {
+      lamports: 2_039_280,
+      owner: TOKEN_PROGRAM_ID,
+      executable: false,
+      data: tokenAccountData({
+        mint: state.virtualPool.poolState.baseMint,
+        owner: user,
+        amount: 10n ** 12n,
+      }),
+    });
+    chain.priorityFees = recent([40_000]);
+    const built = await buildSellTx({
+      connection: mockConnection(chain),
+      pool: ACTIVE_POOL,
+      user,
+      amountInTokens: 10n ** 11n,
+      slippageBps: 300,
+      env: f.env,
+      priority: {},
+    });
+    expect(built.priorityFee).toMatchObject({ microLamports: 40_000, source: 'recent_fees' });
+    expect(instructionsOf(built)[1]!.data.readBigUInt64LE(1)).toBe(40_000n);
+  });
+
+  it('falls back to the floor when the relay refuses the fee read', async () => {
+    const f = feeEnv();
+    const user = key();
+    const chain = chainWithFeeAccounts(f, user);
+    chain.priorityFees = new Error('method not allowed');
+    const built = await buy(chain, f, user, { priority: {} });
+    expect(built.priorityFee).toMatchObject({ microLamports: 10_000, source: 'rpc_unavailable' });
+  });
+
+  it('keeps the legacy shape without a setting, and refuses two prices or a bad setting', async () => {
+    const f = feeEnv();
+    const user = key();
+    const chain = chainWithFeeAccounts(f, user);
+    const plain = await buy(chain, f, user);
+    expect(chain.calls).not.toContain('getRecentPrioritizationFees');
+    expect(instructionsOf(plain)[1]!.programId.equals(ComputeBudgetProgram.programId)).toBe(false);
+    expect(plain.priorityFee).toMatchObject({ microLamports: 0, source: 'fixed' });
+
+    const before = chain.calls.length;
+    await expectSwapErrorAsync(
+      buy(chain, f, user, { priority: {}, priorityFeeMicroLamports: 1 }),
+      'INVALID_PARAMS',
+    );
+    await expectSwapErrorAsync(
+      buy(chain, f, user, { priority: { percentile: 101 } }),
+      'INVALID_PARAMS',
+    );
+    expect(chain.calls.length).toBe(before);
+  });
+
+  it('refuses a priority setting in the pure builder (it has no connection)', () => {
+    const user = key();
+    const ctx = makeContext({ user });
+    expectSwapError(
+      () =>
+        buildSwapTransaction(ctx, {
+          side: 'buy',
+          amountIn: SOL / 100n,
+          slippage: { slippageBps: 100 },
+          priority: {},
+        }),
+      'INVALID_PARAMS',
+    );
+  });
+});
 
 describe('buildBuyTx / buildSellTx / quoteSwap (mocked RPC)', () => {
   it('builds a buy with the fee accounts read from the environment', async () => {

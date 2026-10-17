@@ -2,6 +2,10 @@ import {
   ClaimError,
   DbcReadError,
   MAX_TRANSACTION_BYTES,
+  MAX_TRANSACTION_COMPUTE_UNITS,
+  maxPriceForBudget,
+  priorityFeeInstructions,
+  priorityFeeLamports,
   serializeTransactionBase64,
   transactionSize,
   type ClaimTxResult,
@@ -9,7 +13,7 @@ import {
   type PoolCreationFeeClaimTxResult,
 } from '@forge/core';
 import { LaunchpadSpec, SolanaAddress } from '@forge/shared';
-import { PublicKey, Transaction } from '@solana/web3.js';
+import { ComputeBudgetProgram, PublicKey, Transaction } from '@solana/web3.js';
 import { NOT_FOUND_MESSAGES, RouteError } from '../jobs/http';
 import { errorName, type RoutesLogger } from '../jobs/log';
 import type { LaunchpadRecord, RoutesStore } from '../jobs/store';
@@ -29,6 +33,10 @@ import { officialCoinsOfCoinConfig } from './coins';
  * `remainingPools` tells the dashboard whether another claim is left after this one.
  *
  * A claim that would cost the owner more than it collects (`minNetLamports: 0`) is skipped.
+ *
+ * Both claims carry a priority fee (chain.ts, `CLAIM_PRIORITY_FEE`). Merged, they keep one unit
+ * limit (the sum of both) and one unit price (the trading claim's, lowered if needed so the
+ * priority fee stays within the same cap): a transaction with two of either would fail.
  *
  * Pools: every pool of the launchpad config, and on the coin config only the launchpad's own coin
  * (`launchpads.launchpad_coin_mint`, coins.ts). A look-alike pool someone created on the coin
@@ -97,19 +105,51 @@ function byClaimable(a: CoinOfConfig, b: CoinOfConfig): number {
 }
 
 /** Appends the pool creation fee instructions when the result still fits in one packet. */
+const isComputeBudget = (ix: Transaction['instructions'][number]) =>
+  ix.programId.equals(ComputeBudgetProgram.programId);
+
+/**
+ * The trading claim and the pool creation fee claim in one transaction, with one compute budget
+ * (see the top of this file), or null when it does not fit. `extraPriorityFeeLamports`: what the
+ * merged priority fee costs more than the trading claim's alone.
+ */
 function combine(
-  trading: Transaction,
-  pcf: Transaction | null,
+  trading: ClaimTxResult,
+  pcf: PoolCreationFeeClaimTxResult | null,
   owner: PublicKey,
-): Transaction | null {
-  if (!pcf || !trading.recentBlockhash) return null;
+): { transaction: Transaction; extraPriorityFeeLamports: bigint } | null {
+  const first = trading.transaction;
+  const second = pcf?.transaction ?? null;
+  if (!first || !second || !first.recentBlockhash) return null;
   const merged = new Transaction({
     feePayer: owner,
-    blockhash: trading.recentBlockhash,
-    lastValidBlockHeight: trading.lastValidBlockHeight ?? 0,
+    blockhash: first.recentBlockhash,
+    lastValidBlockHeight: first.lastValidBlockHeight ?? 0,
   });
-  merged.add(...trading.instructions, ...pcf.instructions);
-  return transactionSize(merged) <= MAX_TRANSACTION_BYTES ? merged : null;
+  const a = trading.summary.priorityFee;
+  const b = pcf!.summary.priorityFee;
+  let extraPriorityFeeLamports = 0n;
+  if (a || b) {
+    const priced = (a ?? b)!;
+    const units = Math.min(
+      MAX_TRANSACTION_COMPUTE_UNITS,
+      (a?.computeUnitLimit ?? 0) + (b?.computeUnitLimit ?? 0),
+    );
+    const microLamports = Math.min(
+      priced.microLamports,
+      maxPriceForBudget(units, priced.maxLamports),
+    );
+    merged.add(...priorityFeeInstructions({ computeUnitLimit: units, microLamports }));
+    extraPriorityFeeLamports =
+      priorityFeeLamports({ units, microLamports }) - (a?.priorityFeeLamports ?? 0n);
+  }
+  merged.add(
+    ...first.instructions.filter((ix) => !isComputeBudget(ix)),
+    ...second.instructions.filter((ix) => !isComputeBudget(ix)),
+  );
+  return transactionSize(merged) <= MAX_TRANSACTION_BYTES
+    ? { transaction: merged, extraPriorityFeeLamports }
+    : null;
 }
 
 export function createClaimsService(deps: ClaimsServiceDeps): ClaimsService {
@@ -238,11 +278,14 @@ export function createClaimsService(deps: ClaimsServiceDeps): ClaimsService {
       let pool: CoinOfConfig;
       if (trading) {
         pool = trading.coin;
-        const merged = combine(trading.result.transaction!, pcf?.result.transaction ?? null, owner);
-        transaction = merged ?? trading.result.transaction!;
+        const merged = combine(trading.result, pcf?.result ?? null, owner);
+        transaction = merged?.transaction ?? trading.result.transaction!;
         tradingLamports = trading.result.summary.receiverQuoteLamports;
-        // The owner is the only signer of both claims: merging adds no signature fee.
-        ownerCost = trading.result.summary.costs.payerTotalLamports;
+        // The owner is the only signer of both claims: merging adds no signature fee, only the
+        // priority fee of the larger compute unit limit.
+        ownerCost =
+          trading.result.summary.costs.payerTotalLamports +
+          (merged?.extraPriorityFeeLamports ?? 0n);
         if (merged && pcf) pcfLamports = pcf.result.summary.claimableLamports;
       } else if (pcf) {
         pool = pcf.coin;

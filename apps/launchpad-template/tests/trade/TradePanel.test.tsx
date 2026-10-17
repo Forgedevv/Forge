@@ -145,9 +145,17 @@ describe('fee shown before signing', () => {
     expect(within(summary).getByTestId('quote-row-impact').textContent).toContain('0.42%');
     expect(within(summary).getByTestId('quote-row-trading-fee')).toBeTruthy();
     expect(within(summary).getByTestId('quote-row-network-fee').textContent).toContain('0.000005');
-    // 0.5 + 0.0015 + 0.000005 network + 0.00203928 token account deposit
+    // The most the priority fee can be, before anything is built.
+    expect(within(summary).getByTestId('quote-row-priority-fee').textContent).toContain(
+      'Priority fee (at most)',
+    );
+    expect(within(summary).getByTestId('quote-row-priority-fee').textContent).toContain(
+      '0.00015 SOL',
+    );
+    // 0.5 + 0.0015 + 0.000005 network + 0.00015 priority (at most) + 0.00203928 deposit
     expect(within(summary).getByTestId('quote-row-account-rent')).toBeTruthy();
-    expect(within(summary).getByTestId('quote-row-total').textContent).toContain('0.50354428 SOL');
+    expect(within(summary).getByTestId('quote-row-total').textContent).toContain('at most');
+    expect(within(summary).getByTestId('quote-row-total').textContent).toContain('0.50369428 SOL');
 
     expect(screen.getByTestId('fee-note').textContent).toContain('0.3%');
     expect(wallet.signTransaction).not.toHaveBeenCalled();

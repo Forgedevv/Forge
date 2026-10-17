@@ -20,6 +20,7 @@
  *
  * Building a nonce advance is local (core has no builder for it yet: change request).
  */
+import { CREATE_NONCE_ACCOUNT_COMPUTE_UNITS, type PriorityFeeQuote } from '@forge/core';
 import { PublicKey, SystemProgram, Transaction } from '@solana/web3.js';
 import { creatorRole } from '../keystore.js';
 import {
@@ -45,6 +46,7 @@ import {
   type SettleTiming,
   type SolanaRpc,
 } from '../jobs/shared.js';
+import { NO_PRIORITY_FEES, signerBudgetInstructions, type PriorityFees } from '../jobs/priority.js';
 import { fail } from './errors.js';
 import type { LaunchRevocationEntry, RouteJournals } from './journal.js';
 import type { RouteCore } from './onchain.js';
@@ -69,6 +71,11 @@ export interface RevokeDeps {
   onBeforeSend: BeforeSendHook;
   /** Lock of the payer wallet (created when absent: the CLI runs in its own process). */
   payerLock?: Mutex;
+  /**
+   * Priority fee of the revocation (SIGNER_PRIORITY_FEE_*): it races the client's signature, so it
+   * must land under congestion too. Default: none.
+   */
+  priorityFees?: PriorityFees;
   retry?: RetryOptions;
   settle?: Partial<SettleTiming>;
   sleep?: (ms: number) => Promise<void>;
@@ -99,19 +106,27 @@ export type RevokeResult =
       signature: string;
     };
 
-/** Pure: the unsigned nonce advance (fee payer = payer, authority = creator). */
+/** Compute unit limit of the revocation with a priority fee (one nonce advance). */
+export const REVOKE_COMPUTE_UNITS = CREATE_NONCE_ACCOUNT_COMPUTE_UNITS;
+
+/**
+ * Pure: the unsigned nonce advance (fee payer = payer, authority = creator), after the compute
+ * budget of `priorityFee` when its price is not 0.
+ */
 export function buildRevokeNonceTx(params: {
   payer: PublicKey;
   nonceAccount: PublicKey;
   authority: PublicKey;
   blockhash: string;
   lastValidBlockHeight: number;
+  priorityFee?: PriorityFeeQuote;
 }): Transaction {
   return new Transaction({
     feePayer: params.payer,
     blockhash: params.blockhash,
     lastValidBlockHeight: params.lastValidBlockHeight,
   }).add(
+    ...(params.priorityFee ? signerBudgetInstructions(params.priorityFee) : []),
     SystemProgram.nonceAdvance({
       noncePubkey: params.nonceAccount,
       authorizedPubkey: params.authority,
@@ -281,6 +296,10 @@ export async function revokeLaunch(deps: RevokeDeps, jobId: string): Promise<Rev
 
   // 3. Build, check (policy), sign (creator + payer), journal, send: under the payer lock.
   const payer = await requireRoleRef(keystore, 'payer');
+  const priorityFee = await (deps.priorityFees ?? NO_PRIORITY_FEES).quote(
+    [payer.publicKey, nonceAccount],
+    REVOKE_COMPUTE_UNITS,
+  );
   const { blockhash, lastValidBlockHeight } = await withRetry(
     () => rpc.getLatestBlockhash(),
     retry,
@@ -291,6 +310,7 @@ export async function revokeLaunch(deps: RevokeDeps, jobId: string): Promise<Rev
     authority: creator,
     blockhash,
     lastValidBlockHeight,
+    priorityFee,
   });
   assertRevokeNonceTx(tx, { payer: payer.publicKey, nonceAccount, authority: creator });
   const opened = entry;

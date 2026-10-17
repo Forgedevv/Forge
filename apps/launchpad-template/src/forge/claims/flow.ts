@@ -1,6 +1,8 @@
 import type { VersionedTransaction } from '@solana/web3.js';
 import { signSendConfirm, TxError, type LaunchPhase, type SubmitDeps } from '../create/flow';
 import { VerificationError } from '../create/verify';
+import { decodeTransaction } from '../tx/decode';
+import { networkFeeLamports } from '../tx/fees';
 import { verifyCreatorClaimTx } from './verify';
 import type { ChainClient } from '../create/chain';
 import type { ClaimsCore, CreatorClaimCosts, CreatorCoin } from './core-adapter';
@@ -30,7 +32,7 @@ export interface ClaimReview {
   /** SOL that will be sent to the receiver. */
   claimQuoteLamports: bigint;
   claimBaseRaw: bigint;
-  /** At least this much (base fee; a priority fee may add to it). */
+  /** Base fee plus priority fee, computed from the transaction itself. */
   estimatedNetworkFeeLamports: bigint;
   /** Rent of the wallet's coin account on a first claim (kept in that account), else 0. */
   coinAccountRentLamports: bigint;
@@ -58,8 +60,9 @@ export interface ClaimCostView {
 }
 
 /**
- * Costs shown and checked for a claim: the core's figures, with the network fee raised to the
- * signature count of the transaction actually signed if the core ever reported less.
+ * Costs shown and checked for a claim: the core's figures, with the network fee raised to the fee
+ * of the transaction actually signed (signatures and priority fee, read from its instructions) if
+ * the core ever reported less.
  */
 export function claimCosts(tx: VersionedTransaction, costs: CreatorClaimCosts): ClaimCostView {
   const values = [
@@ -78,8 +81,8 @@ export function claimCosts(tx: VersionedTransaction, costs: CreatorClaimCosts): 
   ) {
     throw new VerificationError('The claim costs returned by the core do not add up.');
   }
-  const baseFee = estimateBaseFee(tx);
-  const extra = baseFee > costs.networkFeeLamports ? baseFee - costs.networkFeeLamports : BigInt(0);
+  const txFee = networkFeeLamports(decodeTransaction(tx));
+  const extra = txFee > costs.networkFeeLamports ? txFee - costs.networkFeeLamports : BigInt(0);
   return {
     networkFeeLamports: costs.networkFeeLamports + extra,
     coinAccountRentLamports: costs.receiverTokenAccountRentLamports,

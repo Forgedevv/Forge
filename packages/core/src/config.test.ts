@@ -553,6 +553,46 @@ describe('buildCreateConfigTx', () => {
     expect(connection.calls).not.toContain('getLatestBlockhash');
     expect(result.lastValidBlockHeight).toBe(9);
     expect(result.transaction.instructions[1]!.data.readBigUInt64LE(1)).toBe(777n);
+    expect(result.priorityFee).toMatchObject({ microLamports: 777, source: 'fixed' });
+  });
+
+  it('reads a bounded priority fee for the payer and the config account', async () => {
+    const connection = mockConnection() as unknown as Record<string, unknown>;
+    const asked: string[][] = [];
+    connection.getRecentPrioritizationFees = async (config?: {
+      lockedWritableAccounts?: PublicKey[];
+    }) => {
+      asked.push((config?.lockedWritableAccounts ?? []).map(String));
+      return [{ slot: 1, prioritizationFee: 5_000_000 }];
+    };
+    const payer = Keypair.generate().publicKey;
+    const config = Keypair.generate().publicKey;
+    const result = await buildCreateConfigTx({
+      connection: connection as unknown as Connection,
+      spec: makeSpec(),
+      kind: 'launchpad',
+      config,
+      payer,
+      priority: { maxMicroLamports: 200_000 },
+    });
+    expect(asked).toEqual([[payer.toBase58(), config.toBase58()]]);
+    const [limit, price, create, ...rest] = result.transaction.instructions;
+    expect(rest).toEqual([]);
+    expect(limit!.data.readUInt32LE(1)).toBe(CREATE_CONFIG_COMPUTE_UNITS);
+    expect(price!.data.readBigUInt64LE(1)).toBe(200_000n);
+    expect(create!.programId.equals(DYNAMIC_BONDING_CURVE_PROGRAM_ID)).toBe(true);
+    expect(result.priorityFee).toMatchObject({ microLamports: 200_000, source: 'recent_fees' });
+    await expect(
+      buildCreateConfigTx({
+        connection: connection as unknown as Connection,
+        spec: makeSpec(),
+        kind: 'launchpad',
+        config,
+        payer,
+        priority: {},
+        computeUnitPriceMicroLamports: 1,
+      }),
+    ).rejects.toThrow(RangeError);
   });
 
   it('refuses an existing config account (idempotency)', async () => {

@@ -1,6 +1,12 @@
 // @vitest-environment node
-import { ClaimError, missingSigners } from '@forge/core';
-import { Keypair, Transaction } from '@solana/web3.js';
+import {
+  CLAIM_COMPUTE_UNITS,
+  ClaimError,
+  POOL_CREATION_FEE_CLAIM_COMPUTE_UNITS,
+  checkComputeBudgetInstructions,
+  missingSigners,
+} from '@forge/core';
+import { ComputeBudgetProgram, Keypair, Transaction } from '@solana/web3.js';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { RpcUnavailableError } from '../../jobs/chain';
 import { ctx, request, spec } from '../../jobs/__tests__/fakes';
@@ -86,6 +92,49 @@ describe('GET /api/launchpads/:id/claim-transaction', () => {
     expect(body.summary.tradingFeesLamports).toBe('2000000');
     expect(body.summary.poolCreationFeeLamports).toBe('9000000');
     expect(decode(body.transaction).instructions).toHaveLength(5);
+  });
+
+  it('merges priced claims under one unit limit and one bounded price', async () => {
+    const lp = seed(0.01);
+    const pool = coin(launchpadConfig, 2_000_000n);
+    h.claimsChain.coins.set(launchpadConfig.toBase58(), [pool]);
+    h.claimsChain.poolCreationFees.set(pool.pool.toBase58(), 9_000_000n);
+    const quote = (computeUnitLimit: number, microLamports: number, maxLamports = 500_000n) => ({
+      computeUnitLimit,
+      microLamports,
+      priorityFeeLamports: BigInt(Math.ceil((computeUnitLimit * microLamports) / 1_000_000)),
+      maxLamports,
+      source: 'recent_fees' as const,
+    });
+    h.claimsChain.priorityFees = {
+      trading: quote(CLAIM_COMPUTE_UNITS, 100_000),
+      pcf: quote(POOL_CREATION_FEE_CLAIM_COMPUTE_UNITS, 120_000),
+    };
+    const body = (await (await claim(lp.id)).json()) as ClaimBody;
+    expect(body.summary.poolCreationFeeLamports).toBe('9000000');
+    const tx = decode(body.transaction);
+    const budget = tx.instructions.filter((ix) =>
+      ix.programId.equals(ComputeBudgetProgram.programId),
+    );
+    expect(budget).toHaveLength(2);
+    expect(tx.instructions.indexOf(budget[0]!)).toBe(0);
+    expect(budget[0]!.data.readUInt32LE(1)).toBe(300_000);
+    expect(budget[1]!.data.readBigUInt64LE(1)).toBe(100_000n);
+    // 4 + 1 claim instructions, one compute budget.
+    expect(tx.instructions).toHaveLength(7);
+    // 5,000 signature fee + 20,000 trading priority fee + 10,000 for the larger limit.
+    expect(body.summary.ownerCostLamports).toBe(String(5000n + 20_000n + 10_000n));
+    expect(checkComputeBudgetInstructions(tx.instructions).priorityFeeLamports).toBe(30_000n);
+
+    // The cap holds after the merge: the price goes down instead.
+    h.claimsChain.priorityFees = {
+      trading: quote(CLAIM_COMPUTE_UNITS, 150_000, 30_000n),
+      pcf: quote(POOL_CREATION_FEE_CLAIM_COMPUTE_UNITS, 300_000, 30_000n),
+    };
+    const capped = decode(((await (await claim(lp.id)).json()) as ClaimBody).transaction);
+    const summary = checkComputeBudgetInstructions(capped.instructions);
+    expect(summary.microLamports).toBe(100_000n);
+    expect(summary.priorityFeeLamports).toBe(30_000n);
   });
 
   it('keeps the trading claim alone when the merge would be too large', async () => {

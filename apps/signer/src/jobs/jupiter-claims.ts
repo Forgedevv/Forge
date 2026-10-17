@@ -62,6 +62,7 @@ import {
   JUPITER_CLAIM_DISCRIMINATOR,
   JUPITER_CLAIM_V2_DISCRIMINATOR,
   JUPITER_CREATE_ADMIN_TOKEN_ACCOUNT_DISCRIMINATOR,
+  JUPITER_REFERRAL_CLAIM_COMPUTE_UNITS,
   JUPITER_REFERRAL_PROGRAM_ID,
   JupiterReferralError,
   buildJupiterCreateAdminTokenAccountIx,
@@ -73,6 +74,7 @@ import {
   type JupiterReferralClaimTx,
   type JupiterReferralClaimVersion,
 } from '@forge/core';
+import type { PriorityFees } from './priority.js';
 import type { PayerReservations } from './reservations.js';
 import {
   DEFAULT_RETRY,
@@ -82,6 +84,7 @@ import {
   alertAbnormalPause,
   awaitSettlement,
   broadcast,
+  assertComputeBudgetSet,
   checkComputeBudget,
   checkPaused,
   checkSettlement,
@@ -394,6 +397,7 @@ export function assertJupiterReferralClaimTx(
   for (const version of expected.claims) {
     if (!seen.has(version)) policy(`${version} claim missing`);
   }
+  assertComputeBudgetSet(tx.instructions);
 }
 
 // ---------------------------------------------------------------------------------------
@@ -463,6 +467,11 @@ export interface JupiterClaimsDeps {
   payerReservations?: PayerReservations;
   /** Default: core's `buildJupiterReferralClaimTx`. */
   builder?: JupiterClaimBuilder;
+  /**
+   * Priority fee of the claims (SIGNER_PRIORITY_FEE_*, jobs/priority.ts): core prices them, the
+   * payer keeps their cap on top of the fee buffer. Default: none.
+   */
+  priorityFees?: PriorityFees;
 }
 
 export type JupiterClaimOutcome = { mint: string } & (
@@ -638,6 +647,7 @@ export function createJupiterClaimsJob(deps: JupiterClaimsDeps): JupiterClaimsJo
             commitment: 'confirmed',
             retry: { attempts: retry.attempts, baseDelayMs: retry.baseDelayMs },
             programId,
+            ...(deps.priorityFees?.setting ? { priority: deps.priorityFees.setting } : {}),
           });
         } catch (err) {
           if (!(err instanceof JupiterReferralError)) throw err;
@@ -674,7 +684,10 @@ export function createJupiterClaimsJob(deps: JupiterClaimsDeps): JupiterClaimsJo
         const tokenRent = summary.createsPartnerTokenAccount
           ? await withRetry(() => rpc.getMinimumBalanceForRentExemption(TOKEN_ACCOUNT_SIZE), retry)
           : 0n;
-        const needed = tokenRent + JUPITER_CLAIM_FEE_BUFFER_LAMPORTS;
+        const needed =
+          tokenRent +
+          JUPITER_CLAIM_FEE_BUFFER_LAMPORTS +
+          (deps.priorityFees?.maxFeeLamports(JUPITER_REFERRAL_CLAIM_COMPUTE_UNITS) ?? 0n);
         const balance = await withRetry(() => rpc.getBalance(payer.publicKey, 'confirmed'), retry);
         const reserved = deps.payerReservations
           ? await deps.payerReservations.outstanding(rpc, retry)

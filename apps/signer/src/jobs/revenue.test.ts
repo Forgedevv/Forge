@@ -16,10 +16,11 @@ import {
   TransactionInstruction,
   type Connection,
 } from '@solana/web3.js';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildSolTransferTx } from '../core-adapter.js';
 import { openKeystore, type Keystore } from '../keystore.js';
 import type { ConvertRunSummary } from './convert.js';
+import { createPriorityFees } from './priority.js';
 import {
   DEFAULT_REVENUE_MIN_FORWARD_LAMPORTS,
   DEFAULT_REVENUE_RESERVE_LAMPORTS,
@@ -140,6 +141,8 @@ class RevenueChain extends FakeChain implements RevenueRpc {
       return;
     }
     if (ix.programId.equals(MEMO_PROGRAM_ID)) return;
+    // Its fee is charged by FakeChain with the signatures.
+    if (ix.programId.equals(ComputeBudgetProgram.programId)) return;
     if (!ix.programId.equals(TOKEN_PROGRAM_ID)) throw new Error('unknown program');
     const data = Buffer.from(ix.data);
     if (data[0] === 18) {
@@ -869,6 +872,32 @@ describe('revenue job', () => {
     expect((await reader.totalForwardedSince('2000-01-01T00:00:00.000Z')).lamports).toBe(
       expectedAmount,
     );
+  });
+
+  it('prices the unwrap and the forward from the recent fees, budget first, cap kept on the wallet', async () => {
+    const reader = {
+      getRecentPrioritizationFees: vi.fn(async () => [{ slot: 1, prioritizationFee: 100_000 }]),
+    };
+    const t = setup({
+      referralWsol: 30_000_000n,
+      otherWsol: 10_000_000n,
+      deps: { priorityFees: createPriorityFees(reader) },
+    });
+    const report = await t.job().runOnce();
+    expect(report.outcome?.result).toBe('forwarded');
+    const [unwrap, forward] = [...t.chain.landed.values()];
+    for (const landed of [unwrap!, forward!]) {
+      expect(landed.programs.slice(0, 2)).toEqual([
+        ComputeBudgetProgram.programId.toBase58(),
+        ComputeBudgetProgram.programId.toBase58(),
+      ]);
+    }
+    // Unwrap of two accounts: 52,000 CU; forward: 30,000 CU; both at 100,000 micro-lamports.
+    expect(unwrap!.priorityFeeLamports).toBe(5_200n);
+    expect(forward!.priorityFeeLamports).toBe(3_000n);
+    // The forward floor keeps its fee at the cap (30,000 CU x 1 lamport).
+    expect(t.chain.balanceOf(revenue)).toBe(t.floor + 30_000n - 5_000n - 3_000n);
+    expect(t.alerter.codes()).toEqual([]);
   });
 
   it('books a native inflow as platform fee and forwards it on the next run', async () => {

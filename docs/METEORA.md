@@ -55,6 +55,11 @@ Our own (stricter) bounds are in `INTERFACES.md`, section 1.
 - `enableFirstSwapWithMinFee` = `true` (Hugo's first buy).
 - `poolCreationFee` = 0: the client would otherwise pay its own creation fee on its own coin and lose the protocol share of it (SDK 1.5.13 accepts 0 as "no fee").
 
+## Transaction sizes and priority fees
+
+- Every transaction must fit in 1,232 bytes. A priority fee costs 12 bytes (`setComputeUnitPrice`) next to the unit limit core always sets: a swap goes from 819 to 831 bytes, a user coin launch fits even with the longest Metaplex metadata.
+- The launchpad coin launch (durable nonce, creator wallet, first buy) is the tight one: name + symbol + URI share 148 bytes (`LAUNCH_METADATA_BUDGET_BYTES`). With a priority fee, core keeps the unit limit and the price up to 136 bytes of metadata, the price alone up to 144 (bounded for 1.4M compute units, the most the runtime applies without a limit), and no price beyond: the budget accepted at `/v1/configs` never shrinks.
+
 ## The Meteora referral
 
 - The swap accepts a `referralTokenAccount`. The referral fee = 20% of the protocol share, deducted from Meteora's share. The partner share and the creator share do not change.

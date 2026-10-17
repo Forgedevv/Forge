@@ -19,6 +19,10 @@
  * - Launch revocation (operator command, revoke.ts): fee payer = payer wallet; signers = {payer,
  *   creator}; only bounded compute budget and ONE System `AdvanceNonceAccount` of the launchpad's
  *   nonce account by the creator wallet (read-only): the creator signature can do nothing else.
+ * Compute budget, in every one of them: a unit limit and a unit price at most, each once and
+ * bounded (`MAX_COMPUTE_UNIT_LIMIT`, `MAX_COMPUTE_UNIT_PRICE`), and a priority fee of at most
+ * `MAX_SIGNER_PRIORITY_FEE_LAMPORTS` (jobs/shared.ts `assertComputeBudgetSet`); nothing else of
+ * the Compute Budget program (no heap frame, no loaded data size).
  * Account indexes follow the pinned DBC SDK IDL (1.5.13).
  */
 import { createHash } from 'node:crypto';
@@ -37,7 +41,12 @@ import {
   type Transaction,
   type TransactionInstruction,
 } from '@solana/web3.js';
-import { JobError, MAX_COMPUTE_UNIT_LIMIT, MAX_COMPUTE_UNIT_PRICE } from '../jobs/shared.js';
+import {
+  JobError,
+  MAX_COMPUTE_UNIT_LIMIT,
+  MAX_COMPUTE_UNIT_PRICE,
+  assertComputeBudgetSet,
+} from '../jobs/shared.js';
 
 function policy(rule: string): never {
   throw new JobError('TX_POLICY', rule);
@@ -152,6 +161,7 @@ export function assertCreateConfigTx(tx: Transaction, expected: CreateConfigExpe
     }
   }
   if (creates !== 1) policy('exactly one create_config expected');
+  assertComputeBudgetSet(tx.instructions);
 }
 
 // ---------------------------------------------------------------------------------------
@@ -194,6 +204,7 @@ export function assertCreateNonceTx(tx: Transaction, expected: CreateNonceExpect
     }
   }
   if (steps.join(',') !== 'create,initialize') policy('expected create then initialize');
+  assertComputeBudgetSet(tx.instructions);
 }
 
 // ---------------------------------------------------------------------------------------
@@ -297,6 +308,7 @@ export function assertLaunchCoinTx(tx: Transaction, expected: LaunchExpectation)
   });
   if (inits !== 1) policy('exactly one pool initialization expected');
   if (swaps !== (expected.firstBuy ? 1 : 0)) policy('unexpected number of first buy swaps');
+  assertComputeBudgetSet(tx.instructions);
 }
 
 // ---------------------------------------------------------------------------------------
@@ -331,4 +343,5 @@ export function assertRevokeNonceTx(tx: Transaction, expected: RevokeNonceExpect
     advances++;
   }
   if (advances !== 1) policy('exactly one nonce advance expected');
+  assertComputeBudgetSet(tx.instructions);
 }

@@ -19,8 +19,10 @@ import {
   DEFAULT_JOURNAL_DIR,
   DEFAULT_MIN_PAYMENT_LAMPORTS,
   MAX_COMPUTE_UNIT_PRICE,
+  MAX_SIGNER_PRIORITY_FEE_LAMPORTS,
   type PaymentMinimums,
 } from '../jobs/shared.js';
+import { DEFAULT_SIGNER_PRIORITY_FEE, type SignerPriorityFeeConfig } from '../jobs/priority.js';
 import { DEFAULT_MAX_LAUNCHPADS_PER_DAY, MAX_LAUNCHPADS_PER_DAY } from '../routes/budget.js';
 
 export type EnvSource = Readonly<Record<string, string | undefined>>;
@@ -110,7 +112,19 @@ const RuntimeEnvSchema = z.object({
   SIGNER_COIN_METADATA_URL: z.string({ error: 'SIGNER_COIN_METADATA_URL is required' }).min(1, {
     message: 'SIGNER_COIN_METADATA_URL is required',
   }),
-  SIGNER_PRIORITY_FEE_MICRO_LAMPORTS: integer(0, 0, Number(MAX_COMPUTE_UNIT_PRICE)),
+  // Priority fees (jobs/priority.ts): floor, cap per CU, percentile, cap per transaction.
+  SIGNER_PRIORITY_FEE_MICRO_LAMPORTS: integer(
+    DEFAULT_SIGNER_PRIORITY_FEE.floorMicroLamports,
+    0,
+    Number(MAX_COMPUTE_UNIT_PRICE),
+  ),
+  SIGNER_PRIORITY_FEE_MAX_MICRO_LAMPORTS: integer(
+    DEFAULT_SIGNER_PRIORITY_FEE.maxMicroLamports,
+    0,
+    Number(MAX_COMPUTE_UNIT_PRICE),
+  ),
+  SIGNER_PRIORITY_FEE_PERCENTILE: integer(DEFAULT_SIGNER_PRIORITY_FEE.percentile, 0, 100),
+  SIGNER_PRIORITY_FEE_MAX_LAMPORTS: lamports(DEFAULT_SIGNER_PRIORITY_FEE.maxLamports),
   SIGNER_ROUTES_PAUSED: bool(false),
   SIGNER_MAX_LAUNCHPADS_PER_DAY: integer(DEFAULT_MAX_LAUNCHPADS_PER_DAY, 1, MAX_LAUNCHPADS_PER_DAY),
   SIGNER_MIN_CREATION_PAYMENT_LAMPORTS: lamports(DEFAULT_MIN_PAYMENT_LAMPORTS.creation),
@@ -135,7 +149,8 @@ export interface RuntimeEnv {
   /** Bind address of the HMAC server (default 0.0.0.0: the IP allowlist decides). */
   host: string;
   coinMetadataUrl: string;
-  priorityFeeMicroLamports: number;
+  /** Priority fees of the signer's transactions (SIGNER_PRIORITY_FEE_*, jobs/priority.ts). */
+  priorityFee: SignerPriorityFeeConfig;
   routesPaused: boolean;
   /** New launchpads the signing routes create accounts for per UTC day (default 20). */
   maxLaunchpadsPerDay: number;
@@ -253,6 +268,19 @@ export function parseRuntimeEnv(env: EnvSource): RuntimeEnv {
         return issue.message.includes(name) ? issue.message : `${name} ${issue.message}`;
       });
   problems.push(...alertingProblems(env));
+  if (parsed.success) {
+    const p = parsed.data;
+    if (p.SIGNER_PRIORITY_FEE_MICRO_LAMPORTS > p.SIGNER_PRIORITY_FEE_MAX_MICRO_LAMPORTS) {
+      problems.push(
+        'SIGNER_PRIORITY_FEE_MICRO_LAMPORTS (the floor) must not be above SIGNER_PRIORITY_FEE_MAX_MICRO_LAMPORTS',
+      );
+    }
+    if (p.SIGNER_PRIORITY_FEE_MAX_LAMPORTS > MAX_SIGNER_PRIORITY_FEE_LAMPORTS) {
+      problems.push(
+        `SIGNER_PRIORITY_FEE_MAX_LAMPORTS must be at most ${MAX_SIGNER_PRIORITY_FEE_LAMPORTS} lamports`,
+      );
+    }
+  }
   if (!parsed.success || problems.length > 0) {
     throw new RuntimeConfigError([...new Set(problems)]);
   }
@@ -267,7 +295,12 @@ export function parseRuntimeEnv(env: EnvSource): RuntimeEnv {
     journalDir: path.resolve(p.SIGNER_JOURNAL_DIR ?? DEFAULT_JOURNAL_DIR),
     host: p.SIGNER_HOST ?? '0.0.0.0',
     coinMetadataUrl: p.SIGNER_COIN_METADATA_URL,
-    priorityFeeMicroLamports: p.SIGNER_PRIORITY_FEE_MICRO_LAMPORTS,
+    priorityFee: {
+      floorMicroLamports: p.SIGNER_PRIORITY_FEE_MICRO_LAMPORTS,
+      maxMicroLamports: p.SIGNER_PRIORITY_FEE_MAX_MICRO_LAMPORTS,
+      percentile: p.SIGNER_PRIORITY_FEE_PERCENTILE,
+      maxLamports: p.SIGNER_PRIORITY_FEE_MAX_LAMPORTS,
+    },
     routesPaused: p.SIGNER_ROUTES_PAUSED,
     maxLaunchpadsPerDay: p.SIGNER_MAX_LAUNCHPADS_PER_DAY,
     minPaymentLamports: {

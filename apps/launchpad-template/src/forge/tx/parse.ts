@@ -26,8 +26,11 @@ import {
 
 /** Highest compute unit limit Solana accepts per transaction. */
 export const MAX_COMPUTE_UNIT_LIMIT = 1_400_000;
-/** Priority fee cap (micro-lamports per CU), same guard as @forge/core: 10 lamports per CU. */
-export const MAX_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS = BigInt(10_000_000);
+/**
+ * Priority fee cap (micro-lamports per CU): 1 lamport per CU, the most the site's own setting
+ * (`SITE_PRIORITY_FEE`, the @forge/core defaults) ever asks for; a test pins it to core.
+ */
+export const MAX_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS = BigInt(1_000_000);
 
 function refuse(ix: DecodedInstruction, what: string): never {
   throw new VerificationError(

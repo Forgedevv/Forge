@@ -9,6 +9,7 @@ import {
   type ClaimTxResult,
   type CoinOfConfig,
   type PoolCreationFeeClaimTxResult,
+  type PriorityFeeSetting,
   type RetryOptions,
 } from '@forge/core';
 import type { Connection, PublicKey } from '@solana/web3.js';
@@ -42,6 +43,13 @@ export interface ClaimsChain {
 }
 
 export const COINS_CACHE_TTL_MS = 30_000;
+
+/**
+ * Priority fee of the partner claims: the defaults of @forge/core (75th percentile of the recent
+ * fees of the accounts the claim writes, at most 0.0005 SOL), counted in the claim's cost, so a
+ * claim worth less than it costs is still skipped.
+ */
+export const CLAIM_PRIORITY_FEE: PriorityFeeSetting = {};
 const MAX_CACHE_ENTRIES = 2_000;
 
 function passThrough(error: unknown): never {
@@ -98,7 +106,7 @@ export function createCoreClaimsChain(options: CoreClaimsChainOptions): ClaimsCh
         return await buildPartnerClaimTx(
           connection,
           { pool, feeClaimer: owner, receiver: owner, payer: owner },
-          { ...common, minNetLamports: 0n },
+          { ...common, minNetLamports: 0n, priority: CLAIM_PRIORITY_FEE },
         );
       } catch (error) {
         passThrough(error);
@@ -110,7 +118,7 @@ export function createCoreClaimsChain(options: CoreClaimsChainOptions): ClaimsCh
         return await buildPartnerPoolCreationFeeClaimTx(
           connection,
           { pool, feeClaimer: owner, receiver: owner, payer: owner },
-          common,
+          { ...common, priority: CLAIM_PRIORITY_FEE },
         );
       } catch (error) {
         passThrough(error);

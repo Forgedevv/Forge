@@ -34,6 +34,12 @@
  * claim (FORGE configs collect fees in SOL only). It is the receiver's associated account, created
  * idempotently by the payer: the first claim of each pool costs the payer that account's rent
  * (~0.00204 SOL), which stays in an account owned by the receiver (recoverable by closing it).
+ *
+ * Priority fee (`ClaimOptions.priority`, priority-fee.ts): two compute budget instructions come
+ * first, `setComputeUnitLimit` (`CLAIM_COMPUTE_UNITS`, or `POOL_CREATION_FEE_CLAIM_COMPUTE_UNITS`)
+ * then `setComputeUnitPrice`, priced from the recent fees of the claim's writable accounts and
+ * bounded by the setting; the costs (network fee, worthwhile check) count it. Without the option
+ * the claims carry no compute budget instruction, as before.
  */
 import {
   ACCOUNT_SIZE,
@@ -65,6 +71,14 @@ import BN from 'bn.js';
 import { getMultisigVault, type AddressEnv } from './addresses.js';
 import { SOL_QUOTE_MINT } from './constants.js';
 import {
+  estimatePriorityFee,
+  priorityFeeInstructions,
+  resolvePriorityFeePolicy,
+  writableAccountsOf,
+  type PriorityFeeQuote,
+  type PriorityFeeSetting,
+} from './priority-fee.js';
+import {
   READ_COMMITMENT,
   feeMetrics,
   getDbcPoolState,
@@ -75,8 +89,18 @@ import {
   type TokenAmounts,
 } from './reads.js';
 
-/** Base fee per signature (lamports); claims set no priority fee. */
+/** Base fee per signature (lamports); a priority fee comes on top with `ClaimOptions.priority`. */
 export const CLAIM_LAMPORTS_PER_SIGNATURE = 5000n;
+
+/**
+ * Compute unit limit of a trading fee claim with a priority fee: two idempotent token account
+ * creations (about 25,000 CU each when they create), the DBC claim (two token transfers and its
+ * event), a token self-transfer, a close and a SOL transfer, about 100,000 CU at most: 2x margin.
+ */
+export const CLAIM_COMPUTE_UNITS = 200_000;
+
+/** Compute unit limit of a pool creation fee claim (one DBC instruction moving lamports). */
+export const POOL_CREATION_FEE_CLAIM_COMPUTE_UNITS = 100_000;
 
 // Pool creation fee helpers live in reads.ts (CoinOfConfig uses them); re-exported here.
 export { PARTNER_POOL_CREATION_FEE_CLAIMED_BIT, partnerPoolCreationFeeShare } from './reads.js';
@@ -112,7 +136,7 @@ export type ClaimKind = 'creator' | 'partner';
 
 /** Lamport costs of a trading fee claim, as bigint. */
 export interface ClaimCosts {
-  /** Signature fees (signers x 5000 lamports; no priority fee), paid by the payer. */
+  /** Signature fees (signers x 5000 lamports) plus the priority fee, if any; paid by the payer. */
   networkFeeLamports: bigint;
   /**
    * Rent of the receiver's coin account, created on the first claim of a pool (paid by the payer,
@@ -157,6 +181,8 @@ export interface ClaimSummary {
    * costs are paid (negative when it costs more than it collects). Base tokens are not valued.
    */
   netLamports: bigint;
+  /** The priority fee of the transaction (price, fee, cap), or null without one. */
+  priorityFee: PriorityFeeQuote | null;
 }
 
 export type ClaimSkipReason = 'nothing_to_claim' | 'not_worthwhile';
@@ -179,6 +205,33 @@ export interface ClaimOptions {
    * than this many lamports (see `isClaimWorthwhile`). Default: never skip a non-empty claim.
    */
   minNetLamports?: bigint;
+  /**
+   * Priority fee read from the cluster for the claim's writable accounts, bounded by this setting
+   * (`{}` = `DEFAULT_PRIORITY_FEE_POLICY`, at most 0.0005 SOL). Default: none.
+   */
+  priority?: PriorityFeeSetting;
+}
+
+/** Checks `options.priority` before any network call. @throws RangeError. */
+export function assertClaimPriority(options: { priority?: PriorityFeeSetting }): void {
+  if (options.priority !== undefined) resolvePriorityFeePolicy(options.priority);
+}
+
+/** The priced compute budget of a claim, or nothing without `priority`. */
+export async function claimPriorityFee(
+  connection: Connection,
+  instructions: readonly TransactionInstruction[],
+  computeUnitLimit: number,
+  priority: PriorityFeeSetting | undefined,
+): Promise<{ quote: PriorityFeeQuote | null; instructions: TransactionInstruction[] }> {
+  if (priority === undefined) return { quote: null, instructions: [] };
+  const quote = await estimatePriorityFee({
+    connection,
+    writableAccounts: writableAccountsOf(instructions),
+    computeUnitLimit,
+    setting: priority,
+  });
+  return { quote, instructions: priorityFeeInstructions(quote) };
 }
 
 export interface CreatorClaimParams {
@@ -307,6 +360,7 @@ async function buildTradingClaim(
         existingWsolLamports: 0n,
         costs: ZERO_COSTS,
         netLamports: 0n,
+        priorityFee: null,
       },
     };
   }
@@ -417,16 +471,23 @@ async function buildTradingClaim(
     );
   }
 
+  const priority = await claimPriorityFee(
+    connection,
+    instructions,
+    CLAIM_COMPUTE_UNITS,
+    options.priority,
+  );
   const { blockhash, lastValidBlockHeight } = await retryRpc(
     () => connection.getLatestBlockhash(commitment),
     options.retry,
   );
   const transaction = new Transaction({ feePayer: payer, blockhash, lastValidBlockHeight });
-  transaction.add(...instructions);
+  transaction.add(...priority.instructions, ...instructions);
 
   // 4. Costs and net.
   const signatures = BigInt(transaction.compileMessage().header.numRequiredSignatures);
-  const networkFeeLamports = signatures * CLAIM_LAMPORTS_PER_SIGNATURE;
+  const networkFeeLamports =
+    signatures * CLAIM_LAMPORTS_PER_SIGNATURE + (priority.quote?.priorityFeeLamports ?? 0n);
   const receiverTokenAccountRentLamports = receiverBaseInfo ? 0n : BigInt(tokenAccountRent);
   const temporaryLamports = claimerWsolInfo ? 0n : BigInt(tokenAccountRent);
   const payerTotalLamports = networkFeeLamports + receiverTokenAccountRentLamports;
@@ -444,6 +505,7 @@ async function buildTradingClaim(
     existingWsolLamports,
     costs,
     netLamports: receiverQuoteLamports - payerTotalLamports,
+    priorityFee: priority.quote,
   };
   if (options.minNetLamports !== undefined && !isClaimWorthwhile(summary, options.minNetLamports)) {
     return { transaction: null, lastValidBlockHeight: null, skipReason: 'not_worthwhile', summary };
@@ -464,6 +526,7 @@ export async function buildCreatorClaimTx(
 ): Promise<ClaimTxResult> {
   const commitment = options.commitment ?? READ_COMMITMENT;
   assertReceiver(params.receiver);
+  assertClaimPriority(options);
   if (params.expectedReceiver && !params.expectedReceiver.equals(params.receiver)) {
     throw new ClaimError(
       'receiver_mismatch',
@@ -548,6 +611,7 @@ export async function buildPartnerClaimTx(
   const commitment = options.commitment ?? READ_COMMITMENT;
   const receiver = params.receiver ?? params.feeClaimer;
   assertReceiver(receiver);
+  assertClaimPriority(options);
   const state = await getDbcPoolState(connection, params.pool, {
     commitment,
     retry: options.retry,
@@ -612,10 +676,12 @@ export interface PoolCreationFeeClaimSummary {
   alreadyClaimed: boolean;
   /** SOL the receiver gets from the transaction (0 when there is none), lamports. */
   claimableLamports: bigint;
-  /** Signature fees of the transaction (0 when there is none), paid by the payer. */
+  /** Signature fees plus the priority fee of the transaction (0 when there is none). */
   networkFeeLamports: bigint;
   /** `claimableLamports - networkFeeLamports` (0 when there is no transaction). */
   netLamports: bigint;
+  /** The priority fee of the transaction (price, fee, cap), or null without one. */
+  priorityFee: PriorityFeeQuote | null;
 }
 
 export type PoolCreationFeeSkipReason = 'no_pool_creation_fee' | 'already_claimed';
@@ -644,6 +710,7 @@ export async function buildPartnerPoolCreationFeeClaimTx(
   const commitment = options.commitment ?? READ_COMMITMENT;
   const receiver = params.receiver ?? params.feeClaimer;
   assertReceiver(receiver);
+  assertClaimPriority(options);
   const state = await getDbcPoolState(connection, params.pool, {
     commitment,
     retry: options.retry,
@@ -671,6 +738,7 @@ export async function buildPartnerPoolCreationFeeClaimTx(
     claimableLamports: 0n,
     networkFeeLamports: 0n,
     netLamports: 0n,
+    priorityFee: null,
   };
   if (partnerShareLamports === 0n || alreadyClaimed) {
     return {
@@ -720,14 +788,21 @@ export async function buildPartnerPoolCreationFeeClaimTx(
       'The SDK pool creation fee claim does not have the expected instruction',
     );
   }
+  const priority = await claimPriorityFee(
+    connection,
+    [claimIx],
+    POOL_CREATION_FEE_CLAIM_COMPUTE_UNITS,
+    options.priority,
+  );
   const { blockhash, lastValidBlockHeight } = await retryRpc(
     () => connection.getLatestBlockhash(commitment),
     options.retry,
   );
   const transaction = new Transaction({ feePayer: payer, blockhash, lastValidBlockHeight });
-  transaction.add(claimIx);
+  transaction.add(...priority.instructions, claimIx);
   const signatures = BigInt(transaction.compileMessage().header.numRequiredSignatures);
-  const networkFeeLamports = signatures * CLAIM_LAMPORTS_PER_SIGNATURE;
+  const networkFeeLamports =
+    signatures * CLAIM_LAMPORTS_PER_SIGNATURE + (priority.quote?.priorityFeeLamports ?? 0n);
   return {
     transaction,
     lastValidBlockHeight,
@@ -737,6 +812,7 @@ export async function buildPartnerPoolCreationFeeClaimTx(
       claimableLamports: partnerShareLamports,
       networkFeeLamports,
       netLamports: partnerShareLamports - networkFeeLamports,
+      priorityFee: priority.quote,
     },
   };
 }

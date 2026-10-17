@@ -338,7 +338,7 @@ function ClaimCreatorFeesList(props: ClaimCreatorFeesProps) {
               />
             )}
             <ReviewRow
-              label="Network fee (at least)"
+              label="Network fee (priority fee included)"
               value={`${formatSol(review.estimatedNetworkFeeLamports)} SOL`}
             />
             {review.coinAccountRentLamports > BigInt(0) && (
