@@ -9,7 +9,13 @@
  * Validation choice: a value is valid when the `PublicKey` constructor accepts it (base58 that
  * decodes to exactly 32 bytes) and it re-encodes to the same string. Being on the ed25519 curve is
  * NOT required, because some of these addresses are token accounts or PDAs (e.g. the Meteora
- * referral account, which is a WSOL token account held by the multisig, or a Squads vault PDA).
+ * referral account, which is a WSOL token account held by the revenue wallet, or a Squads vault
+ * PDA).
+ *
+ * The revenue wallet (`FORGE_REVENUE_WALLET`, docs/DECISIONS.md D34) is the signer-held wallet
+ * where the non-native trading revenue lands: the platform fee (`FORGE_PLATFORM_FEE_WALLET` must
+ * be that wallet), the Meteora referral WSOL account it holds, and the Jupiter referral claims
+ * (it is the referral account's partner). The signer converts and forwards it to the vault.
  * The all-zero key (`11111111111111111111111111111111`, the System Program) is rejected: fees
  * sent there would be lost.
  *
@@ -21,6 +27,7 @@ export const FORGE_ADDRESS_NAMES = [
   'FORGE_MULTISIG_VAULT',
   'FORGE_METEORA_REFERRAL_ACCOUNT',
   'FORGE_PLATFORM_FEE_WALLET',
+  'FORGE_REVENUE_WALLET',
   'FORGE_JUPITER_REFERRAL_ACCOUNT',
   'FORGE_CASHBOX_WALLET',
   'FORGE_MINT',
@@ -129,7 +136,7 @@ export function requireAddresses<N extends ForgeAddressName>(
  * One FORGE address when it is set, `null` when it is absent or empty. A value that is set but is
  * not a valid public key is refused, exactly as `requireAddresses` does. For checks that run
  * wherever the address is known and are skipped elsewhere (e.g. the owner of the Meteora referral
- * account, `FORGE_MULTISIG_VAULT`, in a browser that was not given it).
+ * account, `FORGE_REVENUE_WALLET`, in a browser that was not given it).
  *
  * @throws ForgeAddressError (invalid value; names only).
  */
@@ -142,19 +149,35 @@ export function readOptionalAddress(
   return requireAddresses([name], env)[name] as PublicKey;
 }
 
-/** Squads multisig vault: receives the creator fees, the Meteora referral and the cashbox sweeps. */
+/**
+ * Squads multisig vault: receives the creator fees, the cashbox sweeps and the revenue wallet's
+ * forwards (the converted trading revenue).
+ */
 export function getMultisigVault(env?: AddressEnv): PublicKey {
   return requireAddresses(['FORGE_MULTISIG_VAULT'], env).FORGE_MULTISIG_VAULT;
 }
 
-/** Meteora referral token account (WSOL, held by the multisig), passed as `referralTokenAccount`. */
+/** Meteora referral token account (WSOL, held by the revenue wallet), passed as `referralTokenAccount`. */
 export function getMeteoraReferralAccount(env?: AddressEnv): PublicKey {
   return requireAddresses(['FORGE_METEORA_REFERRAL_ACCOUNT'], env).FORGE_METEORA_REFERRAL_ACCOUNT;
 }
 
-/** Wallet receiving the 0.3% platform fee on swaps built by @forge/core. */
+/**
+ * Wallet receiving the 0.3% platform fee on swaps built by @forge/core: the revenue wallet
+ * (`FORGE_REVENUE_WALLET`, D34). Kept as its own variable so the fee destination stays explicit;
+ * `swapFeeAddresses` refuses an environment where the two differ.
+ */
 export function getPlatformFeeWallet(env?: AddressEnv): PublicKey {
   return requireAddresses(['FORGE_PLATFORM_FEE_WALLET'], env).FORGE_PLATFORM_FEE_WALLET;
+}
+
+/**
+ * Revenue wallet (D34): held by the signer (keystore role `revenue`), it receives the platform
+ * fee, holds the Meteora referral WSOL account and is the partner of the Jupiter referral
+ * account. The signer regularly converts what it holds to SOL and forwards it to the vault.
+ */
+export function getRevenueWallet(env?: AddressEnv): PublicKey {
+  return requireAddresses(['FORGE_REVENUE_WALLET'], env).FORGE_REVENUE_WALLET;
 }
 
 /** Jupiter referral account (integrator fee after graduation). */

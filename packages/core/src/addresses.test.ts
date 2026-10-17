@@ -11,6 +11,7 @@ import {
   getMeteoraReferralAccount,
   getMultisigVault,
   getPlatformFeeWallet,
+  getRevenueWallet,
   readOptionalAddress,
   readSquadsAddresses,
   requireAddresses,
@@ -24,6 +25,7 @@ function fullEnv(): Record<ForgeAddressName, string> {
     FORGE_MULTISIG_VAULT: key(),
     FORGE_METEORA_REFERRAL_ACCOUNT: key(),
     FORGE_PLATFORM_FEE_WALLET: key(),
+    FORGE_REVENUE_WALLET: key(),
     FORGE_JUPITER_REFERRAL_ACCOUNT: key(),
     FORGE_CASHBOX_WALLET: key(),
     FORGE_MINT: key(),
@@ -157,6 +159,7 @@ describe('typed getters', () => {
     expect(getMultisigVault(env).toBase58()).toBe(env.FORGE_MULTISIG_VAULT);
     expect(getMeteoraReferralAccount(env).toBase58()).toBe(env.FORGE_METEORA_REFERRAL_ACCOUNT);
     expect(getPlatformFeeWallet(env).toBase58()).toBe(env.FORGE_PLATFORM_FEE_WALLET);
+    expect(getRevenueWallet(env).toBase58()).toBe(env.FORGE_REVENUE_WALLET);
     expect(getJupiterReferralAccount(env).toBase58()).toBe(env.FORGE_JUPITER_REFERRAL_ACCOUNT);
     expect(getCashboxWallet(env).toBase58()).toBe(env.FORGE_CASHBOX_WALLET);
     expect(getForgeMint(env)?.toBase58()).toBe(env.FORGE_MINT);
@@ -166,6 +169,7 @@ describe('typed getters', () => {
     expect(() => getMultisigVault({})).toThrow(ForgeAddressError);
     expect(() => getMeteoraReferralAccount({})).toThrow(ForgeAddressError);
     expect(() => getPlatformFeeWallet({})).toThrow(ForgeAddressError);
+    expect(() => getRevenueWallet({})).toThrow(ForgeAddressError);
     expect(() => getJupiterReferralAccount({})).toThrow(ForgeAddressError);
     expect(() => getCashboxWallet({})).toThrow(ForgeAddressError);
     expect(getForgeMint({})).toBeNull();

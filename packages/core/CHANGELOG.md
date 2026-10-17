@@ -3,6 +3,25 @@
 All notable changes to `@forge/core`. Versions follow semantic versioning. Consumers (the
 launchpad template, the signer, the web app) pin an exact version, never a range.
 
+## 0.3.0 — unreleased
+
+Publish `@forgedevv/shared` 0.3.0 with it (new kill switch `revenue_paused` in `FlagKey`).
+
+### Changed (revenue wallet, docs/DECISIONS.md D34)
+
+- **New address `FORGE_REVENUE_WALLET`** (`FORGE_ADDRESS_NAMES`, `getRevenueWallet`): the
+  signer-held wallet where the non-native trading revenue lands before the signer converts it to
+  SOL and forwards it to the multisig vault. It replaces the vault as the holder of the Meteora
+  referral account and as the partner of the Jupiter referral account; the platform fee goes to
+  it too (`FORGE_PLATFORM_FEE_WALLET` must be that wallet).
+- **Swaps.** `swapFeeAddresses` returns `revenueWallet` (was `multisigVault`), read from
+  `FORGE_REVENUE_WALLET` (optional, as before): when set, the Meteora referral token account must
+  be held by it (`REFERRAL_ACCOUNT_INVALID`, `assertReferralAccountReady(..., expectedOwner?)`)
+  and `FORGE_PLATFORM_FEE_WALLET` must be it (`PLATFORM_FEE_WALLET_MISMATCH`, checked before any
+  network call by `buildBuyTx`, `buildSellTx` and `assertSwapFeeAccountsReady`). Client sites
+  receive `NEXT_PUBLIC_FORGE_REVENUE_WALLET` instead of `NEXT_PUBLIC_FORGE_MULTISIG_VAULT`.
+- `buildJupiterReferralClaimTx` is unchanged: `expectedPartner` is now the revenue wallet.
+
 ## 0.2.0 — unreleased
 
 Everything below was added after 0.1.0 was published. Publish `@forgedevv/shared` 0.2.0 with it.
