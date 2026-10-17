@@ -3,6 +3,34 @@
 All notable changes to `@forge/core`. Versions follow semantic versioning. Consumers (the
 launchpad template, the signer, the web app) pin an exact version, never a range.
 
+## 0.3.0 — unreleased
+
+Changes after 0.2.0. Publish `@forgedevv/shared` 0.3.0 with it.
+
+### Changed (Jupiter fixes)
+
+- **Jupiter referral fee.** `FEES.jupiterIntegratorFeeBps` (re-exported from `@forge/shared`) is
+  50 bps, was 30: the Jupiter Plugin passes `referralFee` to Ultra `/order`, which refuses any
+  value outside 50..255 bps, so every swap of a graduated coin failed. Jupiter keeps 20% of it.
+  `FEES.platformFeeBps` (30 bps, `PLATFORM_FEE_BPS` on swaps built by core) is unchanged.
+- **Jupiter referral claims.** `buildJupiterReferralClaimTx` refuses a referral account of another
+  project than Jupiter's Ultra project (`project_mismatch`; the new `expectedProject` parameter
+  overrides the default `JUPITER_ULTRA_REFERRAL_PROJECT`). A funded v2 collection account is only
+  claimed for a named referral account at the PDA `["referral", project, name]`, the only kind
+  `claim_v2` accepts: `referral_account_unnamed` or `referral_account_not_pda` otherwise (new
+  `JupiterReferralErrorCode` values; the whole build is refused). With an empty v2 account, an
+  unnamed account still claims its v1 collection account. Devnet is unchanged: any cluster but
+  mainnet-beta is still refused (`wrong_cluster`) before these reads.
+
+### Added (Jupiter fixes)
+
+- `JUPITER_REFERRAL_FEE_BPS_RANGE` (`{ min: 50, max: 255 }`) and
+  `assertJupiterReferralFeeBps(bps)` (constants.ts): returns a whole number of bps within the range
+  Jupiter Ultra accepts, throws a `RangeError` otherwise. The launchpad template runs the plugin
+  fee through it and fails closed outside it.
+- `JUPITER_ULTRA_REFERRAL_PROJECT` (`DkiqsTrw1u1bYFumumC7sCG2S8K25qc2vemJFHyW2wJc`) and
+  `deriveJupiterReferralAccount(project, name, programId?)` (jupiter-referral.ts).
+
 ## 0.2.0 — unreleased
 
 Everything below was added after 0.1.0 was published. Publish `@forgedevv/shared` 0.2.0 with it.
