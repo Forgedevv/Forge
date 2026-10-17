@@ -102,8 +102,10 @@ export function buildCspDirectives(
       ...JUPITER_STREAM,
       ...(isDev ? ['ws://localhost:*', 'http://localhost:*'] : []),
     ],
-    // The Jupiter Plugin renders in the page (no iframe): nothing is framed.
-    'frame-src': ["'none'"],
+    // The Jupiter Plugin renders in the page (no iframe). The TradingView chart library (chart/)
+    // renders its widget in an iframe loaded from a blob: URL it creates (its default loading
+    // mode); a blob: document inherits this policy. No other origin can be framed.
+    'frame-src': ['blob:'],
     'worker-src': ["'self'", 'blob:'],
     'manifest-src': ["'self'"],
     'media-src': ["'none'"],

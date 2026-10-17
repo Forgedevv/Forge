@@ -69,7 +69,7 @@ describe('production CSP', () => {
     expect(directive(csp, 'script-src')).toContain('https://static.jup.ag');
   });
 
-  it('drops the retired and unused Jupiter hosts and frames nothing', () => {
+  it('drops the retired and unused Jupiter hosts and frames no origin', () => {
     const sources = csp.split('; ').flatMap((d) => d.split(' ').slice(1));
     for (const host of [
       'https://quote-api.jup.ag',
@@ -83,9 +83,10 @@ describe('production CSP', () => {
     ]) {
       expect(sources, host).not.toContain(host);
     }
-    // The Jupiter Plugin renders in the page: it needs no frame.
+    // The Jupiter Plugin renders in the page: it needs no frame. Only the blob: frame the
+    // TradingView chart library creates for its widget is allowed.
     expect(directive(csp, 'frame-src')).not.toContain('https://plugin.jup.ag');
-    expect(directive(csp, 'frame-src')).toEqual(["'none'"]);
+    expect(directive(csp, 'frame-src')).toEqual(['blob:']);
   });
 
   it('is a single policy string with no empty directive', () => {
