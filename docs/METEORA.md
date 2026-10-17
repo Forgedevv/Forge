@@ -96,7 +96,9 @@ Our own (stricter) bounds are in `INTERFACES.md`, section 1.
 
 - API key required (Jupiter developer portal). Free tier limited to 1 request per second.
 - The Ultra API is replaced by Swap V2: use the current version.
-- Jupiter transactions cannot be modified.
+- Jupiter transactions (Ultra `/order`, the plugin) cannot be modified.
+- **The signer's swaps** (fee conversion, revenue conversions, $FORGE buyback; `apps/signer/src/jobs/jupiter-v2.ts`) use the Swap API V2 Router path, `GET https://api.jup.ag/swap/v2/build` (Metis routing only, no Jupiter swap fee, key in `x-api-key`). One call returns the quote and the raw instructions for the signing wallet: `inputMint`, `outputMint`, `amount`, `taker` (V2's name for `userPublicKey`), `slippageBps`, `wrapAndUnwrapSol=true`, `transactionVersion=0`. `/build` is ExactIn only (no `swapMode`) and has no `restrictIntermediateTokens` (Metis picks the intermediate tokens; the checks below do not depend on them). No platform fee, fee account, tip or payer is asked. The quote fields (`inAmount`, `outAmount`, `otherAmountThreshold`, `slippageBps`, `priceImpactPct`, `swapMode`) are validated as before. The signer then assembles the v0 transaction itself: every instruction decoded, only the taker signs; Jupiter's `computeBudgetInstructions` (a unit price, no limit) dropped for the signer's own pair (unit limit 1.2x the units a simulation at 1.4M consumes, price from `SIGNER_PRIORITY_FEE_*` capped by `CONVERT_MAX_PRIORITY_FEE_LAMPORTS` / `BUYBACK_MAX_PRIORITY_FEE_LAMPORTS`); each table of `addressesByLookupTableAddress` read through the signer's RPC, which must hold the listed addresses at the same index, the message compiled against the on-chain tables; the blockhash and its last valid height from the signer's RPC (`blockhashWithMetadata` unused). The bytes then pass the same checks as before: one ExactIn route instruction (V2 builds use `route_v2` / `shared_accounts_route_v2`) whose amounts, slippage and fee are bound to the quote, the simulation of every account the wallet holds, the kill switch, the journal before the broadcast.
+- The Metis Swap API (`/swap/v1`: `/quote`, then `/swap` returning a transaction Jupiter assembled and priced with `priorityLevelWithMaxLamports`) is no longer maintained and superseded by Swap V2 (no sunset date announced, checked on 2026-10-17). `JUPITER_SWAP_API=v1` keeps it for one release as a rollback (a restart, no deploy); remove it once V2 has run a release on mainnet.
 - Integrator fee: 50 to 255 bps (Ultra and the plugin); Jupiter keeps 20%, and chooses the currency it collects in.
 
 ## Sources
@@ -106,5 +108,9 @@ Our own (stricter) bounds are in `INTERFACES.md`, section 1.
 - https://github.com/MeteoraAg/meteora-invent (scaffolds/fun-launch)
 - https://developers.jup.ag/docs/ultra/add-fees-to-ultra
 - https://developers.jup.ag/docs/swap/fees
+- https://developers.jup.ag/docs/swap/build and https://developers.jup.ag/docs/api-reference/swap/build (`/build` request and response)
+- https://developers.jup.ag/docs/swap/migration/metis-to-build (Metis to Swap V2)
+- https://developers.jup.ag/docs/swap/advanced/compute-units (unit limit by simulation, capping the price)
+- https://developers.jup.ag/docs/swap-api (Metis Swap API, no longer maintained)
 - https://github.com/TeamRaccoons/referral (Jupiter referral program: `claim.rs`, `claim_v2.rs`)
 - https://developers.jup.ag/docs/ultra/get-started
