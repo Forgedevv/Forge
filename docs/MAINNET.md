@@ -180,7 +180,7 @@ The builder never forwards `RPC_URL`, `JUPITER_API_KEY`, `R2_*` write keys or `R
 | `NEXT_PUBLIC_FORGE_JUPITER_REFERRAL_ACCOUNT` | no | derived; leave unset | derived | different from its source: start-up fails | |
 | `NEXT_PUBLIC_FORGE_PLATFORM_FEE_WALLET` | no | derived; leave unset | derived | same | |
 | `NEXT_PUBLIC_FORGE_METEORA_REFERRAL_ACCOUNT` | no | derived; leave unset | derived | same | |
-| `NEXT_PUBLIC_FORGE_REVENUE_WALLET` | no | derived; leave unset. Not listed in the builder's `.env.example` | derived | same | |
+| `NEXT_PUBLIC_FORGE_REVENUE_WALLET` | no | derived; leave unset (listed with the other twins in the builder's `.env.example`) | derived | same | |
 | `NEXT_PUBLIC_R2_PUBLIC_URL` | no | derived; leave unset | derived | same | |
 | `RPC_RELAY_TOKEN_SECRET` | yes | at least 32 bytes, the same value as web's; derives each site's `FORGE_RPC_RELAY_TOKEN`; never sent to a project | none | start-up fails; a different value than web's: every site token is refused | S |
 
