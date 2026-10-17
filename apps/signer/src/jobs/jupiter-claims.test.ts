@@ -28,10 +28,12 @@ import {
   JUPITER_PROJECT_DISCRIMINATOR,
   JUPITER_REFERRAL_ACCOUNT_DISCRIMINATOR,
   JUPITER_REFERRAL_PROGRAM_ID,
+  JUPITER_ULTRA_REFERRAL_PROJECT,
   buildJupiterCreateAdminTokenAccountIx,
   buildJupiterReferralClaimIx,
   buildJupiterReferralClaimTx,
   deriveJupiterProjectAuthority,
+  deriveJupiterReferralAccount,
   deriveJupiterReferralTokenAccount,
   deriveJupiterReferralTokenAccountV2,
   type JupiterClaimAccounts,
@@ -97,15 +99,21 @@ afterEach(async () => {
 // ---------------------------------------------------------------------------------------
 // Account encoders (the referral program's IDL layouts, as the core tests pin them)
 
-function encodeReferralAccount(partner: PublicKey, project: PublicKey): Buffer {
+/** A named referral account (`Some(name)`), as core requires for a v2 claim. */
+function encodeReferralAccount(partner: PublicKey, project: PublicKey, name: string): Buffer {
   const share = Buffer.alloc(2);
   share.writeUInt16LE(8_000);
+  const nameBytes = Buffer.from(name, 'utf8');
+  const nameLength = Buffer.alloc(4);
+  nameLength.writeUInt32LE(nameBytes.length);
   return Buffer.concat([
     JUPITER_REFERRAL_ACCOUNT_DISCRIMINATOR,
     partner.toBuffer(),
     project.toBuffer(),
     share,
-    Buffer.from([0]),
+    Buffer.from([1]),
+    nameLength,
+    nameBytes,
   ]);
 }
 
@@ -206,9 +214,10 @@ function setup(scenario: Scenario = {}, mints?: JupiterClaimsConfig['mints']): F
   const sleep = chainSleep(chain, sleeps, clock);
   const retry: RetryOptions = { attempts: 3, baseDelayMs: 10, maxDelayMs: 20, sleep };
   const vault = randomAddress();
-  const referral = randomAddress();
+  // Core only claims for a referral account of Jupiter's Ultra project, named, at its PDA.
+  const project = JUPITER_ULTRA_REFERRAL_PROJECT;
+  const referral = deriveJupiterReferralAccount(project, 'forge');
   const mint = scenario.noMint ? randomAddress() : NATIVE_MINT;
-  const project = randomAddress();
   const admin = randomAddress();
   const base = randomAddress();
   const partner = scenario.partner ?? vault;
@@ -231,7 +240,7 @@ function setup(scenario: Scenario = {}, mints?: JupiterClaimsConfig['mints']): F
   });
   const info = (k: PublicKey): AccountInfo<Buffer> | null => {
     if (k.equals(referral)) {
-      return owned(JUPITER_REFERRAL_PROGRAM_ID, encodeReferralAccount(partner, project));
+      return owned(JUPITER_REFERRAL_PROGRAM_ID, encodeReferralAccount(partner, project, 'forge'));
     }
     if (k.equals(project)) return owned(JUPITER_REFERRAL_PROGRAM_ID, encodeProject(base, admin));
     if (k.equals(mint)) return scenario.noMint ? null : owned(tokenProgram, encodeMint());

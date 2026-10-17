@@ -15,6 +15,7 @@ import {
   JUPITER_PROJECT_DISCRIMINATOR,
   JUPITER_REFERRAL_ACCOUNT_DISCRIMINATOR,
   JUPITER_REFERRAL_PROGRAM_ID,
+  JUPITER_ULTRA_REFERRAL_PROJECT,
   JupiterReferralError,
   buildJupiterCreateAdminTokenAccountIx,
   buildJupiterReferralClaimIx,
@@ -22,6 +23,7 @@ import {
   decodeJupiterProject,
   decodeJupiterReferralAccount,
   deriveJupiterProjectAuthority,
+  deriveJupiterReferralAccount,
   deriveJupiterReferralTokenAccount,
   deriveJupiterReferralTokenAccountV2,
 } from './jupiter-referral.js';
@@ -132,6 +134,23 @@ describe('IDL constants', () => {
       JUPITER_REFERRAL_PROGRAM_ID,
     );
     expect(deriveJupiterProjectAuthority(base).equals(authority)).toBe(true);
+  });
+
+  it("pins Jupiter Ultra's project and derives a named referral account like the program", () => {
+    expect(JUPITER_ULTRA_REFERRAL_PROJECT.toBase58()).toBe(
+      'DkiqsTrw1u1bYFumumC7sCG2S8K25qc2vemJFHyW2wJc',
+    );
+    // initialize_referral_account_with_name / claim_v2: seeds ["referral", project, name].
+    const [named] = PublicKey.findProgramAddressSync(
+      [Buffer.from('referral'), JUPITER_ULTRA_REFERRAL_PROJECT.toBuffer(), Buffer.from('forge')],
+      JUPITER_REFERRAL_PROGRAM_ID,
+    );
+    expect(
+      deriveJupiterReferralAccount(JUPITER_ULTRA_REFERRAL_PROJECT, 'forge').equals(named),
+    ).toBe(true);
+    expect(() =>
+      deriveJupiterReferralAccount(JUPITER_ULTRA_REFERRAL_PROJECT, 'x'.repeat(33)),
+    ).toThrow();
   });
 });
 
@@ -264,8 +283,9 @@ describe('claim instructions', () => {
 
 describe('buildJupiterReferralClaimTx', () => {
   const vault = key();
-  const referralAccount = key();
-  const project = key();
+  // FORGE's referral account: named, under Jupiter's Ultra project (the one the plugin pays).
+  const project = JUPITER_ULTRA_REFERRAL_PROJECT;
+  const referralAccount = deriveJupiterReferralAccount(project, 'forge');
   const base = key();
   const admin = key();
   const mint = key();
@@ -278,22 +298,31 @@ describe('buildJupiterReferralClaimTx', () => {
     partnerAtaExists?: boolean;
     adminAtaExists?: boolean;
     partner?: PublicKey;
+    /** Name stored in the referral account (default 'forge'; null: unnamed). */
+    name?: string | null;
+    /** Project stored in the referral account (default: Jupiter Ultra's). */
+    project?: PublicKey;
+    /** Address of the referral account (default: the named PDA `referralAccount`). */
+    at?: PublicKey;
   }): Connection {
     const partner = options.partner ?? vault;
-    const v1 = deriveJupiterReferralTokenAccount(referralAccount, mint);
-    const v2 = deriveJupiterReferralTokenAccountV2(referralAccount, mint, TOKEN_PROGRAM_ID);
+    const at = options.at ?? referralAccount;
+    const ownProject = options.project ?? project;
+    const name = options.name === undefined ? 'forge' : options.name;
+    const v1 = deriveJupiterReferralTokenAccount(at, mint);
+    const v2 = deriveJupiterReferralTokenAccountV2(at, mint, TOKEN_PROGRAM_ID);
     const partnerAta = getAssociatedTokenAddressSync(mint, partner, true, TOKEN_PROGRAM_ID);
     const adminAta = getAssociatedTokenAddressSync(mint, admin, true, TOKEN_PROGRAM_ID);
     const accounts = new Map<string, { owner: PublicKey; data: Buffer }>([
       [
-        referralAccount.toBase58(),
+        at.toBase58(),
         {
           owner: JUPITER_REFERRAL_PROGRAM_ID,
-          data: encodeReferralAccount({ partner, project, shareBps: 8_000, name: 'forge' }),
+          data: encodeReferralAccount({ partner, project: ownProject, shareBps: 8_000, name }),
         },
       ],
       [
-        project.toBase58(),
+        ownProject.toBase58(),
         {
           owner: JUPITER_REFERRAL_PROGRAM_ID,
           data: encodeProject({ base, admin, name: 'jupiter', defaultShareBps: 80 }),
@@ -310,7 +339,7 @@ describe('buildJupiterReferralClaimTx', () => {
     if (options.v2Amount) {
       accounts.set(v2.toBase58(), {
         owner: TOKEN_PROGRAM_ID,
-        data: encodeTokenAccount(mint, referralAccount, options.v2Amount),
+        data: encodeTokenAccount(mint, at, options.v2Amount),
       });
     }
     if (options.partnerAtaExists) {
@@ -426,6 +455,114 @@ describe('buildJupiterReferralClaimTx', () => {
         expectedPartner: vault,
       }),
     ).rejects.toMatchObject({ code: 'partner_mismatch' });
+  });
+
+  it("refuses a referral account of another project than Jupiter Ultra's", async () => {
+    const other = key();
+    await expect(
+      buildJupiterReferralClaimTx({
+        connection: fakeConnection({ v1Amount: 5n, project: other }),
+        referralAccount,
+        mint,
+        payer,
+        expectedPartner: vault,
+      }),
+    ).rejects.toMatchObject({ code: 'project_mismatch' });
+    // Another project only when the caller asks for it explicitly.
+    const r = await buildJupiterReferralClaimTx({
+      connection: fakeConnection({ v1Amount: 5n, project: other }),
+      referralAccount,
+      mint,
+      payer,
+      expectedProject: other,
+    });
+    expect(r.summary.project.equals(other)).toBe(true);
+    expect(r.summary.claims.map((c) => c.version)).toEqual(['v1']);
+  });
+
+  it('claims the v2 collection account of a named referral account', async () => {
+    const r = await buildJupiterReferralClaimTx({
+      connection: fakeConnection({ v2Amount: 9n, partnerAtaExists: true, adminAtaExists: true }),
+      referralAccount,
+      mint,
+      payer,
+      expectedPartner: vault,
+    });
+    expect(r.summary.claims.map((c) => [c.version, c.amount])).toEqual([['v2', 9n]]);
+    expect(r.summary.project.equals(JUPITER_ULTRA_REFERRAL_PROJECT)).toBe(true);
+    const ix = r.transaction!.instructions[0]!;
+    expect(Buffer.from(ix.data).equals(JUPITER_CLAIM_V2_DISCRIMINATOR)).toBe(true);
+    expect(ix.keys[4]!.pubkey.equals(referralAccount)).toBe(true);
+  });
+
+  it('refuses to build a v2 claim for an unnamed referral account, never for the v1 one', async () => {
+    // An unnamed account is a plain keypair account (initialize_referral_account).
+    const unnamed = key();
+    await expect(
+      buildJupiterReferralClaimTx({
+        connection: fakeConnection({ v1Amount: 5n, v2Amount: 7n, name: null, at: unnamed }),
+        referralAccount: unnamed,
+        mint,
+        payer,
+        expectedPartner: vault,
+      }),
+    ).rejects.toMatchObject({ code: 'referral_account_unnamed' });
+    await expect(
+      buildJupiterReferralClaimTx({
+        connection: fakeConnection({ v2Amount: 7n, name: null, at: unnamed }),
+        referralAccount: unnamed,
+        mint,
+        payer,
+      }),
+    ).rejects.toThrow(/no name/);
+    // Nothing in the v2 account: the v1 claim does not need a name.
+    const r = await buildJupiterReferralClaimTx({
+      connection: fakeConnection({ v1Amount: 5n, name: null, at: unnamed }),
+      referralAccount: unnamed,
+      mint,
+      payer,
+      expectedPartner: vault,
+    });
+    expect(r.summary.claims.map((c) => c.version)).toEqual(['v1']);
+  });
+
+  it('refuses a v2 claim for a named referral account that is not its PDA', async () => {
+    const elsewhere = key();
+    await expect(
+      buildJupiterReferralClaimTx({
+        connection: fakeConnection({ v2Amount: 7n, at: elsewhere }),
+        referralAccount: elsewhere,
+        mint,
+        payer,
+      }),
+    ).rejects.toMatchObject({ code: 'referral_account_not_pda' });
+    // A name that cannot be a seed (over 32 bytes) cannot be signed for either.
+    await expect(
+      buildJupiterReferralClaimTx({
+        connection: fakeConnection({ v2Amount: 7n, at: elsewhere, name: 'n'.repeat(40) }),
+        referralAccount: elsewhere,
+        mint,
+        payer,
+      }),
+    ).rejects.toMatchObject({ code: 'referral_account_not_pda' });
+  });
+
+  it('keeps the devnet behaviour: refused as wrong_cluster before any project or name check', async () => {
+    const unnamed = key();
+    await expect(
+      buildJupiterReferralClaimTx({
+        connection: fakeConnection({
+          genesis: CLUSTER_GENESIS_HASH.devnet,
+          v2Amount: 7n,
+          name: null,
+          project: key(),
+          at: unnamed,
+        }),
+        referralAccount: unnamed,
+        mint,
+        payer,
+      }),
+    ).rejects.toMatchObject({ code: 'wrong_cluster' });
   });
 
   it('refuses a missing or foreign referral account', async () => {

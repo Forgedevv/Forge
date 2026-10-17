@@ -1,7 +1,7 @@
 /**
  * Jupiter referral fee claim (docs/METEORA.md "The platform fee", after graduation; D7, D8).
  *
- * After a coin graduates, trades go through Jupiter and FORGE's 30 bps integrator fee is collected
+ * After a coin graduates, trades go through Jupiter and FORGE's 50 bps integrator fee is collected
  * by the Jupiter referral program into token accounts of FORGE's referral account
  * (`FORGE_JUPITER_REFERRAL_ACCOUNT`), one per currency Jupiter collects in. Claiming is
  * permissionless: it moves a token account's balance to the referral account's `partner` (the
@@ -16,8 +16,18 @@
  * - `claimV2`: the associated token account of the referral account (classic or Token-2022).
  * Account order, PDA seeds and Anchor discriminators are the IDL's; the unit tests pin them.
  *
+ * The Jupiter Plugin (Ultra) only pays referral accounts of Jupiter's Ultra project
+ * (`JUPITER_ULTRA_REFERRAL_PROJECT`), into their v2 collection accounts. `claim_v2` only accepts a
+ * NAMED referral account at the PDA `["referral", project, name]` (created with
+ * `initialize_referral_account_with_name`): an unnamed one (plain `initialize_referral_account`)
+ * can never claim them. So the builder refuses a referral account of another project
+ * (`project_mismatch`; `expectedProject` overrides the Ultra project), and builds a v2 claim only
+ * for a named PDA (`referral_account_unnamed` or `referral_account_not_pda` otherwise).
+ *
  * Mainnet only: the referral program and Jupiter's fee collection live on mainnet-beta. The
- * builder checks the connection's genesis hash and refuses any other cluster (`wrong_cluster`).
+ * builder checks the connection's genesis hash and refuses any other cluster (`wrong_cluster`)
+ * before it reads any account, so the project and name checks never run on devnet (where neither
+ * the Ultra project nor Jupiter's fee collection exist): the devnet behaviour is unchanged.
  * The partner can be asserted (`expectedPartner` = the vault): a referral account owned by
  * anyone else is refused (`partner_mismatch`), fees would not reach the treasury.
  */
@@ -52,6 +62,15 @@ export const JUPITER_REFERRAL_PROGRAM_ID = new PublicKey(
   'REFER4ZgmyYx9c6He5XfaTMiGfdLwRnkV4RPp9t9iF3',
 );
 
+/**
+ * Jupiter's Ultra project in the referral program (mainnet-beta). The Jupiter Plugin and Ultra
+ * `/order` only collect the referral fee into referral accounts of this project.
+ * @see https://developers.jup.ag/docs/ultra/add-fees-to-ultra.md
+ */
+export const JUPITER_ULTRA_REFERRAL_PROJECT = new PublicKey(
+  'DkiqsTrw1u1bYFumumC7sCG2S8K25qc2vemJFHyW2wJc',
+);
+
 function anchorDiscriminator(name: string): Buffer {
   return createHash('sha256').update(name).digest().subarray(0, 8);
 }
@@ -81,7 +100,13 @@ export type JupiterReferralErrorCode =
   | 'not_a_project'
   | 'mint_not_found'
   | 'not_a_mint'
-  | 'partner_mismatch';
+  | 'partner_mismatch'
+  /** The referral account belongs to another project than the expected one (Jupiter Ultra's). */
+  | 'project_mismatch'
+  /** Funds wait in the v2 collection account, but `claim_v2` needs a named referral account. */
+  | 'referral_account_unnamed'
+  /** Named, but not the PDA `["referral", project, name]` that `claim_v2` signs with. */
+  | 'referral_account_not_pda';
 
 export class JupiterReferralError extends Error {
   readonly code: JupiterReferralErrorCode;
@@ -178,6 +203,21 @@ export function deriveJupiterReferralTokenAccount(
 ): PublicKey {
   return PublicKey.findProgramAddressSync(
     [Buffer.from('referral_ata', 'utf8'), referralAccount.toBuffer(), mint.toBuffer()],
+    programId,
+  )[0];
+}
+
+/**
+ * Named referral account: PDA `["referral", project, name]` (`initialize_referral_account_with_name`,
+ * and the signer seeds of `claim_v2`). Throws when the name is longer than a seed (32 bytes).
+ */
+export function deriveJupiterReferralAccount(
+  project: PublicKey,
+  name: string,
+  programId: PublicKey = JUPITER_REFERRAL_PROGRAM_ID,
+): PublicKey {
+  return PublicKey.findProgramAddressSync(
+    [Buffer.from('referral', 'utf8'), project.toBuffer(), Buffer.from(name, 'utf8')],
     programId,
   )[0];
 }
@@ -313,6 +353,11 @@ export interface BuildJupiterReferralClaimTxParams {
   payer: PublicKey;
   /** When given, the referral account's partner must be this key (the FORGE multisig vault). */
   expectedPartner?: PublicKey;
+  /**
+   * The referral account's project must be this key. Default: `JUPITER_ULTRA_REFERRAL_PROJECT`,
+   * the only project the Jupiter Plugin pays.
+   */
+  expectedProject?: PublicKey;
   commitment?: Commitment;
   retry?: RetryOptions;
   programId?: PublicKey;
@@ -365,9 +410,45 @@ function tokenAmount(
 }
 
 /**
+ * `claim_v2` signs with the PDA `["referral", project, name]`: refuses (typed error) a referral
+ * account without a name, or one that is not that PDA, before a v2 claim is built.
+ */
+function assertClaimableV2(
+  referralAccount: PublicKey,
+  referral: JupiterReferralAccount,
+  programId: PublicKey,
+): void {
+  if (referral.name === null) {
+    throw new JupiterReferralError(
+      'referral_account_unnamed',
+      'the referral account has no name: claim_v2 needs a referral account created with a name ' +
+        '(PDA ["referral", project, name]), so its v2 collection account cannot be claimed',
+    );
+  }
+  let expected: PublicKey;
+  try {
+    expected = deriveJupiterReferralAccount(referral.project, referral.name, programId);
+  } catch (error) {
+    throw new JupiterReferralError(
+      'referral_account_not_pda',
+      'the referral account name is not a valid PDA seed, so claim_v2 cannot sign for it',
+      { cause: error },
+    );
+  }
+  if (!expected.equals(referralAccount)) {
+    throw new JupiterReferralError(
+      'referral_account_not_pda',
+      'the referral account is not the PDA ["referral", project, name] that claim_v2 signs with',
+    );
+  }
+}
+
+/**
  * Reads the referral account, its project, the mint and the collection accounts, and builds the
  * claim(s) of every funded collection account of `mint` to the partner's associated token account.
  * Mainnet-beta only (genesis hash). Returns `transaction: null` when nothing is claimable.
+ * The referral account must belong to `expectedProject` (default: Jupiter's Ultra project), and a
+ * funded v2 collection account is only claimed for a named referral PDA (typed errors otherwise).
  */
 export async function buildJupiterReferralClaimTx(
   p: BuildJupiterReferralClaimTxParams,
@@ -375,6 +456,7 @@ export async function buildJupiterReferralClaimTx(
   const { connection } = p;
   const commitment = p.commitment ?? 'confirmed';
   const programId = p.programId ?? JUPITER_REFERRAL_PROGRAM_ID;
+  const expectedProject = p.expectedProject ?? JUPITER_ULTRA_REFERRAL_PROJECT;
   const retry = p.retry ?? {};
   if (p.payer.equals(p.referralAccount) || p.mint.equals(p.referralAccount)) {
     throw new JupiterReferralError('invalid_params', 'payer, mint and referral account must differ');
@@ -410,6 +492,13 @@ export async function buildJupiterReferralClaimTx(
     throw new JupiterReferralError(
       'partner_mismatch',
       'the referral account partner is not the expected receiver',
+    );
+  }
+  if (!referral.project.equals(expectedProject)) {
+    throw new JupiterReferralError(
+      'project_mismatch',
+      `the referral account belongs to project ${referral.project.toBase58()}, not to the ` +
+        `expected project ${expectedProject.toBase58()} (Jupiter Ultra by default)`,
     );
   }
   if (!mintInfo) throw new JupiterReferralError('mint_not_found', 'mint not found');
@@ -454,7 +543,10 @@ export async function buildJupiterReferralClaimTx(
   const v1Amount = tokenAmount(v1Account, v1Info ?? null, tokenProgram);
   if (v1Amount > 0n) claims.push({ version: 'v1', referralTokenAccount: v1Account, amount: v1Amount });
   const v2Amount = tokenAmount(v2Account, v2Info ?? null, tokenProgram);
-  if (v2Amount > 0n) claims.push({ version: 'v2', referralTokenAccount: v2Account, amount: v2Amount });
+  if (v2Amount > 0n) {
+    assertClaimableV2(p.referralAccount, referral, programId);
+    claims.push({ version: 'v2', referralTokenAccount: v2Account, amount: v2Amount });
+  }
 
   const projectAuthority = deriveJupiterProjectAuthority(project.base, programId);
   const summary: JupiterReferralClaimSummary = {
