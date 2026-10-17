@@ -145,6 +145,33 @@ describe('ClaimCreatorFees', () => {
     expect(screen.queryByLabelText('Claim summary')).not.toBeInTheDocument();
   });
 
+  it('names the coin tokens claimed with the SOL in the success message', async () => {
+    const s = setup([
+      mockCoin({ name: 'Moon Coin', symbol: 'MOON', claimableBaseRaw: BigInt(2500000) }),
+    ]);
+    renderClaims(s);
+    fireEvent.click(await screen.findByRole('button', { name: 'Claim fees for Moon Coin' }));
+    await screen.findByLabelText('Claim summary');
+    fireEvent.click(screen.getByRole('button', { name: 'Sign and claim' }));
+    expect(await screen.findByText(/Claimed 1.5 SOL and 2.5 MOON\./)).toBeInTheDocument();
+  });
+
+  it('names only the coin tokens when no SOL was claimable', async () => {
+    const s = setup([
+      mockCoin({
+        name: 'Moon Coin',
+        symbol: 'MOON',
+        claimableQuoteLamports: BigInt(0),
+        claimableBaseRaw: BigInt(2500000),
+      }),
+    ]);
+    renderClaims(s);
+    fireEvent.click(await screen.findByRole('button', { name: 'Claim fees for Moon Coin' }));
+    await screen.findByLabelText('Claim summary');
+    fireEvent.click(screen.getByRole('button', { name: 'Sign and claim' }));
+    expect(await screen.findByText(/Claimed 2.5 MOON\./)).toBeInTheDocument();
+  });
+
   it('stays on the summary when the signature is declined', async () => {
     const s = setup([mockCoin({ name: 'Moon Coin' })]);
     s.sign.mockRejectedValue(new Error('User rejected the request'));

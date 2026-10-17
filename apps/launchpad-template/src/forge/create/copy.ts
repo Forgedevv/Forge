@@ -1,8 +1,9 @@
 /**
  * LOCKED ZONE. Every visible text of the coin creation flow (`CreateCoin` and its parts), in one
  * place so the wording stays consistent and other languages can be added later. Like the other
- * locked-zone copy (`CREATOR_FEES_TEXT`, `SLEEPING_TEXT`), it lives next to the code that renders
- * it and imports nothing from the free zones, so a site redesign can never break the flow.
+ * locked-zone copy (`trade/copy.ts`, `claims/copy.ts`, `chart/copy.ts`, `SLEEPING_TEXT`), it lives
+ * next to the code that renders it and imports nothing from the free zones, so a site redesign can
+ * never break the flow.
  *
  * Plain strings, or small functions for the texts that carry a value. The form validation messages
  * are `VALIDATION_TEXT` (validation.ts, shared with the server); the error sentences live in
