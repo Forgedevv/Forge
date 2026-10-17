@@ -5,7 +5,8 @@
  * One transaction contains, in this order:
  *
  *   1. compute budget: `setComputeUnitLimit`, then `setComputeUnitPrice` (only when a priority fee
- *      is given);
+ *      is given: a fixed `priorityFeeMicroLamports`, or a `priority` setting whose price is read
+ *      from the recent fees of the swap's writable accounts and bounded, see priority-fee.ts);
  *   2. token accounts: the user's wrapped SOL ATA is always created (idempotent) and, on a buy, the
  *      user's coin ATA when it does not exist yet;
  *   3. buy only: SOL transfer of `amountInLamports` into the wrapped SOL ATA + `SyncNative` (wrap);
@@ -41,11 +42,12 @@
  *
  * Transaction size: measured on devnet (scripts/devnet-tests/reports/core-swap.md) at 819 bytes for a
  * buy and 797 bytes for a sell with this exact layout, far below the 1,232-byte limit (a buy that
- * also creates the coin ATA adds 10 bytes). If a future layout does not fit, the builders throw
- * `TRANSACTION_TOO_LARGE` unless the caller passes `addressLookupTables` (already fetched
- * `AddressLookupTableAccount`s, e.g. one holding the DBC program, the pool authority, the event
- * authority, the token programs, the wrapped SOL mint and the two FORGE fee accounts); the message
- * is then compiled against those tables and checked again.
+ * also creates the coin ATA adds 10 bytes, a priority fee 12 bytes for `setComputeUnitPrice`). If
+ * a future layout does not fit, the builders throw `TRANSACTION_TOO_LARGE` unless the caller
+ * passes `addressLookupTables` (already fetched `AddressLookupTableAccount`s, e.g. one holding the
+ * DBC program, the pool authority, the event authority, the token programs, the wrapped SOL mint
+ * and the two FORGE fee accounts); the message is then compiled against those tables and checked
+ * again.
  *
  * Layering: `fetchSwapContext` does all the network reads (with retries); everything else is pure
  * and unit-tested without network (`buildSwapTransaction`, `computeSwapQuote`, fee math).
@@ -97,6 +99,13 @@ import {
 } from '@meteora-ag/dynamic-bonding-curve-sdk';
 import { readOptionalAddress, requireAddresses, type AddressEnv } from './addresses.js';
 import { FEES } from './constants.js';
+import {
+  estimatePriorityFee,
+  fixedPriorityFee,
+  resolvePriorityFeePolicy,
+  type PriorityFeeQuote,
+  type PriorityFeeSetting,
+} from './priority-fee.js';
 
 // ---------------------------------------------------------------------------------------------
 // Constants
@@ -828,6 +837,13 @@ export interface SwapBuildOptions {
   /** Priority fee in micro-lamports per CU (default 0: no `setComputeUnitPrice` instruction). */
   priorityFeeMicroLamports?: number;
   /**
+   * Priority fee read from the cluster (priority-fee.ts): the recent fees of the swap's writable
+   * accounts, bounded by this setting (`{}` = `DEFAULT_PRIORITY_FEE_POLICY`: at most 0.0005 SOL
+   * per swap). Only `buildBuyTx` / `buildSellTx` read it (they hold the connection); not with
+   * `priorityFeeMicroLamports`.
+   */
+  priority?: PriorityFeeSetting;
+  /**
    * Address lookup tables to compile the v0 message with, if the transaction would exceed 1,232
    * bytes without them (it does not with the current layout). Fetch them with
    * `connection.getAddressLookupTable(address)`.
@@ -847,6 +863,11 @@ export interface BuiltSwapTransaction {
   sizeBytes: number;
   computeUnitLimit: number;
   priorityFeeMicroLamports: number;
+  /**
+   * The priority fee: price, fee in lamports and its cap (`maxLamports`, the cost guard to show
+   * before signing), and where the price comes from (`fixed` without a `priority` setting).
+   */
+  priorityFee: PriorityFeeQuote;
   /** Base fee + priority fee, in lamports. */
   estimatedNetworkFeeLamports: bigint;
   /** Rent locked in a coin ATA created by a buy (0 when it already existed or on a sell). */
@@ -857,7 +878,9 @@ export interface BuiltSwapTransaction {
   referralTokenAccount: PublicKey;
 }
 
-function readBuildOptions(o: SwapBuildOptions): Required<SwapBuildOptions> {
+type FixedBuildOptions = Required<Omit<SwapBuildOptions, 'priority'>>;
+
+function readBuildOptions(o: SwapBuildOptions): FixedBuildOptions {
   const computeUnitLimit = o.computeUnitLimit ?? DEFAULT_SWAP_COMPUTE_UNIT_LIMIT;
   const priorityFeeMicroLamports = o.priorityFeeMicroLamports ?? 0;
   if (
@@ -881,6 +904,20 @@ function readBuildOptions(o: SwapBuildOptions): Required<SwapBuildOptions> {
   const addressLookupTables = o.addressLookupTables ?? [];
   if (!Array.isArray(addressLookupTables)) throw invalid('addressLookupTables must be an array');
   return { computeUnitLimit, priorityFeeMicroLamports, addressLookupTables };
+}
+
+/** Checks a `priority` setting (INVALID_PARAMS), and that no fixed price is given with it. */
+function readPrioritySetting(o: SwapBuildOptions): PriorityFeeSetting | undefined {
+  if (o.priority === undefined) return undefined;
+  if (o.priorityFeeMicroLamports !== undefined) {
+    throw invalid('Pass either priority or priorityFeeMicroLamports, not both');
+  }
+  try {
+    resolvePriorityFeePolicy(o.priority);
+  } catch (error) {
+    throw invalid(`priority: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  return o.priority;
 }
 
 /**
@@ -940,6 +977,10 @@ export function buildSwapTransaction(
   request: SwapBuildRequest,
   expected: SwapFeeAccountExpectations = {},
 ): BuiltSwapTransaction {
+  if (request.priority !== undefined) {
+    // The price of a `priority` setting is read from the cluster: buildBuyTx / buildSellTx.
+    throw invalid('buildSwapTransaction takes a fixed priorityFeeMicroLamports, not priority');
+  }
   const options = readBuildOptions(request);
   assertPlatformFeeWalletReady(
     ctx.platformFeeWallet,
@@ -1100,6 +1141,7 @@ export function buildSwapTransaction(
     sizeBytes,
     computeUnitLimit: options.computeUnitLimit,
     priorityFeeMicroLamports: options.priorityFeeMicroLamports,
+    priorityFee: fixedPriorityFee(options.computeUnitLimit, options.priorityFeeMicroLamports),
     estimatedNetworkFeeLamports,
     newCoinAccountRentLamports,
     requiredLamports,
@@ -1416,6 +1458,7 @@ async function buildSide(
   assertU64(side === 'buy' ? 'amountInLamports' : 'amountInTokens', amountIn, 1n);
   const slippage = readSlippage(slippageOf(p));
   const options = readBuildOptions(p);
+  const priority = readPrioritySetting(p);
   const { platformFeeWallet, referralTokenAccount, revenueWallet } = swapFeeAddresses(p.env);
   if (p.allowedConfigs !== undefined) toConfigKeys(p.allowedConfigs);
   const ctx = await fetchSwapContext({
@@ -1427,11 +1470,29 @@ async function buildSide(
     ...(p.commitment ? { commitment: p.commitment } : {}),
     ...(p.allowedConfigs !== undefined ? { allowedConfigs: p.allowedConfigs } : {}),
   });
-  return buildSwapTransaction(
+  const expected = { platformFeeWallet, referralOwner: revenueWallet };
+  const built = buildSwapTransaction(ctx, { side, amountIn, slippage, ...options }, expected);
+  if (priority === undefined) return built;
+  // Same swap with its price: read for the accounts it write-locks (the pool, its vaults and the
+  // FORGE fee accounts are shared by every trade), bounded by the setting.
+  const quote = await estimatePriorityFee({
+    connection: p.connection,
+    writableAccounts: writableStaticKeys(built.transaction),
+    computeUnitLimit: options.computeUnitLimit,
+    setting: priority,
+  });
+  const priced = buildSwapTransaction(
     ctx,
-    { side, amountIn, slippage, ...options },
-    { platformFeeWallet, referralOwner: revenueWallet },
+    { side, amountIn, slippage, ...options, priorityFeeMicroLamports: quote.microLamports },
+    expected,
   );
+  return { ...priced, priorityFee: quote };
+}
+
+/** Writable static account keys of a compiled v0 transaction, in message order. */
+function writableStaticKeys(transaction: VersionedTransaction): PublicKey[] {
+  const message = transaction.message;
+  return message.staticAccountKeys.filter((_, index) => message.isAccountWritable(index));
 }
 
 /** Unsigned buy transaction (SOL -> coin) with the FORGE referral and the platform fee. */
