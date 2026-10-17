@@ -357,7 +357,7 @@ The signer never takes an address or an amount from the request: it re-reads eve
 | `SIGNER_URL`, `SIGNER_HMAC_SECRET` | | | ✓ | ✓ |
 | `SIGNER_KEYSTORE_PASSPHRASE`, `SIGNER_KEYSTORE_DIR`, `SIGNER_JOURNAL_DIR`, `SIGNER_ALLOWED_IPS`, `SIGNER_MAX_LAUNCHPADS_PER_DAY` | | | | ✓ |
 | `SIGNER_COIN_METADATA_URL` = `https://<web host>/api/coin-meta/{slug}` (at most 106 bytes once filled) | | | | ✓ |
-| `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | | | ✓ | ✓ |
+| `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | | | ✓ (required on mainnet-beta) | ✓ (required on mainnet-beta and in production) |
 | `BUILDER_VISUAL_REVIEW` (`off` default / `on`: second agent pass on screenshots of new sites) | | | ✓ | |
 | `FORGE_SANDBOX_REVIEW_IMAGE` (pinned visual review image, needed when the review is on) | | | ✓ | |
 

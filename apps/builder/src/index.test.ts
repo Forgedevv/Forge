@@ -88,6 +88,32 @@ describe('builder environment', () => {
     for (const value of Object.values(SECRET_VALUES)) expect(message).not.toContain(value);
   });
 
+  it('requires the Telegram alert variables on mainnet-beta only, naming no value', () => {
+    const telegram = { TELEGRAM_BOT_TOKEN: 'bot-token-SECRETVALUE', TELEGRAM_CHAT_ID: '-100123' };
+    const mainnet = (over: Record<string, string | undefined> = {}) =>
+      baseEnv({ SOLANA_CLUSTER: 'mainnet-beta', ...over });
+    // Devnet: alerts may stay in the log.
+    expect(() => loadBuilderEnv(baseEnv())).not.toThrow();
+    expect(errorOf(() => loadBuilderEnv(mainnet()))).toMatch(
+      /TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID required on mainnet-beta/,
+    );
+    // One set: only the other is named, never the value.
+    const one = errorOf(() =>
+      loadBuilderEnv(mainnet({ TELEGRAM_BOT_TOKEN: telegram.TELEGRAM_BOT_TOKEN })),
+    );
+    expect(one).toContain('TELEGRAM_CHAT_ID');
+    expect(one).not.toContain('TELEGRAM_BOT_TOKEN');
+    expect(one).not.toContain('SECRETVALUE');
+    // Blank values are unset.
+    expect(
+      errorOf(() => loadBuilderEnv(mainnet({ TELEGRAM_BOT_TOKEN: ' ', TELEGRAM_CHAT_ID: '' }))),
+    ).toMatch(/TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID required/);
+    // Other problems are still named next to them.
+    const both = errorOf(() => loadBuilderEnv(mainnet({ SUPABASE_URL: undefined })));
+    expect(both).toMatch(/^invalid builder environment: SUPABASE_URL; TELEGRAM_BOT_TOKEN/);
+    expect(loadBuilderEnv(mainnet(telegram)).SOLANA_CLUSTER).toBe('mainnet-beta');
+  });
+
   it('requires the relay token secret, at least 32 bytes, without printing it', () => {
     for (const value of [undefined, '', 'short-relay-secret']) {
       const message = errorOf(() => loadBuilderEnv(baseEnv({ RPC_RELAY_TOKEN_SECRET: value })));
@@ -364,6 +390,19 @@ describe('builder process', () => {
       vi.unstubAllEnvs();
       vi.resetModules();
     }
+  });
+
+  it('refuses to start on mainnet-beta without Telegram alerting, before anything runs', async () => {
+    const docker = fakeDocker();
+    await expect(
+      startBuilder({
+        env: baseEnv({ SOLANA_CLUSTER: 'mainnet-beta' }),
+        logger: silentLogger(),
+        handleSignals: false,
+        spawn: docker.spawn,
+      }),
+    ).rejects.toThrow(/TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID required on mainnet-beta/);
+    expect(docker.calls).toEqual([]);
   });
 
   it('refuses to start without the sandbox gateway upstream', async () => {

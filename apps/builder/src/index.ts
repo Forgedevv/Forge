@@ -43,7 +43,8 @@ import { createWorkerLogger, runWorker } from './worker/run.js';
  * pipelines, and the daily sleep cycle. Configuration: apps/builder/.env.example.
  *
  * Start-up checks, in order, before any job is picked up: environment (zod, names only in
- * errors), FORGE addresses (`requireAddresses` of @forge/core), public variables of client
+ * errors; the Telegram alert variables on mainnet-beta), FORGE addresses (`requireAddresses` of
+ * @forge/core), public variables of client
  * projects, sandbox step timeouts against the cap on one job, sandbox configuration, visual
  * review setting, removal of sandbox containers and job
  * folders left by a crash, then the gateway listens and the worker starts polling.
@@ -118,12 +119,35 @@ export function withoutEmpty(env: Record<string, string | undefined>): Record<st
   return out;
 }
 
-/** Validates the builder environment. Errors name the variables, never their values. */
+/**
+ * The Telegram variables of the operator alerts (alerts.ts). Required on mainnet-beta, like on
+ * the signer (apps/signer/src/runtime/env.ts): an alert that only reaches the log is lost.
+ */
+export const ALERTING_VARIABLES = ['TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_ID'] as const;
+
+/**
+ * Validates the builder environment. Errors name the variables, never their values. On
+ * mainnet-beta the Telegram alert variables are required (blank counts as unset).
+ */
 export function loadBuilderEnv(env: Record<string, string | undefined>): BuilderEnv {
-  const parsed = BuilderEnvSchema.safeParse(withoutEmpty(env));
-  if (!parsed.success) {
-    const names = [...new Set(parsed.error.issues.map((i) => String(i.path[0] ?? '?')))];
-    throw new Error(`invalid builder environment: ${names.join(', ')}`);
+  const cleaned = withoutEmpty(env);
+  const parsed = BuilderEnvSchema.safeParse(cleaned);
+  const invalid = parsed.success
+    ? []
+    : [...new Set(parsed.error.issues.map((i) => String(i.path[0] ?? '?')))];
+  const cluster = parsed.success ? parsed.data.SOLANA_CLUSTER : cleaned.SOLANA_CLUSTER;
+  const missingAlerting =
+    cluster === 'mainnet-beta'
+      ? ALERTING_VARIABLES.filter((name) => (cleaned[name] ?? '').trim() === '')
+      : [];
+  if (!parsed.success || missingAlerting.length > 0) {
+    const parts = [
+      invalid.filter((name) => !(missingAlerting as readonly string[]).includes(name)).join(', '),
+      missingAlerting.length > 0
+        ? `${missingAlerting.join(', ')} required on mainnet-beta (alerts would only be logged without them)`
+        : '',
+    ].filter(Boolean);
+    throw new Error(`invalid builder environment: ${parts.join('; ')}`);
   }
   return parsed.data;
 }

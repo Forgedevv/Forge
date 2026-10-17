@@ -2,7 +2,7 @@
 
 ## Alerts (Telegram, team group)
 
-Sent by `apps/signer` and `apps/builder` via `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID`.
+Sent by `apps/signer` and `apps/builder` via `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID`. Both refuse to start on mainnet-beta without them (the signer also in production, `NODE_ENV` other than `development` / `test`); on devnet the builder's alerts may stay in its log.
 
 | Alert | Source | Urgency |
 |---|---|---|
