@@ -31,6 +31,43 @@ Changes after 0.2.0. Publish `@forgedevv/shared` 0.3.0 with it (new kill switch 
 - `JUPITER_ULTRA_REFERRAL_PROJECT` (`DkiqsTrw1u1bYFumumC7sCG2S8K25qc2vemJFHyW2wJc`) and
   `deriveJupiterReferralAccount(project, name, programId?)` (jupiter-referral.ts).
 
+### Added (revenue wallet referral accounts setup)
+
+Pure builders of the two accounts the revenue wallet must hold (docs/MAINNET.md section 5), for
+the signer's one-off `--setup-revenue-referrals` command. Only the payer signs: neither the
+revenue wallet nor the new accounts do.
+
+- **`meteora-referral.ts`** (re-exported by the index): `deriveMeteoraReferralAccount(payer,
+  seed?)` (`createWithSeed(payer, seed, SPL Token)`, default seed
+  `METEORA_REFERRAL_ACCOUNT_SEED` = `forge-meteora-referral`), `buildCreateMeteoraReferralAccountIxs`
+  / `buildCreateMeteoraReferralAccountTx({ payer, owner, seed?, rentLamports, blockhash,
+  lastValidBlockHeight, priorityFee? })`: System `createAccountWithSeed` (from = base = payer,
+  the rent of 165 bytes, SPL Token owned) then SPL Token `InitializeAccount3` (wrapped SOL,
+  owner = the revenue wallet, no owner signature), the compute budget pair first when the quote
+  has a price (`METEORA_REFERRAL_SETUP_COMPUTE_UNITS` = 30,000); `inspectMeteoraReferralAccount`
+  (pure: `absent`, `ready`, or `mismatch` with a reason: not a token account, wrong mint or owner,
+  the owner's associated account, frozen, delegated, closable by someone else) and
+  `readMeteoraReferralAccount` (any cluster); `MeteoraReferralError` (`invalid_params`).
+- **Jupiter referral setup** (jupiter-referral.ts), verified against the program source
+  (`initialize_referral_account_with_name.rs`, `lib.rs`, `claim_v2.rs`) and the SDK 0.3.0 IDL:
+  `JUPITER_INITIALIZE_REFERRAL_ACCOUNT_WITH_NAME_DISCRIMINATOR`, `JUPITER_REFERRAL_ACCOUNT_SIZE`
+  (274), `JUPITER_REFERRAL_NAME_MAX_CHARS` (19: the program requires fewer than 20 characters)
+  and `JUPITER_REFERRAL_NAME_MAX_BYTES` (32: a PDA seed), `assertJupiterReferralName` (also
+  refuses whitespace and control characters), `encodeJupiterReferralName` (Borsh),
+  `buildJupiterInitializeReferralAccountWithNameIx({ payer, partner, project, referralAccount },
+  name)` (the IDL's accounts: payer the only signer, partner read-only and not a signer, the
+  referral account the PDA `["referral", project, name]`),
+  `buildJupiterReferralTokenAccountV2Ix({ payer, referralAccount, mint, tokenProgram })` (the v2
+  collection account `claim_v2` empties is the referral account's associated token account: an
+  idempotent creation, what the SDK's `initializeReferralTokenAccountV2` sends),
+  `buildJupiterReferralSetupTx({ payer, partner, project?, name, createReferralAccount,
+  tokenAccounts, blockhash, lastValidBlockHeight, priorityFee? })` (Ultra project by default,
+  `JUPITER_REFERRAL_SETUP_COMPUTE_UNITS` = 150,000), `inspectJupiterReferralAccount` /
+  `inspectJupiterReferralTokenAccountV2` (pure statuses with mismatch reasons: partner, project,
+  name, owner, mint) and `readJupiterReferralSetup({ connection, partner, name, mints })`
+  (mainnet-beta only, `wrong_cluster` before any read; reads the project, the mints' token
+  programs, the referral account and its collection accounts).
+
 ### Changed (revenue wallet, docs/DECISIONS.md D34)
 
 - **New address `FORGE_REVENUE_WALLET`** (`FORGE_ADDRESS_NAMES`, `getRevenueWallet`): the

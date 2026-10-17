@@ -15,6 +15,20 @@
  *                  environment as the service, which must be stopped first (both take the
  *                  instance lock of SIGNER_JOURNAL_DIR). Exit code 3: sent but not settled yet,
  *                  run again.
+ *   --setup-revenue-referrals [--name <name>] [--seed <seed>] [--send]
+ *                  one-off setup of the revenue wallet's referral accounts (jobs/referral-setup.ts,
+ *                  docs/MAINNET.md section 5): the Meteora referral account (a standalone
+ *                  wrapped-SOL token account owned by the revenue wallet, any cluster) and, on
+ *                  mainnet-beta only, the named Jupiter referral account of the Ultra project
+ *                  (partner = the revenue wallet, default name `forge`) with its wrapped SOL and
+ *                  USDC collection accounts. The payer wallet signs alone. Reads the chain first
+ *                  and skips what exists and matches; refuses (exit code 2, nothing sent) what
+ *                  exists and does not match. Dry run by default: prints the plan; `--send`
+ *                  sends. Prints the env lines to set (FORGE_METEORA_REFERRAL_ACCOUNT,
+ *                  FORGE_JUPITER_REFERRAL_ACCOUNT). Needs SOLANA_CLUSTER, RPC_URL, the keystore
+ *                  and journal variables, SIGNER_PRIORITY_FEE_*; the two FORGE_*_REFERRAL_ACCOUNT
+ *                  variables and FORGE_REVENUE_WALLET are checked when set. Service stopped
+ *                  first (instance lock). Exit code 3: sent but not settled yet, run again.
  *
  * Every variable is documented in apps/signer/.env.example. Back up SIGNER_KEYSTORE_DIR and
  * SIGNER_JOURNAL_DIR together: the journals are what makes every payment and account creation
@@ -24,7 +38,11 @@
 import { pino } from 'pino';
 import { keystoreOptionsFromEnv, openKeystore } from './keystore.js';
 import { describeError } from './jobs/shared.js';
-import { runRevokeLaunch } from './runtime/operator.js';
+import {
+  parseSetupRevenueReferralsArgs,
+  runRevokeLaunch,
+  runSetupRevenueReferrals,
+} from './runtime/operator.js';
 import { createSignerRuntime } from './runtime/runtime.js';
 import type { SignerJobModule } from './runtime/modules.js';
 import { buybackJobModule } from './runtime/buyback.js';
@@ -56,6 +74,21 @@ async function initKeys(): Promise<void> {
 async function main(argv: readonly string[]): Promise<void> {
   if (argv.includes('--init-keys')) {
     await initKeys();
+    return;
+  }
+  if (argv.includes('--setup-revenue-referrals')) {
+    const args = parseSetupRevenueReferralsArgs(argv);
+    const result = await runSetupRevenueReferrals({ env: process.env, ...args });
+    log.info(
+      {
+        dryRun: result.dryRun,
+        meteora: { status: result.meteora.status, account: result.meteora.account },
+        jupiter: { status: result.jupiter.status, account: result.jupiter.account },
+        exitCode: result.exitCode,
+      },
+      'revenue referral accounts setup',
+    );
+    process.exitCode = result.exitCode;
     return;
   }
   const revoke = argv.indexOf('--revoke-launch');

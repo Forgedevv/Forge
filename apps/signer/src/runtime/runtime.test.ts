@@ -11,11 +11,11 @@ import { CLUSTER_GENESIS_HASH } from '@forge/core';
 import { openKeystore } from '../keystore.js';
 import { JobError } from '../jobs/shared.js';
 import { signRequest } from '../server.js';
-import { RuntimeConfigError, parseRuntimeEnv } from './env.js';
+import { RuntimeConfigError, parseOperatorEnv, parseRuntimeEnv } from './env.js';
 import { buybackJobModule, type BuybackDepsLike, type BuybackLibrary } from './buyback.js';
 import { INSTANCE_LOCK_FILE } from './instance.js';
 import type { SignerJobContext, SignerJobModule } from './modules.js';
-import { runRevokeLaunch } from './operator.js';
+import { runRevokeLaunch, runSetupRevenueReferrals } from './operator.js';
 import { createSignerRuntime, type SignerRuntime } from './runtime.js';
 import { JobScheduler, statusOf } from './scheduler.js';
 
@@ -672,6 +672,99 @@ describe('operator command --revoke-launch', () => {
   });
 });
 
+describe('operator command --setup-revenue-referrals', () => {
+  /** The operator subset: no database, no HMAC server, no Telegram, no referral addresses yet. */
+  function operatorEnv(
+    overrides: Record<string, string | undefined> = {},
+  ): Record<string, string | undefined> {
+    return {
+      SOLANA_CLUSTER: 'devnet',
+      RPC_URL: 'https://devnet.rpc.test',
+      SIGNER_KEYSTORE_PASSPHRASE: PASSPHRASE,
+      SIGNER_KEYSTORE_DIR: path.join(dir, 'keystore'),
+      SIGNER_JOURNAL_DIR: path.join(dir, 'journal'),
+      SIGNER_PRIORITY_FEE_MAX_MICRO_LAMPORTS: '0',
+      FORGE_REVENUE_WALLET: revenue,
+      LOG_LEVEL: 'silent',
+      ...overrides,
+    };
+  }
+
+  it('parses the operator subset of the environment, naming what is missing', () => {
+    const parsed = parseOperatorEnv(operatorEnv());
+    expect(parsed.cluster).toBe('devnet');
+    expect(parsed.priorityFee.maxMicroLamports).toBe(0);
+    expect(parsed.journalDir).toBe(path.resolve(path.join(dir, 'journal')));
+    expect(() => parseOperatorEnv(operatorEnv({ RPC_URL: undefined }))).toThrow(/RPC_URL/);
+    expect(() => parseOperatorEnv(operatorEnv({ SOLANA_CLUSTER: 'testnet' }))).toThrow(
+      /SOLANA_CLUSTER/,
+    );
+    try {
+      parseOperatorEnv(operatorEnv({ SIGNER_KEYSTORE_PASSPHRASE: 'short' }));
+    } catch (err) {
+      expect(err).toBeInstanceOf(RuntimeConfigError);
+      expect((err as Error).message).not.toContain('short');
+    }
+  });
+
+  it('runs a dry run with the operator environment on devnet and prints only public addresses', async () => {
+    const lines: string[] = [];
+    const result = await runSetupRevenueReferrals({
+      env: operatorEnv(),
+      connection: mockConnection(),
+      logger: pino({ level: 'silent' }),
+      print: (line) => void lines.push(line),
+    });
+    expect(result.dryRun).toBe(true);
+    expect(result.exitCode).toBe(0);
+    expect(result.revenue).toBe(revenue);
+    expect(result.meteora.status).toBe('planned');
+    expect(result.jupiter.status).toBe('wrong_cluster');
+    expect(lines.join('\n')).toContain(`FORGE_METEORA_REFERRAL_ACCOUNT=${result.meteora.account}`);
+    expect(lines.join('\n')).not.toMatch(/PASSPHRASE|https?:\/\//);
+    expect(lines.join('\n')).not.toContain(PASSPHRASE);
+    // Released its lock, created no journal entry (dry run).
+    await expect(fs.access(path.join(dir, 'journal', INSTANCE_LOCK_FILE))).rejects.toThrow();
+    await expect(
+      fs.access(path.join(dir, 'journal', 'referral-setup.meteora.json')),
+    ).rejects.toThrow();
+  });
+
+  it('fails closed on the wrong cluster, a revenue wallet that is not the keystore key, or a bad address', async () => {
+    const run = (overrides: Record<string, string | undefined>, genesis?: string) =>
+      runSetupRevenueReferrals({
+        env: operatorEnv(overrides),
+        connection: mockConnection(genesis),
+        logger: pino({ level: 'silent' }),
+        print: () => undefined,
+      });
+    await expect(run({}, CLUSTER_GENESIS_HASH['mainnet-beta'])).rejects.toThrow(
+      /does not serve SOLANA_CLUSTER/,
+    );
+    await expect(run({ FORGE_REVENUE_WALLET: address() })).rejects.toThrow(
+      /revenue key does not match/,
+    );
+    await expect(run({ FORGE_METEORA_REFERRAL_ACCOUNT: 'not-a-key' })).rejects.toThrow(
+      /FORGE_METEORA_REFERRAL_ACCOUNT is not a valid public key/,
+    );
+    await expect(run({ SUPABASE_URL: undefined, RPC_URL: 'ftp://x' })).rejects.toThrow(/RPC_URL/);
+    await expect(fs.access(path.join(dir, 'journal', INSTANCE_LOCK_FILE))).rejects.toThrow();
+  });
+
+  it('refuses to run next to the service', async () => {
+    const runtime = await create();
+    await expect(
+      runSetupRevenueReferrals({
+        env: operatorEnv(),
+        connection: mockConnection(),
+        logger: pino({ level: 'silent' }),
+        print: () => undefined,
+      }),
+    ).rejects.toThrow(/another signer instance/);
+    await runtime.stop();
+  });
+});
+
 describe('buyback module', () => {
   it('wires the buyback job with the shared lock, the watcher hook and its own tick', async () => {
     type Cfg = {
@@ -716,7 +809,11 @@ describe('buyback module', () => {
       createRpcForgeTokenReader: () => ({ tokens: true }),
       createFileBuybackBudgetSource: (opts) => {
         expect(opts.rpc).toBeDefined();
-        budgets.push({ journalDir: opts.journalDir, since: opts.since, vault: opts.vault.toBase58() });
+        budgets.push({
+          journalDir: opts.journalDir,
+          since: opts.since,
+          vault: opts.vault.toBase58(),
+        });
         return { budget: true };
       },
       createBuybackJob: (deps) => {

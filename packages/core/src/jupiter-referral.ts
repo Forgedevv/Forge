@@ -31,6 +31,11 @@
  * the Ultra project nor Jupiter's fee collection exist): the devnet behaviour is unchanged.
  * The partner can be asserted (`expectedPartner` = the revenue wallet): a referral account owned by
  * anyone else is refused (`partner_mismatch`), fees would not reach the revenue wallet.
+ *
+ * The last section builds the one-off SETUP of that referral account (the signer's
+ * `--setup-revenue-referrals` command): `initialize_referral_account_with_name` under the Ultra
+ * project with the revenue wallet as partner, and the v2 collection accounts of the currencies
+ * Jupiter collects in. Only the payer signs; the program facts are listed there.
  */
 import { createHash } from 'node:crypto';
 import {
@@ -84,9 +89,8 @@ function anchorDiscriminator(name: string): Buffer {
   return createHash('sha256').update(name).digest().subarray(0, 8);
 }
 
-export const JUPITER_REFERRAL_ACCOUNT_DISCRIMINATOR: Buffer = anchorDiscriminator(
-  'account:ReferralAccount',
-);
+export const JUPITER_REFERRAL_ACCOUNT_DISCRIMINATOR: Buffer =
+  anchorDiscriminator('account:ReferralAccount');
 export const JUPITER_PROJECT_DISCRIMINATOR: Buffer = anchorDiscriminator('account:Project');
 export const JUPITER_CLAIM_DISCRIMINATOR: Buffer = anchorDiscriminator('global:claim');
 export const JUPITER_CLAIM_V2_DISCRIMINATOR: Buffer = anchorDiscriminator('global:claim_v2');
@@ -483,7 +487,10 @@ export async function buildJupiterReferralClaimTx(
   const expectedProject = p.expectedProject ?? JUPITER_ULTRA_REFERRAL_PROJECT;
   const retry = p.retry ?? {};
   if (p.payer.equals(p.referralAccount) || p.mint.equals(p.referralAccount)) {
-    throw new JupiterReferralError('invalid_params', 'payer, mint and referral account must differ');
+    throw new JupiterReferralError(
+      'invalid_params',
+      'payer, mint and referral account must differ',
+    );
   }
   try {
     await assertCluster(connection, 'mainnet-beta', retry);
@@ -565,7 +572,8 @@ export async function buildJupiterReferralClaimTx(
   );
   const claims: JupiterReferralClaimItem[] = [];
   const v1Amount = tokenAmount(v1Account, v1Info ?? null, tokenProgram);
-  if (v1Amount > 0n) claims.push({ version: 'v1', referralTokenAccount: v1Account, amount: v1Amount });
+  if (v1Amount > 0n)
+    claims.push({ version: 'v1', referralTokenAccount: v1Account, amount: v1Amount });
   const v2Amount = tokenAmount(v2Account, v2Info ?? null, tokenProgram);
   if (v2Amount > 0n) {
     assertClaimableV2(p.referralAccount, referral, programId);
@@ -651,4 +659,509 @@ export async function buildJupiterReferralClaimTx(
   transaction.feePayer = p.payer;
   transaction.recentBlockhash = latest.blockhash;
   return { transaction, lastValidBlockHeight: latest.lastValidBlockHeight, summary, priorityFee };
+}
+
+// ---------------------------------------------------------------------------------------------
+// Setup of FORGE's referral account (pure builders; docs/MAINNET.md section 5)
+// ---------------------------------------------------------------------------------------------
+//
+// Verified against the program source (github.com/TeamRaccoons/referral, program/programs/
+// referral/src/instructions/initialize_referral_account_with_name.rs, lib.rs, claim_v2.rs; the
+// IDL of @jup-ag/referral-sdk 0.3.0 agrees):
+// - `initialize_referral_account_with_name(params: { name: String })`: accounts `payer` (mut,
+//   signer), `partner` (SystemAccount, read-only, NOT a signer), `project` (read-only, PDA
+//   `["project", base]`), `referral_account` (mut, init, PDA `["referral", project, name]`,
+//   `ReferralAccount::LEN` = 274 bytes, rent paid by `payer`), `system_program`. The share is the
+//   project's `default_share_bps`. Name: `params.name.chars().count() < 20`, so 1 to 19
+//   characters; the name is also a PDA seed, so at most 32 UTF-8 bytes.
+// - The v2 collection accounts `claim_v2` empties are the associated token accounts of the
+//   referral account (`associated_token::authority = referral_account`): the SDK's
+//   `initializeReferralTokenAccountV2` is a plain `CreateIdempotent` of the Associated Token
+//   program, paid by the payer, which is what `buildJupiterReferralTokenAccountV2Ix` builds.
+// Only the payer signs anywhere: the partner (the revenue wallet) never does.
+
+export const JUPITER_INITIALIZE_REFERRAL_ACCOUNT_WITH_NAME_DISCRIMINATOR: Buffer =
+  anchorDiscriminator('global:initialize_referral_account_with_name');
+
+/** `ReferralAccount::LEN` = 8 + 32 + 32 + 200 + 2: what the initialization allocates. */
+export const JUPITER_REFERRAL_ACCOUNT_SIZE = 274;
+
+/** `params.name.chars().count() < 20` in the program. */
+export const JUPITER_REFERRAL_NAME_MAX_CHARS = 19;
+/** The name is a PDA seed: at most 32 bytes. */
+export const JUPITER_REFERRAL_NAME_MAX_BYTES = 32;
+
+/**
+ * Compute unit limit of the setup transaction with a priority fee: one Anchor account
+ * initialization and up to a few associated token account creations, with a wide margin.
+ */
+export const JUPITER_REFERRAL_SETUP_COMPUTE_UNITS = 150_000;
+
+/**
+ * Checks a referral account name: 1 to 19 characters (code points, the program's rule), at most
+ * 32 UTF-8 bytes (a PDA seed), and FORGE's own restriction to printable characters without
+ * whitespace (a name goes into environment files and documentation). Returns the name.
+ * @throws JupiterReferralError `invalid_params`
+ */
+export function assertJupiterReferralName(name: string): string {
+  const fail = (reason: string) => new JupiterReferralError('invalid_params', reason);
+  if (typeof name !== 'string' || name.length === 0) {
+    throw fail('the name must be a non-empty string');
+  }
+  const chars = [...name].length;
+  if (chars > JUPITER_REFERRAL_NAME_MAX_CHARS) {
+    throw fail(
+      `the name has ${chars} characters, at most ${JUPITER_REFERRAL_NAME_MAX_CHARS} are allowed`,
+    );
+  }
+  const bytes = Buffer.byteLength(name, 'utf8');
+  if (bytes > JUPITER_REFERRAL_NAME_MAX_BYTES) {
+    throw fail(
+      `the name is ${bytes} bytes, at most ${JUPITER_REFERRAL_NAME_MAX_BYTES} are allowed`,
+    );
+  }
+  if (/[\s\p{Cc}\p{Cf}]/u.test(name)) {
+    throw fail('the name must not contain whitespace or control characters');
+  }
+  return name;
+}
+
+/** Borsh `String`: u32 little-endian byte length, then the UTF-8 bytes. */
+export function encodeJupiterReferralName(name: string): Buffer {
+  const bytes = Buffer.from(assertJupiterReferralName(name), 'utf8');
+  const length = Buffer.alloc(4);
+  length.writeUInt32LE(bytes.length);
+  return Buffer.concat([length, bytes]);
+}
+
+export interface JupiterInitializeReferralAccountWithNameAccounts {
+  /** Signer: pays the network fee and the referral account rent. */
+  payer: PublicKey;
+  /** Receives the claimed fees (FORGE: the revenue wallet, D34). Does not sign. */
+  partner: PublicKey;
+  project: PublicKey;
+  /** Must be `deriveJupiterReferralAccount(project, name)`. */
+  referralAccount: PublicKey;
+}
+
+/**
+ * `initialize_referral_account_with_name`: the IDL's accounts in the IDL's order, the Anchor
+ * discriminator then the Borsh-encoded `{ name }`. Refuses a referral account that is not the
+ * PDA of the project and the name, and a payer, partner, project or referral account that
+ * coincide.
+ */
+export function buildJupiterInitializeReferralAccountWithNameIx(
+  accounts: JupiterInitializeReferralAccountWithNameAccounts,
+  name: string,
+  programId: PublicKey = JUPITER_REFERRAL_PROGRAM_ID,
+): TransactionInstruction {
+  const data = encodeJupiterReferralName(name);
+  const expected = deriveJupiterReferralAccount(accounts.project, name, programId);
+  if (!expected.equals(accounts.referralAccount)) {
+    throw new JupiterReferralError(
+      'invalid_params',
+      'referralAccount is not the PDA ["referral", project, name] of that name',
+    );
+  }
+  const keys = [accounts.payer, accounts.partner, accounts.project, accounts.referralAccount];
+  if (new Set(keys.map((k) => k.toBase58())).size !== keys.length) {
+    throw new JupiterReferralError(
+      'invalid_params',
+      'payer, partner, project and referral account must differ',
+    );
+  }
+  return new TransactionInstruction({
+    programId,
+    keys: [
+      { pubkey: accounts.payer, isSigner: true, isWritable: true },
+      ro(accounts.partner),
+      ro(accounts.project),
+      rw(accounts.referralAccount),
+      ro(SystemProgram.programId),
+    ],
+    data: Buffer.concat([JUPITER_INITIALIZE_REFERRAL_ACCOUNT_WITH_NAME_DISCRIMINATOR, data]),
+  });
+}
+
+export interface JupiterReferralTokenAccountV2Params {
+  /** Signer: pays the rent of the token account. */
+  payer: PublicKey;
+  referralAccount: PublicKey;
+  mint: PublicKey;
+  /** The mint's program (classic SPL Token or Token-2022). */
+  tokenProgram: PublicKey;
+}
+
+export interface JupiterReferralTokenAccountV2Ix {
+  /** `deriveJupiterReferralTokenAccountV2(referralAccount, mint, tokenProgram)`. */
+  tokenAccount: PublicKey;
+  instruction: TransactionInstruction;
+}
+
+/**
+ * The v2 collection account of `mint` (what the Jupiter Plugin pays and `claim_v2` empties): an
+ * idempotent creation of the referral account's associated token account, paid by `payer`
+ * (the SDK's `initializeReferralTokenAccountV2`). Idempotent on-chain: an existing account is
+ * left as it is.
+ */
+export function buildJupiterReferralTokenAccountV2Ix(
+  p: JupiterReferralTokenAccountV2Params,
+): JupiterReferralTokenAccountV2Ix {
+  assertTokenProgram(p.tokenProgram);
+  if (p.payer.equals(p.referralAccount) || p.mint.equals(p.referralAccount)) {
+    throw new JupiterReferralError(
+      'invalid_params',
+      'payer, mint and referral account must differ',
+    );
+  }
+  const tokenAccount = deriveJupiterReferralTokenAccountV2(
+    p.referralAccount,
+    p.mint,
+    p.tokenProgram,
+  );
+  return {
+    tokenAccount,
+    instruction: createAssociatedTokenAccountIdempotentInstruction(
+      p.payer,
+      tokenAccount,
+      p.referralAccount,
+      p.mint,
+      p.tokenProgram,
+    ),
+  };
+}
+
+export interface JupiterReferralSetupMint {
+  mint: PublicKey;
+  tokenProgram: PublicKey;
+}
+
+export interface BuildJupiterReferralSetupTxParams {
+  /** Fee payer and only signer. */
+  payer: PublicKey;
+  /** The referral account's partner: the revenue wallet. */
+  partner: PublicKey;
+  /** Default: `JUPITER_ULTRA_REFERRAL_PROJECT`, the only project the Jupiter Plugin pays. */
+  project?: PublicKey;
+  name: string;
+  /** False when the referral account already exists (only token accounts are then created). */
+  createReferralAccount: boolean;
+  /** The v2 collection accounts to create (those found absent), in this order. */
+  tokenAccounts: readonly JupiterReferralSetupMint[];
+  blockhash: string;
+  lastValidBlockHeight: number;
+  /**
+   * Priority fee quote of the caller (`JUPITER_REFERRAL_SETUP_COMPUTE_UNITS`): a unit limit then
+   * a unit price are put first when its price is not 0; nothing otherwise.
+   */
+  priorityFee?: Pick<PriorityFeeQuote, 'computeUnitLimit' | 'microLamports'>;
+  programId?: PublicKey;
+}
+
+export interface JupiterReferralSetupTokenAccount extends JupiterReferralSetupMint {
+  tokenAccount: PublicKey;
+}
+
+export interface JupiterReferralSetupTx {
+  /** Unsigned legacy transaction (fee payer = payer, blockhash set). */
+  transaction: Transaction;
+  lastValidBlockHeight: number;
+  referralAccount: PublicKey;
+  project: PublicKey;
+  name: string;
+  /** The token accounts the transaction creates (same order as the input). */
+  tokenAccounts: JupiterReferralSetupTokenAccount[];
+}
+
+/**
+ * Unsigned transaction setting up FORGE's Jupiter referral account: the optional compute budget,
+ * `initialize_referral_account_with_name` when `createReferralAccount`, then one v2 collection
+ * account creation per `tokenAccounts` entry. Refuses an empty plan and a duplicate mint. Does
+ * not read the chain: inspect first (`readJupiterReferralSetup`). Mainnet-beta is the only
+ * cluster where the program and the Ultra project exist; the read helper enforces it.
+ */
+export function buildJupiterReferralSetupTx(
+  p: BuildJupiterReferralSetupTxParams,
+): JupiterReferralSetupTx {
+  const programId = p.programId ?? JUPITER_REFERRAL_PROGRAM_ID;
+  const project = p.project ?? JUPITER_ULTRA_REFERRAL_PROJECT;
+  const name = assertJupiterReferralName(p.name);
+  if (typeof p.blockhash !== 'string' || p.blockhash.length === 0) {
+    throw new JupiterReferralError('invalid_params', 'blockhash required');
+  }
+  if (!Number.isInteger(p.lastValidBlockHeight) || p.lastValidBlockHeight < 0) {
+    throw new JupiterReferralError(
+      'invalid_params',
+      'lastValidBlockHeight must be a non-negative integer',
+    );
+  }
+  if (!p.createReferralAccount && p.tokenAccounts.length === 0) {
+    throw new JupiterReferralError('invalid_params', 'nothing to set up');
+  }
+  const seen = new Set<string>();
+  for (const { mint } of p.tokenAccounts) {
+    if (seen.has(mint.toBase58())) {
+      throw new JupiterReferralError('invalid_params', 'duplicate mint in tokenAccounts');
+    }
+    seen.add(mint.toBase58());
+  }
+  const referralAccount = deriveJupiterReferralAccount(project, name, programId);
+  const transaction = new Transaction({
+    feePayer: p.payer,
+    blockhash: p.blockhash,
+    lastValidBlockHeight: p.lastValidBlockHeight,
+  });
+  if (p.priorityFee && p.priorityFee.microLamports > 0) {
+    transaction.add(...priorityFeeInstructions(p.priorityFee));
+  }
+  if (p.createReferralAccount) {
+    transaction.add(
+      buildJupiterInitializeReferralAccountWithNameIx(
+        { payer: p.payer, partner: p.partner, project, referralAccount },
+        name,
+        programId,
+      ),
+    );
+  }
+  const tokenAccounts: JupiterReferralSetupTokenAccount[] = [];
+  for (const entry of p.tokenAccounts) {
+    const built = buildJupiterReferralTokenAccountV2Ix({
+      payer: p.payer,
+      referralAccount,
+      mint: entry.mint,
+      tokenProgram: entry.tokenProgram,
+    });
+    transaction.add(built.instruction);
+    tokenAccounts.push({ ...entry, tokenAccount: built.tokenAccount });
+  }
+  return {
+    transaction,
+    lastValidBlockHeight: p.lastValidBlockHeight,
+    referralAccount,
+    project,
+    name,
+    tokenAccounts,
+  };
+}
+
+// ---------------------------------------------------------------------------------------------
+// Setup inspection (pure) and read helper (mainnet-beta only)
+// ---------------------------------------------------------------------------------------------
+
+export type JupiterReferralAccountMismatch =
+  'not_a_referral_account' | 'partner_mismatch' | 'project_mismatch' | 'name_mismatch';
+
+export type JupiterReferralAccountStatus =
+  | { status: 'absent' }
+  | { status: 'ready'; account: JupiterReferralAccount }
+  | { status: 'mismatch'; reason: JupiterReferralAccountMismatch; detail: string };
+
+export interface JupiterReferralAccountExpectation {
+  partner: PublicKey;
+  project: PublicKey;
+  name: string;
+  programId?: PublicKey;
+}
+
+/**
+ * What the referral account address holds, against the expected one: absent, ready (a referral
+ * account of `project` with `partner` and exactly `name`), or a mismatch with its reason. The
+ * caller derives the address as the PDA of the project and the name.
+ */
+export function inspectJupiterReferralAccount(
+  info: AccountInfo<Buffer> | null,
+  expected: JupiterReferralAccountExpectation,
+): JupiterReferralAccountStatus {
+  if (!info) return { status: 'absent' };
+  const programId = expected.programId ?? JUPITER_REFERRAL_PROGRAM_ID;
+  const mismatch = (reason: JupiterReferralAccountMismatch, detail: string) =>
+    ({ status: 'mismatch', reason, detail }) as const;
+  if (!info.owner.equals(programId)) {
+    return mismatch(
+      'not_a_referral_account',
+      `the address is in use by an account owned by ${info.owner.toBase58()}`,
+    );
+  }
+  let account: JupiterReferralAccount;
+  try {
+    account = decodeJupiterReferralAccount(Buffer.from(info.data));
+  } catch (error) {
+    return mismatch('not_a_referral_account', (error as Error).message);
+  }
+  if (!account.partner.equals(expected.partner)) {
+    return mismatch(
+      'partner_mismatch',
+      `the referral account partner is ${account.partner.toBase58()}`,
+    );
+  }
+  if (!account.project.equals(expected.project)) {
+    return mismatch(
+      'project_mismatch',
+      `the referral account project is ${account.project.toBase58()}`,
+    );
+  }
+  if (account.name !== expected.name) {
+    return mismatch(
+      'name_mismatch',
+      account.name === null
+        ? 'the referral account has no name'
+        : `the referral account name is "${account.name}"`,
+    );
+  }
+  return { status: 'ready', account };
+}
+
+export type JupiterReferralTokenAccountMismatch =
+  'not_a_token_account' | 'wrong_mint' | 'wrong_owner';
+
+export type JupiterReferralTokenAccountStatus =
+  | { status: 'absent' }
+  | { status: 'ready'; amount: bigint }
+  | { status: 'mismatch'; reason: JupiterReferralTokenAccountMismatch; detail: string };
+
+/**
+ * What the v2 collection account address holds: absent, a token account of `mint` owned by the
+ * referral account, or not.
+ */
+export function inspectJupiterReferralTokenAccountV2(
+  address: PublicKey,
+  info: AccountInfo<Buffer> | null,
+  expected: { referralAccount: PublicKey; mint: PublicKey; tokenProgram: PublicKey },
+): JupiterReferralTokenAccountStatus {
+  if (!info) return { status: 'absent' };
+  const mismatch = (reason: JupiterReferralTokenAccountMismatch, detail: string) =>
+    ({ status: 'mismatch', reason, detail }) as const;
+  if (!info.owner.equals(expected.tokenProgram)) {
+    return mismatch(
+      'not_a_token_account',
+      `the address is in use by an account owned by ${info.owner.toBase58()}`,
+    );
+  }
+  let account: ReturnType<typeof unpackAccount>;
+  try {
+    account = unpackAccount(address, info, expected.tokenProgram);
+  } catch {
+    return mismatch('not_a_token_account', 'the account data is not a token account');
+  }
+  if (!account.mint.equals(expected.mint)) {
+    return mismatch('wrong_mint', `the token account mint is ${account.mint.toBase58()}`);
+  }
+  if (!account.owner.equals(expected.referralAccount)) {
+    return mismatch('wrong_owner', `the token account owner is ${account.owner.toBase58()}`);
+  }
+  return { status: 'ready', amount: account.amount };
+}
+
+export interface ReadJupiterReferralSetupParams {
+  connection: Connection;
+  partner: PublicKey;
+  name: string;
+  /** The currencies whose v2 collection accounts are wanted (e.g. wrapped SOL and USDC). */
+  mints: readonly PublicKey[];
+  /** Default: `JUPITER_ULTRA_REFERRAL_PROJECT`. */
+  project?: PublicKey;
+  programId?: PublicKey;
+  commitment?: Commitment;
+  retry?: RetryOptions;
+}
+
+export interface JupiterReferralSetupTokenAccountState extends JupiterReferralSetupTokenAccount {
+  status: JupiterReferralTokenAccountStatus;
+}
+
+export interface JupiterReferralSetupState {
+  project: PublicKey;
+  /** The project as decoded on-chain (its admin and default share). */
+  projectAccount: JupiterProject;
+  name: string;
+  referralAccount: PublicKey;
+  referral: JupiterReferralAccountStatus;
+  tokenAccounts: JupiterReferralSetupTokenAccountState[];
+}
+
+/**
+ * Reads what the setup needs: the project (must exist and decode), the mints (their token
+ * program), the named referral account and its v2 collection accounts, each inspected. Mainnet
+ * only (`wrong_cluster` on any other cluster, before any read). The caller decides what to
+ * create (the absent ones) and refuses on any mismatch.
+ */
+export async function readJupiterReferralSetup(
+  p: ReadJupiterReferralSetupParams,
+): Promise<JupiterReferralSetupState> {
+  const programId = p.programId ?? JUPITER_REFERRAL_PROGRAM_ID;
+  const project = p.project ?? JUPITER_ULTRA_REFERRAL_PROJECT;
+  const name = assertJupiterReferralName(p.name);
+  const commitment = p.commitment ?? 'confirmed';
+  const retry = p.retry ?? {};
+  if (p.mints.length === 0) throw new JupiterReferralError('invalid_params', 'at least one mint');
+  if (new Set(p.mints.map((m) => m.toBase58())).size !== p.mints.length) {
+    throw new JupiterReferralError('invalid_params', 'duplicate mint');
+  }
+  try {
+    await assertCluster(p.connection, 'mainnet-beta', retry);
+  } catch (error) {
+    if (error instanceof PaymentError && error.code === 'wrong_cluster') {
+      throw new JupiterReferralError(
+        'wrong_cluster',
+        'the Jupiter referral program and the Ultra project only exist on mainnet-beta',
+        { cause: error },
+      );
+    }
+    throw error;
+  }
+  const referralAccount = deriveJupiterReferralAccount(project, name, programId);
+  const [projectInfo, referralInfo, ...mintInfos] = await retryRpc(
+    () => p.connection.getMultipleAccountsInfo([project, referralAccount, ...p.mints], commitment),
+    retry,
+  );
+  if (!projectInfo) throw new JupiterReferralError('project_not_found', 'project not found');
+  if (!projectInfo.owner.equals(programId)) {
+    throw new JupiterReferralError('not_a_project', 'project is not owned by the referral program');
+  }
+  const projectAccount = decodeJupiterProject(Buffer.from(projectInfo.data));
+  const entries: JupiterReferralSetupTokenAccount[] = p.mints.map((mint, i) => {
+    const info = mintInfos[i];
+    if (!info) {
+      throw new JupiterReferralError('mint_not_found', `mint ${mint.toBase58()} not found`);
+    }
+    if (!info.owner.equals(TOKEN_PROGRAM_ID) && !info.owner.equals(TOKEN_2022_PROGRAM_ID)) {
+      throw new JupiterReferralError(
+        'not_a_mint',
+        `${mint.toBase58()} is not owned by a token program`,
+      );
+    }
+    return {
+      mint,
+      tokenProgram: info.owner,
+      tokenAccount: deriveJupiterReferralTokenAccountV2(referralAccount, mint, info.owner),
+    };
+  });
+  const tokenInfos = await retryRpc(
+    () =>
+      p.connection.getMultipleAccountsInfo(
+        entries.map((e) => e.tokenAccount),
+        commitment,
+      ),
+    retry,
+  );
+  return {
+    project,
+    projectAccount,
+    name,
+    referralAccount,
+    referral: inspectJupiterReferralAccount(referralInfo ?? null, {
+      partner: p.partner,
+      project,
+      name,
+      programId,
+    }),
+    tokenAccounts: entries.map((entry, i) => ({
+      ...entry,
+      status: inspectJupiterReferralTokenAccountV2(entry.tokenAccount, tokenInfos[i] ?? null, {
+        referralAccount,
+        mint: entry.mint,
+        tokenProgram: entry.tokenProgram,
+      }),
+    })),
+  };
 }
