@@ -637,11 +637,12 @@ describe('buyback module', () => {
     };
     const captured: Array<BuybackDepsLike<Cfg>> = [];
     const budgets: Array<{ journalDir: string; since: string | null; vault: string }> = [];
+    const configOptions: unknown[] = [];
+    const jupiterOptions: unknown[] = [];
     const lib: BuybackLibrary<Cfg> = {
       buybackConfigFromEnv: (_env, addresses, options) => {
         expect(addresses.forgeMint).toBeNull();
-        // The runtime's resolved cluster (devnet by default), not the raw SOLANA_CLUSTER.
-        expect(options).toEqual({ cluster: 'devnet' });
+        configOptions.push(options);
         return {
           config: {
             maxPriorityFeeLamports: 100_000n,
@@ -654,7 +655,10 @@ describe('buyback module', () => {
         };
       },
       createBuybackJournal: (journalDir) => ({ journalDir }),
-      createJupiterBuybackClient: (opts) => ({ quotes: opts.baseUrl }),
+      createJupiterBuybackClient: (opts) => {
+        jupiterOptions.push(opts);
+        return { quotes: opts.baseUrl };
+      },
       createRpcBuybackSwapPreparer: () => ({ preparer: true }),
       createRpcForgeTokenReader: () => ({ tokens: true }),
       createFileBuybackBudgetSource: (opts) => {
@@ -673,7 +677,22 @@ describe('buyback module', () => {
     };
     const runtime = await create({}, { extraJobs: [buybackJobModule(lib)] });
     expect(runtime.scheduler.names()).toContain('buyback');
+    // The runtime's resolved cluster (devnet by default), not the raw SOLANA_CLUSTER, and the
+    // signer's priority fees (the return's cap in the fee allowance).
+    expect(configOptions).toEqual([
+      { cluster: 'devnet', priorityFees: runtime.context.priorityFees },
+    ]);
+    expect((configOptions[0] as { priorityFees: unknown }).priorityFees).toBe(
+      runtime.context.priorityFees,
+    );
+    // The Jupiter orders keep their own cap (priorityLevelWithMaxLamports), not the signer's.
+    expect(jupiterOptions).toEqual([
+      expect.objectContaining({ maxPriorityFeeLamports: 100_000n, baseUrl: 'https://jup.test' }),
+    ]);
+    expect(jupiterOptions[0]).not.toHaveProperty('priorityFees');
     const deps = captured[0]!;
+    // The return of the bought $FORGE is priced with the signer's priority fees.
+    expect(deps.priorityFees).toBe(runtime.context.priorityFees);
     expect(deps.walletLock).toBe(runtime.context.walletLock);
     expect(deps.onBeforeSend).toBe(runtime.context.onBeforeSend);
     expect(deps.flags).toBe(runtime.context.flags);
@@ -690,6 +709,77 @@ describe('buyback module', () => {
     ]);
     expect(await runtime.scheduler.runNow('buyback')).toEqual({ status: 'paused' });
     expect(runtime.scheduler.states().buyback).toMatchObject({ lastStatus: 'paused', runs: 1 });
+  });
+
+  it('hands the signer priority fees to the withdrawer and the devnet DBC route', async () => {
+    type Cfg = {
+      maxPriorityFeeLamports: bigint;
+      route: 'dbc-devnet';
+      devnetPool: PublicKey;
+      revenueSince: string | null;
+    };
+    const squads = {
+      multisig: Keypair.generate().publicKey,
+      spendingLimit: Keypair.generate().publicKey,
+      vaultIndex: 0,
+      vault: Keypair.generate().publicKey,
+    };
+    const withdrawers: Array<{ priorityFees: unknown; config: unknown }> = [];
+    const routes: Array<{ priorityFees: unknown; maxPriorityFeeLamports: bigint }> = [];
+    const captured: Array<BuybackDepsLike<Cfg>> = [];
+    const lib: BuybackLibrary<Cfg> = {
+      buybackConfigFromEnv: () => ({
+        config: {
+          maxPriorityFeeLamports: 70_000n,
+          route: 'dbc-devnet',
+          devnetPool: Keypair.generate().publicKey,
+          revenueSince: null,
+        },
+        tickMs: 60_000,
+        jupiter: { baseUrl: 'https://jup.test', minRequestIntervalMs: 1_100, timeoutMs: 15_000 },
+      }),
+      createBuybackJournal: (journalDir) => ({ journalDir }),
+      createJupiterBuybackClient: () => {
+        throw new Error('the devnet route does not use Jupiter');
+      },
+      createRpcBuybackSwapPreparer: () => {
+        throw new Error('the devnet route does not use Jupiter');
+      },
+      createRpcForgeTokenReader: () => ({ tokens: true }),
+      createFileBuybackBudgetSource: () => ({ budget: true }),
+      createBuybackJob: (deps) => {
+        captured.push(deps);
+        return { mode: 'simulation', runOnce: async () => ({ status: 'paused' }) };
+      },
+      squadsConfigFromEnv: () => squads,
+      createSquadsJournal: (journalDir) => ({ journalDir }),
+      createSquadsSpendingLimitWithdrawer: (opts) => {
+        withdrawers.push({ priorityFees: opts.priorityFees, config: opts.config });
+        return { withdrawer: true };
+      },
+      createDbcDevnetBuybackRoute: (opts) => {
+        routes.push({
+          priorityFees: opts.priorityFees,
+          maxPriorityFeeLamports: opts.maxPriorityFeeLamports,
+        });
+        return { quotes: { dbc: true }, swapPreparer: { dbc: true } };
+      },
+    };
+    const runtime = await create({ FORGE_MINT: address() }, { extraJobs: [buybackJobModule(lib)] });
+    expect(runtime.scheduler.names()).toContain('buyback');
+    const fees = runtime.context.priorityFees;
+    expect(withdrawers).toHaveLength(1);
+    expect(withdrawers[0]!.priorityFees).toBe(fees);
+    expect(withdrawers[0]!.config).toBe(squads);
+    expect(routes).toHaveLength(1);
+    expect(routes[0]!.priorityFees).toBe(fees);
+    // The buy's own bound stays BUYBACK_MAX_PRIORITY_FEE_LAMPORTS.
+    expect(routes[0]!.maxPriorityFeeLamports).toBe(70_000n);
+    const deps = captured[0]!;
+    expect(deps.priorityFees).toBe(fees);
+    expect(deps.withdrawer).toEqual({ withdrawer: true });
+    expect(deps.quotes).toEqual({ dbc: true });
+    expect(deps.swapPreparer).toEqual({ dbc: true });
   });
 
   it('is required on mainnet-beta once FORGE_BUYBACK_LIVE asks for live mode', () => {

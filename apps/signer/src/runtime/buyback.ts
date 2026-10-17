@@ -14,6 +14,11 @@
  *   BUYBACK_DEVNET_DBC_POOL (jobs/buyback-dbc.ts).
  * Without a withdrawer the job stays in simulation (and refuses a live request at startup).
  *
+ * Priority fees: the signer's (`ctx.priorityFees`, SIGNER_PRIORITY_FEE_*) price the return of
+ * the bought $FORGE, the spending-limit withdrawal and the dbc-devnet buys (bounded there by
+ * BUYBACK_MAX_PRIORITY_FEE_LAMPORTS), and size the default per-order fee allowance. The Jupiter
+ * orders keep Jupiter's `priorityLevelWithMaxLamports` with BUYBACK_MAX_PRIORITY_FEE_LAMPORTS.
+ *
  * The module is optional (a refused configuration disables it with an alert, runtime.ts), except
  * on mainnet-beta with FORGE_BUYBACK_LIVE set: there a refused configuration stops the signer.
  *
@@ -21,6 +26,7 @@
  * runtime tests can replace it; production uses the real modules (`buybackJobModule()`).
  */
 import type { Connection, PublicKey } from '@solana/web3.js';
+import type { PriorityFees } from '../jobs/priority.js';
 import {
   buybackConfigFromEnv,
   createBuybackJob,
@@ -81,6 +87,7 @@ export interface BuybackDepsLike<Config> {
   tokens?: unknown;
   walletLock?: Mutex;
   onBeforeSend?: BeforeSendHook;
+  priorityFees?: PriorityFees;
 }
 
 export interface SquadsConfigLike {
@@ -95,8 +102,11 @@ export interface BuybackLibrary<Config extends BuybackConfigLike> {
   buybackConfigFromEnv(
     env: EnvSource,
     addresses: { vault: PublicKey; forgeMint: PublicKey | null },
-    /** The runtime's resolved cluster: the mode decision must not read the raw variable. */
-    options: { cluster: string },
+    /**
+     * The runtime's resolved cluster (the mode decision must not read the raw variable) and the
+     * signer's priority fees (the return's cap is in the default fee allowance).
+     */
+    options: { cluster: string; priorityFees: PriorityFees },
   ): { config: Config; tickMs: number; jupiter: BuybackJupiterSettingsLike };
   createBuybackJournal(dir: string): unknown;
   createJupiterBuybackClient(
@@ -128,6 +138,7 @@ export interface BuybackLibrary<Config extends BuybackConfigLike> {
     keystore: KeystoreLike;
     journal: unknown;
     logger: JobLogger;
+    priorityFees: PriorityFees;
   }): unknown;
   createDbcDevnetBuybackRoute(opts: {
     connection: Connection;
@@ -137,6 +148,7 @@ export interface BuybackLibrary<Config extends BuybackConfigLike> {
     keystore: KeystoreLike;
     cluster: string | undefined;
     maxPriorityFeeLamports: bigint;
+    priorityFees: PriorityFees;
   }): { quotes: unknown; swapPreparer: unknown };
 }
 
@@ -158,6 +170,7 @@ export const REAL_BUYBACK_LIBRARY = {
     keystore: KeystoreLike;
     journal: ReturnType<typeof createSquadsJournal>;
     logger: JobLogger;
+    priorityFees: PriorityFees;
   }) => createSquadsSpendingLimitWithdrawer(opts),
   createDbcDevnetBuybackRoute,
 } satisfies BuybackLibrary<ReturnType<typeof buybackConfigFromEnv>['config']>;
@@ -183,7 +196,7 @@ export function buybackJobModule<Config extends BuybackConfigLike>(
       const { config, tickMs, jupiter } = lib.buybackConfigFromEnv(
         ctx.env,
         { vault: ctx.addresses.vault, forgeMint: ctx.addresses.forgeMint },
-        { cluster: ctx.cluster },
+        { cluster: ctx.cluster, priorityFees: ctx.priorityFees },
       );
       const logger = ctx.jobLogger('buyback');
 
@@ -197,6 +210,7 @@ export function buybackJobModule<Config extends BuybackConfigLike>(
             keystore: ctx.keystore,
             journal: lib.createSquadsJournal(ctx.journalDir),
             logger: ctx.jobLogger('squads'),
+            priorityFees: ctx.priorityFees,
           })
         : undefined;
 
@@ -219,6 +233,7 @@ export function buybackJobModule<Config extends BuybackConfigLike>(
           keystore: ctx.keystore,
           cluster: ctx.cluster,
           maxPriorityFeeLamports: config.maxPriorityFeeLamports,
+          priorityFees: ctx.priorityFees,
         }));
       } else {
         quotes = lib.createJupiterBuybackClient({
@@ -261,6 +276,7 @@ export function buybackJobModule<Config extends BuybackConfigLike>(
         tokens: lib.createRpcForgeTokenReader(ctx.connection),
         walletLock: ctx.walletLock,
         onBeforeSend: ctx.onBeforeSend,
+        priorityFees: ctx.priorityFees,
       });
       logger.info(
         {
