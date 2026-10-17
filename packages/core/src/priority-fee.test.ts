@@ -19,6 +19,7 @@ import {
   feePercentile,
   fixedPriorityFee,
   maxPriceForBudget,
+  maxPriorityFeeLamports,
   priorityFeeInstructions,
   readRecentPriorityFees,
   resolvePriorityFeePolicy,
@@ -186,6 +187,15 @@ describe('maxPriceForBudget and fixedPriorityFee', () => {
   it('bounds the price by the fee budget', () => {
     expect(maxPriceForBudget(150_000, 500_000n)).toBe(3_333_333);
     expect(maxPriceForBudget(1, MAX_PRIORITY_FEE_LAMPORTS)).toBe(MAX_PRIORITY_FEE_MICRO_LAMPORTS);
+  });
+
+  it('gives the most a transaction can pay under a setting', () => {
+    // 150,000 CU at 1,000,000 micro-lamports: 0.00015 SOL, under the 0.0005 SOL cap.
+    expect(maxPriorityFeeLamports(150_000)).toBe(150_000n);
+    // 1.4M CU: the cap of the whole transaction binds.
+    expect(maxPriorityFeeLamports(1_400_000)).toBeLessThanOrEqual(500_000n);
+    expect(maxPriorityFeeLamports(300_000, { maxLamports: 1_000n })).toBe(1_000n);
+    expect(maxPriorityFeeLamports(300_000, { maxMicroLamports: 0 })).toBe(0n);
   });
 
   it('reports a fixed price as is', () => {

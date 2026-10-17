@@ -227,6 +227,22 @@ export function computePriorityFee(input: {
 }
 
 /**
+ * The most a transaction of `computeUnitLimit` CU can pay as priority fee under `setting`, in
+ * lamports: its fee at the highest price the setting allows. The cost guard to show before the
+ * transaction is built (e.g. next to a swap quote).
+ */
+export function maxPriorityFeeLamports(
+  computeUnitLimit: number,
+  setting?: PriorityFeeSetting,
+): bigint {
+  return computePriorityFee({
+    recentFees: [{ slot: 0, prioritizationFee: MAX_PRIORITY_FEE_MICRO_LAMPORTS }],
+    computeUnitLimit,
+    ...(setting ? { policy: setting } : {}),
+  }).priorityFeeLamports;
+}
+
+/**
  * A quote for a fixed price (the builders' legacy `computeUnitPriceMicroLamports` /
  * `priorityFeeMicroLamports` parameters): no RPC read, the given price as is.
  */
