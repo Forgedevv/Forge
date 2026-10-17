@@ -321,7 +321,7 @@ HTTP on the private network. Each request carries:
 |---|---|---|---|
 | `POST /v1/configs` | `{ jobId }` | `{ launchpadConfig, launchpadCoinConfig }` | re-reads the job and the spec from Supabase, job in `onchain_setup`, payment `confirmed`, bounds validation |
 | `POST /v1/launch-coin/prepare` | `{ jobId }` | `{ partiallySignedTx, mint, summary?, details? }` (the builder requires `details` and writes it to `jobs.owner_tx_details` in the same update as `owner_tx`) | creates a dedicated creator wallet, signs as creator, the client will sign as buyer. Transaction built with a **durable nonce** so it does not expire while the client signs. The builder writes it to `jobs.owner_tx` |
-| `GET /v1/health` | — | `{ ok }` | |
+| `GET /v1/health` | — | `{ ok, cluster, uptimeSeconds?, jobs? }` (`cluster` = the signer's `SOLANA_CLUSTER`; job states hold status codes and counters only, nothing secret) | the builder calls it at startup and refuses to start unless `cluster` equals its own `SOLANA_CLUSTER` |
 
 The signer never takes an address or an amount from the request: it re-reads everything from Supabase. Both routes are idempotent.
 

@@ -9,6 +9,7 @@ import {
   SignerHealthResponse,
   SignerLaunchPrepareResponse,
   signerSignedPayload,
+  type SolanaCluster,
 } from '@forge/shared';
 
 export interface SignerClientOptions {
@@ -178,4 +179,84 @@ export function parseHealthResponse(json: unknown): SignerHealthResponse {
     }
   }
   return out;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Start-up check: the signer runs on the builder's cluster
+
+/** Defaults of the start-up check (`assertSignerCluster`) and of its dedicated client. */
+export const SIGNER_STARTUP_CHECK = {
+  /** Health requests before an unreachable signer stops the start-up. */
+  attempts: 5,
+  /** Delay before the second request, doubled after each one (2, 4, 8 then 16 s). */
+  baseDelayMs: 2_000,
+  /** Per request: the health route answers at once (SIGNER_TIMEOUT_MS is for the configs route). */
+  timeoutMs: 10_000,
+} as const;
+
+export class SignerClusterError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'SignerClusterError';
+  }
+}
+
+export interface SignerClusterCheckOptions {
+  attempts?: number;
+  baseDelayMs?: number;
+  sleep?: (ms: number) => Promise<void>;
+  logger?: { warn(obj: object, msg?: string): void };
+}
+
+function retryable(err: unknown): boolean {
+  return err instanceof SignerClientError && (err.status === undefined || err.status >= 500);
+}
+
+/**
+ * Start-up check of the builder: the signer's health route (HMAC-signed like every call) must
+ * report the builder's cluster. Refused at once, without retry (a configuration error that
+ * retrying cannot fix): a signer on another cluster, a signer that does not report its cluster,
+ * a request the signer rejects (4xx: HMAC secret, IP allowlist, clock) or an invalid answer. An
+ * unreachable signer (network error, timeout, 5xx) is retried with exponential backoff, then
+ * refused too: the process exits and its supervisor restarts it, so the builder comes up once
+ * the signer does. Error messages carry no secret and no URL.
+ */
+export async function assertSignerCluster(
+  signer: Pick<SignerClient, 'health'>,
+  cluster: SolanaCluster,
+  opts: SignerClusterCheckOptions = {},
+): Promise<SignerHealthResponse> {
+  const attempts = opts.attempts ?? SIGNER_STARTUP_CHECK.attempts;
+  const baseDelayMs = opts.baseDelayMs ?? SIGNER_STARTUP_CHECK.baseDelayMs;
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  let lastError = 'no attempt';
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    if (attempt > 1) await sleep(baseDelayMs * 2 ** (attempt - 2));
+    let health: SignerHealthResponse;
+    try {
+      health = await signer.health();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'unknown error';
+      if (!retryable(err)) throw new SignerClusterError(`signer health check refused: ${message}`);
+      lastError = message;
+      opts.logger?.warn({ attempt, attempts, error: message }, 'signer unreachable at startup');
+      continue;
+    }
+    if (health.cluster === undefined) {
+      throw new SignerClusterError('the signer health answer does not report its cluster');
+    }
+    if (health.cluster !== cluster) {
+      const reported =
+        health.cluster === 'devnet' || health.cluster === 'mainnet-beta'
+          ? health.cluster
+          : 'an unknown cluster';
+      throw new SignerClusterError(
+        `the signer runs on ${reported} while the builder runs on ${cluster} (SOLANA_CLUSTER)`,
+      );
+    }
+    return health;
+  }
+  throw new SignerClusterError(
+    `signer unreachable at startup after ${attempts} attempts (${lastError})`,
+  );
 }

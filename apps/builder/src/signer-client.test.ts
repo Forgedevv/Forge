@@ -1,7 +1,13 @@
 /// <reference types="node" />
 import { createHash, createHmac } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
-import { createSignerClient, SignerClientError } from './signer-client.js';
+import {
+  assertSignerCluster,
+  createSignerClient,
+  SIGNER_STARTUP_CHECK,
+  SignerClientError,
+  SignerClusterError,
+} from './signer-client.js';
 
 const SECRET = 'a'.repeat(32);
 const JOB = '3f2b8c1e-9d4a-4b6e-8a1c-2d3e4f5a6b7c';
@@ -276,5 +282,117 @@ describe('createSignerClient', () => {
     );
     const client = make(fetchMock, { timeoutMs: 20, maxAttempts: 1 });
     await expect(client.health()).rejects.toBeInstanceOf(SignerClientError);
+  });
+});
+
+describe('assertSignerCluster (start-up check)', () => {
+  function signerAnswering(...answers: Array<object | Error>) {
+    const health = vi.fn(async () => {
+      const next = answers.shift();
+      if (next === undefined) throw new Error('no more answers');
+      if (next instanceof Error) throw next;
+      return next as { ok: boolean; cluster?: string };
+    });
+    return { health };
+  }
+  const recorder = () => {
+    const sleeps: number[] = [];
+    return { sleeps, sleep: async (ms: number) => void sleeps.push(ms) };
+  };
+
+  it('passes when the signer reports the builder cluster, once', async () => {
+    const signer = signerAnswering({ ok: true, cluster: 'mainnet-beta' });
+    const { sleeps, sleep } = recorder();
+    expect(await assertSignerCluster(signer, 'mainnet-beta', { sleep })).toEqual({
+      ok: true,
+      cluster: 'mainnet-beta',
+    });
+    expect(signer.health).toHaveBeenCalledTimes(1);
+    expect(sleeps).toEqual([]);
+  });
+
+  it('refuses another cluster at once, without retrying', async () => {
+    const signer = signerAnswering({ ok: true, cluster: 'devnet' });
+    const { sleeps, sleep } = recorder();
+    const err = await assertSignerCluster(signer, 'mainnet-beta', { sleep }).catch((e) => e);
+    expect(err).toBeInstanceOf(SignerClusterError);
+    expect((err as Error).message).toBe(
+      'the signer runs on devnet while the builder runs on mainnet-beta (SOLANA_CLUSTER)',
+    );
+    expect(signer.health).toHaveBeenCalledTimes(1);
+    expect(sleeps).toEqual([]);
+  });
+
+  it('refuses a signer that does not report its cluster, or an unknown one, without echoing it', async () => {
+    await expect(assertSignerCluster(signerAnswering({ ok: true }), 'devnet')).rejects.toThrow(
+      /does not report its cluster/,
+    );
+    const err = (await assertSignerCluster(
+      signerAnswering({ ok: true, cluster: 'testnet-<script>' }),
+      'devnet',
+    ).catch((e: unknown) => e)) as Error;
+    expect(err.message).toMatch(/runs on an unknown cluster while the builder runs on devnet/);
+    expect(err.message).not.toContain('testnet');
+  });
+
+  it('refuses a rejected request (4xx) or an invalid answer at once', async () => {
+    for (const failure of [
+      new SignerClientError('signer rejected request (401)', 401),
+      new SignerClientError('signer rejected request (403)', 403),
+      new SignerClientError('signer returned an invalid response', 200),
+    ]) {
+      const signer = signerAnswering(failure);
+      await expect(assertSignerCluster(signer, 'devnet')).rejects.toThrow(
+        `signer health check refused: ${failure.message}`,
+      );
+      expect(signer.health).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it('retries an unreachable signer with backoff, and passes once it answers', async () => {
+    const signer = signerAnswering(
+      new SignerClientError('signer network error: TypeError'),
+      new SignerClientError('signer error 503', 503),
+      { ok: false, cluster: 'devnet' },
+    );
+    const { sleeps, sleep } = recorder();
+    const warn = vi.fn();
+    expect(await assertSignerCluster(signer, 'devnet', { sleep, logger: { warn } })).toEqual({
+      ok: false,
+      cluster: 'devnet',
+    });
+    expect(sleeps).toEqual([2_000, 4_000]);
+    expect(warn).toHaveBeenCalledTimes(2);
+  });
+
+  it('gives up on a signer still unreachable after the last attempt', async () => {
+    const down = () => new SignerClientError('signer network error: TimeoutError');
+    const signer = signerAnswering(down(), down(), down(), down(), down());
+    const { sleeps, sleep } = recorder();
+    await expect(assertSignerCluster(signer, 'devnet', { sleep })).rejects.toThrow(
+      'signer unreachable at startup after 5 attempts (signer network error: TimeoutError)',
+    );
+    expect(SIGNER_STARTUP_CHECK.attempts).toBe(5);
+    expect(signer.health).toHaveBeenCalledTimes(5);
+    expect(sleeps).toEqual([2_000, 4_000, 8_000, 16_000]);
+  });
+
+  it('checks the cluster through the signed health route of a real client', async () => {
+    const fetchMock = vi.fn(async () => json({ ok: true, cluster: 'devnet', uptimeSeconds: 3 }));
+    const health = await assertSignerCluster(make(fetchMock), 'devnet');
+    expect(health.cluster).toBe('devnet');
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe('http://signer:8787/v1/health');
+    expect(init.method).toBe('GET');
+    const headers = sentHeaders(fetchMock);
+    expect(headers['X-Forge-Signature']).toBe(
+      expectedSignature(
+        'GET',
+        '/v1/health',
+        headers['X-Forge-Timestamp'] as string,
+        headers['X-Forge-Nonce'] as string,
+        '',
+      ),
+    );
   });
 });

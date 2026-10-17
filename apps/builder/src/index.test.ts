@@ -280,6 +280,13 @@ describe('visual review setting', () => {
 
 describe('builder process', () => {
   let jobsRoot: string | undefined;
+  const sandboxEnv = (root: string) =>
+    baseEnv({
+      FORGE_SANDBOX_IMAGE: `sha256:${'a'.repeat(64)}`,
+      FORGE_SANDBOX_PROXY_IMAGE: `sha256:${'b'.repeat(64)}`,
+      FORGE_SANDBOX_JOBS_ROOT: root,
+      FORGE_SANDBOX_GATEWAY_UPSTREAM: 'host.docker.internal:8787',
+    });
   afterEach(async () => {
     vi.unstubAllGlobals();
     if (jobsRoot) await rm(jobsRoot, { recursive: true, force: true });
@@ -298,6 +305,7 @@ describe('builder process', () => {
         path: '/rest/v1/jobs',
         handler: () => json([{ id: 'job-1', api_cost_usd: '1.5' }]),
       },
+      { method: 'GET', path: '/v1/health', handler: () => json({ ok: true, cluster: 'devnet' }) },
     ]);
     vi.stubGlobal('fetch', stub.fetch);
     const docker = fakeDocker();
@@ -324,6 +332,10 @@ describe('builder process', () => {
       gatewayPort: 0,
     });
     try {
+      // The signer's cluster was checked once, through the signed health route.
+      const health = stub.find('GET', '/v1/health');
+      expect(health).toHaveLength(1);
+      expect(health[0]!.headers['x-forge-signature']).toMatch(/^[0-9a-f]{64}$/);
       // Stale sandbox resources were looked up before anything else.
       expect(docker.calls.map((c) => c.args.slice(0, 2).join(' '))).toEqual(
         expect.arrayContaining(['ps --all', 'network ls']),
@@ -390,6 +402,55 @@ describe('builder process', () => {
       vi.unstubAllEnvs();
       vi.resetModules();
     }
+  });
+
+  it('refuses to start when the signer runs on another cluster, before anything runs', async () => {
+    jobsRoot = await mkdtemp(path.join(tmpdir(), 'forge-builder-start-'));
+    const stub = stubFetch([
+      {
+        method: 'GET',
+        path: '/v1/health',
+        handler: () => json({ ok: true, cluster: 'mainnet-beta' }),
+      },
+    ]);
+    vi.stubGlobal('fetch', stub.fetch);
+    const docker = fakeDocker();
+    await expect(
+      startBuilder({
+        env: sandboxEnv(jobsRoot),
+        logger: silentLogger(),
+        handleSignals: false,
+        spawn: docker.spawn,
+        gatewayPort: 0,
+      }),
+    ).rejects.toThrow('the signer runs on mainnet-beta while the builder runs on devnet');
+    // No retry for a mismatch, and nothing else ran: no sandbox cleanup, no database call.
+    expect(stub.calls.map((c) => c.path)).toEqual(['/v1/health']);
+    expect(docker.calls).toEqual([]);
+  });
+
+  it('retries an unreachable signer at startup, then refuses to start', async () => {
+    jobsRoot = await mkdtemp(path.join(tmpdir(), 'forge-builder-start-'));
+    const stub = stubFetch([
+      { method: 'GET', path: '/v1/health', handler: () => json({ error: 'down' }, 503) },
+    ]);
+    vi.stubGlobal('fetch', stub.fetch);
+    const docker = fakeDocker();
+    const sleeps: number[] = [];
+    await expect(
+      startBuilder({
+        env: sandboxEnv(jobsRoot),
+        logger: silentLogger(),
+        handleSignals: false,
+        spawn: docker.spawn,
+        gatewayPort: 0,
+        signerCheck: { attempts: 3, sleep: async (ms) => void sleeps.push(ms) },
+      }),
+    ).rejects.toThrow('signer unreachable at startup after 3 attempts (signer error 503)');
+    // One request per attempt (the startup client does not retry on its own).
+    expect(stub.find('GET', '/v1/health')).toHaveLength(3);
+    expect(sleeps).toEqual([2_000, 4_000]);
+    expect(docker.calls).toEqual([]);
   });
 
   it('refuses to start on mainnet-beta without Telegram alerting, before anything runs', async () => {

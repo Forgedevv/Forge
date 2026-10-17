@@ -29,7 +29,12 @@ import {
 } from './sandbox/index.js';
 import type { SpawnFn } from './sandbox/docker.js';
 import { scanDiff } from './scan/index.js';
-import { createSignerClient } from './signer-client.js';
+import {
+  assertSignerCluster,
+  createSignerClient,
+  SIGNER_STARTUP_CHECK,
+  type SignerClusterCheckOptions,
+} from './signer-client.js';
 import { enforceDisabledLaunchpads } from './disable.js';
 import { isRelayTokenSecret } from './relay-token.js';
 import { startSleepScheduler, type SleepScheduler } from './sleep.js';
@@ -46,8 +51,10 @@ import { createWorkerLogger, runWorker } from './worker/run.js';
  * errors; the Telegram alert variables on mainnet-beta), FORGE addresses (`requireAddresses` of
  * @forge/core), public variables of client
  * projects, sandbox step timeouts against the cap on one job, sandbox configuration, visual
- * review setting, removal of sandbox containers and job
- * folders left by a crash, then the gateway listens and the worker starts polling.
+ * review setting, the signer's cluster (its health route must report SOLANA_CLUSTER; an
+ * unreachable signer is retried a few times with backoff, then the start-up fails), removal of
+ * sandbox containers and job folders left by a crash, then the gateway listens and the worker
+ * starts polling.
  */
 
 const intFromEnv = (def: number, min: number, max: number) =>
@@ -247,6 +254,8 @@ export interface StartBuilderOptions {
   spawn?: SpawnFn;
   /** Test seam: listen on this port instead of FORGE_GATEWAY_PORT (0 = any free port). */
   gatewayPort?: number;
+  /** Test seam: retries of the signer cluster check (default SIGNER_STARTUP_CHECK). */
+  signerCheck?: Pick<SignerClusterCheckOptions, 'attempts' | 'baseDelayMs' | 'sleep'>;
 }
 
 /** Starts the builder. Resolves once the gateway listens and the worker polls. */
@@ -269,6 +278,25 @@ export async function startBuilder(opts: StartBuilderOptions = {}): Promise<Buil
     );
   }
   const review = visualReviewSetup(env, sandboxConfig.reviewImage, logger);
+
+  // The signer must run on the builder's cluster: checked before anything runs, through a client
+  // with a short timeout (assertSignerCluster: a mismatch fails at once, an unreachable signer is
+  // retried with backoff, then fails).
+  const signerHealth = await assertSignerCluster(
+    createSignerClient({
+      baseUrl: config.SIGNER_URL,
+      hmacSecret: config.SIGNER_HMAC_SECRET,
+      timeoutMs: SIGNER_STARTUP_CHECK.timeoutMs,
+      maxAttempts: 1,
+    }),
+    config.SOLANA_CLUSTER,
+    { logger, ...opts.signerCheck },
+  );
+  logger.info(
+    { cluster: signerHealth.cluster, signerOk: signerHealth.ok },
+    'signer cluster checked',
+  );
+
   const runner = createSandboxRunner(sandboxConfig, {
     logger,
     ...(opts.spawn ? { spawn: opts.spawn } : {}),
