@@ -66,7 +66,8 @@ export function HolderTable<TData, TValue>({ columns, data }: HolderTableProps<T
 
   return (
     <>
-      <div ref={parentRef} className="flex-1 overflow-y-auto">
+      {/* Scrolls on both axes inside its own frame: wide rows never stretch a phone page. */}
+      <div ref={parentRef} className="min-h-0 flex-1 overflow-auto">
         <div
           ref={tableRef}
           style={{

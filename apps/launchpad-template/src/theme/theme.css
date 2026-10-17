@@ -145,6 +145,90 @@ button {
   background: color-mix(in srgb, var(--color-text) 6%, transparent);
 }
 
+/* Header menus: the phone navigation panel and the connected wallet menu. */
+.launchpad-menu-button {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  color: var(--color-text);
+  transition: border-color 160ms ease, background-color 160ms ease;
+}
+.launchpad-menu-button:hover,
+.launchpad-menu-button[aria-expanded="true"] {
+  border-color: var(--color-primary);
+  background: color-mix(in srgb, var(--color-text) 6%, transparent);
+}
+.launchpad-mobile-menu {
+  border-color: var(--color-border);
+  background: var(--color-bg);
+  box-shadow: 0 12px 24px color-mix(in srgb, var(--color-text) 8%, transparent);
+}
+.launchpad-mobile-menu[hidden],
+.launchpad-wallet-menu[hidden] {
+  display: none;
+}
+.launchpad-mobile-menu-inner {
+  padding: .5rem var(--page-gutter) 1rem;
+}
+.launchpad-mobile-menu-link {
+  display: flex;
+  align-items: center;
+  min-height: 2.75rem;
+  padding-inline: .25rem;
+  border-bottom: 1px solid var(--color-border);
+  color: var(--color-text);
+  font: 500 1rem/1.3 var(--font-body);
+}
+.launchpad-mobile-menu-link:hover {
+  color: var(--color-primary);
+}
+.launchpad-mobile-menu-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 3.25rem;
+  padding-inline: .25rem;
+  color: var(--color-text-muted);
+  font-size: .875rem;
+}
+.launchpad-wallet-menu {
+  display: grid;
+  gap: .125rem;
+  border-color: var(--color-border);
+  border-radius: var(--radius-card);
+  background: var(--color-bg);
+  box-shadow: 0 12px 32px color-mix(in srgb, var(--color-text) 12%, transparent);
+}
+.launchpad-wallet-menu-address {
+  margin: 0;
+  padding: .5rem .625rem .625rem;
+  border-bottom: 1px solid var(--color-border);
+  color: var(--color-text-muted);
+  font: 400 .75rem/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+  overflow-wrap: anywhere;
+}
+.launchpad-wallet-menu-item {
+  display: flex;
+  align-items: center;
+  gap: .625rem;
+  width: 100%;
+  min-height: 2.5rem;
+  padding: .5rem .625rem;
+  border-radius: var(--radius);
+  color: var(--color-text);
+  font-size: .875rem;
+  text-align: left;
+  transition: background-color 160ms ease;
+}
+.launchpad-wallet-menu-item:hover {
+  background: color-mix(in srgb, var(--color-text) 6%, transparent);
+}
+.launchpad-wallet-menu-danger {
+  color: var(--color-danger);
+}
+@media (pointer: coarse) {
+  .launchpad-wallet-menu-item { min-height: 2.75rem; }
+}
+
 .launchpad-footer {
   display: grid;
   grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
@@ -179,8 +263,9 @@ button {
   background: linear-gradient(120deg, var(--color-bg), color-mix(in srgb, var(--color-primary) 5%, var(--color-bg)));
 }
 .launchpad-hero-copy { position: relative; z-index: 2; }
-.launchpad-eyebrow { margin: 0 0 1.3rem; color: var(--color-text-muted); font: 500 .65rem/1.4 var(--font-body); letter-spacing: .15em; }
-.launchpad-hero h1 { max-width: 10ch; margin: 0; font: 400 clamp(3.8rem, 8vw, 8rem)/.92 var(--font-heading); letter-spacing: -.065em; text-wrap: balance; overflow-wrap: anywhere; }
+.launchpad-eyebrow { margin: 0 0 1.3rem; color: var(--color-text-muted); font: 500 .75rem/1.4 var(--font-body); letter-spacing: .15em; }
+/* Long launchpad names wrap between words; a single word wider than the column is hyphenated, or broken as a last resort. */
+.launchpad-hero h1 { max-width: 10ch; margin: 0; font: 400 clamp(3.8rem, 8vw, 8rem)/.92 var(--font-heading); letter-spacing: -.065em; text-wrap: balance; overflow-wrap: break-word; -webkit-hyphens: auto; hyphens: auto; }
 .launchpad-title-period { color: var(--color-primary); }
 .launchpad-hero-tagline { max-width: 31ch; margin: 1.25rem 0 0; color: var(--color-text-muted); font: 400 clamp(.9rem, 1.2vw, 1rem)/1.55 var(--font-body); }
 .launchpad-hero-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 1.75rem; margin-top: 1.8rem; }
@@ -196,14 +281,14 @@ button {
 .launchpad-market-heading { display: flex; align-items: baseline; gap: 1rem; margin-bottom: 1.2rem; }
 .launchpad-market-heading .launchpad-eyebrow { display: none; }
 .launchpad-market-heading h2 { margin: 0; font: 400 clamp(1.8rem, 3vw, 2.5rem)/1 var(--font-heading); letter-spacing: -.055em; }
-.launchpad-market-network { margin-left: auto; display: flex; align-items: center; gap: .5rem; color: var(--color-text-muted); font: 400 .7rem/1 var(--font-body); }
+.launchpad-market-network { margin-left: auto; display: flex; align-items: center; gap: .5rem; color: var(--color-text-muted); font: 400 .75rem/1 var(--font-body); }
 .launchpad-market-network i { width: .3rem; aspect-ratio: 1; border-radius: 50%; background: var(--color-text-muted); }
 /* `clip`, not `hidden`: rounds the corners without making the card a scroll container. */
 .launchpad-market > div { border: 1px solid var(--color-border); border-radius: var(--radius-card); overflow: clip; }
 .launchpad-market-column { height: var(--market-height); background: var(--color-bg); }
 .launchpad-column-heading { min-height: 3.75rem; padding: 1rem 1.2rem; border-color: var(--color-border); }
 .launchpad-column-heading h2 { font: 500 .8rem/1.4 var(--font-body); color: var(--color-text); }
-.launchpad-column-number { color: var(--color-text-muted); font: 400 .62rem/1 var(--font-body); opacity: .7; }
+.launchpad-column-number { color: var(--color-text-muted); font: 400 .75rem/1 var(--font-body); }
 .launchpad-token-row { min-height: var(--token-row-height); padding: 1rem .8rem; border-color: var(--color-border); transition: background 150ms; }
 .launchpad-token-row:hover { background: var(--color-surface); }
 .launchpad-token-row > a:focus-visible { outline-offset: -3px; }
@@ -211,11 +296,11 @@ button {
 .launchpad-empty-mark { width: 3.1rem; height: 3.1rem; display: grid; place-items: center; margin-bottom: .7rem; border: 1px solid var(--color-border); border-radius: 50%; color: var(--color-text-muted); font: 400 1.4rem/1 var(--font-body); }
 .launchpad-market-empty p { color: var(--color-text); font: 400 1.4rem/1.2 var(--font-heading); letter-spacing: -.03em; }
 .launchpad-market-empty > span:not(.launchpad-empty-mark) { max-width: 23ch; color: var(--color-text-muted); font: 400 .75rem/1.6 var(--font-body); }
-.launchpad-market-empty .launchpad-hero-link { margin-top: .4rem; font-size: .7rem; }
+.launchpad-market-empty .launchpad-hero-link { margin-top: .4rem; font-size: .8rem; }
 .launchpad-mobile-tabs { background: var(--color-surface); }
-.launchpad-mobile-tabs button { border-radius: var(--radius); font-size: .7rem; }
+.launchpad-mobile-tabs button { border-radius: var(--radius); font-size: .8125rem; }
 .launchpad-about, .launchpad-create { padding: var(--section-space) var(--page-gutter); }
-.launchpad-about h1, .launchpad-create-heading h1 { max-width: 12ch; margin: 0 0 2rem; font: 400 clamp(3rem, 7vw, 6.5rem)/.94 var(--font-heading); letter-spacing: -.065em; }
+.launchpad-about h1, .launchpad-create-heading h1 { max-width: 12ch; margin: 0 0 2rem; font: 400 clamp(2.5rem, 7vw, 6.5rem)/.94 var(--font-heading); letter-spacing: -.065em; overflow-wrap: break-word; -webkit-hyphens: auto; hyphens: auto; }
 .launchpad-about-copy { max-width: 42rem; padding-top: 1.5rem; border-top: 1px solid var(--color-border); color: var(--color-text-muted); font: 400 clamp(1rem, 1.5vw, 1.15rem)/1.8 var(--font-body); white-space: pre-line; }
 .launchpad-create-heading { border-bottom: 1px solid var(--color-border); padding-bottom: 2rem; }
 .launchpad-create-heading > p:last-child { color: var(--color-text-muted); }
@@ -242,7 +327,7 @@ button {
 @media (max-width: 700px) {
   :root { --header-height: 4rem; --mint-width: 18rem; --token-row-height: 6.3rem; }
   .launchpad-hero { grid-template-columns: 1fr; min-height: auto; padding-block: 2.2rem 1.5rem; }
-  .launchpad-hero h1 { max-width: 9ch; font-size: clamp(3.6rem, 16vw, 5.5rem); }
+  .launchpad-hero h1 { max-width: none; font-size: clamp(2.6rem, 12vw, 4.75rem); line-height: .96; }
   .launchpad-hero-actions { margin-top: 1.3rem; }
   .launchpad-mint { max-width: 90%; height: 12rem; margin-top: 1rem; }
   .launchpad-market-heading h2 { font-size: 2rem; }

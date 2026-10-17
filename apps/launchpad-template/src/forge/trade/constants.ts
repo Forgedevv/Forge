@@ -31,5 +31,11 @@ export const TOKEN_ACCOUNT_SIZE = 165;
 /** Timings. Overridable through props for tests. */
 export const QUOTE_DEBOUNCE_MS = 350;
 export const QUOTE_REFRESH_MS = 15_000;
+/**
+ * Age after which a quote on screen can no longer be signed (two refresh periods): when refreshes
+ * keep failing, the last good quote stays visible, marked stale, but the trade button waits for a
+ * new one. The trade itself always re-quotes right before building (`useTradeExecution`).
+ */
+export const QUOTE_MAX_AGE_MS = 30_000;
 export const CONFIRM_TIMEOUT_MS = 60_000;
 export const CONFIRM_POLL_MS = 1_500;

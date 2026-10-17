@@ -17,10 +17,11 @@ const buttonVariants = cva(
         ghost: 'text-neutral-300 hover:bg-neutral-900 hover:text-neutral-100',
       },
       size: {
-        sm: 'h-8 px-3 text-xs',
-        default: 'h-9 px-4 text-xs md:h-10 md:px-6 md:text-sm',
+        // `touch:` (touch screens and phones): at least a 40px tap target.
+        sm: 'h-8 px-3 text-xs touch:h-10',
+        default: 'h-9 px-4 text-xs touch:h-10 md:h-10 md:px-6 md:text-sm',
         lg: 'h-11 px-8 text-sm md:text-base',
-        icon: 'h-9 w-9',
+        icon: 'h-9 w-9 touch:h-10 touch:w-10',
       },
     },
     defaultVariants: {

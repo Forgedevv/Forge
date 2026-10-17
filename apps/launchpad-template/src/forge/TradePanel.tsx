@@ -7,6 +7,7 @@ import { getRelayConnection } from './trade/connection';
 import { TradeForm } from './trade/TradeForm';
 import { useGraduated } from './trade/useGraduated';
 import { useLaunchpadPool } from './trade/useLaunchpadPool';
+import { TRADE_TEXT } from './trade/copy';
 import { TradeError } from './trade/errors';
 import type { ConfirmOptions } from './trade/confirm';
 
@@ -32,8 +33,11 @@ export interface TradePanelProps {
   /** Tuning knobs, mostly for tests. */
   quoteDebounceMs?: number;
   quoteRefreshMs?: number;
+  quoteMaxAgeMs?: number;
   confirmOptions?: ConfirmOptions;
 }
+
+const TEXT = TRADE_TEXT.panel;
 
 const shell =
   'w-full rounded-[var(--radius)] border border-[var(--color-border)] bg-[var(--color-surface)] p-4 text-[var(--color-text)]';
@@ -66,12 +70,10 @@ export function TradePanel(props: TradePanelProps) {
           className="w-full cursor-not-allowed rounded-[var(--radius)] border border-[var(--color-border)] px-4 py-3 text-sm text-[var(--color-text-muted)] opacity-60"
           data-testid="trade-disabled"
         >
-          {siteConfig.mode === 'sleeping' ? 'Trading is paused' : 'Trading is unavailable'}
+          {siteConfig.mode === 'sleeping' ? TEXT.paused : TEXT.unavailable}
         </button>
         <p className="mt-2 text-xs text-[var(--color-text-muted)]">
-          {siteConfig.mode === 'sleeping'
-            ? 'This launchpad is sleeping.'
-            : 'This site is currently unavailable.'}
+          {siteConfig.mode === 'sleeping' ? TEXT.sleepingNote : TEXT.unavailableNote}
         </p>
       </section>
     );
@@ -89,14 +91,14 @@ function LiveTradePanel(props: TradePanelProps) {
 
   const loading = (
     <p className="text-sm text-[var(--color-text-muted)]" data-testid="trade-loading">
-      Loading trading data...
+      {TEXT.loading}
     </p>
   );
   const routeError = (message: string, onRetry: () => void) => (
     <div role="alert" className="flex flex-col gap-2 text-sm" data-testid="trade-route-error">
       <p className="text-[var(--color-danger)]">{message}</p>
-      <button type="button" onClick={onRetry} className="self-start underline">
-        Retry
+      <button type="button" onClick={onRetry} className="self-start underline touch:min-h-[2.5rem]">
+        {TEXT.retry}
       </button>
     </div>
   );
@@ -134,8 +136,7 @@ function LiveTradePanel(props: TradePanelProps) {
     body = (
       <div className="flex flex-col gap-3" data-testid="trade-jupiter">
         <p className="text-sm text-[var(--color-text-muted)]">
-          This coin graduated. Swaps run through Jupiter and include a{' '}
-          {formatBps(JUPITER_REFERRAL_FEE_BPS)} FORGE platform fee.
+          {TEXT.graduated(formatBps(JUPITER_REFERRAL_FEE_BPS))}
         </p>
         <JupiterTrade launchpadPool={launchpadPool} />
       </div>
@@ -151,6 +152,7 @@ function LiveTradePanel(props: TradePanelProps) {
         onGraduated={markGraduated}
         quoteDebounceMs={props.quoteDebounceMs}
         quoteRefreshMs={props.quoteRefreshMs}
+        quoteMaxAgeMs={props.quoteMaxAgeMs}
         confirmOptions={props.confirmOptions}
       />
     );

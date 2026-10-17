@@ -141,6 +141,9 @@ export default {
     plugin(({ addUtilities, addVariant }) => {
       // Only apply hover styles on devices that actually support hover
       addVariant('has-hover', '@media (hover: hover) and (pointer: fine)');
+      // Touch screens and phones: larger tap targets (at least 40px) without loosening the desktop
+      // density, e.g. `touch:min-h-[2.5rem]`.
+      addVariant('touch', '@media (pointer: coarse), (max-width: 639px)');
 
       addUtilities({
         '.scrollbar-none': {

@@ -1,20 +1,13 @@
+import { CHART_UNAVAILABLE_COPY } from './copy';
+
 /**
  * LOCKED ZONE. Shown in place of the chart when its price history cannot be loaded: the Jupiter
  * data API is unavailable, or the site runs on devnet (Jupiter does not index it). Prices, curve
  * progress and the FORGE trade panel keep working from on-chain data. Styled with the theme's
  * empty-state classes (`launchpad-market-empty`).
  */
-export const CHART_UNAVAILABLE_COPY = {
-  unavailable: {
-    title: 'Chart temporarily unavailable',
-    body: 'Price history could not be loaded. Prices and trading still work.',
-    retry: 'Retry',
-  },
-  devnet: {
-    title: 'No chart on devnet',
-    body: 'Price history comes from Jupiter, which does not index devnet. Prices and trading still work.',
-  },
-} as const;
+/** Texts of this state; they live in `chart/copy.ts`. */
+export { CHART_UNAVAILABLE_COPY };
 
 type ChartUnavailableProps = {
   /** Devnet: no retry, the history never exists there. */

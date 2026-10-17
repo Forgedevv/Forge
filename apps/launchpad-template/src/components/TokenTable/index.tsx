@@ -1,10 +1,7 @@
-import { useInfiniteQuery } from '@tanstack/react-query';
 import { useAtom } from 'jotai';
 import { memo } from 'react';
 
 import { BottomPanelTab, bottomPanelTabAtom } from './config';
-import { useTokenInfo } from '@/hooks/queries';
-import { ReadableNumber } from '../ui/ReadableNumber';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from './Tabs';
 import { cn } from '@/lib/utils';
 import { TxnsTab } from './TxnsTab';

@@ -41,6 +41,10 @@ default template imports none and uses system font stacks.
 
 The Tailwind `primary` scale (`--primary`, `--primary-300`, ...) is also derived from
 `theme.primaryColor`, so existing classes such as `bg-primary` follow the theme.
+`primary-600` to `primary-900` are soft tints: toward white in light mode, toward the dark surface
+in dark mode. `primary-950` is the readable text colour on the primary colour (dark or white from
+its luminance): always pair `bg-primary` with `text-primary-950`, never a fixed white or black.
+Small controls use the `touch:` variant (coarse pointer or phone width) for 40px tap targets.
 
 The shared shell uses the theme variables for page background, text, borders, brand mark, focus
 indicators, and navigation states. Reduced-motion preferences disable smooth scrolling and minimize
@@ -52,7 +56,11 @@ The homepage is composed of optional sections (`src/components/home/`): the iden
 value strip, the market, how it works, the launchpad coin, questions and a closing call to action.
 While no coin exists, the market shows one compact panel (`Explore/MarketEmpty`) instead of three
 empty columns. On mobile the market tabs stay in the card flow (not sticky). Shared buttons use
-`launchpad-button`, `launchpad-button-primary` and `launchpad-button-ghost`. The header and footer
+`launchpad-button`, `launchpad-button-primary` and `launchpad-button-ghost`. On phones the header links
+and the theme toggle move into a menu (`MobileNav`, `launchpad-menu-button`,
+`launchpad-mobile-menu*`); the connected wallet button opens a small menu (`WalletMenu`,
+`launchpad-wallet-menu*`: copy the address, view it on the explorer, creator fees, disconnect).
+The header and footer
 draw the mark of `src/components/Logo.tsx`; the app shell frames the locked creator fee page
 (`[data-forge-page="creator-fees"]`) with the same header and footer. `MintSculpture` is local
 SVG artwork with two engraved medallions; its finish follows the variables above, and it holds a

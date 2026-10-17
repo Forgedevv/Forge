@@ -127,8 +127,9 @@ export function TxTable<TData, TValue>({
     };
   }, [onScroll]);
 
+  // Scrolls on both axes inside its own frame: wide rows never stretch a phone page.
   return (
-    <div ref={parentRef} className="flex-1 overflow-y-auto">
+    <div ref={parentRef} className="min-h-0 flex-1 overflow-auto">
       <div
         ref={tableRef}
         className="relative -mt-px w-full"

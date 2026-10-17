@@ -17,7 +17,8 @@ const HolderTagInfo: Record<
   }
 > = {
   [HolderTag.CUSTOM]: {
-    className: 'bg-primary-800 text-primary-300',
+    // A soft brand tint in both modes, with the strong text colour so any brand stays readable.
+    className: 'bg-primary-800 text-neutral-100',
   },
 };
 

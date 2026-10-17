@@ -28,7 +28,7 @@ export const columns: ColumnDef<HolderInfo>[] = [
 
       return (
         <div className="flex items-center gap-x-1.5">
-          <span className="text-xxs tabular-nums tracking-tighter text-neutral-600">
+          <span className="text-xs tabular-nums tracking-tighter text-neutral-500">
             #{row.original.index}
           </span>
           <div className="flex items-center">

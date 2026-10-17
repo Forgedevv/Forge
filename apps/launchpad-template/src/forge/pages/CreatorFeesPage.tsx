@@ -1,6 +1,7 @@
 import Head from 'next/head';
 import Link from 'next/link';
 import { ClaimCreatorFees } from '../ClaimCreatorFees';
+import { CREATOR_FEES_TEXT } from '../claims/copy';
 import { siteConfig } from '../config';
 
 /**
@@ -18,11 +19,8 @@ import { siteConfig } from '../config';
 /** Route of this page; free-zone navigation links here. */
 export const CREATOR_FEES_PATH = '/creator-fees';
 
-export const CREATOR_FEES_TEXT = {
-  title: 'Creator fees',
-  intro: 'Created a coin on this launchpad? Claim the creator fees it earned for you.',
-  backHome: 'Back to the launchpad',
-} as const;
+/** Texts of the page; they live with the claim widget's in `claims/copy.ts`. */
+export { CREATOR_FEES_TEXT };
 
 export function CreatorFeesPage() {
   return (

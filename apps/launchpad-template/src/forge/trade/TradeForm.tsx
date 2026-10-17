@@ -7,6 +7,7 @@ import type { TradeSide } from './core-adapter';
 import { TradeError } from './errors';
 import { isLaunchpadPool, launchpadPoolKey, type LaunchpadPool } from './launchpad-pool';
 import { QuoteSummary } from './QuoteSummary';
+import { TRADE_TEXT } from './copy';
 import { explorerTxUrl, resolveCluster } from './trade-config';
 import { BUSY_STATUSES, useTradeExecution } from './useTradeExecution';
 import { useMintDecimals } from './useMintDecimals';
@@ -35,20 +36,24 @@ export interface TradeFormProps {
   /** Tuning knobs, mostly for tests. */
   quoteDebounceMs?: number;
   quoteRefreshMs?: number;
+  quoteMaxAgeMs?: number;
   confirmOptions?: ConfirmOptions;
 }
 
 const BUY_PRESETS = ['0.1', '0.5', '1'];
 const SLIPPAGE_PRESETS = ['0.5', '1', '3'];
 
-const STATUS_LABEL: Record<string, string> = {
-  quoting: 'Checking the price...',
-  building: 'Preparing the transaction...',
-  simulating: 'Checking the transaction...',
-  signing: 'Confirm in your wallet...',
-  sending: 'Sending...',
-  confirming: 'Confirming...',
-};
+const TEXT = TRADE_TEXT.form;
+
+/*
+ * Colours are theme tokens only: `primary` is the brand colour and `primary-950` the readable text
+ * on it (dark or white, from its luminance), so light brands (yellow, lime) stay legible. Small
+ * controls stay compact on desktop and grow to a 40px tap target on touch screens and phones
+ * (`touch:` variant, tailwind.config.js).
+ */
+const chipClass =
+  'inline-flex items-center justify-center rounded-[var(--radius)] border px-2 py-1 text-xs touch:min-h-[2.5rem] touch:min-w-[2.75rem] touch:px-3 touch:text-sm';
+const textButtonClass = 'self-start underline touch:min-h-[2.5rem]';
 
 function safeKey(value: string): PublicKey | null {
   try {
@@ -69,10 +74,11 @@ export function TradeForm(props: TradeFormProps) {
     onGraduated,
     quoteDebounceMs,
     quoteRefreshMs,
+    quoteMaxAgeMs,
     confirmOptions,
   } = props;
   /** Unit of token amounts: the ticker, or a neutral word when the coin data has none. */
-  const tokenUnit = symbol || 'tokens';
+  const tokenUnit = symbol || TEXT.tokenUnit;
 
   const { setShowModal } = useUnifiedWalletContext();
   const execution = useTradeExecution(confirmOptions);
@@ -124,8 +130,13 @@ export function TradeForm(props: TradeFormProps) {
     enabled: !busy && execution.status !== 'success',
     debounceMs: quoteDebounceMs,
     refreshMs: quoteRefreshMs,
+    maxAgeMs: quoteMaxAgeMs,
   });
   const quote = quoteState.status === 'ready' ? quoteState.quote : null;
+  // A quote too old to sign stays on screen (stale) until a refresh replaces it.
+  const quoteExpired = quoteState.status === 'ready' && quoteState.expired;
+  const quoteRefreshFailed = quoteState.status === 'ready' && quoteState.refreshError !== null;
+  const quoteStale = quoteExpired || quoteRefreshFailed;
 
   const resetOutcome = execution.reset;
   const changeSide = (next: TradeSide) => {
@@ -169,7 +180,7 @@ export function TradeForm(props: TradeFormProps) {
       setShowModal(true);
       return;
     }
-    if (!poolKey || !quote || !amount.ok || !slippage.ok) return;
+    if (!poolKey || !quote || quoteExpired || !amount.ok || !slippage.ok) return;
     if (side === 'sell' && chainDecimals === null) return;
     const result = await execution.execute({
       connection,
@@ -202,6 +213,7 @@ export function TradeForm(props: TradeFormProps) {
     amountOk: amount.ok,
     slippageOk: slippage.ok,
     quoteStatus: quoteState.status,
+    quoteExpired,
     connected: publicKey !== null,
     insufficient,
     side,
@@ -221,7 +233,7 @@ export function TradeForm(props: TradeFormProps) {
 
   return (
     <div className="flex flex-col gap-4" data-testid="trade-form">
-      <div role="tablist" aria-label="Trade side" className="grid grid-cols-2 gap-1">
+      <div role="tablist" aria-label={TEXT.sideLabel} className="grid grid-cols-2 gap-1">
         {(['buy', 'sell'] as const).map((tab) => (
           <button
             key={tab}
@@ -230,36 +242,32 @@ export function TradeForm(props: TradeFormProps) {
             aria-selected={side === tab}
             disabled={busy}
             onClick={() => changeSide(tab)}
-            className={`rounded-[var(--radius)] px-3 py-2 text-sm font-semibold capitalize transition-colors ${
+            className={`min-h-[2.5rem] rounded-[var(--radius)] px-3 py-2 text-sm font-semibold transition-colors touch:min-h-[2.75rem] ${
               side === tab
-                ? 'bg-[var(--color-primary,#7c3aed)] text-white'
+                ? 'bg-primary text-primary-950'
                 : 'bg-transparent text-[var(--color-text-muted)] hover:text-[var(--color-text)]'
             }`}
           >
-            {tab}
+            {TEXT.sides[tab]}
           </button>
         ))}
       </div>
 
       <div className="flex flex-col gap-1.5">
         <label htmlFor="forge-trade-amount" className="text-sm text-[var(--color-text-muted)]">
-          {side === 'buy'
-            ? 'Amount to spend (SOL)'
-            : symbol
-              ? `Amount to sell (${symbol})`
-              : 'Amount to sell'}
+          {side === 'buy' ? TEXT.amountBuy : TEXT.amountSell(symbol)}
         </label>
         <input
           id="forge-trade-amount"
           inputMode="decimal"
           autoComplete="off"
-          placeholder="0.0"
+          placeholder={TEXT.amountPlaceholder}
           value={amountText}
           disabled={busy}
           onChange={(event) => editAmount(event.target.value)}
           aria-invalid={amountError !== null}
           aria-describedby={amountError ? 'forge-trade-amount-error' : undefined}
-          className="w-full rounded-[var(--radius)] border border-[var(--color-border)] bg-transparent p-3 text-base text-[var(--color-text)] focus:outline-none focus:ring-1 focus:ring-[var(--color-primary,#7c3aed)]"
+          className="w-full rounded-[var(--radius)] border border-[var(--color-border)] bg-transparent p-3 text-base text-[var(--color-text)] focus:outline-none focus:ring-1 focus:ring-primary"
         />
         {amountError ? (
           <p
@@ -278,9 +286,9 @@ export function TradeForm(props: TradeFormProps) {
                   type="button"
                   disabled={busy}
                   onClick={() => editAmount(preset)}
-                  className="rounded-[var(--radius)] border border-[var(--color-border)] px-2 py-1 text-xs text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
+                  className={`${chipClass} border-[var(--color-border)] text-[var(--color-text-muted)] hover:text-[var(--color-text)]`}
                 >
-                  {preset} SOL
+                  {TEXT.presetSol(preset)}
                 </button>
               ))
             : null}
@@ -291,14 +299,14 @@ export function TradeForm(props: TradeFormProps) {
               onClick={() =>
                 editAmount(formatUnits(balances.token, chainDecimals).replace(/,/g, ''))
               }
-              className="rounded-[var(--radius)] border border-[var(--color-border)] px-2 py-1 text-xs text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
+              className={`${chipClass} border-[var(--color-border)] text-[var(--color-text-muted)] hover:text-[var(--color-text)]`}
             >
-              Max
+              {TEXT.max}
             </button>
           ) : null}
           {balances ? (
             <span className="ml-auto text-xs text-[var(--color-text-muted)]" data-testid="balance">
-              Balance:{' '}
+              {TEXT.balance}{' '}
               {side === 'buy'
                 ? `${formatUnits(balances.sol, SOL_DECIMALS, 4)} SOL`
                 : `${formatUnits(balances.token, tokenDecimals, 4)} ${tokenUnit}`}
@@ -308,15 +316,15 @@ export function TradeForm(props: TradeFormProps) {
         {side === 'sell' && mintDecimals.status === 'error' ? (
           <div role="alert" className="flex flex-col gap-1 text-xs" data-testid="mint-error">
             <p className="text-[var(--color-danger)]">{mintDecimals.error}</p>
-            <button type="button" onClick={retryMintDecimals} className="self-start underline">
-              Retry
+            <button type="button" onClick={retryMintDecimals} className={textButtonClass}>
+              {TEXT.retry}
             </button>
           </div>
         ) : null}
       </div>
 
       <fieldset className="flex flex-col gap-1.5">
-        <legend className="text-sm text-[var(--color-text-muted)]">Slippage tolerance</legend>
+        <legend className="text-sm text-[var(--color-text-muted)]">{TEXT.slippageLegend}</legend>
         <div className="flex flex-wrap items-center gap-1.5">
           {SLIPPAGE_PRESETS.map((preset) => (
             <button
@@ -325,9 +333,9 @@ export function TradeForm(props: TradeFormProps) {
               disabled={busy}
               aria-pressed={slippageText === preset}
               onClick={() => setSlippageText(preset)}
-              className={`rounded-[var(--radius)] border px-2 py-1 text-xs ${
+              className={`${chipClass} ${
                 slippageText === preset
-                  ? 'border-[var(--color-primary,#7c3aed)] text-[var(--color-text)]'
+                  ? 'border-primary text-[var(--color-text)]'
                   : 'border-[var(--color-border)] text-[var(--color-text-muted)]'
               }`}
             >
@@ -335,7 +343,7 @@ export function TradeForm(props: TradeFormProps) {
             </button>
           ))}
           <label className="sr-only" htmlFor="forge-trade-slippage">
-            Custom slippage in percent
+            {TEXT.slippageCustom}
           </label>
           <input
             id="forge-trade-slippage"
@@ -345,37 +353,63 @@ export function TradeForm(props: TradeFormProps) {
             disabled={busy}
             onChange={(event) => setSlippageText(event.target.value)}
             aria-invalid={slippageError !== null}
-            className="w-20 rounded-[var(--radius)] border border-[var(--color-border)] bg-transparent px-2 py-1 text-xs text-[var(--color-text)]"
+            className="w-20 rounded-[var(--radius)] border border-[var(--color-border)] bg-transparent px-2 py-1 text-xs text-[var(--color-text)] focus:outline-none focus:ring-1 focus:ring-primary touch:min-h-[2.5rem] touch:text-base"
           />
-          <span className="text-xs text-[var(--color-text-muted)]">%</span>
+          <span className="text-xs text-[var(--color-text-muted)]">{TEXT.percent}</span>
         </div>
         {slippageError ? (
           <p role="alert" className="text-xs text-[var(--color-danger)]">
             {slippageError}
           </p>
         ) : slippageWarn ? (
-          <p className="text-xs text-[var(--color-danger)]">
-            High slippage: you may get a noticeably worse price.
-          </p>
+          <p className="text-xs text-[var(--color-danger)]">{TEXT.slippageHigh}</p>
         ) : null}
       </fieldset>
 
       <div className="min-h-[2rem]" aria-live="polite">
         {quote ? (
-          <QuoteSummary
-            quote={quote}
-            symbol={tokenUnit}
-            tokenDecimals={tokenDecimals}
-            networkFee={networkFee}
-          />
+          <>
+            <div
+              className={`transition-opacity ${quoteStale ? 'opacity-60' : ''}`}
+              data-testid="quote-freshness"
+              data-stale={quoteStale ? 'true' : 'false'}
+            >
+              <QuoteSummary
+                quote={quote}
+                symbol={tokenUnit}
+                tokenDecimals={tokenDecimals}
+                networkFee={networkFee}
+              />
+            </div>
+            {/* Space kept for the hint, so the panel does not jump on every refresh. */}
+            <div className="mt-1.5 flex min-h-[1rem] flex-wrap items-center gap-x-2 text-xs text-[var(--color-text-muted)]">
+              {quoteStale ? (
+                <>
+                  <span data-testid="quote-stale-hint">
+                    {quoteExpired ? TEXT.quoteExpired : TEXT.quoteRefreshFailed}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={quoteState.refresh}
+                    className="underline touch:min-h-[2.5rem]"
+                  >
+                    {TEXT.refreshQuote}
+                  </button>
+                </>
+              ) : quoteState.status === 'ready' && quoteState.refreshing ? (
+                // Visual only: a screen reader is not told about every routine refresh.
+                <span aria-hidden="true" data-testid="quote-refreshing">
+                  {TEXT.quoteRefreshing}
+                </span>
+              ) : null}
+            </div>
+          </>
         ) : quoteState.status === 'loading' ? (
           <p className="text-sm text-[var(--color-text-muted)]" data-testid="quote-loading">
-            Getting a quote...
+            {TEXT.quoteLoading}
           </p>
         ) : (
-          <p className="text-sm text-[var(--color-text-muted)]">
-            Enter an amount to see the output, price impact and every fee before you sign.
-          </p>
+          <p className="text-sm text-[var(--color-text-muted)]">{TEXT.quoteEmpty}</p>
         )}
       </div>
 
@@ -394,7 +428,7 @@ export function TradeForm(props: TradeFormProps) {
               target="_blank"
               rel="noopener noreferrer"
             >
-              View transaction on the explorer
+              {TEXT.viewTransaction}
             </a>
           ) : null}
         </div>
@@ -406,14 +440,14 @@ export function TradeForm(props: TradeFormProps) {
           className="rounded-[var(--radius)] border border-[var(--color-success)] p-3 text-sm text-[var(--color-success)]"
           data-testid="trade-success"
         >
-          <p>Trade confirmed.</p>
+          <p>{TEXT.confirmed}</p>
           <a
             className="underline"
             href={explorerTxUrl(execution.signature, cluster)}
             target="_blank"
             rel="noopener noreferrer"
           >
-            View transaction on the explorer
+            {TEXT.viewTransaction}
           </a>
         </div>
       ) : null}
@@ -423,14 +457,13 @@ export function TradeForm(props: TradeFormProps) {
         onClick={submit}
         disabled={button.disabled}
         data-testid="trade-submit"
-        className="w-full rounded-[var(--radius)] bg-[var(--color-primary,#7c3aed)] px-4 py-3 text-sm font-semibold text-white transition-opacity disabled:cursor-not-allowed disabled:opacity-50"
+        className="min-h-[2.75rem] w-full rounded-[var(--radius)] bg-primary px-4 py-3 text-sm font-semibold text-primary-950 transition-[background-color,opacity] enabled:hover:bg-primary-300 disabled:cursor-not-allowed disabled:opacity-50"
       >
         {button.label}
       </button>
 
       <p className="text-xs text-[var(--color-text-muted)]" data-testid="fee-note">
-        Trades include a {formatBps(PLATFORM_FEE_BPS)} FORGE platform fee, shown above before you
-        sign.
+        {TEXT.feeNote(formatBps(PLATFORM_FEE_BPS))}
       </p>
     </div>
   );
@@ -440,13 +473,13 @@ function amountErrorText(parsed: ReturnType<typeof parseAmount>, decimals: numbe
   if (parsed.ok) return null;
   switch (parsed.reason) {
     case 'invalid':
-      return 'Enter a number, for example 0.5.';
+      return TRADE_TEXT.amountError.invalid;
     case 'too_many_decimals':
-      return `At most ${decimals} decimals.`;
+      return TRADE_TEXT.amountError.tooManyDecimals(decimals);
     case 'zero':
-      return 'The amount must be greater than zero.';
+      return TRADE_TEXT.amountError.zero;
     case 'too_large':
-      return 'That amount is too large.';
+      return TRADE_TEXT.amountError.tooLarge;
     default:
       return null;
   }
@@ -456,9 +489,9 @@ function slippageErrorText(parsed: ReturnType<typeof parseSlippagePercent>): str
   if (parsed.ok) return null;
   const min = formatBps(SLIPPAGE_BPS.min);
   const max = formatBps(SLIPPAGE_BPS.max);
-  if (parsed.reason === 'too_low') return `Slippage must be at least ${min}.`;
-  if (parsed.reason === 'too_high') return `Slippage must be at most ${max}.`;
-  return `Enter a slippage between ${min} and ${max}.`;
+  if (parsed.reason === 'too_low') return TRADE_TEXT.slippageError.tooLow(min);
+  if (parsed.reason === 'too_high') return TRADE_TEXT.slippageError.tooHigh(max);
+  return TRADE_TEXT.slippageError.invalid(min, max);
 }
 
 function buttonState(args: {
@@ -467,6 +500,8 @@ function buttonState(args: {
   amountOk: boolean;
   slippageOk: boolean;
   quoteStatus: 'idle' | 'loading' | 'ready' | 'error';
+  /** The quote on screen is too old to sign. */
+  quoteExpired: boolean;
   connected: boolean;
   insufficient: boolean;
   side: TradeSide;
@@ -474,24 +509,23 @@ function buttonState(args: {
   /** Status of the on-chain mint read, on the sell side only. */
   sellDecimals: 'idle' | 'loading' | 'ready' | 'error' | null;
 }): { label: string; disabled: boolean } {
-  if (args.misconfigured) return { label: 'Trading unavailable', disabled: true };
+  const label = TRADE_TEXT.button;
+  if (args.misconfigured) return { label: label.misconfigured, disabled: true };
   if (args.busyStatus) {
-    return { label: STATUS_LABEL[args.busyStatus] ?? 'Working...', disabled: true };
+    return { label: label.status[args.busyStatus] ?? label.working, disabled: true };
   }
   if (args.sellDecimals === 'idle' || args.sellDecimals === 'loading') {
-    return { label: 'Reading the coin...', disabled: true };
+    return { label: label.readingCoin, disabled: true };
   }
-  if (args.sellDecimals === 'error') return { label: 'Coin unavailable', disabled: true };
-  if (!args.amountOk) return { label: 'Enter an amount', disabled: true };
-  if (!args.slippageOk) return { label: 'Fix slippage', disabled: true };
+  if (args.sellDecimals === 'error') return { label: label.coinUnavailable, disabled: true };
+  if (!args.amountOk) return { label: label.enterAmount, disabled: true };
+  if (!args.slippageOk) return { label: label.fixSlippage, disabled: true };
   if (args.quoteStatus === 'loading' || args.quoteStatus === 'idle') {
-    return { label: 'Getting quote...', disabled: true };
+    return { label: label.gettingQuote, disabled: true };
   }
-  if (args.quoteStatus === 'error') return { label: 'Quote unavailable', disabled: true };
-  if (!args.connected) return { label: 'Connect wallet', disabled: false };
-  if (args.insufficient) return { label: 'Insufficient balance', disabled: true };
-  return {
-    label: `${args.side === 'buy' ? 'Buy' : 'Sell'}${args.symbol ? ` ${args.symbol}` : ''}`,
-    disabled: false,
-  };
+  if (args.quoteStatus === 'error') return { label: label.quoteUnavailable, disabled: true };
+  if (args.quoteExpired) return { label: label.quoteExpired, disabled: true };
+  if (!args.connected) return { label: label.connect, disabled: false };
+  if (args.insufficient) return { label: label.insufficient, disabled: true };
+  return { label: label.trade(args.side, args.symbol), disabled: false };
 }
