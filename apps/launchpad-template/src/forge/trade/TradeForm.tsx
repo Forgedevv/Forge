@@ -36,6 +36,7 @@ export interface TradeFormProps {
   /** Tuning knobs, mostly for tests. */
   quoteDebounceMs?: number;
   quoteRefreshMs?: number;
+  quoteMaxAgeMs?: number;
   confirmOptions?: ConfirmOptions;
 }
 
@@ -73,6 +74,7 @@ export function TradeForm(props: TradeFormProps) {
     onGraduated,
     quoteDebounceMs,
     quoteRefreshMs,
+    quoteMaxAgeMs,
     confirmOptions,
   } = props;
   /** Unit of token amounts: the ticker, or a neutral word when the coin data has none. */
@@ -128,8 +130,13 @@ export function TradeForm(props: TradeFormProps) {
     enabled: !busy && execution.status !== 'success',
     debounceMs: quoteDebounceMs,
     refreshMs: quoteRefreshMs,
+    maxAgeMs: quoteMaxAgeMs,
   });
   const quote = quoteState.status === 'ready' ? quoteState.quote : null;
+  // A quote too old to sign stays on screen (stale) until a refresh replaces it.
+  const quoteExpired = quoteState.status === 'ready' && quoteState.expired;
+  const quoteRefreshFailed = quoteState.status === 'ready' && quoteState.refreshError !== null;
+  const quoteStale = quoteExpired || quoteRefreshFailed;
 
   const resetOutcome = execution.reset;
   const changeSide = (next: TradeSide) => {
@@ -173,7 +180,7 @@ export function TradeForm(props: TradeFormProps) {
       setShowModal(true);
       return;
     }
-    if (!poolKey || !quote || !amount.ok || !slippage.ok) return;
+    if (!poolKey || !quote || quoteExpired || !amount.ok || !slippage.ok) return;
     if (side === 'sell' && chainDecimals === null) return;
     const result = await execution.execute({
       connection,
@@ -206,6 +213,7 @@ export function TradeForm(props: TradeFormProps) {
     amountOk: amount.ok,
     slippageOk: slippage.ok,
     quoteStatus: quoteState.status,
+    quoteExpired,
     connected: publicKey !== null,
     insufficient,
     side,
@@ -360,12 +368,42 @@ export function TradeForm(props: TradeFormProps) {
 
       <div className="min-h-[2rem]" aria-live="polite">
         {quote ? (
-          <QuoteSummary
-            quote={quote}
-            symbol={tokenUnit}
-            tokenDecimals={tokenDecimals}
-            networkFee={networkFee}
-          />
+          <>
+            <div
+              className={`transition-opacity ${quoteStale ? 'opacity-60' : ''}`}
+              data-testid="quote-freshness"
+              data-stale={quoteStale ? 'true' : 'false'}
+            >
+              <QuoteSummary
+                quote={quote}
+                symbol={tokenUnit}
+                tokenDecimals={tokenDecimals}
+                networkFee={networkFee}
+              />
+            </div>
+            {/* Space kept for the hint, so the panel does not jump on every refresh. */}
+            <div className="mt-1.5 flex min-h-[1rem] flex-wrap items-center gap-x-2 text-xs text-[var(--color-text-muted)]">
+              {quoteStale ? (
+                <>
+                  <span data-testid="quote-stale-hint">
+                    {quoteExpired ? TEXT.quoteExpired : TEXT.quoteRefreshFailed}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={quoteState.refresh}
+                    className="underline touch:min-h-[2.5rem]"
+                  >
+                    {TEXT.refreshQuote}
+                  </button>
+                </>
+              ) : quoteState.status === 'ready' && quoteState.refreshing ? (
+                // Visual only: a screen reader is not told about every routine refresh.
+                <span aria-hidden="true" data-testid="quote-refreshing">
+                  {TEXT.quoteRefreshing}
+                </span>
+              ) : null}
+            </div>
+          </>
         ) : quoteState.status === 'loading' ? (
           <p className="text-sm text-[var(--color-text-muted)]" data-testid="quote-loading">
             {TEXT.quoteLoading}
@@ -462,6 +500,8 @@ function buttonState(args: {
   amountOk: boolean;
   slippageOk: boolean;
   quoteStatus: 'idle' | 'loading' | 'ready' | 'error';
+  /** The quote on screen is too old to sign. */
+  quoteExpired: boolean;
   connected: boolean;
   insufficient: boolean;
   side: TradeSide;
@@ -484,6 +524,7 @@ function buttonState(args: {
     return { label: label.gettingQuote, disabled: true };
   }
   if (args.quoteStatus === 'error') return { label: label.quoteUnavailable, disabled: true };
+  if (args.quoteExpired) return { label: label.quoteExpired, disabled: true };
   if (!args.connected) return { label: label.connect, disabled: false };
   if (args.insufficient) return { label: label.insufficient, disabled: true };
   return { label: label.trade(args.side, args.symbol), disabled: false };

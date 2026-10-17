@@ -315,6 +315,74 @@ describe('quote refresh', () => {
     );
   });
 
+  it('keeps the last good quote, marked stale, when a refresh fails on the network', async () => {
+    renderPanel({ quoteRefreshMs: 25 });
+    await readyToTrade('0.1', /Buy MOON/);
+    expect(screen.getByTestId('quote-freshness').getAttribute('data-stale')).toBe('false');
+    const quote = vi.spyOn(core, 'quoteSwap').mockRejectedValue(new TypeError('Failed to fetch'));
+    await waitFor(() => expect(quote).toHaveBeenCalled());
+    const hint = await screen.findByTestId('quote-stale-hint');
+    expect(hint.textContent).toMatch(/Couldn't refresh the quote/);
+    // The good quote stays on screen, dimmed, and is still fresh enough to sign.
+    expect(screen.getByTestId('quote-row-pay').textContent).toContain('0.1 SOL');
+    expect(screen.getByTestId('quote-freshness').getAttribute('data-stale')).toBe('true');
+    expect(screen.queryByTestId('trade-error')).toBeNull();
+    expect(submit().textContent).toBe('Buy MOON');
+    expect(submit().disabled).toBe(false);
+  });
+
+  it('stops signing once the stale quote is too old, and refreshes on demand', async () => {
+    renderPanel({ quoteRefreshMs: 20, quoteMaxAgeMs: 120 });
+    await readyToTrade('0.1', /Buy MOON/);
+    const quote = vi.spyOn(core, 'quoteSwap').mockRejectedValue(new TypeError('Failed to fetch'));
+    await waitFor(() => expect(submit().textContent).toBe('Quote out of date'), { timeout: 2000 });
+    expect(submit().disabled).toBe(true);
+    expect(screen.getByTestId('quote-stale-hint').textContent).toMatch(/out of date/);
+    expect(screen.getByTestId('quote-summary')).toBeTruthy();
+    fireEvent.click(submit());
+    expect(core.calls.buy).toBe(0);
+
+    quote.mockRestore();
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh quote' }));
+    await waitFor(() => expect(submit().textContent).toBe('Buy MOON'));
+    expect(submit().disabled).toBe(false);
+    expect(screen.queryByTestId('quote-stale-hint')).toBeNull();
+  });
+
+  it('drops the quote when a refresh comes back unverifiable', async () => {
+    renderPanel({ quoteRefreshMs: 25 });
+    await readyToTrade('0.1', /Buy MOON/);
+    core.options.platformFeeOverride = BigInt(1);
+    const alert = await screen.findByTestId('trade-error');
+    expect(alert.getAttribute('data-code')).toBe('quote_invalid');
+    expect(screen.queryByTestId('quote-summary')).toBeNull();
+    expect(submit().disabled).toBe(true);
+  });
+
+  it('pauses the refreshes while the tab is hidden and refreshes on return', async () => {
+    let visibility: DocumentVisibilityState = 'visible';
+    const descriptor = vi
+      .spyOn(document, 'visibilityState', 'get')
+      .mockImplementation(() => visibility);
+    try {
+      renderPanel({ quoteRefreshMs: 20 });
+      await readyToTrade('0.1', /Buy MOON/);
+      visibility = 'hidden';
+      document.dispatchEvent(new Event('visibilitychange'));
+      // Let a refresh already in flight settle, then nothing more happens while hidden.
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      const hiddenCalls = core.calls.quote;
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      expect(core.calls.quote).toBe(hiddenCalls);
+
+      visibility = 'visible';
+      document.dispatchEvent(new Event('visibilitychange'));
+      await waitFor(() => expect(core.calls.quote).toBeGreaterThan(hiddenCalls));
+    } finally {
+      descriptor.mockRestore();
+    }
+  });
+
   it('refuses a quote whose platform fee is not 0.3%', async () => {
     core.options.platformFeeOverride = BigInt(1);
     renderPanel();

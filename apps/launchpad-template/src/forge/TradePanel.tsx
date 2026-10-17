@@ -33,6 +33,7 @@ export interface TradePanelProps {
   /** Tuning knobs, mostly for tests. */
   quoteDebounceMs?: number;
   quoteRefreshMs?: number;
+  quoteMaxAgeMs?: number;
   confirmOptions?: ConfirmOptions;
 }
 
@@ -151,6 +152,7 @@ function LiveTradePanel(props: TradePanelProps) {
         onGraduated={markGraduated}
         quoteDebounceMs={props.quoteDebounceMs}
         quoteRefreshMs={props.quoteRefreshMs}
+        quoteMaxAgeMs={props.quoteMaxAgeMs}
         confirmOptions={props.confirmOptions}
       />
     );
