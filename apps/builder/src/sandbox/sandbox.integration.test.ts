@@ -3,6 +3,10 @@
  *
  *   FORGE_SANDBOX_INTEGRATION=1 pnpm --filter @forge/builder exec vitest run src/sandbox/sandbox.integration.test.ts
  *
+ * On Linux, `host.docker.internal` is the Docker bridge, not the host loopback: set
+ * FORGE_SANDBOX_IT_GATEWAY_HOST to the bridge address (the builder's FORGE_GATEWAY_HOST, e.g.
+ * 172.17.0.1) so the stand-in gateway is reachable. Docker Desktop works with the default.
+ *
  * Builds both images (unless FORGE_SANDBOX_IMAGE / FORGE_SANDBOX_PROXY_IMAGE are set),
  * then checks on a tiny sample project: registry egress works through the proxy,
  * every other destination is blocked, the build runs with no network, writes outside
@@ -24,6 +28,10 @@ import { REDACTED } from './redact.js';
 import { createSandboxRunner, type SandboxRunner } from './run.js';
 
 const enabled = process.env.FORGE_SANDBOX_INTEGRATION === '1';
+// The workdir below is created by the user running the test, without the chown the pipeline does
+// (src/pipeline/workdir.ts), so the sandbox runs as that user unless it is root (then the default).
+const hostUid = process.getuid?.();
+const sandboxUid = hostUid !== undefined && hostUid !== 0 ? hostUid : 1000;
 const exec = promisify(execFile);
 const here = path.dirname(fileURLToPath(import.meta.url));
 const builderDir = path.resolve(here, '..', '..');
@@ -196,7 +204,7 @@ describe.skipIf(!enabled)('sandbox integration (real Docker)', () => {
         process.env.FORGE_SANDBOX_PROXY_IMAGE ||
         (await buildImage('egress-proxy.Dockerfile', builderDir));
 
-      // Stand-in for the AI gateway on the host (loopback only).
+      // Stand-in for the AI gateway on the host (loopback, or the Docker bridge on Linux).
       gateway = http.createServer((req, res) => {
         gatewayHits.push({
           path: req.url,
@@ -206,7 +214,8 @@ describe.skipIf(!enabled)('sandbox integration (real Docker)', () => {
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ ok: true, auth: req.headers['x-api-key'] === gatewayToken }));
       });
-      await new Promise<void>((r) => gateway.listen(0, '127.0.0.1', r));
+      const gatewayHost = process.env.FORGE_SANDBOX_IT_GATEWAY_HOST || '127.0.0.1';
+      await new Promise<void>((r) => gateway.listen(0, gatewayHost, r));
       gatewayPort = (gateway.address() as AddressInfo).port;
 
       jobsRoot = await mkdtemp(path.join(os.tmpdir(), 'forge-sbx-it-'));
@@ -221,6 +230,7 @@ describe.skipIf(!enabled)('sandbox integration (real Docker)', () => {
         proxyImage,
         jobsRoot,
         gateway: { host: 'host.docker.internal', port: gatewayPort },
+        uid: sandboxUid,
       });
       await runner.cleanupStale();
     },
@@ -300,7 +310,7 @@ describe.skipIf(!enabled)('sandbox integration (real Docker)', () => {
       console.log(JSON.stringify(probe, null, 2));
 
       // Identity and kernel-level hardening.
-      expect(probe.uid).toBe(1000);
+      expect(probe.uid).toBe(sandboxUid);
       expect(probe.status.CapEff).toBe('0000000000000000');
       expect(probe.status.CapBnd).toBe('0000000000000000');
       expect(probe.status.NoNewPrivs).toBe('1');
