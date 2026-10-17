@@ -1,4 +1,10 @@
-import { ComputeBudgetProgram, Keypair, PublicKey, Transaction } from '@solana/web3.js';
+import {
+  ComputeBudgetProgram,
+  Keypair,
+  PublicKey,
+  Transaction,
+  TransactionInstruction,
+} from '@solana/web3.js';
 import { describe, expect, it, vi } from 'vitest';
 import { buildSolTransferTx } from '../core-adapter.js';
 import { buildRevokeNonceTx, REVOKE_COMPUTE_UNITS } from '../routes/revoke.js';
@@ -141,6 +147,20 @@ describe('priority fees on the signer transactions and their policies', () => {
     tx.instructions.splice(2, 0, extra);
     expect(() => assertSolTransferTx(tx, { from, to, lamports: 1_000n, memo: 'm' })).toThrow(
       message,
+    );
+  });
+
+  it('refuses compute budget bytes under another program', async () => {
+    const tx = await pricedTransfer();
+    tx.instructions.unshift(
+      new TransactionInstruction({
+        programId: key(),
+        keys: [],
+        data: ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 1 }).data,
+      }),
+    );
+    expect(() => assertSolTransferTx(tx, { from, to, lamports: 1_000n, memo: 'm' })).toThrow(
+      /program not allowed/,
     );
   });
 
