@@ -14,6 +14,41 @@ import type { ClaimsCore, CreatorClaimCosts, CreatorCoin } from './core-adapter'
  * The receiver is always the connected wallet.
  */
 
+const CLAIM_BUILD_TEXT = {
+  notCreator: 'This wallet is not the creator of this coin, so it cannot claim its fees.',
+  receiverRent:
+    'Your wallet needs a little SOL (about 0.001) to receive the claim. Add some, then try again.',
+  wrappedSol:
+    'Your wallet holds wrapped SOL that blocks the claim. Unwrap it in your wallet, then try again.',
+  nothing: 'There is nothing to claim for this coin.',
+  unavailable: 'Could not prepare the claim right now. Try again in a moment.',
+} as const;
+
+/**
+ * Human message for a failed claim build (the core adapter wraps core's `ClaimError`, whose
+ * `code` says why). Never the raw core, SDK or RPC text.
+ */
+export function describeClaimBuildError(error: unknown): string {
+  const code =
+    (error as { code?: unknown } | null)?.code ??
+    ((error as { cause?: { code?: unknown } } | null)?.cause?.code as unknown);
+  switch (code) {
+    case 'not_pool_creator':
+    case 'not_fee_claimer':
+      return CLAIM_BUILD_TEXT.notCreator;
+    case 'receiver_not_rent_exempt':
+      return CLAIM_BUILD_TEXT.receiverRent;
+    case 'claimer_wsol_not_empty':
+      return CLAIM_BUILD_TEXT.wrappedSol;
+    default:
+      break;
+  }
+  if (error instanceof Error && /nothing to claim/i.test(error.message)) {
+    return CLAIM_BUILD_TEXT.nothing;
+  }
+  return CLAIM_BUILD_TEXT.unavailable;
+}
+
 /** Base network fee per signature, lamports (cluster constant; priority fee excluded). */
 export const BASE_FEE_PER_SIGNATURE_LAMPORTS = BigInt(5000);
 
@@ -118,11 +153,9 @@ export async function prepareClaim(coin: CreatorCoin, deps: ClaimDeps): Promise<
       receiver: deps.wallet,
     }));
   } catch (error) {
-    throw new TxError(
-      'prepare_failed',
-      'prepare',
-      `Could not build the claim: ${error instanceof Error ? error.message : 'unknown error'}`,
-    );
+    throw new TxError('prepare_failed', 'prepare', describeClaimBuildError(error), undefined, {
+      cause: error,
+    });
   }
 
   let costs: ClaimCostView;

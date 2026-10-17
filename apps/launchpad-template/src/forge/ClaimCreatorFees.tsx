@@ -6,7 +6,7 @@ import { ModeBanner } from './ModeBanner';
 import { capabilitiesFor, currentMode } from './mode-guard';
 import { formatSol } from './create/amounts';
 import { createRpcChainClient, type ChainClient, type ConfirmOptions } from './create/chain';
-import { TxError, waitForSignature, type SignTransaction } from './create/flow';
+import { TxError, messageForUser, waitForSignature, type SignTransaction } from './create/flow';
 import { claimsCore, type ClaimsCore, type CreatorCoin } from './claims/core-adapter';
 import {
   executeClaim,
@@ -99,7 +99,9 @@ function ClaimCreatorFeesList(props: ClaimCreatorFeesProps) {
       setCoins(await loadCreatorCoins(core, wallet));
     } catch (error) {
       setCoins(null);
-      setLoadError(error instanceof Error ? error.message : 'Could not load your coins.');
+      setLoadError(
+        messageForUser(error, 'Could not load your coins right now. Check your connection and retry.'),
+      );
     }
   }, [core, wallet]);
 
@@ -129,7 +131,7 @@ function ClaimCreatorFeesList(props: ClaimCreatorFeesProps) {
       setReview(await prepareClaim(coin, d));
       setActive({ pool: coin.pool, phase: 'review' });
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : 'Could not prepare the claim.');
+      setMessage(messageForUser(error, 'Could not prepare the claim. Try again in a moment.'));
       setActive(null);
     } finally {
       busy.current = false;
@@ -163,7 +165,7 @@ function ClaimCreatorFeesList(props: ClaimCreatorFeesProps) {
           cancel2(error.message);
         else setActive({ pool, phase: 'review' });
       } else {
-        setMessage(error instanceof Error ? error.message : 'Unexpected error.');
+        setMessage(messageForUser(error, 'Something went wrong. Nothing was sent. Try again.'));
         setActive({ pool, phase: 'review' });
       }
     } finally {
@@ -191,7 +193,7 @@ function ClaimCreatorFeesList(props: ClaimCreatorFeesProps) {
       setReview(null);
       await load();
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : 'Unexpected error.');
+      setMessage(messageForUser(error, 'Could not check the transaction. Try again in a moment.'));
       if (error instanceof TxError && error.code === 'timeout') {
         setActive({ pool: review.coin.pool, phase: 'unconfirmed' });
       } else {

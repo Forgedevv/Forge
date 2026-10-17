@@ -98,6 +98,8 @@ export interface FixtureLaunchOptions {
   platformFeeLamports?: bigint;
   /** Leave the platform fee transfer out (to simulate a launch that skips it). */
   omitPlatformFee?: boolean;
+  /** Mint to build for (a rebuild of the same launch); a fresh one by default. */
+  mint?: Keypair;
 }
 
 /** A well-formed `prepare` answer: mint signed, fee payer = wallet, wallet signature missing. */
@@ -105,7 +107,7 @@ export function buildFixtureLaunch(options: FixtureLaunchOptions): {
   response: PrepareLaunchResponse;
   mint: Keypair;
 } {
-  const mint = Keypair.generate();
+  const mint = options.mint ?? Keypair.generate();
   const config = options.launchpadConfig ?? FIXTURE_LAUNCHPAD_CONFIG;
   const pool = dbcPoolAddress(config.toBase58(), mint.publicKey.toBase58());
   const baseVault = dbcVaultAddress(pool, mint.publicKey.toBase58());
