@@ -29,6 +29,7 @@ import {
   solToLamports,
   toOwnerTransactionSummary,
 } from '@forge/core';
+import { maxPriorityFeePerTransaction } from '../jobs/priority.js';
 import { JobError, withRetry } from '../jobs/shared.js';
 import { ensureAccountCreated } from './accounts.js';
 import {
@@ -327,6 +328,9 @@ export async function handlePrepareLaunch(
         nonceAccount,
         nonceValue: current.nonce,
         firstBuy: firstBuyLamports > 0n,
+        // Core prices the launch under the setting's cap per transaction (in the price-only
+        // placement, without a unit limit, for the most compute units a transaction can take).
+        maxPriorityFeeLamports: maxPriorityFeePerTransaction(rt.priorityFees),
       });
 
       await assertRoutesNotPaused(rt);

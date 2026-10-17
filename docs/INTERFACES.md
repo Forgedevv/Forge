@@ -395,7 +395,7 @@ Every forward of the revenue wallet to the multisig is one file `SIGNER_JOURNAL_
 }
 ```
 
-Amounts are decimal strings of lamports; the four `breakdown` values sum to `lamports`: `meteora_referral` (WSOL unwrapped from the Meteora referral account), `jupiter_referral` (WSOL unwrapped from the wallet's other accounts and the conversions of the Jupiter claim mints, `SIGNER_JUPITER_CLAIMS_MINTS`), `platform_fee` (native SOL received directly) and `other` (conversions of any other mint and what the journal cannot explain, e.g. the first run's balance). Fees and the reserve are not booked: the breakdown is the gross receipts since the previous forward, scaled down to the forwarded amount when they exceed it.
+Amounts are decimal strings of lamports; the four `breakdown` values sum to `lamports`: `meteora_referral` (WSOL unwrapped from the Meteora referral account), `jupiter_referral` (WSOL unwrapped from the wallet's other accounts and the conversions of the Jupiter claim mints, `SIGNER_JUPITER_CLAIMS_MINTS`), `platform_fee` (native SOL received directly: the job only sees balance deltas, so an operator top-up lands here too, docs/OPERATIONS.md "Revenue wallet") and `other` (conversions of any other mint, the rent of a wrapped SOL account a conversion closed, the output of a swap whose outcome was unknown, and what the journal cannot explain, e.g. the first run's balance). Fees and the reserve are not booked: the breakdown is the gross receipts since the previous forward, scaled down to the forwarded amount when they exceed it.
 
 Reader (`createRevenueForwardReader(journalDir)`, same file): `list({ since? })` returns the entries finalized at or after an ISO 8601 date, oldest first; `totalForwardedSince(since)` returns `{ lamports, count, breakdown }` as `bigint`s. The buyback budget (section 10) reads the lamports forwarded since `BUYBACK_REVENUE_SINCE` from it.
 
@@ -429,9 +429,12 @@ revenue  = revenue forwards finalized at or after BUYBACK_REVENUE_SINCE (section
 spent    = `funding.lamports` of the buyback day entries (`buyback.day-<day>.json`) with
            `funding.at` at or after BUYBACK_REVENUE_SINCE and status requested, confirmed or unknown
 backlog  = max(0, revenue - spent)
-budget   = min(backlog + SOL on the bot above its reserve, BUYBACK_DAILY_CAP_LAMPORTS,
-               SOL on the bot above its reserve + remaining spending limit - orders x fee allowance
-               - withdrawal fee)
+fees     = orders x fee allowance + withdrawal fee
+budget   = min(backlog + SOL on the bot above its reserve - fees, BUYBACK_DAILY_CAP_LAMPORTS,
+               SOL on the bot above its reserve + remaining spending limit - fees)
+withdrawal = planned orders + planned orders x fee allowance - SOL on the bot above its reserve
+             + withdrawal fee, at most the remaining spending limit and at most the backlog
+             (a backlog of 0 withdraws nothing: the orders run on the bot's own SOL)
 fee allowance  = BUYBACK_ORDER_FEE_ALLOWANCE_LAMPORTS, by default BUYBACK_MAX_PRIORITY_FEE_LAMPORTS
                  (the buy) + the signer priority fee cap of the return (100,000 CU) + 10,000
                  (+ 30 bps of the largest order on the dbc-devnet route)

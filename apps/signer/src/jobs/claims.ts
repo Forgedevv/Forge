@@ -37,9 +37,10 @@ import { NATIVE_MINT } from '@solana/spl-token';
 import { PublicKey, type Transaction } from '@solana/web3.js';
 import { z } from 'zod';
 import type { LaunchpadStatus } from '@forge/shared';
-import { ClaimError } from '@forge/core';
+import { CLAIM_COMPUTE_UNITS, ClaimError, positionClaimComputeUnits } from '@forge/core';
 import { creatorRole } from '../keystore.js';
 import type { CreatorPoolState, CreatorPositionsState, SignerCore } from '../core-adapter.js';
+import type { PriorityFees } from './priority.js';
 import {
   DEFAULT_RETRY,
   DEFAULT_SETTLE,
@@ -250,6 +251,12 @@ export interface ClaimsDeps {
   alerter: JobAlerter;
   logger: JobLogger;
   config: ClaimsConfig;
+  /**
+   * The priority fee setting core prices the claims with (runtime: `ctx.priorityFees`): each
+   * policy refuses a fee above its cap for the claim's compute unit limit. Absent: the fixed
+   * `config.maxPriorityFeeLamports`, then the signer ceiling.
+   */
+  priorityFees?: Pick<PriorityFees, 'maxFeeLamports'>;
   retry?: RetryOptions;
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
@@ -326,6 +333,9 @@ export function createClaimsJob(deps: ClaimsDeps): ClaimsJob {
   const now = deps.now ?? Date.now;
   const settleTiming = { ...DEFAULT_SETTLE, ...config.settle };
   const unclaimedAlertMs = config.unclaimedAlertMs ?? DEFAULT_UNCLAIMED_ALERT_MS;
+  /** The cap of the priority fee a claim of `units` CU was priced with: the policies refuse more. */
+  const maxPriorityFeeOf = (units: number): bigint | undefined =>
+    deps.priorityFees ? deps.priorityFees.maxFeeLamports(units) : config.maxPriorityFeeLamports;
   const maxPerRun = config.maxPerRun ?? 500;
   if (!Number.isInteger(maxPerRun) || maxPerRun < 1) {
     throw new JobError('CONFIG', 'maxPerRun must be a positive integer');
@@ -680,6 +690,7 @@ export function createClaimsJob(deps: ClaimsDeps): ClaimsJob {
         feePayer,
         receiver: config.vault,
         claimedQuoteLamports: built.summary.claimable.quote,
+        maxPriorityFeeLamports: maxPriorityFeeOf(CLAIM_COMPUTE_UNITS),
       });
       return {
         kind: 'dbc',
@@ -765,6 +776,9 @@ export function createClaimsJob(deps: ClaimsDeps): ClaimsJob {
         feePayer,
         receiver: config.vault,
         positions: expectedPositions,
+        maxPriorityFeeLamports: maxPriorityFeeOf(
+          positionClaimComputeUnits(expectedPositions.length),
+        ),
       });
       return {
         kind: 'position',

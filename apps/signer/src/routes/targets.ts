@@ -51,6 +51,7 @@ export function configCreationTarget(
         payer: input.payer,
         config: address,
         owner: input.owner,
+        maxPriorityFeeLamports: rt.priorityFees.maxFeeLamports(CREATE_CONFIG_COMPUTE_UNITS),
       }),
     async exists(address, read = { commitment: 'confirmed' }) {
       const account = await core.getAccount(address, read.commitment, read.minContextSlot);
@@ -91,6 +92,7 @@ export function nonceCreationTarget(
         nonceAccount: address,
         authority: input.authority,
         rentLamports,
+        maxPriorityFeeLamports: rt.priorityFees.maxFeeLamports(CREATE_NONCE_ACCOUNT_COMPUTE_UNITS),
       }),
     async exists(address, read = { commitment: 'confirmed' }) {
       const account = await core.getAccount(address, read.commitment, read.minContextSlot);

@@ -936,7 +936,9 @@ export const MAX_COMPUTE_UNIT_LIMIT = 1_400_000;
  * Highest priority fee of one transaction the signer signs (0.001 SOL), whatever the setting
  * (SIGNER_PRIORITY_FEE_MAX_LAMPORTS is at most this). Without a unit limit it is counted for
  * 1.4M compute units, the most the runtime can apply: at the highest price per CU that is 0.0014
- * SOL, so this bound is the tighter one.
+ * SOL, so this bound is the tighter one. It is the ceiling only: every policy is handed the cap
+ * of the setting the transaction was priced with (`PriorityFees.maxFeeLamports` of its compute
+ * unit limit) and refuses a fee above it.
  */
 export const MAX_SIGNER_PRIORITY_FEE_LAMPORTS = 1_000_000n;
 
@@ -1029,12 +1031,18 @@ export interface SolTransferExpectation {
   to: PublicKey;
   lamports: bigint;
   memo?: string;
+  /**
+   * Highest priority fee the transfer may carry, lamports: the cap of the setting it was priced
+   * with (`PriorityFees.maxFeeLamports(SOL_TRANSFER_COMPUTE_UNITS)`). Default and ceiling:
+   * MAX_SIGNER_PRIORITY_FEE_LAMPORTS.
+   */
+  maxPriorityFeeLamports?: bigint;
 }
 
 /**
  * A SOL transfer transaction must be exactly: one System transfer `from` -> `to` of `lamports`,
- * an optional memo equal to `memo` (no signer keys), optional bounded compute budget; fee payer
- * and only signer = `from`.
+ * an optional memo equal to `memo` (no signer keys), optional bounded compute budget (priority
+ * fee within `maxPriorityFeeLamports`); fee payer and only signer = `from`.
  */
 export function assertSolTransferTx(tx: Transaction, expected: SolTransferExpectation): void {
   if (expected.lamports <= 0n) policy('transfer amount must be positive');
@@ -1064,7 +1072,7 @@ export function assertSolTransferTx(tx: Transaction, expected: SolTransferExpect
   }
   if (transfers !== 1) policy('exactly one transfer expected');
   if (expected.memo !== undefined && memos !== 1) policy('memo missing');
-  assertComputeBudgetSet(tx.instructions);
+  assertComputeBudgetSet(tx.instructions, expected.maxPriorityFeeLamports);
 }
 
 /** Anchor discriminators of the DBC creator claim instructions (sha256("global:<name>")[0..8]). */
@@ -1100,6 +1108,12 @@ export interface CreatorClaimExpectation {
    * exactly this amount.
    */
   claimedQuoteLamports?: bigint;
+  /**
+   * Highest priority fee the claim may carry, lamports: the cap of the setting core priced it
+   * with (`PriorityFees.maxFeeLamports(CLAIM_COMPUTE_UNITS)`). Default and ceiling:
+   * MAX_SIGNER_PRIORITY_FEE_LAMPORTS.
+   */
+  maxPriorityFeeLamports?: bigint;
 }
 
 function isTokenProgram(id: PublicKey): boolean {
@@ -1237,7 +1251,7 @@ export function assertCreatorClaimTx(tx: Transaction, expected: CreatorClaimExpe
       policy('program not allowed in a claim');
     }
   });
-  assertComputeBudgetSet(tx.instructions);
+  assertComputeBudgetSet(tx.instructions, expected.maxPriorityFeeLamports);
 
   if (claimIndex === -1 || !tokenB || !tokenBProgram) policy('no claim instruction');
   if (transfers.length > 1) policy('more than one transfer in a claim');
@@ -1345,6 +1359,12 @@ export interface CreatorPositionClaimExpectation {
   receiver: PublicKey;
   /** The creator's positions on `dammPool`, each with the token account holding its NFT. */
   positions: ReadonlyArray<{ position: PublicKey; positionNftAccount: PublicKey }>;
+  /**
+   * Highest priority fee the claim may carry, lamports: the cap of the setting core priced it
+   * with (`PriorityFees.maxFeeLamports(positionClaimComputeUnits(positions.length))`). Default
+   * and ceiling: MAX_SIGNER_PRIORITY_FEE_LAMPORTS.
+   */
+  maxPriorityFeeLamports?: bigint;
 }
 
 /**
@@ -1451,7 +1471,7 @@ export function assertCreatorPositionClaimTx(
       policy('program not allowed in a position fee claim');
     }
   });
-  assertComputeBudgetSet(tx.instructions);
+  assertComputeBudgetSet(tx.instructions, expected.maxPriorityFeeLamports);
 
   if (claimed.size === 0) policy('no claim instruction');
   for (const p of expected.positions) {

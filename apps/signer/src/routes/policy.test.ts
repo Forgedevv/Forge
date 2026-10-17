@@ -18,8 +18,12 @@ import {
   type Transaction,
 } from '@solana/web3.js';
 import { describe, expect, it } from 'vitest';
-import type { PriorityFeeSetting } from '@forge/core';
-import { DEFAULT_SIGNER_PRIORITY_FEE } from '../jobs/priority.js';
+import { checkComputeBudgetInstructions, type PriorityFeeSetting } from '@forge/core';
+import {
+  DEFAULT_SIGNER_PRIORITY_FEE,
+  createPriorityFees,
+  maxPriorityFeePerTransaction,
+} from '../jobs/priority.js';
 import { isJobError } from '../jobs/shared.js';
 import { createForgeRouteCore } from './onchain.js';
 import {
@@ -207,6 +211,24 @@ describe('config creation policy (real core)', () => {
     );
   });
 
+  it('bounds the priority fee by the cap the creation was priced with', async () => {
+    const { core, payer, config, tx } = await built('launchpad');
+    const base = { dbcProgramId: core.dbcProgramId, payer, config, owner: OWNER };
+    // Core sets the unit limit; priced at 1,000 micro-lamports per CU.
+    tx.add(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 1_000 }));
+    const fee = checkComputeBudgetInstructions(tx.instructions).priorityFeeLamports;
+    expect(fee).toBeGreaterThan(0n);
+    assertCreateConfigTx(tx, { ...base, maxPriorityFeeLamports: fee });
+    expectPolicy(
+      () => assertCreateConfigTx(tx, { ...base, maxPriorityFeeLamports: fee - 1n }),
+      /priority fee too high/,
+    );
+    expectPolicy(
+      () => assertCreateConfigTx(tx, { ...base, maxPriorityFeeLamports: 0n }),
+      /priority fee too high/,
+    );
+  });
+
   it('hashes the exact parameters: another fee, another hash', () => {
     const core = createForgeRouteCore({
       connection: mockConnection(new Map()),
@@ -286,6 +308,25 @@ describe('launch policy (real core, devnet config fixture)', () => {
     expect(built.summary.priorityFeePlacement).toBe('limit_and_price');
     expect(built.summary.computeUnitPriceMicroLamports).toBe(100_000);
     assertLaunchCoinTx(built.transaction, priced.expectation());
+    // The route hands the policy the setting's cap per transaction: 300,000 CU at 100,000
+    // micro-lamports is 30,000 lamports, within it and not below.
+    const perTransactionCap = maxPriorityFeePerTransaction(
+      createPriorityFees(null, DEFAULT_SIGNER_PRIORITY_FEE),
+    );
+    expect(perTransactionCap).toBe(DEFAULT_SIGNER_PRIORITY_FEE.maxLamports);
+    assertLaunchCoinTx(
+      built.transaction,
+      priced.expectation({ maxPriorityFeeLamports: perTransactionCap }),
+    );
+    assertLaunchCoinTx(built.transaction, priced.expectation({ maxPriorityFeeLamports: 30_000n }));
+    expectPolicy(
+      () =>
+        assertLaunchCoinTx(
+          built.transaction,
+          priced.expectation({ maxPriorityFeeLamports: 29_999n }),
+        ),
+      /priority fee too high/,
+    );
 
     // The longest metadata the launch accepts but for 4 bytes: the price goes alone.
     const tight = launchSetup({ priority: DEFAULT_SIGNER_PRIORITY_FEE });
@@ -298,6 +339,12 @@ describe('launch policy (real core, devnet config fixture)', () => {
     });
     expect(alone.summary.priorityFeePlacement).toBe('price_only');
     assertLaunchCoinTx(alone.transaction, tight.expectation());
+    // Price only: counted for the most compute units a transaction can take, which core priced
+    // it for, so it fits the per-transaction cap.
+    assertLaunchCoinTx(
+      alone.transaction,
+      tight.expectation({ maxPriorityFeeLamports: perTransactionCap }),
+    );
 
     built.transaction.instructions.splice(
       2,

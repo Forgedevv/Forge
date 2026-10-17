@@ -22,7 +22,8 @@
  *
  * The transaction policies (shared.ts `assertComputeBudgetSet`, routes/policy.ts) accept the
  * compute budget instructions this produces and nothing else: one unit limit and one unit price
- * at most, bounded by the same hard ceilings.
+ * at most, bounded by the same hard ceilings and, as every caller hands its policy
+ * `maxFeeLamports` of the transaction's compute unit limit, by the configured caps too.
  */
 import {
   DEFAULT_PRIORITY_FEE_POLICY,
@@ -146,6 +147,19 @@ export function createPriorityFees(
 
 /** No priority fee at all (tests, tools): every quote is a zero price. */
 export const NO_PRIORITY_FEES: PriorityFees = createPriorityFees(null, PRIORITY_FEES_OFF);
+
+/**
+ * The most any one transaction priced under `fees` pays as priority fee: the setting's cap per
+ * transaction (SIGNER_PRIORITY_FEE_MAX_LAMPORTS), never above `MAX_SIGNER_PRIORITY_FEE_LAMPORTS`,
+ * 0 when priority fees are off. The policy cap of a transaction whose compute unit limit the
+ * signer does not fix itself (core's launch, which may place the price alone and then counts
+ * for the most compute units a transaction can take).
+ */
+export function maxPriorityFeePerTransaction(fees: Pick<PriorityFees, 'setting'>): bigint {
+  if (!fees.setting) return 0n;
+  const cap = fees.setting.maxLamports ?? DEFAULT_PRIORITY_FEE_POLICY.maxLamports;
+  return cap < MAX_SIGNER_PRIORITY_FEE_LAMPORTS ? cap : MAX_SIGNER_PRIORITY_FEE_LAMPORTS;
+}
 
 /**
  * The compute budget instructions of a quote for a transaction the signer builds itself: the unit

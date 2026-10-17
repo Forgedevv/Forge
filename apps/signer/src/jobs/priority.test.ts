@@ -17,6 +17,7 @@ import {
   SOL_TRANSFER_COMPUTE_UNITS,
   capPrioritySetting,
   createPriorityFees,
+  maxPriorityFeePerTransaction,
   signerBudgetInstructions,
   signerBudgetPair,
 } from './priority.js';
@@ -109,6 +110,24 @@ describe('createPriorityFees', () => {
     ]) {
       expect(() => createPriorityFees(null, config)).toThrow(JobError);
     }
+  });
+
+  it('gives the cap per transaction of the setting, 0 when off, never above the ceiling', () => {
+    expect(
+      maxPriorityFeePerTransaction(createPriorityFees(null, DEFAULT_SIGNER_PRIORITY_FEE)),
+    ).toBe(500_000n);
+    expect(
+      maxPriorityFeePerTransaction(
+        createPriorityFees(null, { ...DEFAULT_SIGNER_PRIORITY_FEE, maxLamports: 1_000n }),
+      ),
+    ).toBe(1_000n);
+    expect(maxPriorityFeePerTransaction(NO_PRIORITY_FEES)).toBe(0n);
+    // A setting without a cap of its own (another implementation): core's default, bounded.
+    expect(
+      maxPriorityFeePerTransaction({
+        setting: { percentile: 75, floorMicroLamports: 0, maxMicroLamports: 1_000_000 },
+      }),
+    ).toBeLessThanOrEqual(MAX_SIGNER_PRIORITY_FEE_LAMPORTS);
   });
 });
 

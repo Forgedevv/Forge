@@ -14,9 +14,11 @@
  *      buyback already took out of the vault since then (its spending-limit withdrawals;
  *      simulated orders move nothing and count for nothing). The day's budget = min(backlog +
  *      the SOL already on the bot above its reserve, BUYBACK_DAILY_CAP_LAMPORTS, and in live
- *      mode what the bot can fund: that SOL plus the spending limit still available, minus the
- *      fee allowance of the orders and the withdrawal's fee). What the cap leaves out stays in
- *      the backlog and is bought on the following days. A budget the source cannot establish (journal unreadable, a
+ *      mode what the bot can fund: that SOL plus the spending limit still available), the first
+ *      and the last minus the fee allowance of the orders and the withdrawal's fee, so the
+ *      withdrawal never takes more than the backlog out of the vault (with a backlog of 0 the
+ *      orders run on the bot's own SOL and nothing is withdrawn). What the cap leaves out stays
+ *      in the backlog and is bought on the following days. A budget the source cannot establish (journal unreadable, a
  *      corrupt entry, BUYBACK_REVENUE_SINCE unset) is 0 for the run, with a high alert, and no
  *      plan is written: the next tick tries again. Without a budget source (direct callers) the
  *      cap alone is the budget.
@@ -26,7 +28,8 @@
  *      written to the journal before anything else, so a restart reuses it (never re-rolls).
  *      Slots already in the past when the plan is created are `missed` (no catch-up burst).
  *   3. Funding (live). Once per day the missing SOL (the planned orders plus a fee allowance per
- *      order, minus what the bot already holds above its reserve, plus the withdrawal's own fee)
+ *      order, minus what the bot already holds above its reserve, plus the withdrawal's own fee;
+ *      at most the spending limit and at most the backlog: never a lamport of non-revenue)
  *      is withdrawn from the vault to the bot wallet through the `SpendingLimitWithdrawer`
  *      (jobs/squads.ts: the bot's own Squads v4 spending limit, SECURITY.md 7). The request is
  *      journaled BEFORE it is made and never repeated that day.
@@ -1863,6 +1866,10 @@ export function createBuybackJob(deps: BuybackDeps): BuybackJob {
     let budget = config.dailyCapLamports;
     let botAvailable: bigint | null = null;
     let fundable: bigint | null = null;
+    // The fee allowance of every order plus the withdrawal's own fee (live): `ensureFunding`
+    // withdraws the orders plus those, so a budget that used a whole bound would leave the last
+    // orders unfunded (skipped as insufficient_funds) once that bound binds.
+    let fees = 0n;
     if (live && bot) {
       const spendable = await spendableBalance(live.rpc, bot, retry);
       botAvailable =
@@ -1871,18 +1878,20 @@ export function createBuybackJob(deps: BuybackDeps): BuybackJob {
       if (typeof allowance !== 'bigint' || allowance < 0n) {
         throw new JobError('INVALID_AMOUNT', 'spending limit returned an invalid amount');
       }
-      // What the wallet and the spending limit can put behind the day, minus the fee allowance
-      // of every order and the withdrawal's own fee: `ensureFunding` withdraws the orders plus
-      // those, so a budget that used the whole limit would leave the last orders unfunded
-      // (skipped as insufficient_funds) once the limit binds.
-      const fees =
+      fees =
         BigInt(config.ordersPerDay) * config.orderFeeAllowanceLamports +
         withdrawalFeeLamports(live);
+      // What the wallet and the spending limit can put behind the day.
       fundable = botAvailable + allowance > fees ? botAvailable + allowance - fees : 0n;
       if (fundable < budget) budget = fundable;
     }
     if (backlog !== null) {
-      const buyable = backlog + (botAvailable ?? 0n);
+      // What the vault owes plus what the bot already holds, minus the fees: the withdrawal
+      // never takes more than the backlog out of the vault (D35: the rest of the vault is not
+      // revenue), so the fees must fit in it too. With a backlog of 0 the orders run on the
+      // bot's own SOL and nothing is withdrawn.
+      const owed = backlog + (botAvailable ?? 0n);
+      const buyable = owed > fees ? owed - fees : 0n;
       if (buyable < budget) budget = buyable;
     }
     return { budget, figures, backlog, botAvailable, fundable };
@@ -2227,6 +2236,11 @@ export function createBuybackJob(deps: BuybackDeps): BuybackJob {
       need += withdrawalFeeLamports(l);
       const allowance = await l.withdrawer.remainingLamports(bot);
       if (allowance < need) need = allowance;
+      // Never more than what the vault owes the buyback (D35): the rest of the vault is not
+      // revenue. The budget already fits the fees in the backlog (`computeBudget`); this bounds a
+      // plan that did not. With nothing owed, the orders run on the bot's own SOL.
+      const backlog = entry.revenue ? BigInt(entry.revenue.backlogLamports) : null;
+      if (backlog !== null && backlog < need) need = backlog;
     }
     if (need <= 0n) {
       const next: BuybackDayEntry = {

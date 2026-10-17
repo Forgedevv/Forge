@@ -296,7 +296,8 @@ export async function revokeLaunch(deps: RevokeDeps, jobId: string): Promise<Rev
 
   // 3. Build, check (policy), sign (creator + payer), journal, send: under the payer lock.
   const payer = await requireRoleRef(keystore, 'payer');
-  const priorityFee = await (deps.priorityFees ?? NO_PRIORITY_FEES).quote(
+  const priorityFees = deps.priorityFees ?? NO_PRIORITY_FEES;
+  const priorityFee = await priorityFees.quote(
     [payer.publicKey, nonceAccount],
     REVOKE_COMPUTE_UNITS,
   );
@@ -312,7 +313,12 @@ export async function revokeLaunch(deps: RevokeDeps, jobId: string): Promise<Rev
     lastValidBlockHeight,
     priorityFee,
   });
-  assertRevokeNonceTx(tx, { payer: payer.publicKey, nonceAccount, authority: creator });
+  assertRevokeNonceTx(tx, {
+    payer: payer.publicKey,
+    nonceAccount,
+    authority: creator,
+    maxPriorityFeeLamports: priorityFees.maxFeeLamports(REVOKE_COMPUTE_UNITS),
+  });
   const opened = entry;
   const sent = await payerLock.runExclusive(async () => {
     const balance = await spendableBalance(rpc, payer.publicKey, retry);
