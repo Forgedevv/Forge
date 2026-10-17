@@ -2,15 +2,78 @@ import { ApeQueries, QueryData } from '@/components/Explore/queries';
 import { atomMsgWithListeners } from '@/lib/jotai';
 import { InfiniteData, useQueryClient } from '@tanstack/react-query';
 import { useSetAtom } from 'jotai';
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef } from 'react';
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { StreamRequest, StreamResponse } from '@/contexts/TokenChart/msg';
 import { delay } from '@/lib/utils';
 import { listedConfigs } from '../trade/launchpad-pool';
 import { launchpadStreamMessage } from './client';
+import { noteSource, primarySource } from './source';
 
 const WS_URL = 'wss://trench-stream.jup.ag/ws';
 
 const RECONNECT_DELAY_MILLIS = 2_500;
+/** Reconnection backoff ceiling while the stream stays unreachable. */
+const MAX_RECONNECT_DELAY_MILLIS = 60_000;
+/** A connection not open after this long counts as failed. */
+const CONNECT_TIMEOUT_MILLIS = 10_000;
+/** Failed connections in a row before the live data falls back to polling. */
+export const FAILURES_BEFORE_POLLING = 2;
+/** Polling interval of the fallback (paused while the tab is hidden). */
+export const POLL_INTERVAL_MILLIS = 15_000;
+
+/**
+ * LOCKED ZONE. Live market data. On mainnet it comes from Jupiter's trench stream; when the stream
+ * cannot be reached (`FAILURES_BEFORE_POLLING` failed connections in a row), and always on devnet
+ * (Jupiter does not index it), the coin lists and coin info are polled instead every
+ * `POLL_INTERVAL_MILLIS` while the tab is visible: their queries read the data API or, when it is
+ * down, the chain (`source.ts`). The stream keeps reconnecting with a backoff and polling stops as
+ * soon as it is back.
+ */
+
+/** True when the trench stream may be used (mainnet only). */
+export function streamEnabled(): boolean {
+  return primarySource() === 'jupiter';
+}
+
+/** The queries a poll refreshes: the coin lists and the coin info (data API shape keys). */
+export function isPolledQuery(queryKey: readonly unknown[]): boolean {
+  if (queryKey[0] !== 'explore') return false;
+  return queryKey[1] === 'gems' || (queryKey[1] === 'token' && queryKey[3] === 'info');
+}
+
+/**
+ * Calls `refresh` every `intervalMs` while `doc` is visible, and once when it becomes visible
+ * again after at least `intervalMs`. Returns the stop function.
+ */
+export function startPolling(
+  refresh: () => void,
+  intervalMs = POLL_INTERVAL_MILLIS,
+  doc: Pick<Document, 'hidden' | 'addEventListener' | 'removeEventListener'> = document,
+): () => void {
+  let last = Date.now();
+  const tick = () => {
+    if (doc.hidden) return;
+    last = Date.now();
+    refresh();
+  };
+  const timer = setInterval(tick, intervalMs);
+  const onVisibility = () => {
+    if (!doc.hidden && Date.now() - last >= intervalMs) tick();
+  };
+  doc.addEventListener('visibilitychange', onVisibility);
+  return () => {
+    clearInterval(timer);
+    doc.removeEventListener('visibilitychange', onVisibility);
+  };
+}
 
 const [dataStreamMsgAtom, useDataStreamListener] = atomMsgWithListeners<StreamResponse | null>(
   null,
@@ -36,6 +99,8 @@ export const DataStreamProvider = ({ children }: { children: React.ReactNode }) 
 
   const ws = useRef<WebSocket | null>(null);
   const shouldReconnect = useRef(true);
+  const failures = useRef(0);
+  const [polling, setPolling] = useState(() => !streamEnabled());
   const subRecentTokenList = useRef(false);
   const subPools = useRef<Set<string>>(new Set());
   const subTxnsAssets = useRef<Set<string>>(new Set());
@@ -125,9 +190,18 @@ export const DataStreamProvider = ({ children }: { children: React.ReactNode }) 
   const init = useCallback(() => {
     const initws = new WebSocket(WS_URL);
     ws.current = initws;
+    let opened = false;
+    const connectTimer = setTimeout(() => {
+      if (!opened) initws.close();
+    }, CONNECT_TIMEOUT_MILLIS);
 
     // Resubscribe to existing
     initws.onopen = () => {
+      opened = true;
+      clearTimeout(connectTimer);
+      failures.current = 0;
+      setPolling(false);
+      noteSource('live updates', 'jupiter');
       if (subRecentTokenList.current) {
         subscribeRecentTokenList();
       }
@@ -197,23 +271,46 @@ export const DataStreamProvider = ({ children }: { children: React.ReactNode }) 
     };
 
     initws.onclose = async () => {
+      clearTimeout(connectTimer);
       if (!shouldReconnect.current) return;
-      await delay(RECONNECT_DELAY_MILLIS);
+      if (!opened) {
+        failures.current += 1;
+        if (failures.current >= FAILURES_BEFORE_POLLING) {
+          setPolling(true);
+          noteSource('live updates', 'chain', 'stream unreachable, polling');
+        }
+      }
+      const backoff = Math.min(
+        MAX_RECONNECT_DELAY_MILLIS,
+        RECONNECT_DELAY_MILLIS * 2 ** Math.max(0, failures.current - 1),
+      );
+      await delay(backoff);
+      if (!shouldReconnect.current) return;
       init();
-    };
-
-    return () => {
-      initws?.close();
     };
   }, [queryClient, setDataStreamMsg, subscribePools, subscribeRecentTokenList, subscribeTxns]);
 
   useEffect(() => {
-    const cleanup = init();
+    // Devnet: no stream (Jupiter does not index it), polling only.
+    if (!streamEnabled()) {
+      noteSource('live updates', 'chain', 'devnet, polling');
+      return;
+    }
+    shouldReconnect.current = true;
+    init();
     return () => {
       shouldReconnect.current = false;
-      cleanup();
+      ws.current?.close();
     };
   }, [init]);
+
+  // Polling fallback: refresh the coin lists and coin info while the stream is unavailable.
+  useEffect(() => {
+    if (!polling) return;
+    return startPolling(() => {
+      void queryClient.invalidateQueries({ predicate: (query) => isPolledQuery(query.queryKey) });
+    });
+  }, [polling, queryClient]);
 
   return (
     <DataStreamContext.Provider

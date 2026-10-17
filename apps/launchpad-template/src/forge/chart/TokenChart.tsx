@@ -21,8 +21,10 @@ import { useMobile } from '@/hooks/useMobile';
 import Spinner from '@/components/Spinner/Spinner';
 import { cn } from '@/lib/utils';
 import { RefreshMarks } from './RefreshMarks';
+import { ChartUnavailable } from './ChartUnavailable';
 import { useTokenChart } from '@/contexts/TokenChartProvider';
 import { useTokenInfo } from '@/hooks/queries';
+import { primarySource } from '@/forge/data/source';
 
 type TradingView = {
   widget: ChartingLibraryWidgetConstructor;
@@ -163,14 +165,27 @@ export const TokenChart: React.FC<ChartProps> = memo(({ renderingId, style, opt 
 
   const [isLoaded, setIsLoaded] = useState(false);
   const [isDataReady, setIsDataReady] = useState(false);
+  // Devnet has no price history (Jupiter does not index it): the chart is never loaded there.
+  const devnet = primarySource() === 'chain';
+  const [historyUnavailable, setHistoryUnavailable] = useState(devnet);
+  const onUnavailableRef = useRef<(() => void) | undefined>(undefined);
+  onUnavailableRef.current = () => setHistoryUnavailable(true);
 
-  const { data: tokenInfo } = useTokenInfo((data) => data?.baseAsset);
+  const {
+    data: tokenInfo,
+    isError: tokenInfoError,
+    refetch: refetchTokenInfo,
+  } = useTokenInfo((data) => data?.baseAsset);
   const symbol = useMemo(() => {
     return tokenInfo ? `${tokenInfo.symbol.toUpperCase()}/USD` : undefined;
   }, [tokenInfo]);
+  const unavailable = historyUnavailable || (tokenInfoError && !tokenInfo);
 
   // Set up widget on first mount and rebuild it when the theme changes
   useEffect(() => {
+    if (historyUnavailable) {
+      return;
+    }
     if (!symbol) {
       console.error('createWidget: missing symbol, breaking: ', { symbol });
       return;
@@ -235,6 +250,7 @@ export const TokenChart: React.FC<ChartProps> = memo(({ renderingId, style, opt 
             showUserTradesRef,
             isMarksLoadingRef,
             resetCacheFnRef,
+            onUnavailableRef,
           ),
           library_path: `${TRADING_VIEW_DOMAIN}/tv/charting_library/bundles`,
           disabled_features: disabledFeatures,
@@ -411,7 +427,7 @@ export const TokenChart: React.FC<ChartProps> = memo(({ renderingId, style, opt 
       }
       widgetRef.current = null;
     };
-  }, [symbol, chartTheme]);
+  }, [symbol, chartTheme, historyUnavailable]);
 
   function updateButtonTitles(config: ChartConfig) {
     if (!priceMcapTogglerRef.current) {
@@ -486,6 +502,23 @@ export const TokenChart: React.FC<ChartProps> = memo(({ renderingId, style, opt 
     onResetCacheNeededCallback();
     activeChart.resetData();
   }, [chartConfig, isLoaded, isDataReady, symbol, baseAssetRef]);
+
+  if (unavailable) {
+    return (
+      <div
+        className={cn('relative h-full w-full flex-1 overflow-hidden')}
+        style={{ minHeight: 200, ...style }}
+      >
+        <ChartUnavailable
+          devnet={devnet}
+          onRetry={() => {
+            setHistoryUnavailable(false);
+            if (tokenInfoError) void refetchTokenInfo();
+          }}
+        />
+      </div>
+    );
+  }
 
   return (
     <>

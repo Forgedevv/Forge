@@ -8,20 +8,26 @@ import {
   TransactionMessage,
   VersionedTransaction,
 } from '@solana/web3.js';
+import { readFileSync } from 'node:fs';
 import {
+  DBC_POOL_CONFIG_OFFSET as CORE_CONFIG_OFFSET,
   DBC_POOL_CREATOR_OFFSET as CORE_CREATOR_OFFSET,
   LAUNCH_CHECK_DBC_PROGRAM_ID,
   listCoinsOfCreator,
+  listPoolStatesOfConfig,
 } from '@forge/core';
 import { describe, expect, it } from 'vitest';
 import { checkCall } from '../jsonrpc';
 import {
   ALLOWED_METHODS,
+  CONFIG_POOLS_WEIGHT,
   CREATOR_POOLS_WEIGHT,
+  DBC_POOL_CONFIG_OFFSET,
   DBC_POOL_CREATOR_OFFSET,
   DBC_POOL_DISCRIMINATORS,
   DBC_PROGRAM_ID,
   decodeBase58,
+  isConfigPoolsScan,
   MAX_MULTIPLE_ACCOUNTS,
   MAX_SIGNATURE_STATUSES,
   METHODS,
@@ -234,7 +240,7 @@ function encodeBase58(bytes: readonly number[]): string {
   return out;
 }
 
-describe('getProgramAccounts: creator pools on the DBC program only', () => {
+describe('getProgramAccounts: creator or config pools on the DBC program only', () => {
   const VIRTUAL_POOL = encodeBase58(DBC_POOL_DISCRIMINATORS[0]!);
   const TRANSFER_HOOK_POOL = encodeBase58(DBC_POOL_DISCRIMINATORS[1]!);
   /** PoolConfig account discriminator: a DBC account that is not a pool. */
@@ -288,7 +294,7 @@ describe('getProgramAccounts: creator pools on the DBC program only', () => {
     ['missing creator filter', query(sdkConfig([disc()]))],
     ['two creator filters', query(sdkConfig([disc(), creatorAt(), creatorAt()]))],
     ['two creator filters, no discriminator', query(sdkConfig([creatorAt(), creatorAt()]))],
-    ['the config at offset 72', query(sdkConfig([disc(), creatorAt(72)]))],
+    ['the pool authority at offset 40', query(sdkConfig([disc(), creatorAt(40)]))],
     ['the base mint at offset 136', query(sdkConfig([disc(), creatorAt(136)]))],
     ['an offset as a string', query(sdkConfig([disc(), creatorAt('104')]))],
     ['dataSize only', query(sdkConfig([{ dataSize: 424 }]))],
@@ -353,6 +359,29 @@ describe('getProgramAccounts: creator pools on the DBC program only', () => {
     expect(METHODS.getProgramAccounts!.isSend).toBeUndefined();
   });
 
+  it('accepts the getPoolsByConfig query (config at offset 72), weighed above a creator query', () => {
+    expect(DBC_POOL_CONFIG_OFFSET).toBe(CORE_CONFIG_OFFSET);
+    const byConfig = query(sdkConfig([disc(), creatorAt(DBC_POOL_CONFIG_OFFSET)]));
+    expectValid('getProgramAccounts', byConfig);
+    expectValid(
+      'getProgramAccounts',
+      query(sdkConfig([disc(TRANSFER_HOOK_POOL), creatorAt(DBC_POOL_CONFIG_OFFSET)])),
+    );
+    expect(isConfigPoolsScan(byConfig)).toBe(true);
+    expect(isConfigPoolsScan(query(sdkConfig()))).toBe(false);
+    expect(isConfigPoolsScan([PK])).toBe(false);
+    expect(METHODS.getProgramAccounts!.weight(byConfig)).toBe(CONFIG_POOLS_WEIGHT);
+    expect(CONFIG_POOLS_WEIGHT).toBeGreaterThan(CREATOR_POOLS_WEIGHT);
+    // The same strictness as the creator query: one key, nothing else.
+    for (const params of [
+      query(sdkConfig([disc(), creatorAt(72), creatorAt(104)])),
+      query({ ...sdkConfig([disc(), creatorAt(72)]), dataSlice: { offset: 0, length: 0 } }),
+      query(sdkConfig([disc(POOL_CONFIG), creatorAt(72)])),
+    ]) {
+      expectCode('getProgramAccounts', params, -32601);
+    }
+  });
+
   it('decodes base58 like web3.js', () => {
     expect(decodeBase58(CREATOR)).toEqual(new PublicKey(CREATOR).toBytes());
     expect(decodeBase58('11111111111111111111111111111111')).toEqual(new Uint8Array(32));
@@ -365,7 +394,7 @@ describe('getProgramAccounts: creator pools on the DBC program only', () => {
 
 describe('compatibility with @solana/web3.js', () => {
   /** Captures the JSON-RPC bodies a real Connection sends, answering with minimal stubs. */
-  function capturingConnection() {
+  function capturingConnection(results: Record<string, unknown> = {}) {
     const bodies: { method: string; params: unknown }[] = [];
     const fetchStub = async (_url: unknown, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body)) as {
@@ -375,16 +404,18 @@ describe('compatibility with @solana/web3.js', () => {
       };
       bodies.push({ method: body.method, params: body.params });
       const answer =
-        body.method === 'getProgramAccounts'
-          ? { result: [] }
-          : body.method === 'getLatestBlockhash'
-            ? {
-                result: {
-                  context: { slot: 1 },
-                  value: { blockhash: DEVNET_GENESIS, lastValidBlockHeight: 100 },
-                },
-              }
-            : { error: { code: -1, message: 'stub' } };
+        body.method in results
+          ? { result: results[body.method] }
+          : body.method === 'getProgramAccounts'
+            ? { result: [] }
+            : body.method === 'getLatestBlockhash'
+              ? {
+                  result: {
+                    context: { slot: 1 },
+                    value: { blockhash: DEVNET_GENESIS, lastValidBlockHeight: 100 },
+                  },
+                }
+              : { error: { code: -1, message: 'stub' } };
       return new Response(JSON.stringify({ jsonrpc: '2.0', id: body.id, ...answer }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
@@ -480,6 +511,41 @@ describe('compatibility with @solana/web3.js', () => {
     for (const body of bodies) {
       expect(check(body.method, body.params).ok, JSON.stringify(body.params)).toBe(true);
     }
+  });
+
+  it('accepts the program scans of core listPoolStatesOfConfig (SDK getPoolsByConfig)', async () => {
+    const fixtures = JSON.parse(
+      readFileSync(
+        new URL(
+          '../../../../../../packages/core/src/__fixtures__/dbc-devnet-accounts.json',
+          import.meta.url,
+        ),
+        'utf8',
+      ),
+    ) as { accounts: Record<string, { address: string; owner: string; data: string }> };
+    const config = fixtures.accounts.test1Config!;
+    const { connection, bodies } = capturingConnection({
+      getAccountInfo: {
+        context: { slot: 1 },
+        value: {
+          data: [config.data, 'base64'],
+          owner: config.owner,
+          lamports: 1,
+          executable: false,
+          rentEpoch: 0,
+          space: Buffer.from(config.data, 'base64').length,
+        },
+      },
+    });
+    await expect(
+      listPoolStatesOfConfig(connection, new PublicKey(config.address), { retry: { attempts: 1 } }),
+    ).resolves.toEqual([]);
+    const scans = bodies.filter((b) => b.method === 'getProgramAccounts');
+    expect(scans).toHaveLength(2);
+    for (const body of bodies) {
+      expect(check(body.method, body.params).ok, JSON.stringify(body.params)).toBe(true);
+    }
+    for (const scan of scans) expect(isConfigPoolsScan(scan.params)).toBe(true);
   });
 
   it('accepts the program scans of core listCoinsOfCreator (SDK getPoolsByCreator)', async () => {

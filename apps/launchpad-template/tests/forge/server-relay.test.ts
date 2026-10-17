@@ -115,6 +115,12 @@ describe('server token wiring', () => {
     expect(route).not.toMatch(/new Connection\(/);
   });
 
+  it('the coins route uses the token for its relay connection', () => {
+    const route = readFileSync(join(root, 'src/pages/api/coins.ts'), 'utf8');
+    expect(route).toMatch(/connection: createServerRelayConnection\(relay\)/);
+    expect(route).not.toMatch(/new Connection\(/);
+  });
+
   it('only server code reads the token, and never under a NEXT_PUBLIC_ name', () => {
     const readers = sourceFiles(join(root, 'src'))
       .filter((file) =>
@@ -122,7 +128,11 @@ describe('server token wiring', () => {
       )
       .map((file) => relative(root, file).split('\\').join('/'))
       .sort();
-    expect(readers).toEqual(['src/forge/server-relay.ts', 'src/pages/api/upload.ts']);
+    expect(readers).toEqual([
+      'src/forge/server-relay.ts',
+      'src/pages/api/coins.ts',
+      'src/pages/api/upload.ts',
+    ]);
     for (const file of sourceFiles(join(root, 'src'))) {
       expect(readFileSync(file, 'utf8')).not.toMatch(/NEXT_PUBLIC_FORGE_RPC_RELAY_TOKEN/);
     }

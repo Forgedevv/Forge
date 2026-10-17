@@ -92,9 +92,23 @@ export function ForgeWalletProvider({ children }: { children: ReactNode }) {
   );
 }
 
+/**
+ * Query retry policy: coin data that is unavailable right now (`DataUnavailableError` of
+ * `data/source.ts`, matched by name: the providers load nothing from `data/`) is not retried at
+ * once, so the UI shows its unavailable state without waiting; the queries' regular refetch tries
+ * again. Any other failure is retried up to 3 times (react-query's default).
+ */
+export function retryQuery(failureCount: number, error: unknown): boolean {
+  if (error instanceof Error && error.name === 'DataUnavailableError') return false;
+  return failureCount < 3;
+}
+
 export function AppProviders({ children }: { children: ReactNode }) {
   const walletTheme = useWalletTheme();
-  const queryClient = useMemo(() => new QueryClient(), []);
+  const queryClient = useMemo(
+    () => new QueryClient({ defaultOptions: { queries: { retry: retryQuery } } }),
+    [],
+  );
 
   return (
     <QueryClientProvider client={queryClient}>

@@ -114,8 +114,19 @@ export function restrictCalls(
   calls: readonly CheckedCall[],
   allowed: ReadonlySet<string>,
 ): CheckedCall[] {
+  return refuseCalls(calls, (c) => !allowed.has(c.method));
+}
+
+/**
+ * Turns every valid call matching `refused` into a refused one (-32601), as if its method were not
+ * on the allowlist. Already refused calls are kept as they are.
+ */
+export function refuseCalls(
+  calls: readonly CheckedCall[],
+  refused: (call: ValidCall) => boolean,
+): CheckedCall[] {
   return calls.map((c) =>
-    c.ok && !allowed.has(c.method)
+    c.ok && refused(c)
       ? {
           ok: false,
           index: c.index,
