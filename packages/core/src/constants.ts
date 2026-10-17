@@ -99,3 +99,27 @@ export const CLIENT_POOL_CREATION_FEE_LAMPORTS = {
   max: solToLamports(CLIENT_BOUNDS.poolCreationFeeSol.max),
   allowZero: CLIENT_BOUNDS.poolCreationFeeSol.allowZero,
 } as const;
+
+/**
+ * Referral fee range of Jupiter Ultra, in bps. The Jupiter Plugin passes `referralFee` as is to
+ * Ultra `/order`, which refuses any value outside 50..255 ("must be between 50 and 255
+ * (inclusive)", checked on 2026-10-17); Jupiter keeps 20% of the fee.
+ * @see https://developers.jup.ag/docs/swap/fees
+ */
+export const JUPITER_REFERRAL_FEE_BPS_RANGE = { min: 50, max: 255 } as const;
+
+/**
+ * Returns `bps` when Jupiter Ultra accepts it as a referral fee: a whole number of bps within
+ * `JUPITER_REFERRAL_FEE_BPS_RANGE`. Throws a `RangeError` otherwise: with such a fee Jupiter
+ * refuses every swap, so it must never reach the plugin.
+ */
+export function assertJupiterReferralFeeBps(bps: number): number {
+  const { min, max } = JUPITER_REFERRAL_FEE_BPS_RANGE;
+  if (!Number.isInteger(bps) || bps < min || bps > max) {
+    throw new RangeError(
+      `Jupiter referral fee must be a whole number of bps between ${min} and ${max} ` +
+        `(Jupiter Ultra refuses any other value), got ${String(bps)}`,
+    );
+  }
+  return bps;
+}

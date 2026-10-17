@@ -6,6 +6,7 @@ import {
   CLIENT_BOUNDS,
   CLIENT_POOL_CREATION_FEE_LAMPORTS,
   FEES,
+  JUPITER_REFERRAL_FEE_BPS_RANGE,
   LAMPORTS_PER_SOL,
   MAX_FEE_BPS,
   MAX_MIGRATED_POOL_FEE_BPS,
@@ -18,6 +19,7 @@ import {
   OPS,
   PRICING,
   SOL_QUOTE_MINT,
+  assertJupiterReferralFeeBps,
   solToLamports,
 } from './constants.js';
 
@@ -72,6 +74,28 @@ describe('solToLamports', () => {
     'rejects %d',
     (sol) => {
       expect(() => solToLamports(sol)).toThrow(RangeError);
+    },
+  );
+});
+
+describe('Jupiter referral fee', () => {
+  it('keeps the shared integrator fee inside the range Jupiter Ultra accepts', () => {
+    expect(JUPITER_REFERRAL_FEE_BPS_RANGE).toEqual({ min: 50, max: 255 });
+    expect(FEES.jupiterIntegratorFeeBps).toBe(50);
+    expect(assertJupiterReferralFeeBps(FEES.jupiterIntegratorFeeBps)).toBe(50);
+    // The platform fee of FORGE's own buy button is a separate constant and stays 30 bps.
+    expect(FEES.platformFeeBps).toBe(30);
+  });
+
+  it.each([50, 100, 255])('accepts %d bps', (bps) => {
+    expect(assertJupiterReferralFeeBps(bps)).toBe(bps);
+  });
+
+  it.each([30, 49, 256, 0, -50, 50.5, Number.NaN, Number.POSITIVE_INFINITY])(
+    'refuses %d bps with a clear error',
+    (bps) => {
+      expect(() => assertJupiterReferralFeeBps(bps)).toThrow(RangeError);
+      expect(() => assertJupiterReferralFeeBps(bps)).toThrow(/between 50 and 255/);
     },
   );
 });

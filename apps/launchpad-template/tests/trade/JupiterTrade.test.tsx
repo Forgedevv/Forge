@@ -65,7 +65,7 @@ afterEach(() => {
 });
 
 describe('JupiterTrade', () => {
-  it('initialises the plugin with the FORGE referral account and the 30 bps fee read from the environment', async () => {
+  it('initialises the plugin with the FORGE referral account from the environment and the 50 bps fee', async () => {
     vi.stubEnv('NEXT_PUBLIC_FORGE_JUPITER_REFERRAL_ACCOUNT', REFERRAL);
     render(<JupiterTrade launchpadPool={await handleFor(keys.mint)} />);
     await waitFor(() => expect(jupiter.init).toHaveBeenCalled());
@@ -73,7 +73,7 @@ describe('JupiterTrade', () => {
     expect(options.formProps).toMatchObject({
       initialOutputMint: keys.mint,
       referralAccount: REFERRAL,
-      referralFee: 30,
+      referralFee: 50,
     });
   });
 

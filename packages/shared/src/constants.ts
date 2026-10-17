@@ -14,8 +14,11 @@ export const PRICING = {
 export const FEES = {
   /** Our fee on our own buy button (before graduation). */
   platformFeeBps: 30,
-  /** After graduation; Jupiter keeps 20 % of it. */
-  jupiterIntegratorFeeBps: 30,
+  /**
+   * Jupiter Plugin referral fee (`referralFee`), after graduation only; Jupiter keeps 20 % of it.
+   * Jupiter Ultra accepts 50 to 255 bps (checked by @forge/core `assertJupiterReferralFeeBps`).
+   */
+  jupiterIntegratorFeeBps: 50,
   /** FORGE creator share on the coin of every launchpad. */
   forgeCreatorSharePct: 25,
 } as const;
