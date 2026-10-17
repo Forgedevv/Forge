@@ -57,6 +57,15 @@ draw the mark of `src/components/Logo.tsx`; the app shell frames the locked crea
 (`[data-forge-page="creator-fees"]`) with the same header and footer. `MintSculpture` is local
 SVG artwork with two engraved medallions; its finish follows the variables above, and it holds a
 static pose when reduced motion is requested. It uses no remote asset or animation service.
+The create page (`src/pages/create-pool.tsx`) uses the normal page frame (header and footer). Its
+notes come first in the page: phones show them, compact, above the form; wide screens put them in a
+side column. The form panel (`launchpad-create-panel`) is framed on wide screens and frameless on
+phones, so the form keeps the full width. The FORGE form inside it takes its colours from the
+Tailwind theme scales and its corners from `--radius` (controls) and `--radius-card` (framed
+blocks); restyle it further from CSS through its `[data-forge="create-coin-form"]`,
+`create-coin-preview`, `create-coin-review`, `create-coin-steps`, `create-coin-status` and
+`create-coin-success` attributes. Its coin preview reuses the market row class
+(`launchpad-token-row`), so restyling the market restyles the preview too.
 The token page keeps the existing chart and trading components intact; the theme controls its
 chart/table frames and the trade rail. On mobile the trading panel comes between the chart and
 the tables instead of being hidden below a full-screen transaction list.

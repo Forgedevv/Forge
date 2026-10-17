@@ -325,7 +325,10 @@ button {
 
 /* Create page notes and the framed creator fee page. */
 .launchpad-create-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(14rem, 18rem); align-items: start; gap: clamp(1.25rem, 3vw, 2.5rem); max-width: 74rem; margin: var(--section-space) auto 0; }
-.launchpad-create-layout .launchpad-create-panel { max-width: none; margin: 0; }
+.launchpad-create-layout .launchpad-create-panel { max-width: none; min-width: 0; margin: 0; }
+/* The notes come first in the page (phones show them above the form); wide screens put them on the side. */
+.launchpad-create-layout > .launchpad-create-panel { grid-column: 1; grid-row: 1; }
+.launchpad-create-layout > .launchpad-create-notes { grid-column: 2; grid-row: 1; }
 .launchpad-create-notes { position: sticky; top: calc(var(--header-height) + 1.5rem); padding: 1.25rem; border: 1px solid var(--color-border); border-radius: var(--radius-card); }
 .launchpad-create-notes h2 { margin: 0 0 1rem; font: 400 1.25rem/1.2 var(--font-heading); }
 .launchpad-create-notes ol { display: grid; gap: 1rem; margin: 0; padding: 0; list-style: none; }
@@ -339,9 +342,19 @@ button {
   .launchpad-coin-card { grid-template-columns: auto minmax(0, 1fr); }
   .launchpad-coin-action { grid-column: 1 / -1; }
   .launchpad-create-layout { grid-template-columns: minmax(0, 1fr); }
-  .launchpad-create-notes { position: static; }
+  .launchpad-create-layout > .launchpad-create-panel, .launchpad-create-layout > .launchpad-create-notes { grid-column: 1; grid-row: auto; }
+  /* Compact notes above the form. */
+  .launchpad-create-notes { position: static; padding: .9rem 1rem; }
+  .launchpad-create-notes h2 { margin-bottom: .6rem; font-size: 1rem; }
+  .launchpad-create-notes ol { gap: .45rem; }
+  .launchpad-create-notes li { display: block; font-size: .8rem; line-height: 1.5; }
+  .launchpad-create-note-title { margin-right: .35rem; }
 }
 @media (max-width: 700px) {
+  /* The form uses the full width on phones: no frame around it (and no card in a card). */
+  .launchpad-create-layout .launchpad-create-panel { padding: 0; border: 0; border-radius: 0; background: transparent; }
+  .launchpad-create-heading { padding-bottom: 1.25rem; }
+  .launchpad-create-heading h1 { margin-bottom: 1rem; }
   .launchpad-footer { grid-template-columns: minmax(0, 1fr); }
   .launchpad-footer-nav { justify-content: flex-start; margin-inline: -.6rem; }
   .launchpad-coin-card { grid-template-columns: minmax(0, 1fr); }
