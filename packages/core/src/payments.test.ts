@@ -246,6 +246,7 @@ describe('buildPaymentTx', () => {
 
   it('puts a bounded priority fee first and still verifies once landed', async () => {
     const connection = buildConnection(5_000_000) as unknown as Record<string, unknown>;
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars -- typed like Connection.getRecentPrioritizationFees
     const fees = vi.fn(async (_config?: { lockedWritableAccounts?: PublicKey[] }) =>
       [0, 30_000, 2_000_000, 9_000_000].map((prioritizationFee, slot) => ({
         slot,

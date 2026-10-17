@@ -161,6 +161,7 @@ function mockConnection(options: MockOptions = {}) {
       async (size: number) => options.rentOverride?.[size] ?? rent(size),
     ),
     getLatestBlockhash,
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars -- typed like Connection.getRecentPrioritizationFees
     getRecentPrioritizationFees: vi.fn(async (_config?: { lockedWritableAccounts?: PublicKey[] }) =>
       (options.priorityFees ?? []).map((prioritizationFee, slot) => ({ slot, prioritizationFee })),
     ),
