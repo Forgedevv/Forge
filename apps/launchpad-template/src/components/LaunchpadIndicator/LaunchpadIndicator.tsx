@@ -14,6 +14,11 @@ type TrenchesTokenIconLaunchpadProps = {
   className?: string;
 };
 
+/**
+ * Optional launchpad chip on a token icon, for free-zone code that wants one: render it inside a
+ * `TrenchesTokenIconRoot`. The FORGE token icons no longer draw it (every coin of the site is on
+ * the same launchpad, so it told visitors nothing). Styled with the theme variables.
+ */
 export const TrenchesTokenIconLaunchpad: React.FC<TrenchesTokenIconLaunchpadProps> = (props) => {
   const { token, width, height, hideLaunchpad } = useTrenchesTokenIconContext();
 
@@ -45,9 +50,7 @@ export const LaunchpadIndicator: React.FC<LaunchpadIndicatorProps> = ({ launchpa
     <div
       className={cn(
         'absolute -bottom-px -right-1',
-        // Fixed dark chip in both themes: the launchpad brand icons are drawn
-        // with white fills and are illegible on a light background
-        'flex shrink-0 items-center justify-center overflow-hidden rounded-full border bg-[#0b0e13] p-0.5',
+        'flex shrink-0 items-center justify-center overflow-hidden rounded-full border bg-[var(--color-surface)] p-0.5',
         className,
       )}
       style={{ borderColor: config.borderColor }}
