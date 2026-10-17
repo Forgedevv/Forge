@@ -349,6 +349,7 @@ The signer never takes an address or an amount from the request: it re-reads eve
 | `FORGE_MULTISIG_VAULT` | | | | ✓ |
 | `FORGE_REVENUE_WALLET` (D34: the signer's `revenue` keystore wallet; `FORGE_PLATFORM_FEE_WALLET` must be it) | | ✓ as `NEXT_PUBLIC_FORGE_REVENUE_WALLET` (referral holder and platform fee wallet check) | ✓ (injects the public twin) | ✓ |
 | `FORGE_SQUADS_MULTISIG`, `FORGE_SQUADS_SPENDING_LIMIT`, `FORGE_SQUADS_VAULT_INDEX` (optional, read in `packages/core/src/addresses.ts`) | | | | ✓ (buyback funding) |
+| `BUYBACK_REVENUE_SINCE` (D35: the ISO 8601 instant, with its time zone, from which the trading revenue is bought back; required by `FORGE_BUYBACK_LIVE=true` on mainnet-beta, alert and no buy without it elsewhere), `BUYBACK_DAILY_CAP_LAMPORTS` (5 SOL on mainnet, at most `BUYBACK_ORDERS_PER_DAY` x `BUYBACK_MAX_ORDER_LAMPORTS`) | | | | ✓ (buyback budget) |
 | `FORGE_METEORA_REFERRAL_ACCOUNT`, `FORGE_PLATFORM_FEE_WALLET`, `FORGE_JUPITER_REFERRAL_ACCOUNT` | | ✓ as `NEXT_PUBLIC_*` twins | ✓ (injects the public twins) | ✓ |
 | `NEXT_PUBLIC_POOL_CONFIG_KEY`, `NEXT_PUBLIC_R2_PUBLIC_URL`, `NEXT_PUBLIC_SITE_NAME` | | ✓ | ✓ (injected) | |
 | `JUPITER_API_KEY` | ✓ | | | ✓ (required when the fee conversion or the buyback runs live) |
@@ -392,4 +393,40 @@ Every forward of the revenue wallet to the multisig is one file `SIGNER_JOURNAL_
 
 Amounts are decimal strings of lamports; the four `breakdown` values sum to `lamports`: `meteora_referral` (WSOL unwrapped from the Meteora referral account), `jupiter_referral` (WSOL unwrapped from the wallet's other accounts and the conversions of the Jupiter claim mints, `SIGNER_JUPITER_CLAIMS_MINTS`), `platform_fee` (native SOL received directly) and `other` (conversions of any other mint and what the journal cannot explain, e.g. the first run's balance). Fees and the reserve are not booked: the breakdown is the gross receipts since the previous forward, scaled down to the forwarded amount when they exceed it.
 
-Reader (`createRevenueForwardReader(journalDir)`, same file): `list({ since? })` returns the entries finalized at or after an ISO 8601 date, oldest first; `totalForwardedSince(since)` returns `{ lamports, count, breakdown }` as `bigint`s. The buyback budget (slice S2) reads the lamports forwarded over its period from it.
+Reader (`createRevenueForwardReader(journalDir)`, same file): `list({ since? })` returns the entries finalized at or after an ISO 8601 date, oldest first; `totalForwardedSince(since)` returns `{ lamports, count, breakdown }` as `bigint`s. The buyback budget (section 10) reads the lamports forwarded since `BUYBACK_REVENUE_SINCE` from it.
+
+## 10. Claim receipts and the buyback budget (signer journal)
+
+Every creator claim the vault received (DBC creator share before graduation, DAMM v2 position fees after; `apps/signer/src/jobs/claims.ts`) is one file `SIGNER_JOURNAL_DIR/claim-receipt.<signature>.json`, written when the claims job sees the claim settled, never deleted (`ClaimReceiptEntry`):
+
+```json
+{
+  "v": 1,
+  "signature": "<base58 signature of the claim>",
+  "kind": "dbc",
+  "pool": "<DBC pool address>",
+  "launchpadId": "<uuid>",
+  "receiver": "<FORGE_MULTISIG_VAULT>",
+  "lamports": "50000000",
+  "settledAt": "2026-11-02T09:00:12.000Z",
+  "commitment": "finalized",
+  "finalizedAt": "2026-11-02T10:00:00.000Z",
+  "positions": []
+}
+```
+
+`kind` is `dbc` or `position` (`positions` then lists the DAMM v2 positions claimed); `lamports` is the quote (SOL) side the claim collected, exact for a DBC claim and a lower bound for a position claim (the rent of the temporary WSOL account also reaches the vault but is the payer's money, not revenue: not booked). Claims settle at `confirmed`, so a receipt is first written with `commitment: "confirmed"` and no `finalizedAt`; the buyback budget checks such a receipt against the ledger (`getSignatureStatuses`) and rewrites it once with `commitment: "finalized"` and `finalizedAt` when the ledger shows it final. That promotion is the only rewrite a receipt ever gets.
+
+**Buyback budget** (`apps/signer/src/jobs/buyback-budget.ts`, D35), computed by the signer once per UTC day before it plans the buyback:
+
+```
+revenue  = revenue forwards finalized at or after BUYBACK_REVENUE_SINCE (section 9)
+         + claim receipts settled at or after BUYBACK_REVENUE_SINCE, receiver = the vault, finalized
+spent    = `funding.lamports` of the buyback day entries (`buyback.day-<day>.json`) with
+           `funding.at` at or after BUYBACK_REVENUE_SINCE and status requested, confirmed or unknown
+backlog  = max(0, revenue - spent)
+budget   = min(backlog + SOL on the bot above its reserve, BUYBACK_DAILY_CAP_LAMPORTS,
+               SOL on the bot above its reserve + remaining spending limit - orders x fee allowance)
+```
+
+Everything comes from the journals, nothing from a balance (a balance mixes revenue with client payments and the team's own funds). Cashbox sweeps (client payments) are never read. The figures are recorded in the day entry (`revenue`, `botAvailableLamports`, `unplannedLamports`), in the run report (`budget`) and in the `buyback day planned` log line. When the budget cannot be established (`BUYBACK_REVENUE_SINCE` unset, journal directory unreadable, a corrupt entry) the day is not planned for that run and a high alert is sent (docs/OPERATIONS.md "Buyback budget").
