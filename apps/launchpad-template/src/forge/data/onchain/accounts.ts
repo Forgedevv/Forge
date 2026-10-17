@@ -140,17 +140,15 @@ export function decodeMetadata(
  */
 export const PYTH_SOL_USD_ACCOUNT = '7UVimffxr9ow1uXYxsr4LHAcV58mLzhmwaeKvJ1pjLiE';
 export const PYTH_RECEIVER_PROGRAM_ID = 'rec5EKMGg6MxZYaMdyBfgwp4d5rB9T1VQH5pJv5LtFJ';
-/** Pyth feed id of SOL/USD. */
-export const PYTH_SOL_USD_FEED_ID =
-  'ef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d';
+/**
+ * Pyth feed id of SOL/USD (hex `ef0d8b6f…c280b56d`), written as the base58 of its 32 bytes like
+ * an address.
+ */
+export const PYTH_SOL_USD_FEED_ID = 'H6ARHf6YXhGYeQfUzQNGk6rDNnLBQKrenN712K4AQJEG';
 /** Anchor discriminator of `PriceUpdateV2`. */
 const PRICE_UPDATE_V2_DISCRIMINATOR = [0x22, 0xf1, 0x23, 0x63, 0x9d, 0x7e, 0xf4, 0xcd];
 /** A price older than this is not shown (display only: USD values are then left empty). */
 export const MAX_SOL_USD_AGE_SECONDS = 15 * 60;
-
-function hex(bytes: Uint8Array): string {
-  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
-}
 
 /**
  * SOL price in USD from the Pyth `PriceUpdateV2` account: discriminator, write authority, the
@@ -168,7 +166,9 @@ export function decodeSolUsdPrice(
   const level = data[40];
   const message = level === 1 ? 41 : level === 0 ? 42 : -1;
   if (message < 0 || data.length < message + 60) return null;
-  if (hex(data.subarray(message, message + 32)) !== PYTH_SOL_USD_FEED_ID) return null;
+  if (new PublicKey(data.subarray(message, message + 32)).toBase58() !== PYTH_SOL_USD_FEED_ID) {
+    return null;
+  }
   const price = i64(data, message + 32);
   const exponent = i32(data, message + 48);
   const publishTime = Number(i64(data, message + 52));
