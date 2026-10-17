@@ -31,6 +31,17 @@ Changes after 0.2.0. Publish `@forgedevv/shared` 0.3.0 with it.
 - `JUPITER_ULTRA_REFERRAL_PROJECT` (`DkiqsTrw1u1bYFumumC7sCG2S8K25qc2vemJFHyW2wJc`) and
   `deriveJupiterReferralAccount(project, name, programId?)` (jupiter-referral.ts).
 
+### Added (on-chain fallback of the coin data)
+
+- `listPoolStatesOfConfig(connection, config, options?)` (reads.ts): the decoded pools of a config
+  with the config state (`DbcPoolState[]`, sorted by pool address), from the SDK's
+  `getPoolsByConfig`; a pool whose decoded config differs is dropped. `listCoinsOfConfig` now
+  summarizes its result (unchanged output). The launchpad template lists its coins with it when
+  the Jupiter data API is unavailable (and always on devnet).
+- `poolSpotPrice(sqrtPrice, baseDecimals, quoteDecimals = 9)` (reads.ts): display price of one
+  whole coin in whole quote tokens from the pool's Q64.64 `sqrtPrice` (same value as the SDK's
+  `getPriceFromSqrtPrice`, as a float).
+
 ## 0.2.0 — unreleased
 
 Everything below was added after 0.1.0 was published. Publish `@forgedevv/shared` 0.2.0 with it.

@@ -321,6 +321,24 @@ export async function listCoinsOfConfig(
   config: PublicKey,
   options: ReadOptions = {},
 ): Promise<CoinOfConfig[]> {
+  return (await listPoolStatesOfConfig(connection, config, options)).map(summarizeCoin);
+}
+
+/**
+ * The decoded pools of a config with the config itself (what `listCoinsOfConfig` summarizes):
+ * one `getPoolsByConfig` scan (one `getProgramAccounts` per pool account variant, filtered on the
+ * config at offset 72) and one config read. A pool whose decoded `config` is not `config` is
+ * dropped (a wrong RPC answer is never shown). Sorted by pool address.
+ *
+ * The scan returns every pool of the config: callers should cache it (the FORGE RPC relay serves
+ * it to server-token callers only, with a response size cap).
+ * @throws DbcReadError when the config does not exist.
+ */
+export async function listPoolStatesOfConfig(
+  connection: Connection,
+  config: PublicKey,
+  options: ReadOptions = {},
+): Promise<DbcPoolState[]> {
   const state = stateService(connection, options.commitment ?? READ_COMMITMENT);
   const configState = await retryRpc(() => state.getPoolConfig(config), options.retry);
   if (!configState) {
@@ -329,10 +347,36 @@ export async function listCoinsOfConfig(
   const pools = await retryRpc(() => state.getPoolsByConfig(config), options.retry);
   return pools
     .filter((p) => p.account.poolState.config.equals(config))
-    .map((p) =>
-      summarizeCoin({ address: p.publicKey, virtualPool: p.account, config: configState }),
-    )
-    .sort((a, b) => compareStrings(a.pool.toBase58(), b.pool.toBase58()));
+    .map((p) => ({ address: p.publicKey, virtualPool: p.account, config: configState }))
+    .sort((a, b) => compareStrings(a.address.toBase58(), b.address.toBase58()));
+}
+
+/** 2^128: a pool's `sqrtPrice` is a Q64.64 number, so its square is a Q128.128 price. */
+const Q128 = 1n << 128n;
+
+/** Fixed-point scale used to turn the bigint price into a float without losing small prices. */
+const SPOT_PRICE_SCALE = 10n ** 18n;
+
+/**
+ * Pure: spot price of one whole base token (the coin) in whole quote tokens (SOL for FORGE pools),
+ * from the pool's `sqrtPrice`: `sqrtPrice^2 / 2^128` quote units per base unit (the price the
+ * curve is at, before fees), times `10^(baseDecimals - quoteDecimals)`. A float, for display only:
+ * quotes and transactions use the exact bigint math of `quoteSwap`.
+ */
+export function poolSpotPrice(
+  sqrtPrice: { toString(): string } | bigint,
+  baseDecimals: number,
+  quoteDecimals = 9,
+): number {
+  const sqrt = toBigint(sqrtPrice);
+  if (sqrt <= 0n) return 0;
+  const shift = baseDecimals - quoteDecimals;
+  let numerator = sqrt * sqrt * SPOT_PRICE_SCALE;
+  let denominator = Q128;
+  if (shift >= 0) numerator *= 10n ** BigInt(shift);
+  else denominator *= 10n ** BigInt(-shift);
+  const scaled = numerator / denominator;
+  return Number(scaled) / Number(SPOT_PRICE_SCALE);
 }
 
 /**

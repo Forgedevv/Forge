@@ -1,6 +1,9 @@
 import { readFileSync } from 'node:fs';
 import { PublicKey, type AccountInfo, type Connection } from '@solana/web3.js';
-import { DYNAMIC_BONDING_CURVE_PROGRAM_ID } from '@meteora-ag/dynamic-bonding-curve-sdk';
+import {
+  DYNAMIC_BONDING_CURVE_PROGRAM_ID,
+  getPriceFromSqrtPrice,
+} from '@meteora-ag/dynamic-bonding-curve-sdk';
 import { describe, expect, it, vi } from 'vitest';
 import {
   CURVE_PROGRESS_FULL_BPS,
@@ -17,8 +20,10 @@ import {
   isTransientRpcError,
   listCoinsOfConfig,
   listCoinsOfCreator,
+  listPoolStatesOfConfig,
   partnerPoolCreationFeeShare,
   poolCreationFeeStatus,
+  poolSpotPrice,
   readCoin,
   retryRpc,
   type DbcPoolState,
@@ -246,6 +251,65 @@ describe('listCoinsOfConfig', () => {
     const { connection } = mockConnection();
     const err = await listCoinsOfConfig(connection, PublicKey.unique(), noRetry).catch((e) => e);
     expect((err as DbcReadError).code).toBe('config_not_found');
+  });
+});
+
+describe('listPoolStatesOfConfig', () => {
+  it('returns the decoded pools of the config with the config state', async () => {
+    const { connection, getProgramAccounts } = mockConnection();
+    const states = await listPoolStatesOfConfig(connection, key('test1Config'), noRetry);
+    expect(states).toHaveLength(1);
+    const s = states[0]!;
+    expect(s.address.equals(key('test1Pool'))).toBe(true);
+    expect(s.virtualPool.poolState.config.equals(key('test1Config'))).toBe(true);
+    expect(s.config.migrationQuoteThreshold.toString()).toBe(
+      (await state('test1Pool')).config.migrationQuoteThreshold.toString(),
+    );
+    expect(getProgramAccounts).toHaveBeenCalledTimes(2);
+    for (const [, config] of getProgramAccounts.mock.calls) {
+      const { filters } = config as { filters: Filter[] };
+      expect(filters[1]).toEqual({
+        memcmp: {
+          offset: DBC_POOL_CONFIG_OFFSET,
+          bytes: fx('test1Config').address,
+          encoding: 'base58',
+        },
+      });
+    }
+  });
+
+  it('drops a pool whose decoded config is another one', async () => {
+    const { connection, getProgramAccounts } = mockConnection();
+    // A wrong answer hands back the pools of every config.
+    const pools = ['test1Pool', 'test2Pool'].map((n) => ({
+      pubkey: key(n),
+      account: accountInfo(fx(n)),
+    }));
+    getProgramAccounts.mockResolvedValueOnce(pools).mockResolvedValueOnce([]);
+    const states = await listPoolStatesOfConfig(connection, key('test1Config'), noRetry);
+    expect(states.map((s) => s.address.toBase58())).toEqual([fx('test1Pool').address]);
+  });
+});
+
+describe('poolSpotPrice', () => {
+  it('matches the SDK price of the fixture pools', async () => {
+    for (const name of ['test1Pool', 'test2Pool', 'test3Pool']) {
+      const s = await state(name);
+      const sqrtPrice = s.virtualPool.poolState.sqrtPrice;
+      const decimals = s.config.tokenDecimal;
+      const expected = getPriceFromSqrtPrice(sqrtPrice, decimals, 9).toNumber();
+      expect(poolSpotPrice(sqrtPrice, decimals)).toBeCloseTo(expected, 15);
+      expect(poolSpotPrice(BigInt(sqrtPrice.toString()), decimals) / expected).toBeCloseTo(1, 9);
+    }
+  });
+
+  it('handles both decimal shifts and a zero price', () => {
+    // sqrtPrice = 2^64 is a raw price of exactly 1 quote unit per base unit.
+    const one = 1n << 64n;
+    expect(poolSpotPrice(one, 9, 9)).toBe(1);
+    expect(poolSpotPrice(one, 6, 9)).toBeCloseTo(0.001, 15);
+    expect(poolSpotPrice(one, 9, 6)).toBe(1000);
+    expect(poolSpotPrice(0n, 6)).toBe(0);
   });
 });
 
