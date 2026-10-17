@@ -15,7 +15,8 @@ import {
   Heading,
   Loading,
   TransactionState,
-  readableError,
+  describeError,
+  type FriendlyError,
 } from './components';
 import { launchCopy as copy } from './content/launch';
 import { common } from './content/common';
@@ -56,7 +57,7 @@ export function LaunchScreen({
   const [summary, setSummary] = useState<LaunchReview | null>(null),
     [alreadySigned, setAlreadySigned] = useState(false),
     [acknowledged, setAcknowledged] = useState(false),
-    [error, setError] = useState(''),
+    [error, setError] = useState<FriendlyError | null>(null),
     [phase, setPhase] = useState<TxPhase>(initialPhase),
     [result, setResult] = useState<TxResult | null>(null),
     [generation, setGeneration] = useState(0);
@@ -64,7 +65,7 @@ export function LaunchScreen({
   useEffect(() => {
     if (holdLoading) return;
     let cancelled = false;
-    setError('');
+    setError(null);
     void api
       .getOwnerTransactionSummary(jobId)
       .then((value) => {
@@ -76,7 +77,7 @@ export function LaunchScreen({
         if (cancelled) return;
         // Signed and confirmed already (e.g. from another tab): that is a success.
         if (serverCodeOf(e) === 'ALREADY_SIGNED') setAlreadySigned(true);
-        else setError(readableError(e));
+        else setError(describeError(e));
       });
     return () => {
       cancelled = true;
@@ -91,7 +92,7 @@ export function LaunchScreen({
     if (!summary || session?.wallet !== summary.ownerWallet || lock.current) return;
     if (!simulated && !acknowledged) return;
     lock.current = true;
-    setError('');
+    setError(null);
     try {
       const next = await api.signOwnerTransaction(jobId, setPhase);
       setResult(next);
@@ -100,7 +101,7 @@ export function LaunchScreen({
         router.replace(`/jobs/${encodeURIComponent(jobId)}`);
     } catch (e) {
       setPhase('error');
-      setError(readableError(e));
+      setError(describeError(e));
     } finally {
       lock.current = false;
     }
@@ -199,7 +200,7 @@ export function LaunchScreen({
                       await disconnect();
                       openLogin();
                     } catch (e) {
-                      setError(readableError(e));
+                      setError(describeError(e));
                     }
                   }}
                 >
@@ -232,7 +233,12 @@ export function LaunchScreen({
         )
       )}
       {error && (
-        <ErrorNotice message={error} onRetry={summary ? sign : () => setGeneration((n) => n + 1)} />
+        <ErrorNotice
+          message={error.message}
+          detail={error.detail}
+          reference={jobId}
+          onRetry={summary ? sign : () => setGeneration((n) => n + 1)}
+        />
       )}
     </div>
   );

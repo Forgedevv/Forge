@@ -22,6 +22,8 @@ import { common } from './content/common';
 import { jobCopy } from './content/job';
 import { Muse, type MuseMood } from '../muse';
 import { SupportLinks } from './support';
+import { errorDetail, readableError } from './errors';
+import { errorCopy } from './content/errors';
 
 export function Button({
   variant = 'primary',
@@ -78,19 +80,44 @@ export function Loading({ label = common.loading }: { label?: string }) {
     </div>
   );
 }
+/** The technical side of a failure, collapsed: for support, never in the message itself. */
+export function ErrorDetails({
+  detail,
+  reference,
+}: {
+  detail?: string | null;
+  reference?: string | null;
+}) {
+  if (!detail && !reference) return null;
+  return (
+    <details className="fw-error-details">
+      <summary>{errorCopy.details}</summary>
+      {reference && (
+        <p>
+          {errorCopy.reference}: <code>{reference}</code>
+        </p>
+      )}
+      {detail && <code className="fw-wrap">{detail}</code>}
+    </details>
+  );
+}
 export function ErrorNotice({
   message,
   onRetry,
   reference,
+  detail,
 }: {
   message: string;
   onRetry?: () => void;
   /** The id the team needs to help (a job or launchpad id), quoted in the support message. */
   reference?: string | null;
+  /** Technical detail of the failure, shown collapsed for support. */
+  detail?: string | null;
 }) {
   return (
     <div className="fw-notice fw-notice-error" role="alert">
       <p>{message}</p>
+      <ErrorDetails detail={detail} reference={reference} />
       <div className="fw-actions">
         {onRetry && (
           <Button variant="secondary" onClick={onRetry}>
@@ -469,9 +496,7 @@ export function ClaimButton({
     </div>
   );
 }
-export function readableError(error: unknown) {
-  return error instanceof Error ? error.message : common.error;
-}
+export { describeError, readableError, type FriendlyError } from './errors';
 export class ScreenBoundary extends Component<
   { children: ReactNode; onRetry(): void },
   { error: Error | null }
@@ -481,9 +506,11 @@ export class ScreenBoundary extends Component<
     return { error };
   }
   render() {
+    // A crash is a bug: a stable message, the error itself only in the details.
     return this.state.error ? (
       <ErrorNotice
-        message={this.state.error.message}
+        message={errorCopy.crash}
+        detail={errorDetail(this.state.error)}
         onRetry={() => {
           this.props.onRetry();
           this.setState({ error: null });

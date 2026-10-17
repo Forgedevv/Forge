@@ -16,7 +16,8 @@ import {
   Loading,
   QuoteCountdown,
   TransactionState,
-  readableError,
+  describeError,
+  type FriendlyError,
 } from './components';
 import { paymentCopy as copy } from './content/payment';
 import { common } from './content/common';
@@ -98,7 +99,7 @@ export function PaymentScreen({
     return pending ? pendingResult(pending) : null;
   });
   const [quote, setQuote] = useState<Quote | null>(null),
-    [error, setError] = useState(''),
+    [error, setError] = useState<FriendlyError | null>(null),
     [phase, setPhase] = useState<TxPhase>(initialPhase),
     [result, setResult] = useState<PaymentResult | null>(null),
     [expired, setExpired] = useState(false),
@@ -126,11 +127,11 @@ export function PaymentScreen({
   const recheck = useCallback(async () => {
     if (lock.current) return;
     lock.current = true;
-    setError('');
+    setError(null);
     try {
       finish(await api.resumePayment(jobId, setPhase));
     } catch (e) {
-      setError(readableError(e));
+      setError(describeError(e));
     } finally {
       lock.current = false;
     }
@@ -148,7 +149,7 @@ export function PaymentScreen({
     if (!hasJob || holdLoading || paid || sent) return;
     let cancelled = false;
     setQuote(null);
-    setError('');
+    setError(null);
     setExpired(false);
     void api
       .getQuote(jobId, kind)
@@ -163,7 +164,7 @@ export function PaymentScreen({
         if (!cancelled) {
           const pending = api.getPendingPayment(jobId);
           if (pending) setSent(pendingResult(pending));
-          else setError(readableError(e));
+          else setError(describeError(e));
         }
       });
     return () => {
@@ -180,7 +181,7 @@ export function PaymentScreen({
       return;
     }
     lock.current = true;
-    setError('');
+    setError(null);
     try {
       let current = quote;
       // The quoted transaction carries a blockhash that lives about 60 s: past QUOTE_TX_FRESH_MS,
@@ -199,7 +200,7 @@ export function PaymentScreen({
       }
       finish(await api.payQuote(current, setPhase));
     } catch (e) {
-      setError(readableError(e));
+      setError(describeError(e));
       setPhase('error');
       if (Date.parse(quote.expiresAt) <= Date.now()) setExpired(true);
     } finally {
@@ -305,7 +306,14 @@ export function PaymentScreen({
             </>
           )
         )}
-        {error && <ErrorNotice message={error} onRetry={() => setGeneration((n) => n + 1)} />}
+        {error && (
+          <ErrorNotice
+            message={error.message}
+            detail={error.detail}
+            reference={jobId}
+            onRetry={() => setGeneration((n) => n + 1)}
+          />
+        )}
       </Card>
     </div>
   );

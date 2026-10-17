@@ -8,13 +8,16 @@ import {
   Amount,
   Button,
   Card,
+  ErrorDetails,
   ErrorNotice,
   Heading,
   JobStepTracker,
   Loading,
   StatusBadge,
-  readableError,
+  describeError,
+  type FriendlyError,
 } from './components';
+import { jobErrorDetail } from './errors';
 import { safeUrl } from './safe-url';
 import { jobCopy as copy } from './content/job';
 import { common } from './content/common';
@@ -38,7 +41,7 @@ export function JobScreen({
   const restart = useStartAgain(job?.launchpadId ?? '', refreshLaunchpad);
   const next = launchpad ? draftNext(launchpad) : null;
   const [busy, setBusy] = useState(false),
-    [error, setError] = useState('');
+    [error, setError] = useState<FriendlyError | null>(null);
   const lock = useRef(false);
   const end = useRef<HTMLLIElement>(null);
   useEffect(() => {
@@ -56,11 +59,11 @@ export function JobScreen({
     if (lock.current) return;
     lock.current = true;
     setBusy(true);
-    setError('');
+    setError(null);
     try {
       await api.approvePreview(jobId);
     } catch (e) {
-      setError(readableError(e));
+      setError(describeError(e));
     } finally {
       lock.current = false;
       setBusy(false);
@@ -161,7 +164,7 @@ export function JobScreen({
                         );
                         toast(common.copied);
                       } catch {
-                        setError(common.copyFailed);
+                        setError({ message: common.copyFailed, detail: null });
                       }
                     }}
                   >
@@ -190,7 +193,14 @@ export function JobScreen({
                   {copy.attempt} {job.attempts}/2
                 </p>
               )}
-              {job.error && <p>{job.error}</p>}
+              <p>
+                {job.failedStage === 'build'
+                  ? job.attempts < 2
+                    ? copy.retryingBody
+                    : copy.refundBody
+                  : copy.teamBody}
+              </p>
+              <ErrorDetails detail={jobErrorDetail(job.error)} reference={jobId} />
               <SupportBlock reference={jobId} />
             </div>
           )}
@@ -223,7 +233,7 @@ export function JobScreen({
               </ActionLink>
             </>
           )}
-          {error && <ErrorNotice message={error} />}
+          {error && <ErrorNotice message={error.message} detail={error.detail} reference={jobId} />}
           {restart.error && <ErrorNotice message={restart.error} />}
         </Card>
         <Card className="fw-event-card">

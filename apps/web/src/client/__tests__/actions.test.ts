@@ -56,7 +56,7 @@ describe('simple actions', () => {
 
   it('confirmSpec rejects an invalid conversation id without calling the server', async () => {
     const fetchFn = mockFetch(() => json({}));
-    await expect(confirmSpec('nope', {} as never)).rejects.toThrow(/Invalid request/);
+    await expect(confirmSpec('nope', {} as never)).rejects.toThrow(/not valid/);
     expect(fetchFn).not.toHaveBeenCalled();
   });
 

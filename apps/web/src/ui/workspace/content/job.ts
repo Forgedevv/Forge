@@ -23,6 +23,11 @@ export const jobCopy = {
   payment: 'Continue to payment',
   sign: 'Review and sign the launch',
   retrying: 'Retrying automatically',
+  retryingBody: 'The first build attempt did not finish. A second one starts on its own: nothing to do.',
+  refundBody:
+    'The payment is refunded automatically to the wallet that paid. You do not need to do anything.',
+  teamBody:
+    'You do not need to pay again. The team follows up on this launchpad; contact us with the reference below if you have a question.',
   attempt: 'Build attempt',
   team: 'Something went wrong. Our team has been notified and is on it.',
   refundPending: 'Both build attempts failed. Waiting for the refund confirmation.',

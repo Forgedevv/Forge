@@ -65,6 +65,21 @@ export class NetworkFailure extends ClientError {
   }
 }
 
+/**
+ * A request body refused by the shared schema before it is sent: a client-side bug or a stale
+ * screen, never something the user can fix from the schema message. `detail` keeps that message
+ * for support.
+ */
+export class RequestValidationError extends Error {
+  readonly detail: string;
+
+  constructor(detail: string) {
+    super('Some details of this request are not valid. Reload the page and try again.');
+    this.name = 'RequestValidationError';
+    this.detail = detail;
+  }
+}
+
 /** Worth retrying unchanged: network failure, timeout, 429 or 5xx. */
 export function isTransientError(err: unknown): boolean {
   if (err instanceof NetworkFailure) return true;

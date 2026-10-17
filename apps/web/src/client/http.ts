@@ -1,6 +1,6 @@
 import { ClientError } from '@forge/shared';
 import type { z } from 'zod';
-import { mapHttpError, networkError, parseRetryAfter } from './errors';
+import { RequestValidationError, mapHttpError, networkError, parseRetryAfter } from './errors';
 import { emitBetaNotInvited, emitUnauthorized } from './session-store';
 
 export interface RequestOptions {
@@ -88,7 +88,8 @@ export function validateBody<S extends z.ZodType>(schema: S, body: unknown): z.o
   const parsed = schema.safeParse(body);
   if (!parsed.success) {
     const first = parsed.error.issues[0];
-    throw new Error(first ? `Invalid request: ${first.message}` : 'Invalid request.');
+    const path = first?.path.length ? `${first.path.map(String).join('.')}: ` : '';
+    throw new RequestValidationError(first ? `${path}${first.message}` : 'invalid request body');
   }
   return parsed.data;
 }
