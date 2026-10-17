@@ -78,7 +78,7 @@ export function ImageDropzone(props: ImageDropzoneProps) {
         className={[
           'group relative flex w-full cursor-pointer items-center gap-4 overflow-hidden rounded-[var(--radius-card)] border-2 border-dashed bg-background p-3 text-left transition-colors',
           'md:aspect-square md:flex-col md:justify-center md:gap-2 md:p-4 md:text-center',
-          'peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-[var(--color-accent)]',
+          'peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-[color:var(--color-accent)]',
           'peer-disabled:cursor-not-allowed peer-disabled:opacity-60',
           props.invalid ? 'border-rose/60' : 'border-neutral-750 hover:border-primary/60',
           dragging ? 'border-primary bg-primary/5' : '',
