@@ -11,8 +11,10 @@ import type { OnchainCoinService } from './service';
  *   `{ pools: Pool[] }` (at most 30 coins each);
  * - `GET /api/coins?mint=<address>`: `{ source: 'chain', pool: Pool | null, description: string | null }`
  *   (`pool` is null when the mint is not a coin of this launchpad); 400 for an invalid address;
- * - 503 `{ error }` (never cached) when the site is not live, the relay is not configured, or the
- *   chain cannot be read; 405 for any other method.
+ * - without a relay (development, the builder's visual review), `source: 'none'` and nothing
+ *   (empty lists, no pool), never cached: what a devnet site showed before this fallback existed;
+ * - 503 `{ error }` (never cached) when the site is not live or the chain cannot be read; 405 for
+ *   any other method.
  *
  * Answers are cacheable by the CDN (`s-maxage`), so most visitors never reach the function.
  */
@@ -25,6 +27,12 @@ export interface CoinsHandlerOptions {
   service: () => OnchainCoinService | null;
   mode?: SiteMode;
 }
+
+const EMPTY_LISTS = {
+  recent: { pools: [] },
+  aboutToGraduate: { pools: [] },
+  graduated: { pools: [] },
+};
 
 function unavailable(res: NextApiResponse, error: string): void {
   res.setHeader('Cache-Control', 'no-store');
@@ -39,12 +47,19 @@ export function createCoinsHandler(options: CoinsHandlerOptions) {
       res.status(405).json({ error: 'Method not allowed.' });
       return;
     }
+    const mint = req.query.mint;
     const service = options.service();
     if (!service) {
-      unavailable(res, 'On-chain coin data is not configured on this site yet.');
+      res.setHeader('Cache-Control', 'no-store');
+      res
+        .status(200)
+        .json(
+          mint === undefined
+            ? { source: 'none', ...EMPTY_LISTS }
+            : { source: 'none', pool: null, description: null },
+        );
       return;
     }
-    const mint = req.query.mint;
     try {
       if (mint !== undefined) {
         const result = typeof mint === 'string' ? await service.coin(mint) : null;

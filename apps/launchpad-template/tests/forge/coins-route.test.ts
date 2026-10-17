@@ -70,7 +70,7 @@ describe('GET /api/coins (handler)', () => {
     }
   });
 
-  it('answers 503 (never cached) when the chain cannot be read or nothing is configured', async () => {
+  it('answers 503 (never cached) when the chain cannot be read', async () => {
     const failing = service({
       lists: vi.fn(async () => {
         throw new Error('relay down');
@@ -81,10 +81,18 @@ describe('GET /api/coins (handler)', () => {
     expect(res.statusCode).toBe(503);
     expect(res.headers['cache-control']).toBe('no-store');
     expect(JSON.stringify(res.body)).not.toContain('relay down');
+  });
 
-    const none = fakeResponse();
-    await createCoinsHandler({ service: () => null, mode: 'live' })(request(), none as never);
-    expect(none.statusCode).toBe(503);
+  it('answers nothing (never cached) without a relay, as a devnet site did before', async () => {
+    const handler = createCoinsHandler({ service: () => null, mode: 'live' });
+    const lists = fakeResponse();
+    await handler(request(), lists as never);
+    expect(lists.statusCode).toBe(200);
+    expect(lists.body).toEqual({ source: 'none', ...EMPTY });
+    expect(lists.headers['cache-control']).toBe('no-store');
+    const coin = fakeResponse();
+    await handler(request({ mint: 'So11111111111111111111111111111111111111112' }), coin as never);
+    expect(coin.body).toEqual({ source: 'none', pool: null, description: null });
   });
 
   it('refuses other methods and serves nothing when the site is not live', async () => {
@@ -105,13 +113,14 @@ describe('GET /api/coins (handler)', () => {
 });
 
 describe('/api/coins route', () => {
-  it('answers 503 without any network call when the relay is not configured', async () => {
+  it('reads nothing and makes no network call when the relay is not configured', async () => {
     vi.stubEnv('NEXT_PUBLIC_FORGE_RPC_RELAY_URL', '');
     const fetch = vi.spyOn(globalThis, 'fetch');
     const { default: coins } = await import('../../src/pages/api/coins');
     const res = fakeResponse();
     await coins(request() as never, res as never);
-    expect(res.statusCode).toBe(503);
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toMatchObject({ source: 'none' });
     expect(fetch).not.toHaveBeenCalled();
     fetch.mockRestore();
   });
