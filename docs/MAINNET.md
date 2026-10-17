@@ -392,7 +392,7 @@ Forbidden in a client project and refused by the builder: `RPC_URL`, `JUPITER_AP
 | 15 | Separate Helius keys | web `RPC_URL` and signer `RPC_URL` (payments, claims, buyback) differ from `RPC_RELAY_UPSTREAM_URL` (public relay) | startup warning when equal | relay traffic spends the payment quota |
 | 16 | Secrets stay out of client projects | no `RPC_URL`, `JUPITER_API_KEY`, `R2_*` write keys, `RPC_RELAY_TOKEN_SECRET` in the builder's project env | `vercel.ts` allowlist and forbidden list | refused |
 
-Arithmetic for rule 12 with the go-live values and default allowance: allowance = 100000 + 10000 = 110000; 10 x 110000 = 1100000; the spending limit must be at least 5001100000 lamports (5.0011 SOL). Round up a little, not much: the limit is the most the bot can ever pull per day.
+Arithmetic for rule 12 with the go-live values and the default allowance: per order, allowance = buy priority cap 100000 + return priority cap 100000 (100000 CU at the signer's 1000000 micro-lamports per CU) + network fees 10000 = 210000; 10 x 210000 = 2100000; plus the withdrawal fee withdrawn with the day's funding, 5000 + 200000 (200000 CU at the same price cap) = 205000. The spending limit must be at least 5000000000 + 2100000 + 205000 = 5002305000 lamports (5.002305 SOL). Round up a little, not much: the limit is the most the bot can ever pull per day.
 
 ## 7. Go-live values decided by the owner
 
@@ -406,7 +406,7 @@ Arithmetic for rule 12 with the go-live values and default allowance: allowance 
 | `BUYBACK_ORDERS_PER_DAY` | `10` | signer | D35 |
 | `BUYBACK_MAX_ORDER_LAMPORTS` | `500000000` | signer | D35 |
 | `BUYBACK_REVENUE_SINCE` | the go-live instant, set in the same restart as `FORGE_BUYBACK_LIVE=true`; never moved backwards (moving it forwards forgets the backlog before it) | signer | D35 |
-| Squads | vault 0 = `FORGE_MULTISIG_VAULT`; two owner keys, threshold 1; the buyback bot is a member with no permission; SOL spending limit, period Day, only member and only destination = the bot, amount >= 5001100000 lamports | Squads app, then `FORGE_SQUADS_MULTISIG` / `FORGE_SQUADS_SPENDING_LIMIT` | D33 |
+| Squads | vault 0 = `FORGE_MULTISIG_VAULT`; two owner keys, threshold 1; the buyback bot is a member with no permission; SOL spending limit, period Day, only member and only destination = the bot, amount >= 5002305000 lamports | Squads app, then `FORGE_SQUADS_MULTISIG` / `FORGE_SQUADS_SPENDING_LIMIT` | D33 |
 
 The owner's decision (2026-10-17, `docs/DECISIONS.md` D36, `docs/SECURITY.md` section 7): two owner keys with threshold 1, so one compromised key can move the vault; raise the threshold when members are added.
 
@@ -514,7 +514,7 @@ fp()  { printf %s "${!1}" | sha256sum | cut -c1-12; }      # fingerprint to comp
     index: Number(process.env.FORGE_SQUADS_VAULT_INDEX || 0) });
   console.log(vault.toBase58());
   ```
-- [ ] The spending limit is the one of section 7: in the Squads app, SOL, period Day, amount at least 5001100000 lamports, members and destinations = the buyback wallet only; the buyback wallet is a member with no permission; the multisig has the two owner keys and threshold 1. The signer re-checks the on-chain account before every withdrawal (`checkSpendingLimit`).
+- [ ] The spending limit is the one of section 7: in the Squads app, SOL, period Day, amount at least 5002305000 lamports, members and destinations = the buyback wallet only; the buyback wallet is a member with no permission; the multisig has the two owner keys and threshold 1. The signer re-checks the on-chain account before every withdrawal (`checkSpendingLimit`).
 
 **E. Network**
 - [ ] From the builder host: `curl -m 5 -s -o /dev/null -w '%{http_code}\n' http://<signer address>:<port>/v1/health` answers `401` (reachable, signature required). From any other host it must time out or answer `403`.
