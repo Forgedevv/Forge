@@ -106,6 +106,11 @@ function answer(c: UpstreamCall): unknown {
       return { context, value: { blockhash: DEVNET_GENESIS, lastValidBlockHeight: 1_000 } };
     case 'getBalance':
       return { context, value: 1_000_000_000 };
+    case 'getRecentPrioritizationFees':
+      return [
+        { slot: 1, prioritizationFee: 0 },
+        { slot: 2, prioritizationFee: 40_000 },
+      ];
     case 'sendTransaction':
       return SIG;
     case 'getSignatureStatuses':
@@ -208,13 +213,17 @@ describe('creator fee claim of a sleeping site, through the relay', () => {
     expect(coins.map((c) => c.pool.toBase58())).toEqual([POOL.address]);
     expect(coins[0]!.fees.claimable.creator.quote).toBe(10_000_000n);
 
-    // 2. The claim transaction, receiver = the wallet itself.
+    // 2. The claim transaction, receiver = the wallet itself, priced like the template's.
     const built = await buildCreatorClaimTx(
       connection,
       { pool: new PublicKey(POOL.address), creator: CREATOR, receiver: CREATOR },
-      noRetry,
+      { ...noRetry, priority: {} },
     );
     expect(built.transaction).not.toBeNull();
+    expect(built.summary.priorityFee).toMatchObject({
+      microLamports: 40_000,
+      source: 'recent_fees',
+    });
     const tx = new VersionedTransaction(built.transaction!.compileMessage());
     expect(tx.message.staticAccountKeys[0]!.equals(CREATOR)).toBe(true);
     // The wallet signs (any 64 bytes: the relay does not verify signatures, the cluster does).

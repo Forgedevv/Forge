@@ -32,6 +32,16 @@ export const MAX_MULTIPLE_ACCOUNTS = 20;
 export const MAX_SIGNATURE_STATUSES = 16;
 export const MAX_SIMULATION_ACCOUNTS = 8;
 export const MAX_SEND_RETRIES = 10;
+/**
+ * Most writable accounts of one `getRecentPrioritizationFees` call: what @forge/core sends at most
+ * (`MAX_PRIORITY_FEE_ACCOUNTS`, a test compares them); the RPC itself accepts 128.
+ */
+export const MAX_PRIORITY_FEE_ACCOUNTS = 32;
+/**
+ * Rate-limit units of one priority fee read: answered from the node's in-memory cache of the
+ * last 150 slots (about 6 KB at most), a little more than an account read.
+ */
+export const PRIORITY_FEES_WEIGHT = 2;
 
 const Pubkey = z.string().regex(/^[1-9A-HJ-NP-Za-km-z]{32,44}$/);
 const Signature = z.string().regex(/^[1-9A-HJ-NP-Za-km-z]{64,88}$/);
@@ -350,6 +360,14 @@ export const METHODS: Readonly<Record<string, MethodSpec>> = {
     weight: one,
     retryable: true,
   },
+  getRecentPrioritizationFees: {
+    usedBy:
+      'core priority fees of the transactions it builds (template swaps, coin creation and creator fee claims, FORGE site claims): the recent fees of the accounts the transaction writes',
+    // web3.js sends [] without accounts, [[addresses]] with them; nothing else.
+    validate: positional([], [z.array(Pubkey).min(1).max(MAX_PRIORITY_FEE_ACCOUNTS)]),
+    weight: () => PRIORITY_FEES_WEIGHT,
+    retryable: true,
+  },
   getProgramAccounts: {
     usedBy:
       'template creator fee claim: core listCoinsOfCreator (SDK getPoolsByCreator), DBC pools of one creator; template /api/coins (server token only): core listPoolStatesOfConfig (SDK getPoolsByConfig), DBC pools of one config',
@@ -392,4 +410,6 @@ export const SLEEPING_SITE_METHODS: ReadonlySet<string> = new Set([
   // Template chain client: the signed claim, then confirmation by polling.
   'sendTransaction',
   'getSignatureStatuses',
+  // Core claim build: the claim's priority fee (recent fees of the accounts it writes).
+  'getRecentPrioritizationFees',
 ]);
