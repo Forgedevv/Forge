@@ -1781,6 +1781,75 @@ describe('buyback job, live flow', () => {
     expect(p.funding?.status).toBe('not_needed');
   });
 
+  it('with a backlog of 0, buys from the SOL already on the bot and withdraws nothing, fee allowances included', async () => {
+    // 0.5 SOL above the reserve on the bot, nothing owed by the vault: the vault funds nothing,
+    // not even the orders' fee allowances or the withdrawal fee.
+    const fee = 150_000n;
+    const withdrawalFee = 20_000n;
+    const h = liveHarness(undefined, { withdrawalFeeLamports: withdrawalFee });
+    h.rpc.balances.set(bot.toBase58(), 520_000_000n);
+    const r = await h
+      .make({ orderFeeAllowanceLamports: fee, minOrderLamports: 10_000_000n }, { budget: okBudget(0n) })
+      .runOnce();
+    const p = await plan(h.journal);
+    expect(p.botAvailableLamports).toBe('500000000');
+    expect(p.revenue?.backlogLamports).toBe('0');
+    // The fee allowances and the withdrawal fee come out of the bot's SOL: not planned as orders.
+    expect(BigInt(p.budgetLamports)).toBe(500_000_000n - 6n * fee - withdrawalFee);
+    const planned = p.slots.filter((s) => s.status === 'planned');
+    expect(planned.length).toBeGreaterThan(0);
+    const total = planned.reduce((a, s) => a + BigInt(s.lamports), 0n);
+    expect(total + fee * BigInt(planned.length)).toBeLessThanOrEqual(500_000_000n);
+    expect(h.withdraw).not.toHaveBeenCalled();
+    expect(p.funding).toMatchObject({ status: 'not_needed', lamports: '0' });
+    expect(r.outcome?.result).not.toBe('no_budget');
+  });
+
+  it('never withdraws more than the backlog: the fees fit in it, the orders get the rest', async () => {
+    // 0.1 SOL owed, nothing on the bot above its reserve: at most 0.1 SOL leaves the vault.
+    const fee = 150_000n;
+    const withdrawalFee = 20_000n;
+    const backlog = 100_000_000n;
+    const h = liveHarness(undefined, { withdrawalFeeLamports: withdrawalFee });
+    h.rpc.balances.set(bot.toBase58(), 20_000_000n);
+    await h
+      .make(
+        { orderFeeAllowanceLamports: fee, minOrderLamports: 10_000_000n },
+        { budget: okBudget(backlog) },
+      )
+      .runOnce();
+    const p = await plan(h.journal);
+    expect(p.botAvailableLamports).toBe('0');
+    expect(BigInt(p.budgetLamports)).toBe(backlog - 6n * fee - withdrawalFee);
+    const planned = p.slots.filter((s) => s.status === 'planned');
+    const total = planned.reduce((a, s) => a + BigInt(s.lamports), 0n);
+    expect(h.withdraw).toHaveBeenCalledTimes(1);
+    const withdrawn = h.withdraw.mock.calls[0]![0].lamports;
+    expect(withdrawn).toBe(total + fee * BigInt(planned.length) + withdrawalFee);
+    expect(withdrawn).toBeLessThanOrEqual(backlog);
+    expect(p.funding).toMatchObject({ status: 'confirmed', lamports: withdrawn.toString() });
+  });
+
+  it('caps the withdrawal of a journaled plan at its backlog', async () => {
+    // A plan whose orders exceed what the vault owes (written by an older version): the funding
+    // step bounds the withdrawal by the journaled backlog on its own.
+    const h = liveHarness();
+    await h.make({ minOrderLamports: 10_000_000n }, { budget: okBudget(100_000_000n) }).runOnce();
+    const p = await plan(h.journal);
+    expect(p.funding?.status).toBe('confirmed');
+    await h.journal.put(dayJournalKey(DAY), {
+      ...p,
+      funding: null,
+      revenue: { ...p.revenue!, backlogLamports: '1000' },
+    });
+    h.withdraw.mockClear();
+    h.rpc.balances.set(bot.toBase58(), 20_000_000n);
+    await h.make({ minOrderLamports: 10_000_000n }, { budget: okBudget(100_000_000n) }).runOnce();
+    expect(h.withdraw).toHaveBeenCalledTimes(1);
+    expect(h.withdraw.mock.calls[0]![0].lamports).toBe(1_000n);
+    expect((await plan(h.journal)).funding).toMatchObject({ status: 'confirmed', lamports: '1000' });
+  });
+
   it('still bounds the backlog by the spending limit and the bot wallet', async () => {
     // 0.2 SOL left on the limit, 0.01 SOL on the bot, 3 SOL of backlog: the limit binds.
     const h = liveHarness(undefined, { remainingLamports: 200_000_000n });

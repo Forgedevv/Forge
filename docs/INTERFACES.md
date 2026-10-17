@@ -429,9 +429,12 @@ revenue  = revenue forwards finalized at or after BUYBACK_REVENUE_SINCE (section
 spent    = `funding.lamports` of the buyback day entries (`buyback.day-<day>.json`) with
            `funding.at` at or after BUYBACK_REVENUE_SINCE and status requested, confirmed or unknown
 backlog  = max(0, revenue - spent)
-budget   = min(backlog + SOL on the bot above its reserve, BUYBACK_DAILY_CAP_LAMPORTS,
-               SOL on the bot above its reserve + remaining spending limit - orders x fee allowance
-               - withdrawal fee)
+fees     = orders x fee allowance + withdrawal fee
+budget   = min(backlog + SOL on the bot above its reserve - fees, BUYBACK_DAILY_CAP_LAMPORTS,
+               SOL on the bot above its reserve + remaining spending limit - fees)
+withdrawal = planned orders + planned orders x fee allowance - SOL on the bot above its reserve
+             + withdrawal fee, at most the remaining spending limit and at most the backlog
+             (a backlog of 0 withdraws nothing: the orders run on the bot's own SOL)
 fee allowance  = BUYBACK_ORDER_FEE_ALLOWANCE_LAMPORTS, by default BUYBACK_MAX_PRIORITY_FEE_LAMPORTS
                  (the buy) + the signer priority fee cap of the return (100,000 CU) + 10,000
                  (+ 30 bps of the largest order on the dbc-devnet route)
