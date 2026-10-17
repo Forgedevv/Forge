@@ -177,9 +177,9 @@ describe('swap core backed by @forge/core', () => {
     });
   });
 
-  it('hands the multisig vault to core when the site has it (referral holder check)', async () => {
-    const multisig = Keypair.generate().publicKey.toBase58();
-    vi.stubEnv('NEXT_PUBLIC_FORGE_MULTISIG_VAULT', multisig);
+  it('hands the revenue wallet to core when the site has it (referral holder check)', async () => {
+    const revenue = Keypair.generate().publicKey.toBase58();
+    vi.stubEnv('NEXT_PUBLIC_FORGE_REVENUE_WALLET', revenue);
     core.buildBuyTx.mockResolvedValue({ transaction: {} });
     await createCoreSwapCore().buildBuyTx({
       connection,
@@ -191,7 +191,7 @@ describe('swap core backed by @forge/core', () => {
     expect(core.buildBuyTx.mock.calls[0]?.[0].env).toEqual({
       FORGE_PLATFORM_FEE_WALLET: feeWallet,
       FORGE_METEORA_REFERRAL_ACCOUNT: referral,
-      FORGE_MULTISIG_VAULT: multisig,
+      FORGE_REVENUE_WALLET: revenue,
     });
   });
 

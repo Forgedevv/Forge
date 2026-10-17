@@ -30,9 +30,10 @@ describe('FORGE fee accounts of the site', () => {
     expect(readers(/NEXT_PUBLIC_FORGE_METEORA_REFERRAL_ACCOUNT/)).toEqual([
       'src/forge/trade/core-adapter.ts',
     ]);
-    expect(readers(/NEXT_PUBLIC_FORGE_MULTISIG_VAULT/)).toEqual([
+    expect(readers(/NEXT_PUBLIC_FORGE_REVENUE_WALLET/)).toEqual([
       'src/forge/trade/core-adapter.ts',
     ]);
+    expect(readers(/NEXT_PUBLIC_FORGE_MULTISIG_VAULT/)).toEqual([]);
   });
 
   it('cannot be overridden: no env option on the swap core, setSwapCore gated to tests', () => {
