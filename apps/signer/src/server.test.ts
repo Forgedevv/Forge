@@ -12,12 +12,18 @@ import {
   createSignerServer,
   loadSignerServerEnv,
   signRequest,
-  stubSignerRoutes,
   type SignerRouteHandlers,
   type SignerServerOptions,
 } from './server.js';
 import { ReplayCache } from './http/replay.js';
 import { normalizeIp, parseAllowedIps } from './http/ip.js';
+
+/** Handlers for the HTTP layer tests: the signing routes answer 501, the health route ok. */
+const stubSignerRoutes: SignerRouteHandlers = {
+  configs: async () => ({ ok: false, status: 501, error: 'not_implemented' }),
+  launchCoinPrepare: async () => ({ ok: false, status: 501, error: 'not_implemented' }),
+  health: async () => ({ ok: true, body: { ok: true } }),
+};
 
 const SECRET = 'test-secret-0123456789-abcdefghijklmnop';
 const NOW = 1_800_000_000_000;

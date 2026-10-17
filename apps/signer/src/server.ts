@@ -57,13 +57,6 @@ export interface SignerRouteHandlers {
   health(): Promise<SignerRouteResult<SignerHealthReport>>;
 }
 
-/** Wave 1 handlers: the two signing routes are not implemented yet. */
-export const stubSignerRoutes: SignerRouteHandlers = {
-  configs: async () => ({ ok: false, status: 501, error: 'not_implemented' }),
-  launchCoinPrepare: async () => ({ ok: false, status: 501, error: 'not_implemented' }),
-  health: async () => ({ ok: true, body: { ok: true } }),
-};
-
 export interface SignerServerOptions {
   /** SIGNER_HMAC_SECRET, at least 32 bytes. */
   hmacSecret: string | Buffer;
