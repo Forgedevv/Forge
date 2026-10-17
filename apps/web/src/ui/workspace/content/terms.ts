@@ -1,5 +1,5 @@
 export const termsCopy = {
-  eyebrow: 'A10 / PRODUCT INFORMATION',
+  eyebrow: 'PRODUCT INFORMATION',
   title: 'Before you launch.',
   sections: [
     [

@@ -1,5 +1,5 @@
 export const faqCopy = {
-  eyebrow: 'A10 / GOOD QUESTIONS',
+  eyebrow: 'HELP',
   title: 'A clearer path to launch.',
   questions: [
     [

@@ -2,7 +2,7 @@ export const chatCopy = {
   user: 'YOU',
   assistant: 'YOUR MUSE',
   network: 'The connection dropped. Please retry your message.',
-  eyebrow: 'A4 / DESIGN STUDIO',
+  eyebrow: 'DESIGN STUDIO',
   title: 'Tell us what you see.',
   modifyTitle: 'Make room for your next idea.',
   subtitle: 'A name, a feeling, a community. Start anywhere. We will shape the details together.',

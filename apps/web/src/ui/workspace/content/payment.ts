@@ -1,5 +1,5 @@
 export const paymentCopy = {
-  eyebrow: 'A5 / PAYMENT',
+  eyebrow: 'PAYMENT',
   title: 'One step closer to launch.',
   changeTitle: 'Your next iteration starts here.',
   body: 'Review the quote before opening your wallet. The SOL amount is fixed until this quote expires.',

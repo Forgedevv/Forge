@@ -1,5 +1,5 @@
 export const gatingCopy = {
-  eyebrow: 'A3 / ACCESS',
+  eyebrow: 'ACCESS',
   title: 'A little FORGE opens the door.',
   body: 'Hold the required amount of $FORGE in your wallet to use the builder. Nothing is spent or locked.',
   checking: 'Checking your $FORGE balance…',

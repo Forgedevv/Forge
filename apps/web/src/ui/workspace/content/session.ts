@@ -1,6 +1,6 @@
 export const sessionCopy = {
   title: 'Your wallet. Your workshop.',
-  eyebrow: 'A2 / CONNECT',
+  eyebrow: 'SIGN IN',
   body: 'Choose your wallet, then sign a login message. This is free and does not send a transaction.',
   choose: 'Choose a wallet',
   resume: 'Continue with my wallet',

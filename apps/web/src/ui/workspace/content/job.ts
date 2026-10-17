@@ -1,6 +1,6 @@
 export const jobCopy = {
   progress: 'Build progress',
-  eyebrow: 'A6 / IN THE MAKING',
+  eyebrow: 'IN THE MAKING',
   title: 'From blueprint to live.',
   log: 'Workshop activity',
   noEvents: 'Waiting for the first update…',

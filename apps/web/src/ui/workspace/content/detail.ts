@@ -1,5 +1,5 @@
 export const detailCopy = {
-  eyebrow: 'A9 / LAUNCHPAD FILE',
+  eyebrow: 'LAUNCHPAD FILE',
   title: 'Every detail. All in one place.',
   settings: 'On-chain settings',
   final: 'On-chain settings are final.',
