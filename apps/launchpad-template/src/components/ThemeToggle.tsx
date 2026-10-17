@@ -22,7 +22,7 @@ export const ThemeToggle = ({ className }: ThemeToggleProps) => {
       aria-label={isDark ? content.strings.lightMode : content.strings.darkMode}
       onClick={() => setTheme(isDark ? 'light' : 'dark')}
       className={cn(
-        'flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-full border border-neutral-800 text-neutral-300 transition-colors',
+        'flex h-9 w-9 shrink-0 cursor-pointer touch:h-10 touch:w-10 items-center justify-center rounded-full border border-neutral-800 text-neutral-300 transition-colors',
         'hover:bg-neutral-850 hover:text-neutral-100',
         'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60',
         className,

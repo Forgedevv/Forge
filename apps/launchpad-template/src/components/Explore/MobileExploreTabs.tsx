@@ -15,7 +15,7 @@ export const MobileExploreTabs = () => {
     <div className="launchpad-mobile-tabs relative border-b border-neutral-850 lg:hidden">
       <div className="px-2 py-1">
         <ToggleGroupPrimitive.Root
-          className="flex h-9 w-full min-w-fit items-center gap-1 text-sm"
+          className="flex h-10 w-full min-w-fit items-center gap-1 text-sm touch:h-11"
           type="single"
           value={mobileTab}
           onValueChange={(value) => {
