@@ -30,7 +30,8 @@ import { buybackJobModule } from './runtime/buyback.js';
 
 /**
  * Optional job modules: the $FORGE buyback (simulation unless the Squads spending limit is
- * configured and live mode is enabled, runtime/buyback.ts).
+ * configured and live mode is enabled, runtime/buyback.ts). Required, and so fatal when refused,
+ * on mainnet-beta with FORGE_BUYBACK_LIVE set.
  */
 const EXTRA_JOBS: SignerJobModule[] = [buybackJobModule()];
 

@@ -651,6 +651,70 @@ describe('buyback module', () => {
     expect(await runtime.scheduler.runNow('buyback')).toEqual({ status: 'paused' });
     expect(runtime.scheduler.states().buyback).toMatchObject({ lastStatus: 'paused', runs: 1 });
   });
+
+  it('is required on mainnet-beta once FORGE_BUYBACK_LIVE asks for live mode', () => {
+    const required = (cluster: 'devnet' | 'mainnet-beta', live: string | undefined) =>
+      buybackJobModule().required!({
+        cluster,
+        env: live === undefined ? {} : { FORGE_BUYBACK_LIVE: live },
+      } as SignerJobContext);
+    expect(required('mainnet-beta', 'true')).toBe(true);
+    // A malformed value is a live request too (fail closed).
+    expect(required('mainnet-beta', 'TRUE')).toBe(true);
+    expect(required('mainnet-beta', 'false')).toBe(false);
+    expect(required('mainnet-beta', undefined)).toBe(false);
+    expect(required('devnet', 'true')).toBe(false);
+  });
+
+  it('stops the signer at startup when a live buyback on mainnet-beta is refused', async () => {
+    const onMainnet = { connection: mockConnection(CLUSTER_GENESIS_HASH['mainnet-beta']) };
+    const live = mainnetOverrides({ FORGE_BUYBACK_LIVE: 'true', FORGE_MINT: address() });
+    // No Jupiter API key, then no Squads spending limit (no withdrawer): both refused.
+    await expect(create(live, { ...onMainnet, extraJobs: [buybackJobModule()] })).rejects.toThrow(
+      /JUPITER_API_KEY is required/,
+    );
+    await expect(
+      create(
+        { ...live, JUPITER_API_KEY: 'jupiter-key-test' },
+        { ...onMainnet, extraJobs: [buybackJobModule()] },
+      ),
+    ).rejects.toThrow(/live buyback refused: no Squads spending limit withdrawer/);
+    // A malformed live flag stops it too.
+    await expect(
+      create(mainnetOverrides({ FORGE_BUYBACK_LIVE: 'yes' }), {
+        ...onMainnet,
+        extraJobs: [buybackJobModule()],
+      }),
+    ).rejects.toThrow(/FORGE_BUYBACK_LIVE/);
+    // The failed startups released the instance lock.
+    const simulation = await create(mainnetOverrides({ FORGE_BUYBACK_LIVE: 'false' }), {
+      ...onMainnet,
+      extraJobs: [buybackJobModule()],
+    });
+    expect(simulation.scheduler.names()).toContain('buyback');
+  });
+
+  it('only disables a refused buyback on mainnet-beta without the live flag, and on devnet', async () => {
+    const onMainnet = { connection: mockConnection(CLUSTER_GENESIS_HASH['mainnet-beta']) };
+    // Simulation on mainnet-beta: the devnet route is refused, the module disabled, alerted.
+    const mainnet = await create(mainnetOverrides({ BUYBACK_ROUTE: 'dbc-devnet' }), {
+      ...onMainnet,
+      extraJobs: [buybackJobModule()],
+    });
+    expect(mainnet.disabledJobs).toEqual(['buyback']);
+    await mainnet.stop();
+    // Devnet behaviour unchanged: a refused live devnet test disables the module only.
+    const devnet = await create(
+      {
+        FORGE_BUYBACK_LIVE: 'true',
+        FORGE_BUYBACK_DEVNET_TEST: 'true',
+        BUYBACK_ROUTE: 'dbc-devnet',
+      },
+      { extraJobs: [buybackJobModule()] },
+    );
+    expect(devnet.disabledJobs).toEqual(['buyback']);
+    expect(devnet.scheduler.names()).not.toContain('buyback');
+  });
 });
 
 describe('job scheduler', () => {

@@ -12,6 +12,9 @@
  *   BUYBACK_DEVNET_DBC_POOL (jobs/buyback-dbc.ts).
  * Without a withdrawer the job stays in simulation (and refuses a live request at startup).
  *
+ * The module is optional (a refused configuration disables it with an alert, runtime.ts), except
+ * on mainnet-beta with FORGE_BUYBACK_LIVE set: there a refused configuration stops the signer.
+ *
  * The module is typed against a structural slice of the job library (`BuybackLibrary`) so the
  * runtime tests can replace it; production uses the real modules (`buybackJobModule()`).
  */
@@ -145,11 +148,23 @@ export const REAL_BUYBACK_LIBRARY = {
   createDbcDevnetBuybackRoute,
 } satisfies BuybackLibrary<ReturnType<typeof buybackConfigFromEnv>['config']>;
 
+/**
+ * FORGE_BUYBACK_LIVE asks for live mode: any value but unset or "false" (a malformed value is
+ * refused by the configuration, and counts as a live request here: fail closed).
+ */
+export function buybackLiveRequested(env: EnvSource): boolean {
+  const value = env.FORGE_BUYBACK_LIVE ?? '';
+  return value !== '' && value !== 'false';
+}
+
 export function buybackJobModule<Config extends BuybackConfigLike>(
   lib: BuybackLibrary<Config> = REAL_BUYBACK_LIBRARY as unknown as BuybackLibrary<Config>,
 ): SignerJobModule {
   return {
     name: 'buyback',
+    // A live buyback on mainnet-beta is not optional: its refused configuration stops the
+    // signer at startup. Elsewhere (devnet, simulation) it only disables the module, alerted.
+    required: (ctx) => ctx.cluster === 'mainnet-beta' && buybackLiveRequested(ctx.env),
     create(ctx) {
       const { config, tickMs, jupiter } = lib.buybackConfigFromEnv(
         ctx.env,

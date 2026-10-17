@@ -14,7 +14,8 @@
  * Fee recipients that are not rent-exempt are alerted (devnet finding), not fatal: core refuses
  * to build a transaction that would fail on them. An OPTIONAL job module (`extraJobs`, the
  * buyback) whose configuration is refused is disabled with a high alert: the built-in jobs and
- * the routes run without it.
+ * the routes run without it. Except where the module is required (`required`): the buyback with
+ * FORGE_BUYBACK_LIVE set on mainnet-beta is, so a refused live buyback there stops the startup.
  *
  * The keystore passphrase and the Supabase service role key are removed from the environment as
  * soon as they are parsed (env.ts `dropParsedSecrets`).
@@ -251,12 +252,15 @@ export async function createSignerRuntime(options: SignerRuntimeOptions): Promis
     for (const module of BUILTIN_JOB_MODULES) {
       scheduler.register(module.name, await module.create(context));
     }
-    // Optional modules: a refused configuration disables that module only, loudly.
+    // Optional modules: a refused configuration disables that module only, loudly, unless the
+    // module is required in this environment (the live buyback on mainnet-beta): then the
+    // startup fails, like for a built-in job.
     const disabledJobs: string[] = [];
     for (const module of options.extraJobs ?? []) {
       try {
         scheduler.register(module.name, await module.create(context));
       } catch (err) {
+        if (module.required?.(context)) throw err;
         const summary = describeError(err);
         disabledJobs.push(module.name);
         startupLog.error({ job: module.name, err: summary }, 'optional job disabled');

@@ -132,6 +132,11 @@ export interface SignerJobContext {
 export interface SignerJobModule {
   readonly name: string;
   create(ctx: SignerJobContext): ScheduledJob | Promise<ScheduledJob>;
+  /**
+   * Optional modules (`extraJobs`) only: true when the module is not optional in this
+   * environment, so a refused configuration stops the startup instead of disabling the module.
+   */
+  required?(ctx: SignerJobContext): boolean;
 }
 
 export const claimsModule: SignerJobModule = {
