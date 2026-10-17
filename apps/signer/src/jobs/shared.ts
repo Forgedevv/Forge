@@ -36,6 +36,7 @@ import { z } from 'zod';
 import { PRICING, type FlagKey, type PaymentKind } from '@forge/shared';
 import type { Keystore } from '../keystore.js';
 import { redactSecrets } from '../keystore.js';
+import type { FixedRole } from '../keystore/roles.js';
 
 // ---------------------------------------------------------------------------------------
 // Errors
@@ -1429,7 +1430,7 @@ export async function signWithKeystore(
 /** Ref of a fixed keystore role whose key must be `expected`. Throws CONFIG otherwise. */
 export async function requireRoleRef(
   keystore: KeystoreLike,
-  role: 'payer' | 'cashbox' | 'buyback',
+  role: FixedRole,
   expected?: PublicKey,
 ): Promise<{ ref: string; publicKey: PublicKey }> {
   const ref = await keystore.findRef(role);
@@ -1455,12 +1456,16 @@ export const JUPITER_CLAIMS_FLAG = 'jupiter_claims_paused' as const satisfies Fl
 /** Kill switch of the fee conversion to SOL (jobs/convert.ts, migration 0015). */
 export const CONVERT_FLAG = 'convert_paused' as const satisfies FlagKey;
 
+/** Kill switch of the revenue wallet job (jobs/revenue.ts, migration 0016). */
+export const REVENUE_FLAG = 'revenue_paused' as const satisfies FlagKey;
+
 /** A kill switch key of the shared contract (`FlagKey`). */
 export type KillSwitchKey = FlagKey;
 
 /**
- * Kill switches of these jobs (`flags` table, seeded with `false` by migrations 0005, 0013 and
- * 0015). A missing row pauses the job: the switch must exist for an operator to be able to use it.
+ * Kill switches of these jobs (`flags` table, seeded with `false` by migrations 0005, 0013, 0015
+ * and 0016). A missing row pauses the job: the switch must exist for an operator to be able to use
+ * it.
  */
 export const JOB_FLAGS = {
   claims: 'claims_paused',
@@ -1468,6 +1473,7 @@ export const JOB_FLAGS = {
   refunds: 'refunds_paused',
   jupiterClaims: JUPITER_CLAIMS_FLAG,
   convert: CONVERT_FLAG,
+  revenue: REVENUE_FLAG,
 } as const satisfies Record<string, KillSwitchKey>;
 
 export type PauseReason = 'config' | 'flag' | 'flag_missing' | 'flags_unavailable';

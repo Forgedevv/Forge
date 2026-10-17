@@ -122,7 +122,10 @@ export class FakeChain implements SolanaRpc {
   statusLag = 0;
   /** Signatures the status index misses but `getTransaction(finalized)` still returns. */
   readonly statusIndexGaps = new Set<string>();
-  /** Effects of a non-System instruction (fake DBC, token program), in order. Throw to fail. */
+  /**
+   * Effects of a non-System instruction (fake DBC, token program) and of a System instruction
+   * other than a transfer (e.g. createAccountWithSeed), in order. Throw to fail.
+   */
   onInstruction: ((ix: TransactionInstruction, tx: Transaction, ledger: Ledger) => void) | null =
     null;
 
@@ -307,9 +310,14 @@ export class FakeChain implements SolanaRpc {
     for (const ix of tx.instructions) {
       if (ix.programId.equals(SystemProgram.programId)) {
         const t = decodeSystemTransfer(ix);
-        if (!t) throw new Error('unsupported system instruction');
-        ledger.debit(t.from, t.lamports);
-        ledger.credit(t.to, t.lamports);
+        if (t) {
+          ledger.debit(t.from, t.lamports);
+          ledger.credit(t.to, t.lamports);
+        } else if (this.onInstruction) {
+          this.onInstruction(ix, tx, ledger);
+        } else {
+          throw new Error('unsupported system instruction');
+        }
       } else {
         this.onInstruction?.(ix, tx, ledger);
       }
@@ -981,13 +989,14 @@ export class MemoryClaimsStore implements ClaimsStore {
 // ---------------------------------------------------------------------------------------
 // Flags, alerts, logs
 
-/** The kill switches of the signer jobs, seeded by migrations 0005, 0013 and 0015 (all off). */
+/** The kill switches of the signer jobs, seeded by migrations 0005, 0013, 0015 and 0016 (all off). */
 export const DEFAULT_FLAGS: Readonly<Record<string, boolean>> = {
   claims_paused: false,
   cashbox_sweep_paused: false,
   refunds_paused: false,
   jupiter_claims_paused: false,
   convert_paused: false,
+  revenue_paused: false,
 };
 
 export function memoryFlags(values: Record<string, boolean> = {}): FlagsReader & {

@@ -1,7 +1,7 @@
 /**
  * Key roles and key references.
  *
- * Roles: `payer`, `cashbox`, `buyback` (one each) and `creator:<launchpadId>` (one per
+ * Roles: `payer`, `cashbox`, `buyback`, `revenue` (one each) and `creator:<launchpadId>` (one per
  * launchpad, launchpadId = lowercase UUID as stored in Supabase). The role decides the
  * key file name, so a role can only ever have one key file.
  *
@@ -13,7 +13,7 @@
 import { randomBytes } from 'node:crypto';
 import { KeystoreError } from './errors.js';
 
-export const FIXED_ROLES = ['payer', 'cashbox', 'buyback'] as const;
+export const FIXED_ROLES = ['payer', 'cashbox', 'buyback', 'revenue'] as const;
 export type FixedRole = (typeof FIXED_ROLES)[number];
 export type CreatorRole = `creator:${string}`;
 export type KeyRole = FixedRole | CreatorRole;
