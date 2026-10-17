@@ -5,7 +5,7 @@
 ## Before going to mainnet
 
 - [ ] The devnet integration flow (`tasks/06`) passes entirely.
-- [ ] Mainnet Squads multisig created, members and threshold validated (Q1).
+- [ ] Mainnet Squads multisig created, members and threshold validated (D36: two owner keys, threshold 1, the buyback bot without permission).
 - [ ] Anthropic spending limit set; per-job budget verified.
 - [ ] Helius and Supabase moved to a paid plan; Jupiter key created; Jupiter referral account created with a name under Jupiter's Ultra project (`docs/METEORA.md`, "The platform fee") with the FORGE revenue wallet (D34) as its partner, and SOL + USDC token accounts created, held by the revenue wallet.
 - [ ] Meteora referral account (WSOL) held by the revenue wallet (D34), which is also `FORGE_PLATFORM_FEE_WALLET`.

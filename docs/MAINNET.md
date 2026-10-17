@@ -408,7 +408,7 @@ Arithmetic for rule 12 with the go-live values and default allowance: allowance 
 | `BUYBACK_REVENUE_SINCE` | the go-live instant, set in the same restart as `FORGE_BUYBACK_LIVE=true`; never moved backwards (moving it forwards forgets the backlog before it) | signer | D35 |
 | Squads | vault 0 = `FORGE_MULTISIG_VAULT`; two owner keys, threshold 1; the buyback bot is a member with no permission; SOL spending limit, period Day, only member and only destination = the bot, amount >= 5001100000 lamports | Squads app, then `FORGE_SQUADS_MULTISIG` / `FORGE_SQUADS_SPENDING_LIMIT` | D33 |
 
-`docs/SECURITY.md` section 7 and `docs/DECISIONS.md` Q1 still speak of 2 signatures out of 3; the owner's decision is two owner keys with threshold 1.
+The owner's decision (2026-10-17, `docs/DECISIONS.md` D36, `docs/SECURITY.md` section 7): two owner keys with threshold 1, so one compromised key can move the vault; raise the threshold when members are added.
 
 ## 8. Kill switches and the first mainnet boot
 

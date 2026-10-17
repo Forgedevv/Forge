@@ -27,7 +27,7 @@ Keep all keys in a password manager. Never paste them into a conversation with a
 - [ ] Helius: account, API key, devnet and mainnet RPC URLs.
 - [ ] Jupiter: API key on the developer portal. **[devnet is enough: do before the mainnet tests]**
 - [ ] Team wallets (Phantom or Ledger), one per multisig member.
-- [ ] Squads multisig: create the multisig with the members and the threshold decided (Q1 in DECISIONS.md). Note the **vault** address. Create a **devnet** version first for the tests.
+- [ ] Squads multisig: create the multisig with the members and the threshold decided (D36 in DECISIONS.md). Note the **vault** address. Create a **devnet** version first for the tests.
 - [ ] Fake $FORGE on devnet: agent 1 creates it in its scripts; you have nothing to do here.
 - [ ] Devnet SOL: https://faucet.solana.com (GitHub login) when the scripts print the address to fund.
 - [ ] Mainnet SOL for tests: 0.5 to 1 SOL on a test wallet. **[later]**
