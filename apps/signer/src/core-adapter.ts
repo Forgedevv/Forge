@@ -21,6 +21,7 @@
 import {
   DAMM_V2_PROGRAM_ID,
   DbcReadError,
+  type PriorityFeeSetting,
   buildCreatorClaimTx as coreBuildCreatorClaimTx,
   buildCreatorPositionFeeClaimTx as coreBuildCreatorPositionFeeClaimTx,
   feeMetrics,
@@ -210,11 +211,17 @@ export interface ForgeSignerCoreOptions {
   cashbox: PublicKey;
   /** SOLANA_CLUSTER: core checks the connection's genesis hash against it. */
   cluster: PaymentCluster;
+  /**
+   * Priority fee of the claims core builds (jobs/priority.ts `PriorityFees.setting`): priced from
+   * the recent fees of their writable accounts and bounded. Without it, no compute budget.
+   */
+  priority?: PriorityFeeSetting;
 }
 
 /** `SignerCore` over `@forge/core`. */
 export function createForgeSignerCore(options: ForgeSignerCoreOptions): SignerCore {
   const { connection, cashbox, cluster } = options;
+  const priority = options.priority ? { priority: options.priority } : {};
   if (cluster !== 'devnet' && cluster !== 'mainnet-beta') {
     throw new Error('cluster must be devnet or mainnet-beta');
   }
@@ -277,6 +284,7 @@ export function createForgeSignerCore(options: ForgeSignerCoreOptions): SignerCo
     async buildCreatorPositionClaimTx(params) {
       const built = await coreBuildCreatorPositionFeeClaimTx(connection, params, {
         commitment: 'confirmed',
+        ...priority,
       });
       const s = built.summary;
       if (s.kind !== 'position') throw new Error('core returned a non-position claim');
@@ -301,7 +309,10 @@ export function createForgeSignerCore(options: ForgeSignerCoreOptions): SignerCo
     },
 
     async buildCreatorClaimTx(params) {
-      const built = await coreBuildCreatorClaimTx(connection, params, { commitment: 'confirmed' });
+      const built = await coreBuildCreatorClaimTx(connection, params, {
+        commitment: 'confirmed',
+        ...priority,
+      });
       const s = built.summary;
       if (s.kind !== 'creator') throw new Error('core returned a non-creator claim');
       return {

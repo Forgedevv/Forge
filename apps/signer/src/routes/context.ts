@@ -36,6 +36,7 @@ import {
   type SolanaRpc,
 } from '../jobs/shared.js';
 import { PayerReservations } from '../jobs/reservations.js';
+import { NO_PRIORITY_FEES, type PriorityFees } from '../jobs/priority.js';
 import type { AlertFn, CreationEnv } from './accounts.js';
 import { DEFAULT_MAX_LAUNCHPADS_PER_DAY, MAX_LAUNCHPADS_PER_DAY } from './budget.js';
 import { fail } from './errors.js';
@@ -63,8 +64,11 @@ export interface SignerRoutesConfig {
    * longest slug (32) or launchpad id (36). Checked at startup (`assertMetadataTemplate`).
    */
   metadataUriTemplate: string;
-  /** Priority fee of the config and nonce creations (micro-lamports per CU, default 0). */
-  computeUnitPriceMicroLamports?: number;
+  /**
+   * Priority fees of the config and nonce creations and of the launch revocation (jobs/priority.ts,
+   * SIGNER_PRIORITY_FEE_*): priced for the accounts each one writes. Default: none.
+   */
+  priorityFees?: PriorityFees;
   /** Bounded wait for a creation to confirm within one request (default 45 s). */
   settle?: Partial<SettleTiming>;
   /** Failed or expired creation transactions tolerated per account (default 3). */
@@ -173,16 +177,12 @@ export interface RouteRuntime {
   maxCreateAttempts: number;
   maxLaunchBuilds: number;
   payerFeeBufferLamports: bigint;
-  computeUnitPriceMicroLamports: number;
+  priorityFees: PriorityFees;
   metadataUriTemplate: string;
 }
 
 export function createRouteRuntime(deps: SignerRoutesDeps): RouteRuntime {
   const { config } = deps;
-  const cuPrice = config.computeUnitPriceMicroLamports ?? 0;
-  if (!Number.isSafeInteger(cuPrice) || cuPrice < 0) {
-    throw new Error('computeUnitPriceMicroLamports must be a non-negative integer');
-  }
   assertMetadataTemplate(config.metadataUriTemplate);
   const maxLaunchpadsPerDay = config.maxLaunchpadsPerDay ?? DEFAULT_MAX_LAUNCHPADS_PER_DAY;
   if (
@@ -226,7 +226,7 @@ export function createRouteRuntime(deps: SignerRoutesDeps): RouteRuntime {
     maxCreateAttempts: config.maxCreateAttempts ?? DEFAULT_MAX_CREATE_ATTEMPTS,
     maxLaunchBuilds: config.maxLaunchBuilds ?? DEFAULT_MAX_LAUNCH_BUILDS,
     payerFeeBufferLamports: config.payerFeeBufferLamports ?? DEFAULT_PAYER_FEE_BUFFER_LAMPORTS,
-    computeUnitPriceMicroLamports: cuPrice,
+    priorityFees: config.priorityFees ?? NO_PRIORITY_FEES,
     metadataUriTemplate: config.metadataUriTemplate,
   };
 }

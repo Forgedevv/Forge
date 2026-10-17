@@ -33,6 +33,7 @@ import {
 } from '@solana/web3.js';
 import type pino from 'pino';
 import { z } from 'zod';
+import { ComputeBudgetCheckError, checkComputeBudgetInstructions } from '@forge/core';
 import { PRICING, type FlagKey, type PaymentKind } from '@forge/shared';
 import type { Keystore } from '../keystore.js';
 import { redactSecrets } from '../keystore.js';
@@ -931,6 +932,13 @@ export function decodeSystemTransfer(
 /** Highest priority fee price accepted in a transaction built by core (micro-lamports per CU). */
 export const MAX_COMPUTE_UNIT_PRICE = 1_000_000n;
 export const MAX_COMPUTE_UNIT_LIMIT = 1_400_000;
+/**
+ * Highest priority fee of one transaction the signer signs (0.001 SOL), whatever the setting
+ * (SIGNER_PRIORITY_FEE_MAX_LAMPORTS is at most this). Without a unit limit it is counted for
+ * 1.4M compute units, the most the runtime can apply: at the highest price per CU that is 0.0014
+ * SOL, so this bound is the tighter one.
+ */
+export const MAX_SIGNER_PRIORITY_FEE_LAMPORTS = 1_000_000n;
 
 /** A compute budget instruction must be a bounded unit limit or unit price (TX_POLICY otherwise). */
 export function checkComputeBudget(ix: TransactionInstruction): void {
@@ -949,6 +957,25 @@ export function checkComputeBudget(ix: TransactionInstruction): void {
 
 function policy(rule: string): never {
   throw new JobError('TX_POLICY', rule);
+}
+
+/**
+ * The compute budget of a whole transaction (on top of `checkComputeBudget` per instruction): at
+ * most one unit limit and one unit price (a second one would make the transaction fail, or hide
+ * another price), within `MAX_COMPUTE_UNIT_LIMIT` and `MAX_COMPUTE_UNIT_PRICE`, and a priority fee
+ * of at most `MAX_SIGNER_PRIORITY_FEE_LAMPORTS`. TX_POLICY otherwise.
+ */
+export function assertComputeBudgetSet(instructions: readonly TransactionInstruction[]): void {
+  try {
+    checkComputeBudgetInstructions(instructions, {
+      maxComputeUnits: MAX_COMPUTE_UNIT_LIMIT,
+      maxMicroLamports: MAX_COMPUTE_UNIT_PRICE,
+      maxPriorityFeeLamports: MAX_SIGNER_PRIORITY_FEE_LAMPORTS,
+    });
+  } catch (error) {
+    if (error instanceof ComputeBudgetCheckError) policy(error.message);
+    throw error;
+  }
 }
 
 function sameKey(a: PublicKey | undefined | null, b: PublicKey): boolean {
@@ -1004,6 +1031,7 @@ export function assertSolTransferTx(tx: Transaction, expected: SolTransferExpect
   }
   if (transfers !== 1) policy('exactly one transfer expected');
   if (expected.memo !== undefined && memos !== 1) policy('memo missing');
+  assertComputeBudgetSet(tx.instructions);
 }
 
 /** Anchor discriminators of the DBC creator claim instructions (sha256("global:<name>")[0..8]). */
@@ -1176,6 +1204,7 @@ export function assertCreatorClaimTx(tx: Transaction, expected: CreatorClaimExpe
       policy('program not allowed in a claim');
     }
   });
+  assertComputeBudgetSet(tx.instructions);
 
   if (claimIndex === -1 || !tokenB || !tokenBProgram) policy('no claim instruction');
   if (transfers.length > 1) policy('more than one transfer in a claim');
@@ -1389,6 +1418,7 @@ export function assertCreatorPositionClaimTx(
       policy('program not allowed in a position fee claim');
     }
   });
+  assertComputeBudgetSet(tx.instructions);
 
   if (claimed.size === 0) policy('no claim instruction');
   for (const p of expected.positions) {

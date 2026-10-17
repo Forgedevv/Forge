@@ -1,7 +1,7 @@
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { PublicKey, SystemProgram, Transaction } from '@solana/web3.js';
+import { ComputeBudgetProgram, PublicKey, SystemProgram, Transaction } from '@solana/web3.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { openKeystore, type Keystore } from '../keystore.js';
 import {
@@ -23,6 +23,7 @@ import {
   createRefundLedger,
   createRefundsJob,
 } from './refunds.js';
+import { createPriorityFees } from './priority.js';
 import {
   Mutex,
   createMemoryJournal,
@@ -218,6 +219,32 @@ describe('cashbox job', () => {
     const again = await t.job().runOnce();
     expect(again.outcome).toMatchObject({ result: 'below_reserve' });
     expect(t.chain.transfers).toHaveLength(1);
+  });
+
+  it('prices the sweep from the recent fees, budget first, and keeps its cap on the floor', async () => {
+    const reader = {
+      getRecentPrioritizationFees: vi.fn(async () => [{ slot: 1, prioritizationFee: 400_000 }]),
+    };
+    const priorityFees = createPriorityFees(reader);
+    const t = setup({}, { priorityFees });
+    // The floor holds the priority fee at its cap (30,000 CU x 1 lamport).
+    const floor = t.floor() + 30_000n;
+    t.chain.setBalance(cashbox, floor + 2n * SOL);
+
+    const report = await t.job().runOnce();
+
+    expect(report.outcome).toMatchObject({ result: 'swept', lamports: 2n * SOL });
+    const [landed] = [...t.chain.landed.values()];
+    expect(landed!.programs.slice(0, 2)).toEqual([
+      ComputeBudgetProgram.programId.toBase58(),
+      ComputeBudgetProgram.programId.toBase58(),
+    ]);
+    // 30,000 CU at 400,000 micro-lamports.
+    expect(landed!.priorityFeeLamports).toBe(12_000n);
+    expect(t.chain.balanceOf(cashbox)).toBe(floor - 5_000n - 12_000n);
+    expect(reader.getRecentPrioritizationFees).toHaveBeenCalledWith({
+      lockedWritableAccounts: [cashbox, t.vault],
+    });
   });
 
   it('keeps the unresolved payment anomalies on the cashbox (money refunded by hand)', async () => {

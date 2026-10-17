@@ -19,6 +19,7 @@ import { CLUSTER_GENESIS_HASH } from '@forge/core';
 import { createAlerterFromEnv } from '../alerts.js';
 import { openKeystore, type Keystore } from '../keystore.js';
 import { createJobLogger, requireRoleRef, rpcFromConnection } from '../jobs/shared.js';
+import { createPriorityFees } from '../jobs/priority.js';
 import { createFileRouteJournals, createForgeRouteCore } from '../routes/index.js';
 import { revokeLaunch, type RevokeResult } from '../routes/revoke.js';
 import {
@@ -84,6 +85,7 @@ export async function runRevokeLaunch(options: RevokeLaunchOptions): Promise<Rev
       {
         core: createForgeRouteCore({ connection }),
         rpc: rpcFromConnection(connection),
+        priorityFees: createPriorityFees(connection, config.priorityFee),
         keystore,
         journals: createFileRouteJournals(config.journalDir),
         alerter,

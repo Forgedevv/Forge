@@ -164,6 +164,12 @@ export interface ClaimsConfig {
   minPositionClaimLamports: bigint;
   /** Who pays the network fee and the temporary accounts' rent: the payer wallet or the creator. */
   feePayer: 'payer' | 'creator';
+  /**
+   * The most a claim pays as priority fee (lamports), kept on the fee payer on top of the rents
+   * and `CLAIM_FEE_BUFFER_LAMPORTS` (runtime: `PriorityFees.maxFeeLamports` of the claim's compute
+   * unit limit; core prices the claims). Default 0.
+   */
+  maxPriorityFeeLamports?: bigint;
   /** Alert when fees above the threshold stay unclaimed longer than this (default 48 h). */
   unclaimedAlertMs?: number;
   /**
@@ -446,7 +452,10 @@ export function createClaimsJob(deps: ClaimsDeps): ClaimsJob {
         () => rpc.getMinimumBalanceForRentExemption(TOKEN_ACCOUNT_SIZE),
         retry,
       );
-      const needed = tokenRent * CLAIM_TOKEN_ACCOUNTS_FUNDED + CLAIM_FEE_BUFFER_LAMPORTS;
+      const needed =
+        tokenRent * CLAIM_TOKEN_ACCOUNTS_FUNDED +
+        CLAIM_FEE_BUFFER_LAMPORTS +
+        (config.maxPriorityFeeLamports ?? 0n);
       const feePayerBalance = await withRetry(() => rpc.getBalance(feePayer, 'confirmed'), retry);
       const reserved =
         payer && deps.payerReservations ? await deps.payerReservations.outstanding(rpc, retry) : 0n;

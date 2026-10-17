@@ -29,6 +29,7 @@ import {
   TransactionInstruction,
 } from '@solana/web3.js';
 import {
+  fixedPriorityFee,
   paymentMemo,
   type ConfigKind,
   type LaunchCoinSummary,
@@ -622,6 +623,8 @@ export class FakeRouteChain implements SolanaRpc, RouteCore, RoutePaymentVerifie
       lastValidBlockHeight: null,
       computeUnitLimit: 300_000,
       computeUnitPriceMicroLamports: 0,
+      priorityFee: fixedPriorityFee(300_000, 0),
+      priorityFeePlacement: 'limit_and_price',
       signerSideSigners: [creator, mint],
       ownerSigner: owner,
       txBytes: 1_000,

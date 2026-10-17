@@ -18,6 +18,8 @@ import {
   type Transaction,
 } from '@solana/web3.js';
 import { describe, expect, it } from 'vitest';
+import type { PriorityFeeSetting } from '@forge/core';
+import { DEFAULT_SIGNER_PRIORITY_FEE } from '../jobs/priority.js';
 import { isJobError } from '../jobs/shared.js';
 import { createForgeRouteCore } from './onchain.js';
 import {
@@ -80,6 +82,10 @@ function mockConnection(accounts: Map<string, AccountInfo<Buffer>>): Connection 
     getLatestBlockhash: async () => ({ blockhash: BLOCKHASH, lastValidBlockHeight: 1_000 }),
     getFeeForMessage: async () => ({ context: { slot: 1 }, value: 15_000 }),
     getSignaturesForAddress: async () => [],
+    getRecentPrioritizationFees: async () => [
+      { slot: 1, prioritizationFee: 0 },
+      { slot: 2, prioritizationFee: 100_000 },
+    ],
   } as unknown as Connection;
 }
 
@@ -94,7 +100,7 @@ function expectPolicy(fn: () => void, rule?: RegExp): void {
   if (rule) expect((error as Error).message).toMatch(rule);
 }
 
-function launchSetup() {
+function launchSetup(options: { priority?: PriorityFeeSetting } = {}) {
   const creator = Keypair.generate().publicKey;
   const mint = Keypair.generate().publicKey;
   const nonceAccount = Keypair.generate().publicKey;
@@ -110,6 +116,7 @@ function launchSetup() {
   );
   const core = createForgeRouteCore({
     connection: mockConnection(accounts),
+    ...(options.priority ? { priority: options.priority } : {}),
   });
   const params = {
     config: CONFIG,
@@ -271,6 +278,33 @@ describe('launch policy (real core, devnet config fixture)', () => {
       if (previous === undefined) delete process.env.FORGE_METEORA_REFERRAL_ACCOUNT;
       else process.env.FORGE_METEORA_REFERRAL_ACCOUNT = previous;
     }
+  });
+
+  it('accepts the priced launch in both placements, and refuses a second price', async () => {
+    const priced = launchSetup({ priority: DEFAULT_SIGNER_PRIORITY_FEE });
+    const built = await priced.core.buildLaunchCoinTx(priced.params);
+    expect(built.summary.priorityFeePlacement).toBe('limit_and_price');
+    expect(built.summary.computeUnitPriceMicroLamports).toBe(100_000);
+    assertLaunchCoinTx(built.transaction, priced.expectation());
+
+    // The longest metadata the launch accepts but for 4 bytes: the price goes alone.
+    const tight = launchSetup({ priority: DEFAULT_SIGNER_PRIORITY_FEE });
+    const uri = `https://example.com/${'a'.repeat(102 - 25)}.json`;
+    const alone = await tight.core.buildLaunchCoinTx({
+      ...tight.params,
+      name: 'N'.repeat(32),
+      symbol: 'S'.repeat(10),
+      metadataUri: uri,
+    });
+    expect(alone.summary.priorityFeePlacement).toBe('price_only');
+    assertLaunchCoinTx(alone.transaction, tight.expectation());
+
+    built.transaction.instructions.splice(
+      2,
+      0,
+      ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 1 }),
+    );
+    expectPolicy(() => assertLaunchCoinTx(built.transaction, priced.expectation()), /duplicate/);
   });
 
   it('accepts a launch without a first buy', async () => {

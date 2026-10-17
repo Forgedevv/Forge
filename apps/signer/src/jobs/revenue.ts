@@ -76,6 +76,7 @@ import type { SignerCore } from '../core-adapter.js';
 import { planSweep } from './cashbox.js';
 import type { ConvertRunSummary } from './convert.js';
 import { parseJupiterClaimMints } from './jupiter-claims.js';
+import type { PriorityFees } from './priority.js';
 import {
   DEFAULT_RETRY,
   DEFAULT_SETTLE,
@@ -86,6 +87,7 @@ import {
   assertSolTransferTx,
   awaitSettlement,
   broadcast,
+  assertComputeBudgetSet,
   checkComputeBudget,
   checkPaused,
   checkSettlement,
@@ -378,13 +380,18 @@ export interface RevenueUnwrapParams {
   rentLamports: bigint;
   sources: readonly UnwrapSource[];
   memo: string;
-  /** SIGNER_PRIORITY_FEE_MICRO_LAMPORTS; 0 adds no compute budget instruction. */
+  /** Compute unit price (the job prices it with `PriorityFees`); 0 adds no compute budget. */
   computeUnitPriceMicroLamports?: number;
 }
 
 /** Compute units requested when a priority fee is set: the fixed part plus one per transfer. */
 export const UNWRAP_BASE_COMPUTE_UNITS = 40_000;
 export const UNWRAP_COMPUTE_UNITS_PER_TRANSFER = 6_000;
+
+/** Compute unit limit of an unwrap of `sources` accounts. */
+export function unwrapComputeUnits(sources: number): number {
+  return UNWRAP_BASE_COMPUTE_UNITS + UNWRAP_COMPUTE_UNITS_PER_TRANSFER * sources;
+}
 export const FORWARD_COMPUTE_UNITS = 30_000;
 /** Most WSOL accounts unwrapped in one transaction (size and compute bounds). */
 export const MAX_UNWRAP_SOURCES = 8;
@@ -413,7 +420,7 @@ export function buildRevenueUnwrapTx(p: RevenueUnwrapParams): Transaction {
   if (p.rentLamports <= 0n) throw new JobError('INVALID_AMOUNT', 'rent must be positive');
   const tx = new Transaction();
   for (const ix of computeBudgetIxs(
-    UNWRAP_BASE_COMPUTE_UNITS + UNWRAP_COMPUTE_UNITS_PER_TRANSFER * p.sources.length,
+    unwrapComputeUnits(p.sources.length),
     p.computeUnitPriceMicroLamports,
   )) {
     tx.add(ix);
@@ -588,6 +595,7 @@ export function assertRevenueUnwrapTx(tx: Transaction, e: RevenueUnwrapExpectati
   }
   if (stage !== 'done') policy('unwrap transaction incomplete');
   if (transferred.size !== e.sources.length) policy('expected source not transferred');
+  assertComputeBudgetSet(tx.instructions);
 }
 
 // ---------------------------------------------------------------------------------------
@@ -619,7 +627,10 @@ export interface RevenueConfig {
   minUnwrapLamports: bigint;
   /** A native drop between two runs beyond this (the job's own fees) raises an alert. */
   outflowToleranceLamports: bigint;
-  /** SIGNER_PRIORITY_FEE_MICRO_LAMPORTS. */
+  /**
+   * Fixed compute unit price, used only without `RevenueDeps.priorityFees` (the runtime passes
+   * the priority fees and 0 here).
+   */
   computeUnitPriceMicroLamports: number;
   /** Compute, plan and log only: never sign or send (true by default). */
   dryRun: boolean;
@@ -831,6 +842,12 @@ export interface RevenueDeps {
   seed?: () => string;
   /** Called with each signature right before it is (re)broadcast by this process. Required. */
   onBeforeSend: BeforeSendHook;
+  /**
+   * Priority fees of the unwrap and the forward (SIGNER_PRIORITY_FEE_*, jobs/priority.ts): priced
+   * for the accounts each one writes; their cap is kept on the wallet on top of the fee buffers.
+   * Absent: the fixed `config.computeUnitPriceMicroLamports`.
+   */
+  priorityFees?: PriorityFees;
 }
 
 export type RevenueOutcome =
@@ -883,6 +900,17 @@ export function createRevenueJob(deps: RevenueDeps): RevenueJob {
   const now = deps.now ?? Date.now;
   const newSeed = deps.seed ?? randomSeed;
   const settleTiming = { ...DEFAULT_SETTLE, ...config.settle };
+  const priorityFees = deps.priorityFees ?? null;
+  /** The compute unit price of a transaction writing `writable`, of `units` CU. */
+  const priceOf = async (writable: PublicKey[], units: number): Promise<number> =>
+    priorityFees
+      ? (await priorityFees.quote(writable, units)).microLamports
+      : config.computeUnitPriceMicroLamports;
+  /** The most a transaction of `units` CU pays as priority fee. */
+  const maxPriorityFee = (units: number): bigint =>
+    priorityFees
+      ? priorityFees.maxFeeLamports(units)
+      : (BigInt(units) * BigInt(config.computeUnitPriceMicroLamports) + 999_999n) / 1_000_000n;
   let running = false;
 
   assertRevenueConfig(config);
@@ -921,7 +949,12 @@ export function createRevenueJob(deps: RevenueDeps): RevenueJob {
       const delta = balance - expected;
       if (delta > 0n) {
         pending.platform_fee += delta;
-      } else if (delta < 0n && -delta > config.outflowToleranceLamports) {
+      } else if (
+        delta < 0n &&
+        // The job's own fees: an unwrap at most between two observations, priority fee included.
+        -delta >
+          config.outflowToleranceLamports + maxPriorityFee(unwrapComputeUnits(MAX_UNWRAP_SOURCES))
+      ) {
         await alert(
           'high',
           'revenue_unexpected_outflow',
@@ -1270,14 +1303,17 @@ export function createRevenueJob(deps: RevenueDeps): RevenueJob {
       retry,
     );
     if (unwrapTotal >= config.minUnwrapLamports && !config.dryRun) {
-      if (balance < tokenRent + UNWRAP_FEE_BUFFER_LAMPORTS) {
+      const unwrapFeeBuffer =
+        UNWRAP_FEE_BUFFER_LAMPORTS +
+        maxPriorityFee(unwrapComputeUnits(Math.min(wsol.length, MAX_UNWRAP_SOURCES)));
+      if (balance < tokenRent + unwrapFeeBuffer) {
         await alert(
           'high',
           'revenue_low_balance',
           'The revenue wallet cannot pay the rent of the ephemeral unwrap account: fund it',
           {
             balance: formatSol(balance),
-            needed: formatSol(tokenRent + UNWRAP_FEE_BUFFER_LAMPORTS),
+            needed: formatSol(tokenRent + unwrapFeeBuffer),
           },
           'revenue_low_balance',
         );
@@ -1304,7 +1340,10 @@ export function createRevenueJob(deps: RevenueDeps): RevenueJob {
         };
         const tx = buildRevenueUnwrapTx({
           ...expectation,
-          computeUnitPriceMicroLamports: config.computeUnitPriceMicroLamports,
+          computeUnitPriceMicroLamports: await priceOf(
+            [config.revenue, ephemeral, ...sources.map((s) => s.account)],
+            unwrapComputeUnits(sources.length),
+          ),
         });
         const { blockhash, lastValidBlockHeight } = await withRetry(
           () => rpc.getLatestBlockhash(),
@@ -1342,7 +1381,7 @@ export function createRevenueJob(deps: RevenueDeps): RevenueJob {
       rentExemptLamports: rentExempt,
       reserveLamports: config.reserveLamports,
       liabilitiesLamports: 0n,
-      feeBufferLamports: FORWARD_FEE_BUFFER_LAMPORTS,
+      feeBufferLamports: FORWARD_FEE_BUFFER_LAMPORTS + maxPriorityFee(FORWARD_COMPUTE_UNITS),
       minSweepLamports: config.minForwardLamports,
     });
     const planLog = {
@@ -1390,12 +1429,13 @@ export function createRevenueJob(deps: RevenueDeps): RevenueJob {
       lamports: plan.amount,
       memo: FORWARD_MEMO,
     });
-    for (const ix of computeBudgetIxs(
-      FORWARD_COMPUTE_UNITS,
-      config.computeUnitPriceMicroLamports,
-    )) {
-      tx.add(ix);
-    }
+    // The compute budget comes first.
+    tx.instructions.unshift(
+      ...computeBudgetIxs(
+        FORWARD_COMPUTE_UNITS,
+        await priceOf([config.revenue, config.vault], FORWARD_COMPUTE_UNITS),
+      ),
+    );
     const { blockhash, lastValidBlockHeight } = await withRetry(
       () => rpc.getLatestBlockhash(),
       retry,

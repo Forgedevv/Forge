@@ -39,6 +39,7 @@ import {
 } from '@forge/core';
 import { createAlerterFromEnv } from '../alerts.js';
 import { createForgeSignerCore } from '../core-adapter.js';
+import { createPriorityFees } from '../jobs/priority.js';
 import { openKeystore, type Keystore } from '../keystore.js';
 import {
   Mutex,
@@ -261,6 +262,8 @@ export async function createSignerRuntime(options: SignerRuntimeOptions): Promis
         : null;
 
     const rpc = rpcFromConnection(connection);
+    // One priority fee policy for every transaction the signer builds (SIGNER_PRIORITY_FEE_*).
+    const priorityFees = createPriorityFees(connection, config.priorityFee);
     const db = createPostgrestClient({
       url: config.supabaseUrl,
       serviceRoleKey: config.supabaseServiceRoleKey,
@@ -282,12 +285,13 @@ export async function createSignerRuntime(options: SignerRuntimeOptions): Promis
         connection,
         cashbox: addresses.cashbox,
         cluster: config.cluster,
+        ...(priorityFees.setting ? { priority: priorityFees.setting } : {}),
       }),
       keystore,
       payer,
       cashbox,
       revenue,
-      priorityFeeMicroLamports: config.priorityFeeMicroLamports,
+      priorityFees,
       db,
       supabase: { url: config.supabaseUrl, serviceRoleKey: config.supabaseServiceRoleKey },
       flags,
@@ -349,7 +353,11 @@ export async function createSignerRuntime(options: SignerRuntimeOptions): Promis
         store: createPostgrestRouteStore(db),
         core:
           // No referral on the first buy (devnet finding, see createForgeRouteCore).
-          options.routeCore ?? createForgeRouteCore({ connection }),
+          options.routeCore ??
+          createForgeRouteCore({
+            connection,
+            ...(priorityFees.setting ? { priority: priorityFees.setting } : {}),
+          }),
         rpc,
         keystore,
         // The creation payment is proven on-chain (finalized) before any payer spend.
@@ -363,7 +371,7 @@ export async function createSignerRuntime(options: SignerRuntimeOptions): Promis
         logger: createJobLogger(logger, 'routes'),
         config: {
           metadataUriTemplate: config.coinMetadataUrl,
-          computeUnitPriceMicroLamports: config.priorityFeeMicroLamports,
+          priorityFees,
           paused: config.routesPaused,
           maxLaunchpadsPerDay: config.maxLaunchpadsPerDay,
           minPaymentLamports: config.minPaymentLamports,

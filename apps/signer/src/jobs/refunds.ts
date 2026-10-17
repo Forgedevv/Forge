@@ -59,6 +59,12 @@ import {
 } from '@forge/shared';
 import type { SignerCore } from '../core-adapter.js';
 import {
+  NO_PRIORITY_FEES,
+  SOL_TRANSFER_COMPUTE_UNITS,
+  signerBudgetInstructions,
+  type PriorityFees,
+} from './priority.js';
+import {
   DEFAULT_RETRY,
   DEFAULT_SETTLE,
   FALLBACK_EXPIRY_BLOCKS,
@@ -469,6 +475,8 @@ export interface RefundsDeps {
   walletLock: Mutex;
   /** Called with each refund signature right before it is (re)broadcast by this process. Required. */
   onBeforeSend: BeforeSendHook;
+  /** Priority fee of the refunds (SIGNER_PRIORITY_FEE_*, jobs/priority.ts). Default: none. */
+  priorityFees?: PriorityFees;
 }
 
 export type RefundOutcome =
@@ -499,6 +507,10 @@ export function createRefundsJob(deps: RefundsDeps): RefundsJob {
   const now = deps.now ?? Date.now;
   const settleTiming = { ...DEFAULT_SETTLE, ...config.settle };
   const maxPerRun = config.maxPerRun ?? 10;
+  const priorityFees = deps.priorityFees ?? NO_PRIORITY_FEES;
+  /** Network fee of a refund: signature and priority fee at its cap. */
+  const refundFeeBuffer =
+    REFUND_FEE_BUFFER_LAMPORTS + priorityFees.maxFeeLamports(SOL_TRANSFER_COMPUTE_UNITS);
   let running = false;
   /** Set when the kill switch is found on during a run: no further refund is started. */
   let stopReason: PauseReason | null = null;
@@ -1058,7 +1070,7 @@ export function createRefundsJob(deps: RefundsDeps): RefundsJob {
     // Balances (rent read from the cluster, never hard-coded).
     const rentExempt = await withRetry(() => rpc.getMinimumBalanceForRentExemption(0), retry);
     const cashboxBalance = await spendableBalance(rpc, config.cashbox, retry);
-    if (cashboxBalance < amount + REFUND_FEE_BUFFER_LAMPORTS + rentExempt) {
+    if (cashboxBalance < amount + refundFeeBuffer + rentExempt) {
       await alert(
         'high',
         'cashbox_low_balance',
@@ -1066,7 +1078,7 @@ export function createRefundsJob(deps: RefundsDeps): RefundsJob {
         {
           jobId: job.id,
           paymentId: payment.id,
-          needed: formatSol(amount + REFUND_FEE_BUFFER_LAMPORTS + rentExempt),
+          needed: formatSol(amount + refundFeeBuffer + rentExempt),
           balance: formatSol(cashboxBalance),
         },
         'cashbox_low_balance:refund',
@@ -1089,9 +1101,15 @@ export function createRefundsJob(deps: RefundsDeps): RefundsJob {
       return { result: 'skipped', jobId: job.id, paymentId: payment.id, reason: 'paused' };
     }
 
-    // Build, check, sign. The signature is known before anything is recorded or sent.
+    // Build, check, sign. The signature is known before anything is recorded or sent. The
+    // compute budget (SIGNER_PRIORITY_FEE_*) comes first.
     const memo = refundMemo(payment.id);
+    const priorityFee = await priorityFees.quote(
+      [config.cashbox, payer],
+      SOL_TRANSFER_COMPUTE_UNITS,
+    );
     const tx = core.buildSolTransferTx({ from: config.cashbox, to: payer, lamports: amount, memo });
+    tx.instructions.unshift(...signerBudgetInstructions(priorityFee));
     const { blockhash, lastValidBlockHeight } = await withRetry(
       () => rpc.getLatestBlockhash(),
       retry,

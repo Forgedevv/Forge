@@ -216,7 +216,13 @@ describe('runtime environment', () => {
       cluster: 'devnet',
       convertRoles: ['cashbox'],
       routesPaused: false,
-      priorityFeeMicroLamports: 0,
+      // Dynamic priority fees by default: no floor, 1 lamport per CU and 0.0005 SOL at most.
+      priorityFee: {
+        floorMicroLamports: 0,
+        maxMicroLamports: 1_000_000,
+        percentile: 75,
+        maxLamports: 500_000n,
+      },
     });
     expect(() => parseRuntimeEnv({ ...env, SIGNER_CONVERT_ROLES: 'cashbox,buyback' })).toThrow(
       /never the buyback wallet/,
