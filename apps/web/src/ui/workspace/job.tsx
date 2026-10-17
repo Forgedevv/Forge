@@ -111,7 +111,7 @@ export function JobScreen({
               {preview ? <PreviewCard url={preview} /> : <p>{common.pending}</p>}
               <div className="fw-actions">
                 <Button disabled={!preview || busy} onClick={approve}>
-                  {busy ? copy.approving : copy.approve} ↗
+                  {busy ? copy.approving : copy.approve}
                 </Button>
                 {/* A creation preview belongs to a draft: changes come once it is live. */}
                 {job.type === 'modify_launchpad' && (
@@ -199,7 +199,7 @@ export function JobScreen({
                     target="_blank"
                     rel="noreferrer"
                   >
-                    {common.receipt} ↗
+                    {common.receipt} <span aria-hidden="true">↗</span>
                   </Link>
                 </>
               )}

@@ -70,7 +70,7 @@ export function SpecSummary({
                   typeof value === 'string' &&
                   safeUrl(value) ? (
                   <Link href={safeUrl(value)!} target="_blank" rel="noreferrer">
-                    {common.preview} ↗
+                    {common.preview} <span aria-hidden="true">↗</span>
                   </Link>
                 ) : (
                   display

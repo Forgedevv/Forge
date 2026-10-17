@@ -124,6 +124,27 @@ export function WorkspaceProvider({
   );
 }
 
+/** The workshop theme chosen by the visitor (localStorage; storage errors are ignored). */
+export const THEME_KEY = 'forge.theme';
+type Theme = 'dark' | 'light';
+
+function savedTheme(): Theme | null {
+  try {
+    const value = window.localStorage.getItem(THEME_KEY);
+    return value === 'dark' || value === 'light' ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveTheme(theme: Theme) {
+  try {
+    window.localStorage.setItem(THEME_KEY, theme);
+  } catch {
+    // Storage unavailable (private mode, quota): the choice lasts for this page only.
+  }
+}
+
 /** Shared interface state; the live wallet provider is mounted separately from preview mocks. */
 export function WorkspaceStateProvider({
   children,
@@ -138,7 +159,12 @@ export function WorkspaceStateProvider({
   const router = useRouter();
   const [login, setLogin] = useState(false);
   const [message, setMessage] = useState('');
-  const [theme, setTheme] = useState<'dark' | 'light'>('dark');
+  // Dark on the server and the first render (no hydration mismatch), then the saved choice.
+  const [theme, setTheme] = useState<Theme>('dark');
+  useEffect(() => {
+    const saved = savedTheme();
+    if (saved) setTheme(saved);
+  }, []);
   useEffect(() => {
     controller?.start();
     return () => controller?.dispose();
@@ -155,7 +181,11 @@ export function WorkspaceStateProvider({
         available: true,
         demo: Boolean(controller),
         theme,
-        toggleTheme: () => setTheme((t) => (t === 'dark' ? 'light' : 'dark')),
+        toggleTheme: () => {
+          const next = theme === 'dark' ? 'light' : 'dark';
+          saveTheme(next);
+          setTheme(next);
+        },
         openLogin: () => setLogin(true),
         closeLogin: () => setLogin(false),
         toast: setMessage,

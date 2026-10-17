@@ -291,7 +291,7 @@ function LaunchpadCard({
         <LaunchpadArt name={pad.name} slug={pad.slug} primary={primary} accent={accent} />
         <span className={`fw-badge fw-badge-${pad.status}`}>{copy.status[pad.status]}</span>
         <span className="fw-pad-cover-arrow" aria-hidden="true">
-          ↗
+          →
         </span>
       </Link>
       <div className="fw-pad-main">
@@ -409,17 +409,19 @@ function LaunchpadCard({
       )}
       {next.kind === 'continue' ? (
         <Link className="fw-current-job" href={next.href}>
-          {common.continue} ↗
+          {common.continue} <span aria-hidden="true">→</span>
         </Link>
       ) : (
         pad.activeJobId && (
           <Link className="fw-current-job" href={`/jobs/${pad.activeJobId}`}>
-            {copy.job} ↗
+            {copy.job} <span aria-hidden="true">→</span>
           </Link>
         )
       )}
       <div className="fw-card-links fw-pad-actions">
-        <Link href={`/launchpads/${pad.id}`}>{copy.view} ↗</Link>
+        <Link href={`/launchpads/${pad.id}`}>
+          {copy.view} <span aria-hidden="true">→</span>
+        </Link>
         {pad.status === 'live' && <Link href={`/launchpads/${pad.id}/modify`}>{copy.modify}</Link>}
       </div>
       {/* Both are already readable messages. */}

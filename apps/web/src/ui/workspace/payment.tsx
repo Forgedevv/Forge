@@ -52,7 +52,7 @@ function SentPaymentNotice({
         <>
           <Address value={result.signature} label={copy.signature} />
           <Link href={api.explorerTxUrl(result.signature)} target="_blank" rel="noreferrer">
-            {copy.explorer} ↗
+            {copy.explorer} <span aria-hidden="true">↗</span>
           </Link>
         </>
       )}
@@ -270,7 +270,7 @@ export function PaymentScreen({
                     {copy.included} {copy.includedBody}
                   </p>
                   <Button disabled={busy} onClick={pay}>
-                    {copy.continue} ↗
+                    {copy.continue}
                   </Button>
                 </>
               ) : (
@@ -296,7 +296,7 @@ export function PaymentScreen({
                     <>
                       <p className="fw-caption">{copy.signing}</p>
                       <Button disabled={busy || expired} onClick={pay}>
-                        {busy ? (phase === 'sending' ? common.sending : common.sign) : copy.pay} ↗
+                        {busy ? (phase === 'sending' ? common.sending : common.sign) : copy.pay}
                       </Button>
                     </>
                   )}

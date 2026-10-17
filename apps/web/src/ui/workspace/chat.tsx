@@ -220,7 +220,7 @@ export function ChatScreen({
                 {copy.readyHint}
               </p>
               <Button disabled={busy} onClick={confirm}>
-                {busy ? copy.confirming : launchpadId ? copy.confirmChange : copy.confirm} ↗
+                {busy ? copy.confirming : launchpadId ? copy.confirmChange : copy.confirm}
               </Button>
             </div>
           )}
@@ -285,7 +285,7 @@ export function ChatScreen({
           <div className="fw-summary-confirm">
             <p className="fw-caption">{copy.edit}</p>
             <Button disabled={!canConfirm || busy} onClick={confirm}>
-              {busy ? copy.confirming : launchpadId ? copy.confirmChange : copy.confirm} ↗
+              {busy ? copy.confirming : launchpadId ? copy.confirmChange : copy.confirm}
             </Button>
           </div>
         </Card>

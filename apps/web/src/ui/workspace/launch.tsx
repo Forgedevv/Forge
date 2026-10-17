@@ -218,8 +218,7 @@ export function LaunchScreen({
                       : common.sign
                     : phase === 'error'
                       ? copy.retry
-                      : copy.sign}{' '}
-                  ↗
+                      : copy.sign}
                 </Button>
                 {phase === 'error' && (
                   <p className="fw-caption">

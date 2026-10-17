@@ -48,7 +48,7 @@ export function StateGallery({
         </Heading>
         <div className="fw-actions">
           <Link className="fw-button fw-button-secondary" href="/new">
-            {copy.journey} ↗
+            {copy.journey} <span aria-hidden="true">→</span>
           </Link>
           <Button variant="secondary" onClick={toggleTheme}>
             {theme === 'dark' ? common.light : common.dark}

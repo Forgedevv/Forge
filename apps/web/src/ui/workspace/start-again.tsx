@@ -86,7 +86,6 @@ export function StartAgainButton({
   return (
     <Button variant={variant} disabled={state.busy} onClick={state.start}>
       {state.busy ? common.startingAgain : common.startAgain}
-      <span aria-hidden="true">↗</span>
     </Button>
   );
 }

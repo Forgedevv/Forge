@@ -90,7 +90,7 @@ export function LoginPanel({ initialMessage = '' }: { initialMessage?: string })
         <>
           <Address value={session.wallet} />
           <Link className="fw-button fw-button-primary" href="/dashboard" onClick={closeLogin}>
-            {copy.continue} ↗
+            {copy.continue} <span aria-hidden="true">→</span>
           </Link>
         </>
       ) : (
@@ -106,7 +106,6 @@ export function LoginPanel({ initialMessage = '' }: { initialMessage?: string })
                 >
                   <span className="fw-wallet-icon">{i === 0 ? '◕' : '▣'}</span>
                   {wallet}
-                  <span>↗</span>
                 </Button>
               ))}
             </div>

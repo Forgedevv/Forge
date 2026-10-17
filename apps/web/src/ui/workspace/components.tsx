@@ -34,6 +34,10 @@ export function Button({
     <button type="button" className={`fw-button fw-button-${variant} ${className}`} {...props} />
   );
 }
+/** A link to another site (opened in a new tab, marked ↗); anything else stays in the app. */
+export function isExternalHref(href: string): boolean {
+  return /^(https?:)?\/\//i.test(href);
+}
 export function ActionLink({
   href,
   children,
@@ -43,10 +47,17 @@ export function ActionLink({
   children: ReactNode;
   secondary?: boolean;
 }) {
-  return (
-    <Link className={`fw-button fw-button-${secondary ? 'secondary' : 'primary'}`} href={href}>
+  const className = `fw-button fw-button-${secondary ? 'secondary' : 'primary'}`;
+  // ↗ only for another site; an action inside the workshop gets a plain arrow.
+  return isExternalHref(href) ? (
+    <a className={className} href={href} target="_blank" rel="noopener noreferrer">
       {children}
       <span aria-hidden="true">↗</span>
+    </a>
+  ) : (
+    <Link className={className} href={href}>
+      {children}
+      <span aria-hidden="true">→</span>
     </Link>
   );
 }
@@ -223,7 +234,7 @@ export function TransactionState({ phase, result }: { phase: TxPhase; result?: T
       {phase === 'error' && <ErrorNotice message={result?.error ?? common.txError} />}
       {phase === 'confirmed' && result?.signature && (
         <Link href={api.explorerTxUrl(result.signature)} target="_blank" rel="noreferrer">
-          {common.receipt} ↗
+          {common.receipt} <span aria-hidden="true">↗</span>
         </Link>
       )}
     </div>
@@ -484,7 +495,7 @@ export function ClaimButton({
               </span>
               {entry.signature && (
                 <Link href={api.explorerTxUrl(entry.signature)} target="_blank" rel="noreferrer">
-                  {common.receipt} ↗
+                  {common.receipt} <span aria-hidden="true">↗</span>
                 </Link>
               )}
             </li>
