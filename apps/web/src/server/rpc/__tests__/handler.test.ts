@@ -8,7 +8,7 @@ import type { DirectorySnapshot, LaunchpadDirectory } from '../origins';
 import { secretFragments } from '../redact';
 import { deriveRelayToken, RELAY_TOKEN_HEADER } from '../server-token';
 import { createUpstream, GENESIS_HASH, type FetchLike } from '../upstream';
-import { CREATOR_POOLS_WEIGHT, DBC_PROGRAM_ID } from '../methods';
+import { CONFIG_POOLS_WEIGHT, CREATOR_POOLS_WEIGHT, DBC_PROGRAM_ID } from '../methods';
 import {
   call,
   DEVNET_GENESIS,
@@ -38,6 +38,19 @@ const CREATOR_POOLS_PARAMS = [
     filters: [
       { memcmp: { offset: 0, bytes: 'cmrfVvtHrjd', encoding: 'base58' } },
       { memcmp: { offset: 104, bytes: PK2, encoding: 'base58' } },
+    ],
+  },
+];
+
+/** The SDK getPoolsByConfig query (VirtualPool discriminator, config at offset 72). */
+const CONFIG_POOLS_PARAMS = [
+  DBC_PROGRAM_ID,
+  {
+    encoding: 'base64',
+    commitment: 'confirmed',
+    filters: [
+      { memcmp: { offset: 0, bytes: 'cmrfVvtHrjd', encoding: 'base58' } },
+      { memcmp: { offset: 72, bytes: PK2, encoding: 'base58' } },
     ],
   },
 ];
@@ -519,6 +532,29 @@ describe('forwarding', () => {
     expect(relay.upstreamPayloads).toEqual([
       { jsonrpc: '2.0', id: 0, method: 'getProgramAccounts', params: CREATOR_POOLS_PARAMS },
     ]);
+  });
+
+  it('forwards the config pool query of a server token only (the /api/coins route)', async () => {
+    const relay = makeRelay({ allowAnonymous: true });
+    const query = CONFIG_POOLS_PARAMS;
+    const server = await send(relay, call('getProgramAccounts', query, 6), {
+      origin: null,
+      token: deriveRelayToken(SECRET, 'moonpad'),
+    });
+    expect(server.res.status).toBe(200);
+    expect(server.json).toEqual({ jsonrpc: '2.0', id: 6, result: 'getProgramAccounts:0' });
+    expect(relay.upstreamPayloads).toEqual([
+      { jsonrpc: '2.0', id: 0, method: 'getProgramAccounts', params: query },
+    ]);
+
+    // A browser (live or sleeping site, FORGE site) or an anonymous caller never gets it.
+    for (const origin of [CLIENT, SLEEPING, FORGE, null]) {
+      const { res, json } = await send(relay, call('getProgramAccounts', query, 7), { origin });
+      expect(res.status, String(origin)).toBe(200);
+      expect(json).toMatchObject({ id: 7, error: { code: -32601 } });
+    }
+    expect(relay.upstreamPayloads).toHaveLength(1);
+    expect(CONFIG_POOLS_WEIGHT).toBeGreaterThan(CREATOR_POOLS_WEIGHT);
   });
 
   it('refuses any other program scan without calling upstream', async () => {

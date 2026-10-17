@@ -7,12 +7,14 @@ import { z } from 'zod';
  * coin creation, creator claims, its server route /api/upload), @forge/core helpers it runs, and
  * the FORGE site's browser client (wallet adapter, launch signing, partner fee claims). Each entry
  * says who needs it. Everything else is refused with -32601, in particular:
- * - getProgramAccounts in any shape but one (a program scan is very expensive and its response is
- *   unbounded; the coin lists come from the Jupiter data API). The one shape allowed is the query
- *   of the Meteora SDK's `getPoolsByCreator`, which the creator fee claim runs to find the coins a
- *   wallet created: the DBC program, a pool account discriminator at offset 0 and one 32-byte
- *   creator key at offset 104, base64 data, nothing else (no dataSlice, dataSize, withContext,
- *   minContextSlot or extra filter). Any other shape answers -32601 too, like a refused method;
+ * - getProgramAccounts in any shape but two (a program scan is very expensive and its response is
+ *   unbounded; the coin lists come from the Jupiter data API). The shapes allowed are the queries
+ *   of the Meteora SDK's `getPoolsByCreator` and `getPoolsByConfig`: the DBC program, a pool
+ *   account discriminator at offset 0 and one 32-byte key at offset 104 (creator: the creator fee
+ *   claim finds the coins a wallet created) or at offset 72 (config: the on-chain fallback of a
+ *   client site's coin list, server-token callers only, see `isConfigPoolsScan`), base64 data,
+ *   nothing else (no dataSlice, dataSize, withContext, minContextSlot or extra filter). Any other
+ *   shape answers -32601 too, like a refused method;
  * - getSignaturesForAddress / getTransaction (history indexing; payment checks run server side on
  *   FORGE's own connection, not through the relay);
  * - requestAirdrop, subscriptions, getLargestAccounts, getTokenLargestAccounts, getVoteAccounts...
@@ -111,8 +113,17 @@ export const DBC_POOL_DISCRIMINATORS: readonly (readonly number[])[] = [
 /** Offset of the pool creator in a DBC pool account (8-byte discriminator + `PoolState`). */
 export const DBC_POOL_CREATOR_OFFSET = 104;
 
+/** Offset of the pool config in a DBC pool account (the SDK's `getPoolsByConfig` filter). */
+export const DBC_POOL_CONFIG_OFFSET = 72;
+
 /** Rate-limit units of one creator pool query (a program scan, about 10x an account read). */
 export const CREATOR_POOLS_WEIGHT = 20;
+
+/**
+ * Rate-limit units of one config pool query: a program scan whose answer holds every coin of a
+ * launchpad (larger than a creator's), served to server-token callers only, which cache it.
+ */
+export const CONFIG_POOLS_WEIGHT = 30;
 
 const BASE58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
 
@@ -156,20 +167,39 @@ const PoolDiscriminator = z.string().refine((value) => {
   return bytes !== null && DBC_POOL_DISCRIMINATORS.some((d) => sameBytes(bytes, d));
 }, 'not a DBC pool account discriminator');
 
-const CreatorKey = z.string().refine((value) => {
+const Key32 = z.string().refine((value) => {
   const bytes = decodeBase58(value);
   return bytes !== null && bytes.length === 32;
 }, 'not a 32-byte key');
 
 /**
- * Config of the creator pool query, exactly as web3.js 1.x sends the SDK's `getPoolsByCreator`:
- * `{ encoding: 'base64', commitment?, filters: [discriminator @0, creator @104] }`.
+ * Config of a pool query on one 32-byte key at `offset`, exactly as web3.js 1.x sends the SDK's
+ * `getPoolsByCreator` / `getPoolsByConfig`:
+ * `{ encoding: 'base64', commitment?, filters: [discriminator @0, key @offset] }`.
  */
-const CreatorPoolsConfig = z.strictObject({
-  encoding: z.literal('base64'),
-  commitment: Commitment.optional(),
-  filters: z.tuple([memcmpAt(0, PoolDiscriminator), memcmpAt(DBC_POOL_CREATOR_OFFSET, CreatorKey)]),
-});
+const poolsByKeyConfig = (offset: number) =>
+  z.strictObject({
+    encoding: z.literal('base64'),
+    commitment: Commitment.optional(),
+    filters: z.tuple([memcmpAt(0, PoolDiscriminator), memcmpAt(offset, Key32)]),
+  });
+
+const CreatorPoolsConfig = poolsByKeyConfig(DBC_POOL_CREATOR_OFFSET);
+const ConfigPoolsConfig = poolsByKeyConfig(DBC_POOL_CONFIG_OFFSET);
+
+const creatorPoolsParams = (params: unknown) =>
+  positional([z.literal(DBC_PROGRAM_ID), CreatorPoolsConfig])(params);
+const configPoolsParams = (params: unknown) =>
+  positional([z.literal(DBC_PROGRAM_ID), ConfigPoolsConfig])(params);
+
+/**
+ * True when `params` are the config pool query (`getPoolsByConfig`). The handler serves it to
+ * server-token callers only (a client site's server route, which caches it): a browser, a
+ * sleeping site or an anonymous caller gets -32601, as for any refused scan.
+ */
+export function isConfigPoolsScan(params: unknown): boolean {
+  return configPoolsParams(params) === null;
+}
 
 /** Positional params: `required` first, then up to `optional.length` more. */
 function positional(required: z.ZodType[], optional: z.ZodType[] = []) {
@@ -322,9 +352,12 @@ export const METHODS: Readonly<Record<string, MethodSpec>> = {
   },
   getProgramAccounts: {
     usedBy:
-      'template creator fee claim: core listCoinsOfCreator (SDK getPoolsByCreator), DBC pools of one creator only',
-    validate: positional([z.literal(DBC_PROGRAM_ID), CreatorPoolsConfig]),
-    weight: () => CREATOR_POOLS_WEIGHT,
+      'template creator fee claim: core listCoinsOfCreator (SDK getPoolsByCreator), DBC pools of one creator; template /api/coins (server token only): core listPoolStatesOfConfig (SDK getPoolsByConfig), DBC pools of one config',
+    validate: (params) =>
+      creatorPoolsParams(params) === null || configPoolsParams(params) === null
+        ? null
+        : 'not an allowed program scan',
+    weight: (p) => (isConfigPoolsScan(p) ? CONFIG_POOLS_WEIGHT : CREATOR_POOLS_WEIGHT),
     retryable: true,
     narrow: true,
   },
@@ -343,7 +376,8 @@ export const ALLOWED_METHODS: readonly string[] = Object.freeze(Object.keys(METH
  * answers -32601.
  */
 export const SLEEPING_SITE_METHODS: ReadonlySet<string> = new Set([
-  // Coins of the wallet: core listCoinsOfCreator (SDK getPoolsByCreator).
+  // Coins of the wallet: core listCoinsOfCreator (SDK getPoolsByCreator). The config pool query
+  // is server-token only (handler.ts), so it is refused here too.
   'getProgramAccounts',
   // Pool and config (SDK fetchers), the wallet's coin account (SDK getOrCreateATAInstruction).
   'getAccountInfo',

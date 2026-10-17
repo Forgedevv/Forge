@@ -4,6 +4,7 @@ import {
   errorForAll,
   errorResponse,
   parseBody,
+  refuseCalls,
   restrictCalls,
   RPC_ERRORS,
   type CheckedCall,
@@ -21,7 +22,7 @@ import {
   type RelayRateLimitStore,
 } from './limits';
 import type { RelayLogger } from './log';
-import { METHODS, SLEEPING_SITE_METHODS } from './methods';
+import { METHODS, SLEEPING_SITE_METHODS, isConfigPoolsScan } from './methods';
 import { decideOrigin, type LaunchpadDirectory, type OriginDecision } from './origins';
 import { RELAY_TOKEN_HEADER, verifyRelayToken } from './server-token';
 import type { Upstream, UpstreamResult } from './upstream';
@@ -32,7 +33,8 @@ import type { Upstream, UpstreamResult } from './upstream';
  * Pipeline: caller tier (Origin / server token / anonymous) -> request overhead charged ->
  * content type -> body size cap -> JSON-RPC parsing (single call or batch of at most 10) ->
  * per-call allowlist and params validation (narrowed to the creator fee claim's methods for the
- * origin of a sleeping site and for anonymous callers) -> weighted rate limits (per IP or per
+ * origin of a sleeping site and for anonymous callers; the config pool scan for server-token
+ * callers only) -> weighted rate limits (per IP or per
  * launchpad, then the ceiling of the caller's class) -> upstream (ids rewritten) -> answers mapped
  * back to the caller's ids, in request order.
  *
@@ -498,9 +500,18 @@ export function createRelayHandler(deps: RelayDeps): RelayHandler {
       const { batch } = parsed;
       // A sleeping site only claims creator fees (D29): it gets the claim's methods, nothing else.
       // Anonymous callers get the same set, so dropping the Origin header widens nothing.
-      const calls = restrictedToClaim(caller)
+      const claimCalls = restrictedToClaim(caller)
         ? restrictCalls(parsed.calls, SLEEPING_SITE_METHODS)
         : parsed.calls;
+      // The config pool scan (every coin of a launchpad) is served to server-token callers only:
+      // a client site's /api/coins route, which caches it for all its visitors.
+      const calls =
+        caller.tier === 'server'
+          ? claimCalls
+          : refuseCalls(
+              claimCalls,
+              (c) => c.method === 'getProgramAccounts' && isConfigPoolsScan(c.params),
+            );
       const valid = calls.filter((c): c is ValidCall => c.ok);
 
       let units = 0;
