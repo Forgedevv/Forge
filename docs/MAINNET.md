@@ -38,7 +38,7 @@ Set in the Vercel project (Production). Read at start-up by `instrumentation.ts`
 | `RPC_URL` | yes | Helius mainnet URL, key A. Host must not contain `devnet` or `testnet` (`payments/config.ts`, `jobs/config.ts`) | none | payments, launch checks, gating and the upload mint check fail; health 503 `config_invalid` | S |
 | `RPC_RELAY_UPSTREAM_URL` | yes (production or mainnet) | a second Helius mainnet URL, key B, https only (`rpc/config.ts`) | none (no fallback to `RPC_URL` in strict mode) | relay answers 503: client sites cannot read the chain or trade. Same key as `RPC_URL`: relay traffic spends the payment quota (startup warning) | S |
 | `RPC_RELAY_ANONYMOUS` | no | leave unset or `off` | `off` on mainnet or production, `on` otherwise | `on`: callers with no Origin and no token get the creator-claim methods and their own ceiling | |
-| `RPC_RELAY_TOKEN_SECRET` | cond | yes on mainnet: at least 32 bytes, the same value as the builder's. Not in `.env.example` | unset (server-token tier off) | too short: health 503; different from the builder's: tokens of client sites are refused (uploads and `/api/coins` of the sites break) | S |
+| `RPC_RELAY_TOKEN_SECRET` | cond | yes on mainnet: at least 32 bytes, the same value as the builder's | unset (server-token tier off) | too short: health 503; different from the builder's: tokens of client sites are refused (uploads and `/api/coins` of the sites break) | S |
 
 ### 2.2 Supabase and sign-in
 
@@ -52,9 +52,9 @@ Set in the Vercel project (Production). Read at start-up by `instrumentation.ts`
 | `SUPABASE_JWT_SECRET` | yes | JWT signing secret of the Supabase project (HS256), at least 32 bytes | none | tokens minted by the site are not accepted by Supabase; health 503 if absent or short | S |
 | `NEXT_PUBLIC_APP_URL` | yes | `https://<FORGE domain>`; its host is the sign-in domain and its origin the only one allowed for state-changing requests | none | wallet sign-in and POSTs refused; relay refuses the FORGE site origin | |
 | `SESSION_SECRET` | yes | at least 32 random bytes (`openssl rand -base64 48`) | none | health 503; rotating it signs everybody out | S |
-| `FORGE_BETA_MODE` | cond | `on` (closed beta, wallet allowlist) or `off` (public). Not in `.env.example` | `on` in production, `off` otherwise | `on` with no valid allowlist: nobody can sign in and health answers 503 (`beta/config.ts`); any other value: closed | |
+| `FORGE_BETA_MODE` | cond | `on` (closed beta, wallet allowlist) or `off` (public). | `on` in production, `off` otherwise | `on` with no valid allowlist: nobody can sign in and health answers 503 (`beta/config.ts`); any other value: closed | |
 | `FORGE_BETA_ALLOWLIST` | cond | comma-separated base58 wallets, required while the beta is on (max 10,000); re-read on every request | none | one invalid entry or an empty list closes sign-in for everybody | |
-| `NEXT_PUBLIC_USE_MOCKS` | no | unset or `0`. `.env.example` ships `1`: do not copy that line to production | unset | no effect in a production build, but the dev pages and mocks assume it is off | |
+| `NEXT_PUBLIC_USE_MOCKS` | no | unset or `0`. `.env.example` has the line commented out: never enable it in production | unset | no effect in a production build, but the dev pages and mocks assume it is off | |
 
 ### 2.3 Payments, price guard, $FORGE gate
 
@@ -91,9 +91,9 @@ Coin uploads are not part of readiness: with a bad R2 block they answer 503 `NOT
 | `R2_SECRET_ACCESS_KEY` | yes | secret of that token (16 characters or more, no whitespace) | none | uploads 503 | S |
 | `R2_BUCKET` | yes | bucket name; add a lifecycle rule deleting `pending/` after 1 day (OPERATIONS.md) | none | uploads 503 | |
 | `R2_PUBLIC_URL` | yes | public https base of the bucket, no query; same value as the builder's | none | uploads 503; CSP `img-src` lacks the host; images not rendered | |
-| `R2_ENDPOINT` | no | S3 endpoint override. Not in `.env.example` | `https://<account>.r2.cloudflarestorage.com` | uploads 503 if invalid | |
+| `R2_ENDPOINT` | no | S3 endpoint override. | `https://<account>.r2.cloudflarestorage.com` | uploads 503 if invalid | |
 | `CLIENTS_DOMAIN` | cond | yes on mainnet: the clients domain, same as the builder's (a domain separate from FORGE's) | none | no `<slug>.<domain>` origin in the relay, uploads, coin metadata `external_url` or CSP `frame-src`; only recorded `site_host` values work | |
-| `FORGE_INTERNAL_CRON_SECRET` | cond | yes if the upload sweep runs (it should): at least 32 bytes, sent as `Authorization: Bearer` by an external scheduler. Not in `.env.example` | unset (route answers 503) | wrong: 401; unset: abandoned uploads in `pending/` are never swept | S |
+| `FORGE_INTERNAL_CRON_SECRET` | cond | yes if the upload sweep runs (it should): at least 32 bytes, sent as `Authorization: Bearer` by an external scheduler. | unset (route answers 503) | wrong: 401; unset: abandoned uploads in `pending/` are never swept | S |
 
 ### 2.6 Relay rate-limit overrides (tuning, all optional, `src/server/rpc/config.ts`)
 
@@ -467,7 +467,7 @@ fp()  { printf %s "${!1}" | sha256sum | cut -c1-12; }      # fingerprint to comp
 - [ ] The three services run the same commit as the one tested: `git rev-parse HEAD` on each host; CI green (`pnpm install --frozen-lockfile && pnpm typecheck && pnpm test`).
 - [ ] No env file is tracked: `git ls-files | grep -E '(^|/)\.env' | grep -v '\.example$'` prints nothing.
 - [ ] Migrations 0001 to 0016 are applied: `select key from flags order by key;` returns the 9 keys of section 8.
-- [ ] Each env file has no unknown name and no missing name: `comm -13 <(grep -oE '^[A-Z][A-Z0-9_]*' .env.example | sort -u) <(grep -oE '^[A-Z][A-Z0-9_]*' .env | sort -u)` lists names; compare with sections 2 to 4 (web needs the names that are not in its `.env.example`: `RPC_RELAY_TOKEN_SECRET`, `FORGE_BETA_*`, `FORGE_INTERNAL_CRON_SECRET`).
+- [ ] Each env file has no unknown name and no missing name: `comm -13 <(grep -oE '^[A-Z][A-Z0-9_]*' .env.example | sort -u) <(grep -oE '^[A-Z][A-Z0-9_]*' .env | sort -u)` lists names; compare with sections 2 to 4.
 
 **B. Cluster and RPC** (run on each host with its own URL; the output carries no key)
 - [ ] `curl -s -X POST "$RPC_URL" -H 'content-type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"getGenesisHash"}'` returns `5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d` for web `RPC_URL`, web `RPC_RELAY_UPSTREAM_URL` and signer `RPC_URL`.
