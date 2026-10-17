@@ -58,13 +58,13 @@ Our own (stricter) bounds are in `INTERFACES.md`, section 1.
 ## The Meteora referral
 
 - The swap accepts a `referralTokenAccount`. The referral fee = 20% of the protocol share, deducted from Meteora's share. The partner share and the creator share do not change.
-- The referral account is a token account of the quote currency (WSOL for a SOL pool), held by the multisig.
+- The referral account is a token account of the quote currency (WSOL for a SOL pool), held by the FORGE revenue wallet (`FORGE_REVENUE_WALLET`, D34; the signer unwraps it and forwards the SOL to the multisig). Create it as a standalone token account of that wallet, not its associated account (the Jupiter claims land in the associated account and are booked separately). Core refuses a swap whose referral account is held by anyone else when the environment has the revenue wallet.
 - **Only when the swap goes through our own code** (`@forge/core`). When the trade goes through Jupiter, Jupiter collects the referral.
 
 ## The platform fee (0.3%)
 
 - **Before graduation**: a SOL transfer instruction of 0.3% of the amount is added to the swap transaction built by `@forge/core`, to `FORGE_PLATFORM_FEE_WALLET`. On a buy: 0.3% of the SOL spent. On a sell: 0.3% of the quoted SOL out (not of the slippage minimum). The fee is always rounded up to the lamport (FORGE gains less than 1 lamport) and the fee transfer is the **last** instruction, so a sell pays it from the proceeds.
-- **After graduation**: a Jupiter transaction cannot be modified. We use the **Jupiter integrator fee** (`referralAccount` + `referralFee` = 30 bps). Jupiter keeps 20% of this fee. A Jupiter referral account must be created, along with token accounts for each currency Jupiter may collect in (at minimum SOL and USDC).
+- **After graduation**: a Jupiter transaction cannot be modified. We use the **Jupiter integrator fee** (`referralAccount` + `referralFee` = 30 bps). Jupiter keeps 20% of this fee. A Jupiter referral account must be created, along with token accounts for each currency Jupiter may collect in (at minimum SOL and USDC). Its partner is the revenue wallet (D34): the claims land in the revenue wallet's token accounts and the signer converts them to SOL for the multisig.
 
 ## Migration (graduation)
 

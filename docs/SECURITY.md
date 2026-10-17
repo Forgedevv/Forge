@@ -54,6 +54,16 @@ Every protection below is **mandatory** in the MVP. Agents that touch one of the
 
 **Protections**: Squads multisig, at least 2 signatures out of 3 (to be confirmed with the team). The buyback bot only has a daily spending limit to its own wallet.
 
+## 7b. Revenue wallet hot key (D34)
+
+**Threat**: the revenue wallet's key lives in the signer keystore (VPS 2), like the cashbox's. A compromise of the machine exposes what the wallet holds, and a bug in the job could send its balance elsewhere.
+
+**Protections** (agent 5):
+- The wallet only ever holds about one day of revenue: the job forwards everything above a small reserve to the multisig every day (`SIGNER_REVENUE_INTERVAL_HOURS`), and the key is never used for anything else.
+- The forward is a single policy-checked transfer whose destination is pinned to `FORGE_MULTISIG_VAULT` before signing; the unwrap is pinned instruction by instruction (ephemeral account seeded from the wallet, transfers only into it, closed only to the wallet); the swaps go through the conversion policy (allowlist and simulation). Any other transaction is refused before the keystore signs.
+- Fail-closed startup on mainnet-beta: the key, `FORGE_PLATFORM_FEE_WALLET` and the owner of the Meteora referral account must agree with `FORGE_REVENUE_WALLET`. Kill switch `revenue_paused` (fail closed), read again before every signature.
+- The outflow watcher treats the wallet like the cashbox (vault as the only allowed destination, token accounts included), and the job alerts on any native drop it cannot explain by its own fees.
+
 ## 8. Buyback front-run by bots (MEV)
 
 **Protections** (agent 5): small amounts, random times, capped slippage (1%), never a predictable amount.

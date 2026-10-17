@@ -81,7 +81,7 @@ Shared types and zod schemas: `LaunchpadSpec`, job statuses, API payloads, busin
 - Telegram alerts.
 
 ### Squads multisig
-- Receives: platform fees, referral (referral account held by the multisig), claimed creator fees, Jupiter integrator fees.
+- Receives: claimed creator fees, the cashbox sweeps, and the revenue wallet's daily forwards (platform fees, Meteora referral and Jupiter integrator fees, converted to SOL by the signer, D34).
 - Daily spending limit to the buyback bot's wallet.
 - Bought-back $FORGE returns there.
 
