@@ -92,7 +92,7 @@ Coin uploads are not part of readiness: with a bad R2 block they answer 503 `NOT
 | `R2_BUCKET` | yes | bucket name; add a lifecycle rule deleting `pending/` after 1 day (OPERATIONS.md) | none | uploads 503 | |
 | `R2_PUBLIC_URL` | yes | public https base of the bucket, no query; same value as the builder's | none | uploads 503; CSP `img-src` lacks the host; images not rendered | |
 | `R2_ENDPOINT` | no | S3 endpoint override. | `https://<account>.r2.cloudflarestorage.com` | uploads 503 if invalid | |
-| `CLIENTS_DOMAIN` | cond | yes on mainnet: the clients domain, same as the builder's (a domain separate from FORGE's) | none | no `<slug>.<domain>` origin in the relay, uploads, coin metadata `external_url` or CSP `frame-src`; only recorded `site_host` values work | |
+| `CLIENTS_DOMAIN` | cond | yes on mainnet: the clients domain, same as the builder's (a domain separate from FORGE's) | none | no `<slug>.<domain>` origin in the relay, uploads, or coin metadata `external_url`; only recorded `site_host` values work | |
 | `FORGE_INTERNAL_CRON_SECRET` | cond | yes if the upload sweep runs (it should): at least 32 bytes, sent as `Authorization: Bearer` by an external scheduler. | unset (route answers 503) | wrong: 401; unset: abandoned uploads in `pending/` are never swept | S |
 
 ### 2.6 Relay rate-limit overrides (tuning, all optional, `src/server/rpc/config.ts`)

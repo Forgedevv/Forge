@@ -24,12 +24,6 @@ type Directives = Record<string, string[]>;
 
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1']);
 
-/**
- * Client previews are Vercel deployment URLs (`https://<project>-<hash>-<team>.vercel.app`),
- * shown in an iframe of the job page.
- */
-const PREVIEW_HOSTS = ['https://*.vercel.app'];
-
 /** Origin of a configured URL, or nothing when unset, invalid or not https. */
 export function originOf(value: string | undefined, isDev = false): string | null {
   const raw = value?.trim();
@@ -49,17 +43,12 @@ function websocketOf(origin: string): string {
   return origin.replace(/^http/, 'ws');
 }
 
-const DOMAIN_RE = /^(?=.{4,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
-
 export function buildCspDirectives(isDev: boolean, env: Env): Directives {
   const app = originOf(env.NEXT_PUBLIC_APP_URL, isDev);
   const supabase =
     originOf(env.NEXT_PUBLIC_SUPABASE_URL, isDev) ?? originOf(env.SUPABASE_URL, isDev);
   // Public bucket of the coin images (the browser renders them).
   const storage = originOf(env.R2_PUBLIC_URL, isDev);
-  const clientsDomain = env.CLIENTS_DOMAIN?.trim().toLowerCase();
-  const clientSites =
-    clientsDomain && DOMAIN_RE.test(clientsDomain) ? [`https://*.${clientsDomain}`] : [];
 
   const only = (...values: (string | null)[]) => values.filter((v): v is string => v !== null);
   return {
@@ -77,7 +66,9 @@ export function buildCspDirectives(isDev: boolean, env: Env): Directives {
       ...(supabase ? [websocketOf(supabase)] : []),
       ...(isDev ? ['ws://localhost:*', 'http://localhost:*'] : []),
     ],
-    'frame-src': ["'self'", ...PREVIEW_HOSTS, ...clientSites],
+    // Build previews and client sites open in their own tab (they forbid framing): no other
+    // origin is ever framed.
+    'frame-src': ["'self'"],
     'worker-src': ["'self'", 'blob:'],
     'manifest-src': ["'self'"],
     'object-src': ["'none'"],
