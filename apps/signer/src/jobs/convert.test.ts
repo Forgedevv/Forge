@@ -12,6 +12,8 @@ import {
 import type { Alerter } from '../alerts.js';
 import {
   DEFAULT_CONVERT_MAX_INPUT_AMOUNT,
+  DEFAULT_JUPITER_V1_URL,
+  DEFAULT_JUPITER_V2_URL,
   JUPITER_EXACT_OUT_INSTRUCTIONS,
   JUPITER_PROGRAM_ID,
   JUPITER_ROUTE_INSTRUCTIONS,
@@ -187,9 +189,58 @@ describe('parseConvertConfig', () => {
   it('has safe defaults', () => {
     expect(config.slippageBps).toBe(50);
     expect(config.maxSlippageBps).toBe(100);
-    expect(config.jupiterUrl).toBe('https://api.jup.ag/swap/v1');
+    // Swap API V2 by default (the Metis API is no longer maintained).
+    expect(config.swapApi).toBe('v2');
+    expect(config.jupiterUrl).toBe('https://api.jup.ag/swap/v2');
     expect(config.apiKey).toBeUndefined();
     expect(config.minRequestIntervalMs).toBeGreaterThanOrEqual(1000);
+  });
+
+  it('keeps the Metis API behind JUPITER_SWAP_API=v1, each with its own default URL', () => {
+    expect(parseConvertConfig({ JUPITER_SWAP_API: 'v1' })).toMatchObject({
+      swapApi: 'v1',
+      jupiterUrl: DEFAULT_JUPITER_V1_URL,
+    });
+    expect(parseConvertConfig({ JUPITER_SWAP_API: 'v2' })).toMatchObject({
+      swapApi: 'v2',
+      jupiterUrl: DEFAULT_JUPITER_V2_URL,
+    });
+    // Unset or empty: the defaults (an env file line `JUPITER_API_URL=` included).
+    expect(parseConvertConfig({ JUPITER_SWAP_API: '', JUPITER_API_URL: '' })).toMatchObject({
+      swapApi: 'v2',
+      jupiterUrl: DEFAULT_JUPITER_V2_URL,
+    });
+    // A proxy URL is kept as is, trailing slashes dropped.
+    expect(
+      parseConvertConfig({ JUPITER_API_URL: 'https://jup.example.test/proxy/' }).jupiterUrl,
+    ).toBe('https://jup.example.test/proxy');
+  });
+
+  it('refuses an unknown API, a plain http URL and a URL of the other API', () => {
+    for (const api of ['V2', 'metis', '2', 'v3']) {
+      expect(() => parseConvertConfig({ JUPITER_SWAP_API: api })).toThrow(
+        /JUPITER_SWAP_API must be v2 or v1/,
+      );
+    }
+    expect(() => parseConvertConfig({ JUPITER_API_URL: 'http://x.test' })).toThrow(/https/);
+    expect(() => parseConvertConfig({ JUPITER_API_URL: 'not a url' })).toThrow(/valid URL/);
+    expect(() => parseConvertConfig({ JUPITER_API_URL: DEFAULT_JUPITER_V1_URL })).toThrow(
+      /ends with \/swap\/v1 but JUPITER_SWAP_API is v2/,
+    );
+    expect(() =>
+      parseConvertConfig({ JUPITER_SWAP_API: 'v1', JUPITER_API_URL: `${DEFAULT_JUPITER_V2_URL}/` }),
+    ).toThrow(/ends with \/swap\/v2 but JUPITER_SWAP_API is v1/);
+  });
+
+  it('requires the API key live with either API', () => {
+    for (const api of ['v1', 'v2']) {
+      expect(() =>
+        parseConvertConfig(
+          { JUPITER_SWAP_API: api, FORGE_CONVERT_LIVE: 'true' },
+          { cluster: 'mainnet-beta' },
+        ),
+      ).toThrow(/JUPITER_API_KEY is required/);
+    }
   });
 
   it('caps one swap by default (1 000 USDC in raw units), still configurable', () => {

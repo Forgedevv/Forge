@@ -8,7 +8,9 @@
  * receipts and buyback journals of SIGNER_JOURNAL_DIR from BUYBACK_REVENUE_SINCE, the RPC for
  * the claims' finality), the Squads v4 spending-limit withdrawer (jobs/squads.ts) when
  * FORGE_SQUADS_MULTISIG and FORGE_SQUADS_SPENDING_LIMIT are set, and the buy route:
- * - `jupiter` (default, the only route on mainnet-beta): Jupiter quote client + the RPC swap
+ * - `jupiter` (default, the only route on mainnet-beta): Jupiter quote client (JUPITER_SWAP_API:
+ *   Swap API V2 `/build` by default, jobs/jupiter-v2.ts, the buy assembled from its instructions
+ *   over `ctx.connection`; v1 the Metis client, the rollback path for one release) + the RPC swap
  *   preparer (static allowlist + simulation + keystore signature);
  * - `dbc-devnet` (devnet only, startup error on mainnet-beta): core `buildBuyTx` on
  *   BUYBACK_DEVNET_DBC_POOL (jobs/buyback-dbc.ts).
@@ -17,7 +19,9 @@
  * Priority fees: the signer's (`ctx.priorityFees`, SIGNER_PRIORITY_FEE_*) price the return of
  * the bought $FORGE, the spending-limit withdrawal and the dbc-devnet buys (bounded there by
  * BUYBACK_MAX_PRIORITY_FEE_LAMPORTS), and size the default per-order fee allowance. The Jupiter
- * orders keep Jupiter's `priorityLevelWithMaxLamports` with BUYBACK_MAX_PRIORITY_FEE_LAMPORTS.
+ * orders are priced the same way on Swap API V2 (the signer's setting, its cap per transaction
+ * lowered to BUYBACK_MAX_PRIORITY_FEE_LAMPORTS); on v1 they keep Jupiter's
+ * `priorityLevelWithMaxLamports` with BUYBACK_MAX_PRIORITY_FEE_LAMPORTS.
  *
  * The module is optional (a refused configuration disables it with an alert, runtime.ts), except
  * on mainnet-beta with FORGE_BUYBACK_LIVE set: there a refused configuration stops the signer.
@@ -38,6 +42,8 @@ import {
 } from '../jobs/buyback.js';
 import { createFileBuybackBudgetSource } from '../jobs/buyback-budget.js';
 import { createDbcDevnetBuybackRoute } from '../jobs/buyback-dbc.js';
+import type { JupiterSwapApi } from '../jobs/convert.js';
+import { createJupiterV2BuybackClient } from '../jobs/jupiter-v2.js';
 import {
   createSquadsJournal,
   createSquadsSpendingLimitWithdrawer,
@@ -57,6 +63,8 @@ import type { EnvSource } from './env.js';
 import type { SignerJobModule } from './modules.js';
 
 export interface BuybackJupiterSettingsLike {
+  /** JUPITER_SWAP_API: v2 (default) or v1 (the Metis API, rollback). */
+  swapApi: JupiterSwapApi;
   baseUrl: string;
   apiKey?: string | undefined;
   minRequestIntervalMs: number;
@@ -112,6 +120,14 @@ export interface BuybackLibrary<Config extends BuybackConfigLike> {
   createJupiterBuybackClient(
     opts: BuybackJupiterSettingsLike & { maxPriorityFeeLamports: bigint; fetch?: typeof fetch },
   ): unknown;
+  createJupiterV2BuybackClient(
+    opts: BuybackJupiterSettingsLike & {
+      connection: Connection;
+      priorityFees: PriorityFees;
+      maxPriorityFeeLamports: bigint;
+      fetch?: typeof fetch;
+    },
+  ): unknown;
   createRpcBuybackSwapPreparer(opts: {
     connection: Connection;
     keystore: KeystoreLike;
@@ -157,6 +173,7 @@ export const REAL_BUYBACK_LIBRARY = {
   buybackConfigFromEnv,
   createBuybackJournal,
   createJupiterBuybackClient,
+  createJupiterV2BuybackClient,
   createRpcBuybackSwapPreparer,
   createRpcForgeTokenReader,
   createFileBuybackBudgetSource,
@@ -236,11 +253,20 @@ export function buybackJobModule<Config extends BuybackConfigLike>(
           priorityFees: ctx.priorityFees,
         }));
       } else {
-        quotes = lib.createJupiterBuybackClient({
-          ...jupiter,
-          maxPriorityFeeLamports: config.maxPriorityFeeLamports,
-          fetch: ctx.fetch,
-        });
+        quotes =
+          jupiter.swapApi === 'v1'
+            ? lib.createJupiterBuybackClient({
+                ...jupiter,
+                maxPriorityFeeLamports: config.maxPriorityFeeLamports,
+                fetch: ctx.fetch,
+              })
+            : lib.createJupiterV2BuybackClient({
+                ...jupiter,
+                connection: ctx.connection,
+                priorityFees: ctx.priorityFees,
+                maxPriorityFeeLamports: config.maxPriorityFeeLamports,
+                fetch: ctx.fetch,
+              });
         swapPreparer = lib.createRpcBuybackSwapPreparer({
           connection: ctx.connection,
           keystore: ctx.keystore,
@@ -282,6 +308,7 @@ export function buybackJobModule<Config extends BuybackConfigLike>(
         {
           mode: job.mode,
           route: config.route,
+          ...(config.route === 'jupiter' ? { jupiterSwapApi: jupiter.swapApi } : {}),
           withdrawer: withdrawer !== undefined,
           revenueSince: config.revenueSince,
         },

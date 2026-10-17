@@ -310,6 +310,37 @@ describe('buybackConfigFromEnv', () => {
       false,
     );
   });
+  it('uses Swap API V2 by default and keeps the Metis API behind JUPITER_SWAP_API=v1', () => {
+    expect(buybackConfigFromEnv({}, addresses).jupiter).toMatchObject({
+      swapApi: 'v2',
+      baseUrl: 'https://api.jup.ag/swap/v2',
+    });
+    expect(buybackConfigFromEnv({ JUPITER_SWAP_API: 'v1' }, addresses).jupiter).toMatchObject({
+      swapApi: 'v1',
+      baseUrl: 'https://api.jup.ag/swap/v1',
+    });
+    expect(() => buybackConfigFromEnv({ JUPITER_SWAP_API: 'metis' }, addresses)).toThrow(
+      /JUPITER_SWAP_API must be v2 or v1/,
+    );
+    // The v1 URL left in place after the default moved to v2: refused, not a 404 on every order.
+    expect(() =>
+      buybackConfigFromEnv({ JUPITER_API_URL: 'https://api.jup.ag/swap/v1' }, addresses),
+    ).toThrow(/ends with \/swap\/v1 but JUPITER_SWAP_API is v2/);
+    // The key stays required for a live buyback, whatever the API.
+    for (const api of ['v1', 'v2']) {
+      expect(() =>
+        buybackConfigFromEnv(
+          {
+            JUPITER_SWAP_API: api,
+            FORGE_BUYBACK_LIVE: 'true',
+            BUYBACK_REVENUE_SINCE: '2026-11-01T00:00:00Z',
+          },
+          addresses,
+          { cluster: 'mainnet-beta' },
+        ),
+      ).toThrow(/JUPITER_API_KEY is required/);
+    }
+  });
   it('requires the Jupiter API key for a live buyback on mainnet-beta only', () => {
     const mainnet = { cluster: 'mainnet-beta' };
     const since = { BUYBACK_REVENUE_SINCE: '2026-11-01T00:00:00Z' };

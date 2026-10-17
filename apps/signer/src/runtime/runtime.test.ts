@@ -469,6 +469,51 @@ describe('signer runtime wiring', () => {
     expect(await unseeded.scheduler.runNow('convert')).toEqual({ status: 'paused' });
   });
 
+  it('quotes the conversion on Swap API V2 by default, on the Metis API with JUPITER_SWAP_API=v1', async () => {
+    // The cashbox holds a non-SOL balance: the dry run asks Jupiter for a quote.
+    const mint = address();
+    const base = mockConnection();
+    const withBalance = new Proxy(base, {
+      get(target, name: string) {
+        if (name !== 'getParsedTokenAccountsByOwner') return Reflect.get(target, name);
+        return async () => ({
+          context: { slot: 1 },
+          value: [
+            {
+              pubkey: address(),
+              account: {
+                data: {
+                  parsed: {
+                    info: { mint, state: 'initialized', tokenAmount: { amount: '5000000' } },
+                  },
+                },
+              },
+            },
+          ],
+        });
+      },
+    });
+    for (const [api, path] of [
+      [undefined, 'api.jup.ag/swap/v2/build'],
+      ['v1', 'api.jup.ag/swap/v1/quote'],
+    ] as const) {
+      const calls: string[] = [];
+      const runtime = await create(api ? { JUPITER_SWAP_API: api } : {}, {
+        connection: withBalance,
+        fetch: mockFetch(calls),
+      });
+      // The offline fetch answers 503: a failed dry-run quote is logged, the run goes on.
+      expect(await runtime.scheduler.runNow('convert')).toEqual({ status: 'ran' });
+      expect(calls).toContain(path);
+      expect(calls.filter((c) => c.startsWith('api.jup.ag'))).toEqual([path]);
+      await runtime.stop();
+    }
+    // A malformed switch stops the startup like any other built-in job setting.
+    await expect(create({ JUPITER_SWAP_API: 'metis' })).rejects.toThrow(
+      /JUPITER_SWAP_API must be v2 or v1/,
+    );
+  });
+
   it('refuses a live conversion on mainnet-beta without the Jupiter API key', async () => {
     const onMainnet = { connection: mockConnection(CLUSTER_GENESIS_HASH['mainnet-beta']) };
     await expect(
@@ -638,7 +683,7 @@ describe('buyback module', () => {
     const captured: Array<BuybackDepsLike<Cfg>> = [];
     const budgets: Array<{ journalDir: string; since: string | null; vault: string }> = [];
     const configOptions: unknown[] = [];
-    const jupiterOptions: unknown[] = [];
+    const jupiterOptions: Array<{ [key: string]: unknown }> = [];
     const lib: BuybackLibrary<Cfg> = {
       buybackConfigFromEnv: (_env, addresses, options) => {
         expect(addresses.forgeMint).toBeNull();
@@ -651,12 +696,20 @@ describe('buyback module', () => {
             revenueSince: '2026-11-01T00:00:00Z',
           },
           tickMs: 45_000,
-          jupiter: { baseUrl: 'https://jup.test', minRequestIntervalMs: 1_100, timeoutMs: 15_000 },
+          jupiter: {
+            swapApi: 'v2',
+            baseUrl: 'https://jup.test',
+            minRequestIntervalMs: 1_100,
+            timeoutMs: 15_000,
+          },
         };
       },
       createBuybackJournal: (journalDir) => ({ journalDir }),
-      createJupiterBuybackClient: (opts) => {
-        jupiterOptions.push(opts);
+      createJupiterBuybackClient: () => {
+        throw new Error('Swap API V2 is the default');
+      },
+      createJupiterV2BuybackClient: (opts) => {
+        jupiterOptions.push({ ...opts });
         return { quotes: opts.baseUrl };
       },
       createRpcBuybackSwapPreparer: () => ({ preparer: true }),
@@ -685,11 +738,14 @@ describe('buyback module', () => {
     expect((configOptions[0] as { priorityFees: unknown }).priorityFees).toBe(
       runtime.context.priorityFees,
     );
-    // The Jupiter orders keep their own cap (priorityLevelWithMaxLamports), not the signer's.
+    // Swap API V2: the bot assembles its buys over the signer's RPC, priced with the signer's
+    // priority fees capped at BUYBACK_MAX_PRIORITY_FEE_LAMPORTS.
     expect(jupiterOptions).toEqual([
       expect.objectContaining({ maxPriorityFeeLamports: 100_000n, baseUrl: 'https://jup.test' }),
     ]);
-    expect(jupiterOptions[0]).not.toHaveProperty('priorityFees');
+    expect(jupiterOptions[0]!.priorityFees).toBe(runtime.context.priorityFees);
+    expect(jupiterOptions[0]!.connection).toBe(runtime.context.connection);
+    expect(captured[0]!.quotes).toEqual({ quotes: 'https://jup.test' });
     const deps = captured[0]!;
     // The return of the bought $FORGE is priced with the signer's priority fees.
     expect(deps.priorityFees).toBe(runtime.context.priorityFees);
@@ -709,6 +765,64 @@ describe('buyback module', () => {
     ]);
     expect(await runtime.scheduler.runNow('buyback')).toEqual({ status: 'paused' });
     expect(runtime.scheduler.states().buyback).toMatchObject({ lastStatus: 'paused', runs: 1 });
+  });
+
+  it('wires the Metis client with its own cap when JUPITER_SWAP_API is v1 (rollback)', async () => {
+    type Cfg = {
+      maxPriorityFeeLamports: bigint;
+      route: 'jupiter';
+      devnetPool: null;
+      revenueSince: string | null;
+    };
+    const captured: Array<BuybackDepsLike<Cfg>> = [];
+    const jupiterOptions: Array<{ [key: string]: unknown }> = [];
+    const lib: BuybackLibrary<Cfg> = {
+      buybackConfigFromEnv: () => ({
+        config: {
+          maxPriorityFeeLamports: 100_000n,
+          route: 'jupiter',
+          devnetPool: null,
+          revenueSince: null,
+        },
+        tickMs: 60_000,
+        jupiter: {
+          swapApi: 'v1',
+          baseUrl: 'https://jup.test/swap/v1',
+          minRequestIntervalMs: 1_100,
+          timeoutMs: 15_000,
+        },
+      }),
+      createBuybackJournal: (journalDir) => ({ journalDir }),
+      createJupiterBuybackClient: (opts) => {
+        jupiterOptions.push({ ...opts });
+        return { metis: opts.baseUrl };
+      },
+      createJupiterV2BuybackClient: () => {
+        throw new Error('v1 asked');
+      },
+      createRpcBuybackSwapPreparer: () => ({ preparer: true }),
+      createRpcForgeTokenReader: () => ({ tokens: true }),
+      createFileBuybackBudgetSource: () => ({ budget: true }),
+      createBuybackJob: (deps) => {
+        captured.push(deps);
+        return { mode: 'simulation', runOnce: async () => ({ status: 'paused' }) };
+      },
+      squadsConfigFromEnv: () => null,
+      createSquadsJournal: (journalDir) => ({ journalDir }),
+      createSquadsSpendingLimitWithdrawer: () => ({ withdrawer: true }),
+      createDbcDevnetBuybackRoute: () => ({ quotes: null, swapPreparer: null }),
+    };
+    const runtime = await create({}, { extraJobs: [buybackJobModule(lib)] });
+    expect(runtime.scheduler.names()).toContain('buyback');
+    // The Metis orders keep Jupiter's priorityLevelWithMaxLamports with their own cap.
+    expect(jupiterOptions).toEqual([
+      expect.objectContaining({
+        maxPriorityFeeLamports: 100_000n,
+        baseUrl: 'https://jup.test/swap/v1',
+      }),
+    ]);
+    expect(jupiterOptions[0]).not.toHaveProperty('priorityFees');
+    expect(captured[0]!.quotes).toEqual({ metis: 'https://jup.test/swap/v1' });
   });
 
   it('hands the signer priority fees to the withdrawer and the devnet DBC route', async () => {
@@ -736,10 +850,18 @@ describe('buyback module', () => {
           revenueSince: null,
         },
         tickMs: 60_000,
-        jupiter: { baseUrl: 'https://jup.test', minRequestIntervalMs: 1_100, timeoutMs: 15_000 },
+        jupiter: {
+          swapApi: 'v2',
+          baseUrl: 'https://jup.test',
+          minRequestIntervalMs: 1_100,
+          timeoutMs: 15_000,
+        },
       }),
       createBuybackJournal: (journalDir) => ({ journalDir }),
       createJupiterBuybackClient: () => {
+        throw new Error('the devnet route does not use Jupiter');
+      },
+      createJupiterV2BuybackClient: () => {
         throw new Error('the devnet route does not use Jupiter');
       },
       createRpcBuybackSwapPreparer: () => {
