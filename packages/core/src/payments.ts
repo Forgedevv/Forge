@@ -5,6 +5,9 @@
  *   1. a System Program transfer of `lamports` from the payer to `FORGE_CASHBOX_WALLET`;
  *   2. an SPL Memo (v2) instruction, signed by the payer, whose UTF-8 data is
  *      `forge:job:<jobId>` (`jobId` = the job UUID, lowercase). See `paymentMemo`.
+ * With a `priority` option, two compute budget instructions come first (`setComputeUnitLimit`
+ * of `PAYMENT_COMPUTE_UNITS`, then `setComputeUnitPrice`, priced from the recent fees of the
+ * payer and the cashbox and bounded: priority-fee.ts), so a payment still lands under congestion.
  *
  * `verifyPayment` checks a transaction on-chain and returns a typed result; it never throws on a
  * transaction that is "not there yet" (it returns `pending`). It throws only on configuration
@@ -29,6 +32,12 @@ import {
 import { Base58Signature, Uuid } from '@forge/shared';
 import { requireAddresses, type AddressEnv } from './addresses.js';
 import { LAMPORTS_PER_SOL_BIGINT } from './constants.js';
+import {
+  estimatePriorityFee,
+  priorityFeeInstructions,
+  type PriorityFeeQuote,
+  type PriorityFeeSetting,
+} from './priority-fee.js';
 import { retryRpc, type RetryOptions } from './reads.js';
 import { encodeBase58 } from './tx.js';
 
@@ -45,6 +54,12 @@ export const PAYMENT_MEMO_PREFIX = 'forge:job:';
  * against a unit mistake upstream.
  */
 export const MAX_PAYMENT_LAMPORTS = 100n * LAMPORTS_PER_SOL_BIGINT;
+
+/**
+ * Compute unit limit of a payment with a priority fee: a System transfer (150 CU) and a memo of
+ * about 46 bytes signed by the payer (a few thousand CU), with a wide margin.
+ */
+export const PAYMENT_COMPUTE_UNITS = 50_000;
 
 /** Genesis hashes of the Solana clusters FORGE uses (public network constants). */
 export const CLUSTER_GENESIS_HASH = {
@@ -133,6 +148,12 @@ export interface PaymentTxOptions {
   env?: AddressEnv;
   commitment?: Commitment;
   retry?: RetryOptions;
+  /**
+   * Priority fee read from the cluster for the payer and the cashbox, bounded by this setting
+   * (`{}` = `DEFAULT_PRIORITY_FEE_POLICY`, at most 0.0005 SOL). Without it the transaction holds
+   * the transfer and the memo only.
+   */
+  priority?: PriorityFeeSetting;
 }
 
 export interface PaymentTxResult {
@@ -142,6 +163,8 @@ export interface PaymentTxResult {
   recipient: PublicKey;
   lamports: bigint;
   memo: string;
+  /** The priority fee (price, fee, cap), or null without a `priority` option. */
+  priorityFee: PriorityFeeQuote | null;
 }
 
 /**
@@ -157,9 +180,17 @@ export async function buildPaymentTx(
   const cashbox = resolveCashbox(options.env);
   const instructions = buildPaymentInstructions({ ...params, cashbox });
   const commitment = options.commitment ?? 'confirmed';
-  const [rentExempt, cashboxBalance] = await Promise.all([
+  const [rentExempt, cashboxBalance, priorityFee] = await Promise.all([
     retryRpc(() => connection.getMinimumBalanceForRentExemption(0, commitment), options.retry),
     retryRpc(() => connection.getBalance(cashbox, commitment), options.retry),
+    options.priority === undefined
+      ? Promise.resolve(null)
+      : estimatePriorityFee({
+          connection,
+          writableAccounts: [params.payer, cashbox],
+          computeUnitLimit: PAYMENT_COMPUTE_UNITS,
+          setting: options.priority,
+        }),
   ]);
   if (BigInt(cashboxBalance) + params.lamports < BigInt(rentExempt)) {
     throw new PaymentError(
@@ -175,13 +206,14 @@ export async function buildPaymentTx(
     feePayer: params.payer,
     blockhash,
     lastValidBlockHeight,
-  }).add(...instructions);
+  }).add(...(priorityFee ? priorityFeeInstructions(priorityFee) : []), ...instructions);
   return {
     transaction,
     lastValidBlockHeight,
     recipient: cashbox,
     lamports: params.lamports,
     memo: paymentMemo(params.jobId),
+    priorityFee,
   };
 }
 

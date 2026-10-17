@@ -19,6 +19,7 @@ import {
   MAX_PAYMENT_LAMPORTS,
   MEMO_PROGRAM_ID,
   MEMO_V1_PROGRAM_ID,
+  PAYMENT_COMPUTE_UNITS,
   PaymentError,
   buildPaymentInstructions,
   buildPaymentTx,
@@ -229,6 +230,74 @@ describe('buildPaymentTx', () => {
         { env: {}, retry: noRetry },
       ),
     ).rejects.toThrow(ForgeAddressError);
+  });
+
+  it('reads no priority fee and adds no compute budget without the option', async () => {
+    const connection = buildConnection(5_000_000) as unknown as Record<string, unknown>;
+    connection.getRecentPrioritizationFees = vi.fn(async () => []);
+    const result = await buildPaymentTx(
+      connection as unknown as Connection,
+      { payer: payer.publicKey, lamports: LAMPORTS, jobId: JOB_ID },
+      { env, retry: noRetry },
+    );
+    expect(result.priorityFee).toBeNull();
+    expect(connection.getRecentPrioritizationFees).not.toHaveBeenCalled();
+  });
+
+  it('puts a bounded priority fee first and still verifies once landed', async () => {
+    const connection = buildConnection(5_000_000) as unknown as Record<string, unknown>;
+    const fees = vi.fn(async (_config?: { lockedWritableAccounts?: PublicKey[] }) =>
+      [0, 30_000, 2_000_000, 9_000_000].map((prioritizationFee, slot) => ({
+        slot,
+        prioritizationFee,
+      })),
+    );
+    connection.getRecentPrioritizationFees = fees;
+    const result = await buildPaymentTx(
+      connection as unknown as Connection,
+      { payer: payer.publicKey, lamports: LAMPORTS, jobId: JOB_ID },
+      { env, retry: noRetry, priority: {} },
+    );
+    const accounts = fees.mock.calls[0]![0]!.lockedWritableAccounts!;
+    expect(accounts.map((k) => k.toBase58())).toEqual([
+      payer.publicKey.toBase58(),
+      cashbox.toBase58(),
+    ]);
+    // The 75th percentile (2,000,000) is above the default cap of 1,000,000 per CU.
+    expect(result.priorityFee).toEqual({
+      computeUnitLimit: PAYMENT_COMPUTE_UNITS,
+      microLamports: 1_000_000,
+      priorityFeeLamports: 50_000n,
+      maxLamports: 500_000n,
+      source: 'recent_fees',
+    });
+    const [limit, price, transfer, memo, ...rest] = result.transaction.instructions;
+    expect(rest).toHaveLength(0);
+    expect(limit!.programId.equals(ComputeBudgetProgram.programId)).toBe(true);
+    expect(limit!.data.readUInt32LE(1)).toBe(PAYMENT_COMPUTE_UNITS);
+    expect(price!.programId.equals(ComputeBudgetProgram.programId)).toBe(true);
+    expect(price!.data.readBigUInt64LE(1)).toBe(1_000_000n);
+    expect(transfer!.programId.equals(SystemProgram.programId)).toBe(true);
+    expect(memo!.programId.equals(MEMO_PROGRAM_ID)).toBe(true);
+
+    const tx = result.transaction;
+    tx.sign(payer);
+    const response = txResponse(tx.instructions);
+    expect(checkPaymentTransaction(response, SIGNATURE, check()).status).toBe('confirmed');
+  });
+
+  it('still builds the payment at the floor when the fees cannot be read', async () => {
+    const connection = buildConnection(5_000_000) as unknown as Record<string, unknown>;
+    connection.getRecentPrioritizationFees = vi.fn(async () => {
+      throw new Error('method not allowed');
+    });
+    const result = await buildPaymentTx(
+      connection as unknown as Connection,
+      { payer: payer.publicKey, lamports: LAMPORTS, jobId: JOB_ID },
+      { env, retry: noRetry, priority: { floorMicroLamports: 5_000 } },
+    );
+    expect(result.priorityFee).toMatchObject({ microLamports: 5_000, source: 'rpc_unavailable' });
+    expect(result.transaction.instructions).toHaveLength(4);
   });
 });
 
