@@ -29,7 +29,7 @@
  *   repository (a tracked `.npmrc` is always left out).
  *
  * Usage:
- *   node scripts/prepare-template-repo.mjs --out <dir> --pin @forge/core=0.2.0 --pin @forge/shared=0.2.0
+ *   node scripts/prepare-template-repo.mjs --out <dir> --pin @forge/core=0.3.0 --pin @forge/shared=0.3.0
  *     [--typescript 6.0.3] [--dry-run]
  */
 import { execFileSync } from 'node:child_process';

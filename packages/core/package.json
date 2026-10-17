@@ -1,6 +1,6 @@
 {
   "name": "@forge/core",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "FORGE transaction core: Meteora Dynamic Bonding Curve configs, pools, swaps, claims and on-chain checks. Published on npm as @forgedevv/core.",
   "license": "UNLICENSED",

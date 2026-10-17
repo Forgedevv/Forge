@@ -3,7 +3,7 @@
 All notable changes to `@forge/core`. Versions follow semantic versioning. Consumers (the
 launchpad template, the signer, the web app) pin an exact version, never a range.
 
-## 0.3.0 — unreleased
+## 0.3.0 — 2026-10-17
 
 Changes after 0.2.0. Publish `@forgedevv/shared` 0.3.0 with it (new kill switch `revenue_paused` in `FlagKey`).
 
@@ -143,9 +143,9 @@ revenue wallet nor the new accounts do.
   whole coin in whole quote tokens from the pool's Q64.64 `sqrtPrice` (same value as the SDK's
   `getPriceFromSqrtPrice`, as a float).
 
-## 0.2.0 — unreleased
+## 0.2.0 — 2026-10-17
 
-Everything below was added after 0.1.0 was published. Publish `@forgedevv/shared` 0.2.0 with it.
+Everything below was added after 0.1.0 and published on npm on 2026-10-17 with `@forgedevv/shared` 0.2.0.
 
 ### Changed (security review)
 
