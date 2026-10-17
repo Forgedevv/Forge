@@ -912,8 +912,7 @@
   min-height: clamp(220px, 32vw, 360px);
   align-content: center;
   background:
-    radial-gradient(ellipse at 85% 0%, var(--fw-glow), transparent 55%),
-    var(--fw-surface);
+    radial-gradient(ellipse at 85% 0%, var(--fw-glow), transparent 55%), var(--fw-surface);
 }
 .fw-preview-body > p:first-child {
   margin: 0;

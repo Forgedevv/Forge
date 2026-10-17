@@ -76,7 +76,9 @@ export function ChangeUnavailable({
       </Heading>
       <Card>
         <h2>{launchpad.name}</h2>
-        {next.kind === 'on_hold' && <StartAgainHold reason={next.reason} reference={launchpad.id} />}
+        {next.kind === 'on_hold' && (
+          <StartAgainHold reason={next.reason} reference={launchpad.id} />
+        )}
         {next.kind === 'start_again' && signupsPaused && (
           <p className="fw-notice" role="status">
             {common.paused}
@@ -132,7 +134,10 @@ export function ChatScreen({
     [busy, setBusy] = useState(initialBusy);
   const lock = useRef(false);
   // Follows the conversation inside its own box, spaced out while a reply streams in.
-  const log = useStickToBottom<HTMLDivElement>(chat.messages, chat.streaming ? STREAM_SCROLL_MS : 0);
+  const log = useStickToBottom<HTMLDivElement>(
+    chat.messages,
+    chat.streaming ? STREAM_SCROLL_MS : 0,
+  );
   const lastAssistant = chat.messages.map((m) => m.role).lastIndexOf('assistant');
   const blocked = launchpadId ? changeBlocked(launchpad) : null;
   // Offered only when the server can accept it: a complete blueprint, a conversation, and for a

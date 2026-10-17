@@ -37,11 +37,7 @@ describe('build preview', () => {
     fireEvent.click(screen.getByRole('button', { name: new RegExp(copy.mobile) }));
     expect(open).toHaveBeenCalledWith(URL, 'forge-preview-mobile', previewFeatures('mobile'));
     fireEvent.click(screen.getByRole('button', { name: new RegExp(copy.desktop) }));
-    expect(open).toHaveBeenLastCalledWith(
-      URL,
-      'forge-preview-desktop',
-      previewFeatures('desktop'),
-    );
+    expect(open).toHaveBeenLastCalledWith(URL, 'forge-preview-desktop', previewFeatures('desktop'));
     expect(previewFeatures('mobile')).toBe('popup=yes,width=390,height=844,noopener,noreferrer');
   });
 

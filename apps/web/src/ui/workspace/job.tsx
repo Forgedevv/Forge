@@ -108,11 +108,7 @@ export function JobScreen({
             <>
               <h2>{copy.preview}</h2>
               <p>{copy.previewBody}</p>
-              {preview ? (
-                <PreviewCard url={preview} />
-              ) : (
-                <p>{common.pending}</p>
-              )}
+              {preview ? <PreviewCard url={preview} /> : <p>{common.pending}</p>}
               <div className="fw-actions">
                 <Button disabled={!preview || busy} onClick={approve}>
                   {busy ? copy.approving : copy.approve} ↗

@@ -104,7 +104,13 @@ export function SupportLinks({
 }
 
 /** A copyable reference: shortened on screen, complete in the copy and on failure. */
-export function SupportReference({ value, label = copy.reference }: { value: string; label?: string }) {
+export function SupportReference({
+  value,
+  label = copy.reference,
+}: {
+  value: string;
+  label?: string;
+}) {
   const { toast } = useWorkspace();
   const [failed, setFailed] = useState(false);
   return (

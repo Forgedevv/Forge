@@ -142,7 +142,9 @@ describe('support where clients need it', () => {
     expect(screen.getByText('How do I get an invite?')).toBeInTheDocument();
     const support = document.getElementById('support')!;
     expect(support).toHaveTextContent('How do I contact the FORGE team?');
-    expect(within(support).getByRole('link', { name: new RegExp(copy.telegram) })).toBeInTheDocument();
+    expect(
+      within(support).getByRole('link', { name: new RegExp(copy.telegram) }),
+    ).toBeInTheDocument();
   });
 
   it('opens the question a link points to', () => {
