@@ -946,6 +946,23 @@ describe('assertJupiterReferralClaimTx', () => {
     ).not.toThrow();
   });
 
+  it('bounds the priority fee by the cap the claim was priced with', () => {
+    // `full`: 200,000 CU at 1,000 micro-lamports = 200 lamports.
+    const e = expectation();
+    expect(() =>
+      assertJupiterReferralClaimTx(full(e), { ...e, maxPriorityFeeLamports: 200n }),
+    ).not.toThrow();
+    expect(refused(full(e), { ...e, maxPriorityFeeLamports: 199n })).toMatch(
+      /priority fee too high/,
+    );
+    // Priority fees off: an unpriced claim passes, a priced one does not.
+    const unpriced = tx(e, [partnerAtaIx(e), adminCreateIx(e), claimIx(e, 'v1'), claimIx(e, 'v2')]);
+    expect(() =>
+      assertJupiterReferralClaimTx(unpriced, { ...e, maxPriorityFeeLamports: 0n }),
+    ).not.toThrow();
+    expect(refused(full(e), { ...e, maxPriorityFeeLamports: 0n })).toMatch(/priority fee too high/);
+  });
+
   it('accepts exactly what core builds end to end', async () => {
     const t = setup({ v1Amount: 5_000_000n, v2Amount: 1n });
     const built = await buildJupiterReferralClaimTx({

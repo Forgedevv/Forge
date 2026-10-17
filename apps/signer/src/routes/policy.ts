@@ -21,8 +21,10 @@
  *   nonce account by the creator wallet (read-only): the creator signature can do nothing else.
  * Compute budget, in every one of them: a unit limit and a unit price at most, each once and
  * bounded (`MAX_COMPUTE_UNIT_LIMIT`, `MAX_COMPUTE_UNIT_PRICE`), and a priority fee of at most
- * `MAX_SIGNER_PRIORITY_FEE_LAMPORTS` (jobs/shared.ts `assertComputeBudgetSet`); nothing else of
- * the Compute Budget program (no heap frame, no loaded data size).
+ * the expectation's `maxPriorityFeeLamports` (the cap of the setting the transaction was priced
+ * with, `PriorityFees.maxFeeLamports`), never above `MAX_SIGNER_PRIORITY_FEE_LAMPORTS`
+ * (jobs/shared.ts `assertComputeBudgetSet`); nothing else of the Compute Budget program (no heap
+ * frame, no loaded data size).
  * Account indexes follow the pinned DBC SDK IDL (1.5.13).
  */
 import { createHash } from 'node:crypto';
@@ -127,7 +129,16 @@ function systemType(ix: TransactionInstruction): string {
 // ---------------------------------------------------------------------------------------
 // Config creation
 
-export interface CreateConfigExpectation {
+/**
+ * Highest priority fee a route transaction may carry, lamports: the cap of the setting it was
+ * priced with (`PriorityFees.maxFeeLamports` of its compute unit limit). Default and ceiling:
+ * MAX_SIGNER_PRIORITY_FEE_LAMPORTS.
+ */
+interface PriorityFeeCap {
+  maxPriorityFeeLamports?: bigint;
+}
+
+export interface CreateConfigExpectation extends PriorityFeeCap {
   dbcProgramId: PublicKey;
   payer: PublicKey;
   config: PublicKey;
@@ -161,13 +172,13 @@ export function assertCreateConfigTx(tx: Transaction, expected: CreateConfigExpe
     }
   }
   if (creates !== 1) policy('exactly one create_config expected');
-  assertComputeBudgetSet(tx.instructions);
+  assertComputeBudgetSet(tx.instructions, expected.maxPriorityFeeLamports);
 }
 
 // ---------------------------------------------------------------------------------------
 // Nonce account creation
 
-export interface CreateNonceExpectation {
+export interface CreateNonceExpectation extends PriorityFeeCap {
   payer: PublicKey;
   nonceAccount: PublicKey;
   authority: PublicKey;
@@ -204,13 +215,13 @@ export function assertCreateNonceTx(tx: Transaction, expected: CreateNonceExpect
     }
   }
   if (steps.join(',') !== 'create,initialize') policy('expected create then initialize');
-  assertComputeBudgetSet(tx.instructions);
+  assertComputeBudgetSet(tx.instructions, expected.maxPriorityFeeLamports);
 }
 
 // ---------------------------------------------------------------------------------------
 // Launch transaction (pool creation + the client's first buy)
 
-export interface LaunchExpectation {
+export interface LaunchExpectation extends PriorityFeeCap {
   dbcProgramId: PublicKey;
   owner: PublicKey;
   creator: PublicKey;
@@ -308,13 +319,13 @@ export function assertLaunchCoinTx(tx: Transaction, expected: LaunchExpectation)
   });
   if (inits !== 1) policy('exactly one pool initialization expected');
   if (swaps !== (expected.firstBuy ? 1 : 0)) policy('unexpected number of first buy swaps');
-  assertComputeBudgetSet(tx.instructions);
+  assertComputeBudgetSet(tx.instructions, expected.maxPriorityFeeLamports);
 }
 
 // ---------------------------------------------------------------------------------------
 // Launch revocation (advance the launchpad's nonce: a handed-out launch can no longer land)
 
-export interface RevokeNonceExpectation {
+export interface RevokeNonceExpectation extends PriorityFeeCap {
   payer: PublicKey;
   nonceAccount: PublicKey;
   /** Nonce authority = the launchpad's creator wallet. */
@@ -343,5 +354,5 @@ export function assertRevokeNonceTx(tx: Transaction, expected: RevokeNonceExpect
     advances++;
   }
   if (advances !== 1) policy('exactly one nonce advance expected');
-  assertComputeBudgetSet(tx.instructions);
+  assertComputeBudgetSet(tx.instructions, expected.maxPriorityFeeLamports);
 }

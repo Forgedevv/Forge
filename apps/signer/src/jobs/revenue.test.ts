@@ -532,12 +532,21 @@ describe('buildRevenueUnwrapTx', () => {
     expect(() => assertRevenueUnwrapTx(tx, e)).not.toThrow();
   });
 
-  it('adds a bounded compute budget only with a priority fee, accepted by the policy', async () => {
+  it('adds a bounded compute budget only with a priority fee, accepted by the policy within its cap', async () => {
     const { tx, e } = await build(1, 1_000);
     expect(tx.instructions).toHaveLength(7);
     expect(tx.instructions[0]!.programId.equals(ComputeBudgetProgram.programId)).toBe(true);
     expect(tx.instructions[1]!.programId.equals(ComputeBudgetProgram.programId)).toBe(true);
     expect(() => assertRevenueUnwrapTx(tx, e)).not.toThrow();
+    // One source: 46,000 CU at 1,000 micro-lamports = 46 lamports.
+    expect(() => assertRevenueUnwrapTx(tx, { ...e, maxPriorityFeeLamports: 46n })).not.toThrow();
+    expect(() => assertRevenueUnwrapTx(tx, { ...e, maxPriorityFeeLamports: 45n })).toThrow(
+      /priority fee too high/,
+    );
+    const unpriced = await build(1);
+    expect(() =>
+      assertRevenueUnwrapTx(unpriced.tx, { ...unpriced.e, maxPriorityFeeLamports: 0n }),
+    ).not.toThrow();
   });
 
   it('refuses a bad seed, no source, too many sources or a zero amount', async () => {
@@ -1529,7 +1538,10 @@ describe('revenue job', () => {
           convert: async () => {
             swapSignature = await fixtureShapedSwap(t, t.usdcAccount);
             return conversionSummary([
-              { ...usdcConversion(swapSignature), outcome: { status: 'unknown', signature: swapSignature } },
+              {
+                ...usdcConversion(swapSignature),
+                outcome: { status: 'unknown', signature: swapSignature },
+              },
             ]);
           },
         })

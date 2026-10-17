@@ -1116,7 +1116,13 @@ export function createRefundsJob(deps: RefundsDeps): RefundsJob {
     );
     tx.recentBlockhash = blockhash;
     tx.feePayer = config.cashbox;
-    assertSolTransferTx(tx, { from: config.cashbox, to: payer, lamports: amount, memo });
+    assertSolTransferTx(tx, {
+      from: config.cashbox,
+      to: payer,
+      lamports: amount,
+      memo,
+      maxPriorityFeeLamports: priorityFees.maxFeeLamports(SOL_TRANSFER_COMPUTE_UNITS),
+    });
     const { raw, signature } = await signWithKeystore(keystore, tx, [
       { ref: cashboxRef, expected: config.cashbox },
     ]);

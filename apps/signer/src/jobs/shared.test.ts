@@ -442,11 +442,26 @@ describe('transaction policy', () => {
     ).toThrow(JobError);
   });
 
-  it('accepts a bounded compute budget', () => {
+  it('accepts a bounded compute budget, within the cap it was priced with', () => {
+    // 200,000 CU at 1,000 micro-lamports: a priority fee of 200 lamports.
     const tx = transfer()
       .add(ComputeBudgetProgram.setComputeUnitLimit({ units: 200_000 }))
       .add(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 1_000n }));
-    expect(() => assertSolTransferTx(tx, { from, to, lamports: 1_000n, memo: 'm' })).not.toThrow();
+    const expected = { from, to, lamports: 1_000n, memo: 'm' };
+    expect(() => assertSolTransferTx(tx, expected)).not.toThrow();
+    expect(() =>
+      assertSolTransferTx(tx, { ...expected, maxPriorityFeeLamports: 200n }),
+    ).not.toThrow();
+    expect(() => assertSolTransferTx(tx, { ...expected, maxPriorityFeeLamports: 199n })).toThrow(
+      /priority fee too high/,
+    );
+    // Priority fees off: no price at all is accepted, any price is refused.
+    expect(() => assertSolTransferTx(tx, { ...expected, maxPriorityFeeLamports: 0n })).toThrow(
+      /priority fee too high/,
+    );
+    expect(() =>
+      assertSolTransferTx(transfer(), { ...expected, maxPriorityFeeLamports: 0n }),
+    ).not.toThrow();
     expect(MEMO_PROGRAM_ID.toBase58()).toBe('MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr');
   });
 
@@ -478,6 +493,16 @@ describe('transaction policy', () => {
     expect(() => assertCreatorClaimTx(tx, { ...expected, feePayer: creator })).toThrow(JobError);
     expect(() => assertCreatorClaimTx(tx, { ...expected, dbcProgramId: randomAddress() })).toThrow(
       JobError,
+    );
+    // Priced: 200,000 CU at 1,000 micro-lamports = 200 lamports, within the cap it was priced
+    // with and not above.
+    tx.add(ComputeBudgetProgram.setComputeUnitLimit({ units: 200_000 }));
+    tx.add(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 1_000n }));
+    expect(() =>
+      assertCreatorClaimTx(tx, { ...expected, maxPriorityFeeLamports: 200n }),
+    ).not.toThrow();
+    expect(() => assertCreatorClaimTx(tx, { ...expected, maxPriorityFeeLamports: 199n })).toThrow(
+      /priority fee too high/,
     );
   });
 });

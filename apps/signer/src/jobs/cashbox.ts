@@ -461,6 +461,7 @@ export function createCashboxJob(deps: CashboxDeps): CashboxJob {
       to: config.vault,
       lamports: plan.amount,
       memo: SWEEP_MEMO,
+      maxPriorityFeeLamports: priorityFees.maxFeeLamports(SOL_TRANSFER_COMPUTE_UNITS),
     });
     // The kill switch may have been turned on since the run started: re-read it before signing.
     const pausedBeforeSigning = await pausedReport();

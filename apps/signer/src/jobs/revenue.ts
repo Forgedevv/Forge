@@ -499,6 +499,12 @@ export interface RevenueUnwrapExpectation {
   rentLamports: bigint;
   sources: readonly UnwrapSource[];
   memo: string;
+  /**
+   * Highest priority fee the unwrap may carry, lamports: the cap of the setting it was priced
+   * with (`PriorityFees.maxFeeLamports(unwrapComputeUnits(sources.length))`). Default and
+   * ceiling: MAX_SIGNER_PRIORITY_FEE_LAMPORTS.
+   */
+  maxPriorityFeeLamports?: bigint;
 }
 
 function policy(rule: string): never {
@@ -603,7 +609,7 @@ export function assertRevenueUnwrapTx(tx: Transaction, e: RevenueUnwrapExpectati
   }
   if (stage !== 'done') policy('unwrap transaction incomplete');
   if (transferred.size !== e.sources.length) policy('expected source not transferred');
-  assertComputeBudgetSet(tx.instructions);
+  assertComputeBudgetSet(tx.instructions, e.maxPriorityFeeLamports);
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1305,6 +1311,7 @@ export function createRevenueJob(deps: RevenueDeps): RevenueJob {
           rentLamports: tokenRent,
           sources,
           memo: UNWRAP_MEMO,
+          maxPriorityFeeLamports: maxPriorityFee(unwrapComputeUnits(sources.length)),
         };
         const tx = buildRevenueUnwrapTx({
           ...expectation,
@@ -1370,7 +1377,9 @@ export function createRevenueJob(deps: RevenueDeps): RevenueJob {
           } => i.outcome.status === 'confirmed',
         );
         const sent = summary.items.filter(
-          (i): i is typeof i & { outcome: { status: 'confirmed' | 'unknown'; signature: string } } =>
+          (
+            i,
+          ): i is typeof i & { outcome: { status: 'confirmed' | 'unknown'; signature: string } } =>
             i.outcome.status === 'confirmed' || i.outcome.status === 'unknown',
         );
         if (sent.length === 0) {
@@ -1388,7 +1397,9 @@ export function createRevenueJob(deps: RevenueDeps): RevenueJob {
           );
           // A WSOL account a swap closed returned its rent (not revenue, booked as `other`) and
           // the wrapped SOL it still held after the unwrap (revenue of its source).
-          const closed = wsolHeld.filter((t) => !remaining.some((r) => r.address.equals(t.address)));
+          const closed = wsolHeld.filter(
+            (t) => !remaining.some((r) => r.address.equals(t.address)),
+          );
           const closedRent = closed.reduce(
             (sum, t) => sum + (t.lamports > t.amount ? t.lamports - t.amount : 0n),
             0n,
@@ -1421,7 +1432,9 @@ export function createRevenueJob(deps: RevenueDeps): RevenueJob {
                 confirmed.forEach((item, i) => {
                   const mint = new PublicKey(item.mint);
                   pending[
-                    config.jupiterClaimMints.some((m) => m.equals(mint)) ? 'jupiter_referral' : 'other'
+                    config.jupiterClaimMints.some((m) => m.equals(mint))
+                      ? 'jupiter_referral'
+                      : 'other'
                   ] += shares[i]!;
                 });
               } else {
@@ -1451,7 +1464,11 @@ export function createRevenueJob(deps: RevenueDeps): RevenueJob {
             // No gain: the swaps' fees at most (alerted beyond the tolerance), or nothing landed.
             let related = state.relatedSignatures;
             for (const item of sent) related = remember(related, item.outcome.signature);
-            state = await reconcile({ ...state, relatedSignatures: related }, after, 'after_conversions');
+            state = await reconcile(
+              { ...state, relatedSignatures: related },
+              after,
+              'after_conversions',
+            );
           }
           balance = after;
         }
@@ -1530,6 +1547,7 @@ export function createRevenueJob(deps: RevenueDeps): RevenueJob {
       to: config.vault,
       lamports: plan.amount,
       memo: FORWARD_MEMO,
+      maxPriorityFeeLamports: maxPriorityFee(FORWARD_COMPUTE_UNITS),
     });
     const pausedBeforeSigning = await pausedReport();
     if (pausedBeforeSigning) return pausedBeforeSigning;

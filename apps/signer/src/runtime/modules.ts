@@ -180,6 +180,7 @@ export const claimsModule: SignerJobModule = {
     const job = createClaimsJob({
       store: createPostgrestClaimsStore(ctx.db),
       core: ctx.core,
+      priorityFees: ctx.priorityFees,
       rpc: ctx.rpc,
       keystore: ctx.keystore,
       journal: createFileJournal({

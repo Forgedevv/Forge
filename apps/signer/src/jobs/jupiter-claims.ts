@@ -264,6 +264,12 @@ export interface JupiterClaimExpectation {
   tokenProgram: PublicKey;
   /** The collection accounts the transaction must claim (one per version, each at most once). */
   claims: readonly JupiterReferralClaimVersion[];
+  /**
+   * Highest priority fee the claim may carry, lamports: the cap of the setting core priced it
+   * with (`PriorityFees.maxFeeLamports(JUPITER_REFERRAL_CLAIM_COMPUTE_UNITS)`). Default and
+   * ceiling: MAX_SIGNER_PRIORITY_FEE_LAMPORTS.
+   */
+  maxPriorityFeeLamports?: bigint;
 }
 
 function policy(rule: string): never {
@@ -397,7 +403,7 @@ export function assertJupiterReferralClaimTx(
   for (const version of expected.claims) {
     if (!seen.has(version)) policy(`${version} claim missing`);
   }
-  assertComputeBudgetSet(tx.instructions);
+  assertComputeBudgetSet(tx.instructions, expected.maxPriorityFeeLamports);
 }
 
 // ---------------------------------------------------------------------------------------
@@ -720,6 +726,9 @@ export function createJupiterClaimsJob(deps: JupiterClaimsDeps): JupiterClaimsJo
           mint: target.mint,
           tokenProgram: summary.tokenProgram,
           claims: summary.claims.map((c) => c.version),
+          maxPriorityFeeLamports: deps.priorityFees?.maxFeeLamports(
+            JUPITER_REFERRAL_CLAIM_COMPUTE_UNITS,
+          ),
         });
         // The kill switch may have been turned on since the run started: re-read it before signing.
         const pausedBeforeSigning = await pausedReport();
