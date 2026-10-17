@@ -1,6 +1,6 @@
 'use client';
 import Link from 'next/link';
-import { useEffect, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import type { LaunchpadSpec, LaunchpadSummary } from '@forge/shared';
 import { useWebClient } from './provider';
@@ -19,6 +19,10 @@ import { StartAgainButton, StartAgainHold, draftNext, useStartAgain } from './st
 import { chatCopy as copy } from './content/chat';
 import { common } from './content/common';
 import { Muse } from '../muse';
+import { useStickToBottom } from './scroll';
+
+/** Least time between two scrolls of the conversation while a reply streams in. */
+export const STREAM_SCROLL_MS = 120;
 
 export function NewScreen({ launchpadId }: { launchpadId?: string }) {
   const api = useWebClient();
@@ -127,10 +131,8 @@ export function ChatScreen({
     [error, setError] = useState(initialError),
     [busy, setBusy] = useState(initialBusy);
   const lock = useRef(false);
-  const end = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    end.current?.scrollIntoView?.({ block: 'nearest', behavior: 'instant' });
-  }, [chat.messages]);
+  // Follows the conversation inside its own box, spaced out while a reply streams in.
+  const log = useStickToBottom<HTMLDivElement>(chat.messages, chat.streaming ? STREAM_SCROLL_MS : 0);
   const lastAssistant = chat.messages.map((m) => m.role).lastIndexOf('assistant');
   const blocked = launchpadId ? changeBlocked(launchpad) : null;
   // Offered only when the server can accept it: a complete blueprint, a conversation, and for a
@@ -170,7 +172,14 @@ export function ChatScreen({
       </Heading>
       <div className="fw-studio-grid">
         <section className="fw-chat" aria-label={copy.title}>
-          <div className="fw-messages" role="log" aria-live="polite" aria-relevant="additions text">
+          <div
+            className="fw-messages"
+            role="log"
+            aria-live="polite"
+            aria-relevant="additions text"
+            ref={log.ref}
+            onScroll={log.onScroll}
+          >
             {chat.messages.map((message, i) => (
               <article key={i} className={`fw-message fw-message-${message.role}`}>
                 <span className="fw-message-author">
@@ -186,7 +195,6 @@ export function ChatScreen({
                 <p>{message.content || (chat.streaming ? copy.typing : '')}</p>
               </article>
             ))}
-            <div ref={end} />
           </div>
           {chat.streaming && (
             <p className="fw-typing" role="status">
@@ -223,6 +231,8 @@ export function ChatScreen({
               if (!text.trim() || chat.streaming || chat.rateLimited) return;
               setError('');
               try {
+                // Their own message: back to the end of the conversation.
+                log.pin();
                 chat.send(text.trim());
                 setText('');
               } catch (failure) {

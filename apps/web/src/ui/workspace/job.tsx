@@ -23,6 +23,7 @@ import { jobCopy as copy } from './content/job';
 import { common } from './content/common';
 import { SupportBlock } from './support';
 import { PreviewCard } from './preview-card';
+import { useStickToBottom } from './scroll';
 import { Muse, museMoodForJob } from '../muse';
 import { StartAgainButton, StartAgainHold, draftNext, useStartAgain } from './start-again';
 
@@ -44,14 +45,12 @@ export function JobScreen({
   const [busy, setBusy] = useState(false),
     [error, setError] = useState<FriendlyError | null>(null);
   const lock = useRef(false);
-  const end = useRef<HTMLLIElement>(null);
+  // The activity log follows new events inside its own box, never scrolling the page.
+  const log = useStickToBottom<HTMLOListElement>(`${loading}:${events.length}`);
   useEffect(() => {
     if (autoRedirect && job?.status === 'awaiting_owner_signature')
       router.replace(`/jobs/${encodeURIComponent(jobId)}/launch`);
   }, [autoRedirect, job?.status, router, jobId]);
-  useEffect(() => {
-    end.current?.scrollIntoView?.({ block: 'nearest' });
-  }, [events.length]);
   if (loading) return <Loading />;
   if (!job) return <ErrorNotice message={common.missing} />;
   const preview = safeUrl(job.previewUrl),
@@ -233,10 +232,12 @@ export function JobScreen({
             aria-live="polite"
             aria-relevant="additions"
             aria-label={copy.log}
+            ref={log.ref}
+            onScroll={log.onScroll}
           >
             {events.length ? (
-              events.map((event, i) => (
-                <li key={event.id} ref={i === events.length - 1 ? end : undefined}>
+              events.map((event) => (
+                <li key={event.id}>
                   <time dateTime={event.createdAt}>
                     {new Date(event.createdAt).toLocaleTimeString('en-GB', {
                       hour: '2-digit',

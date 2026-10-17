@@ -833,6 +833,7 @@
   list-style: none;
   max-height: 510px;
   overflow-y: auto;
+  overscroll-behavior: contain;
   scrollbar-width: thin;
 }
 .fw-event-log li {
