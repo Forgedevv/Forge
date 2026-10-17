@@ -52,6 +52,42 @@ describe('production CSP', () => {
     expect(script.some((s) => s.includes('*'))).toBe(false);
   });
 
+  it('lists exactly the Jupiter hosts the plugin and the site call', () => {
+    expect(directive(csp, 'connect-src')).toEqual([
+      "'self'",
+      'https://forge.example',
+      'https://datapi.jup.ag',
+      'https://ultra-api.jup.ag',
+      'https://worker.jup.ag',
+      'wss://trench-stream.jup.ag',
+    ]);
+    // The plugin loads Inter from Google Fonts and the Jupiter logo from jup.ag.
+    expect(directive(csp, 'style-src')).toContain('https://fonts.googleapis.com');
+    expect(directive(csp, 'font-src')).toContain('https://fonts.gstatic.com');
+    expect(directive(csp, 'img-src')).toContain('https://jup.ag');
+    // static.jup.ag serves the TradingView chart library (src/forge/chart).
+    expect(directive(csp, 'script-src')).toContain('https://static.jup.ag');
+  });
+
+  it('drops the retired and unused Jupiter hosts and frames nothing', () => {
+    const sources = csp.split('; ').flatMap((d) => d.split(' ').slice(1));
+    for (const host of [
+      'https://quote-api.jup.ag',
+      'https://price.jup.ag',
+      'https://tokens.jup.ag',
+      'https://api.jup.ag',
+      'https://lite-api.jup.ag',
+      'https://img-cdn.jup.ag',
+      'https://unified.jup.ag',
+      'https://station.jup.ag',
+    ]) {
+      expect(sources, host).not.toContain(host);
+    }
+    // The Jupiter Plugin renders in the page: it needs no frame.
+    expect(directive(csp, 'frame-src')).not.toContain('https://plugin.jup.ag');
+    expect(directive(csp, 'frame-src')).toEqual(["'none'"]);
+  });
+
   it('is a single policy string with no empty directive', () => {
     for (const part of csp.split('; ')) expect(part.trim()).not.toBe('');
   });
