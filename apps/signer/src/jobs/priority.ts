@@ -1,6 +1,7 @@
 /**
  * Priority fees of the transactions the signer builds or has core build (claims, refunds, cashbox
- * sweeps, revenue unwrap and forward, launchpad accounts and launches, Jupiter referral claims).
+ * sweeps, revenue unwrap and forward, launchpad accounts and launches, Jupiter referral claims,
+ * and the Jupiter Swap API V2 swaps it assembles, capped by the job's own cap).
  *
  * The price is the one of @forge/core (`estimatePriorityFee`): the `percentile` of the recent
  * prioritization fees of the accounts the transaction writes (`getRecentPrioritizationFees` on
@@ -24,6 +25,7 @@
  * at most, bounded by the same hard ceilings.
  */
 import {
+  DEFAULT_PRIORITY_FEE_POLICY,
   estimatePriorityFee,
   fixedPriorityFee,
   maxPriorityFeeLamports,
@@ -32,7 +34,11 @@ import {
   type PriorityFeeReader,
   type PriorityFeeSetting,
 } from '@forge/core';
-import type { PublicKey, TransactionInstruction } from '@solana/web3.js';
+import {
+  ComputeBudgetProgram,
+  type PublicKey,
+  type TransactionInstruction,
+} from '@solana/web3.js';
 import { JobError, MAX_COMPUTE_UNIT_PRICE, MAX_SIGNER_PRIORITY_FEE_LAMPORTS } from './shared.js';
 
 /**
@@ -148,4 +154,33 @@ export const NO_PRIORITY_FEES: PriorityFees = createPriorityFees(null, PRIORITY_
  */
 export function signerBudgetInstructions(quote: PriorityFeeQuote): TransactionInstruction[] {
   return quote.microLamports > 0 ? priorityFeeInstructions(quote) : [];
+}
+
+/**
+ * The compute budget pair of a transaction whose unit limit is always needed (the Jupiter V2
+ * swaps the signer assembles, jobs/jupiter-v2.ts): the unit limit then the price, a zero price
+ * included, so `assertSignerBudgetPair` always finds the pair.
+ */
+export function signerBudgetPair(
+  quote: Pick<PriorityFeeQuote, 'computeUnitLimit' | 'microLamports'>,
+): TransactionInstruction[] {
+  return [
+    ComputeBudgetProgram.setComputeUnitLimit({ units: quote.computeUnitLimit }),
+    ComputeBudgetProgram.setComputeUnitPrice({ microLamports: quote.microLamports }),
+  ];
+}
+
+/**
+ * `setting` (the signer's, `PriorityFees.setting`) with its cap per transaction lowered to
+ * `maxLamports` (a job's own cap: BUYBACK_MAX_PRIORITY_FEE_LAMPORTS, CONVERT_MAX_PRIORITY_FEE_
+ * LAMPORTS). Undefined (no price) when priority fees are off or `maxLamports` is 0. The rule of
+ * the devnet DBC buys (buyback-dbc.ts `dbcBuyPrioritySetting`).
+ */
+export function capPrioritySetting(
+  setting: PriorityFeeSetting | undefined,
+  maxLamports: bigint,
+): PriorityFeeSetting | undefined {
+  if (!setting || maxLamports <= 0n) return undefined;
+  const cap = setting.maxLamports ?? DEFAULT_PRIORITY_FEE_POLICY.maxLamports;
+  return { ...setting, maxLamports: cap < maxLamports ? cap : maxLamports };
 }

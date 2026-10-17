@@ -15,13 +15,16 @@ import {
   NO_PRIORITY_FEES,
   PRIORITY_FEES_OFF,
   SOL_TRANSFER_COMPUTE_UNITS,
+  capPrioritySetting,
   createPriorityFees,
   signerBudgetInstructions,
+  signerBudgetPair,
 } from './priority.js';
 import {
   JobError,
   MAX_SIGNER_PRIORITY_FEE_LAMPORTS,
   assertComputeBudgetSet,
+  assertSignerBudgetPair,
   assertSolTransferTx,
 } from './shared.js';
 
@@ -263,5 +266,30 @@ describe('SIGNER_PRIORITY_FEE_* environment', () => {
     ] as const) {
       expect(() => parseRuntimeEnv({ ...base, ...overrides })).toThrow(name);
     }
+  });
+});
+
+describe('signerBudgetPair and capPrioritySetting (Jupiter V2 swaps)', () => {
+  it('always gives the unit limit then the price, a zero price included', () => {
+    for (const microLamports of [0, 3_000]) {
+      const pair = signerBudgetPair({ computeUnitLimit: 216_000, microLamports });
+      expect(pair.map((ix) => ix.data[0])).toEqual([2, 3]);
+      expect(pair[0]!.data.readUInt32LE(1)).toBe(216_000);
+      expect(pair[1]!.data.readBigUInt64LE(1)).toBe(BigInt(microLamports));
+      expect(assertSignerBudgetPair(pair, 1_000n)).toBe(2);
+    }
+  });
+
+  it("lowers the setting's cap per transaction to the job's, never raises it", () => {
+    const setting = createPriorityFees(null, DEFAULT_SIGNER_PRIORITY_FEE).setting;
+    expect(capPrioritySetting(setting, 100_000n)).toEqual({ ...setting, maxLamports: 100_000n });
+    expect(capPrioritySetting(setting, 5_000_000n)).toEqual(setting);
+    expect(capPrioritySetting(setting, 0n)).toBeUndefined();
+    expect(capPrioritySetting(undefined, 100_000n)).toBeUndefined();
+    // A setting without its own cap gets the core default, then the job's.
+    expect(capPrioritySetting({ percentile: 50 }, 1_000_000n)).toEqual({
+      percentile: 50,
+      maxLamports: 500_000n,
+    });
   });
 });

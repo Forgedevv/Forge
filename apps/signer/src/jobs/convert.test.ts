@@ -12,10 +12,14 @@ import {
 import type { Alerter } from '../alerts.js';
 import {
   DEFAULT_CONVERT_MAX_INPUT_AMOUNT,
+  DEFAULT_JUPITER_V1_URL,
+  DEFAULT_JUPITER_V2_URL,
   JUPITER_EXACT_OUT_INSTRUCTIONS,
   JUPITER_PROGRAM_ID,
   JUPITER_ROUTE_INSTRUCTIONS,
   JUPITER_SWAP_VARIANTS,
+  JupiterError,
+  JupiterRefusal,
   WSOL_MINT,
   checkJupiterRoute,
   createJupiterClient,
@@ -185,9 +189,58 @@ describe('parseConvertConfig', () => {
   it('has safe defaults', () => {
     expect(config.slippageBps).toBe(50);
     expect(config.maxSlippageBps).toBe(100);
-    expect(config.jupiterUrl).toBe('https://api.jup.ag/swap/v1');
+    // Swap API V2 by default (the Metis API is no longer maintained).
+    expect(config.swapApi).toBe('v2');
+    expect(config.jupiterUrl).toBe('https://api.jup.ag/swap/v2');
     expect(config.apiKey).toBeUndefined();
     expect(config.minRequestIntervalMs).toBeGreaterThanOrEqual(1000);
+  });
+
+  it('keeps the Metis API behind JUPITER_SWAP_API=v1, each with its own default URL', () => {
+    expect(parseConvertConfig({ JUPITER_SWAP_API: 'v1' })).toMatchObject({
+      swapApi: 'v1',
+      jupiterUrl: DEFAULT_JUPITER_V1_URL,
+    });
+    expect(parseConvertConfig({ JUPITER_SWAP_API: 'v2' })).toMatchObject({
+      swapApi: 'v2',
+      jupiterUrl: DEFAULT_JUPITER_V2_URL,
+    });
+    // Unset or empty: the defaults (an env file line `JUPITER_API_URL=` included).
+    expect(parseConvertConfig({ JUPITER_SWAP_API: '', JUPITER_API_URL: '' })).toMatchObject({
+      swapApi: 'v2',
+      jupiterUrl: DEFAULT_JUPITER_V2_URL,
+    });
+    // A proxy URL is kept as is, trailing slashes dropped.
+    expect(
+      parseConvertConfig({ JUPITER_API_URL: 'https://jup.example.test/proxy/' }).jupiterUrl,
+    ).toBe('https://jup.example.test/proxy');
+  });
+
+  it('refuses an unknown API, a plain http URL and a URL of the other API', () => {
+    for (const api of ['V2', 'metis', '2', 'v3']) {
+      expect(() => parseConvertConfig({ JUPITER_SWAP_API: api })).toThrow(
+        /JUPITER_SWAP_API must be v2 or v1/,
+      );
+    }
+    expect(() => parseConvertConfig({ JUPITER_API_URL: 'http://x.test' })).toThrow(/https/);
+    expect(() => parseConvertConfig({ JUPITER_API_URL: 'not a url' })).toThrow(/valid URL/);
+    expect(() => parseConvertConfig({ JUPITER_API_URL: DEFAULT_JUPITER_V1_URL })).toThrow(
+      /ends with \/swap\/v1 but JUPITER_SWAP_API is v2/,
+    );
+    expect(() =>
+      parseConvertConfig({ JUPITER_SWAP_API: 'v1', JUPITER_API_URL: `${DEFAULT_JUPITER_V2_URL}/` }),
+    ).toThrow(/ends with \/swap\/v2 but JUPITER_SWAP_API is v1/);
+  });
+
+  it('requires the API key live with either API', () => {
+    for (const api of ['v1', 'v2']) {
+      expect(() =>
+        parseConvertConfig(
+          { JUPITER_SWAP_API: api, FORGE_CONVERT_LIVE: 'true' },
+          { cluster: 'mainnet-beta' },
+        ),
+      ).toThrow(/JUPITER_API_KEY is required/);
+    }
   });
 
   it('caps one swap by default (1 000 USDC in raw units), still configurable', () => {
@@ -290,6 +343,7 @@ describe('Jupiter client', () => {
       inputMint: MINT_A,
       amount: 1000n,
       slippageBps: 50,
+      taker: OWNER,
     });
     expect(q.outAmount).toBe('500000000');
     const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
@@ -307,7 +361,12 @@ describe('Jupiter client', () => {
     const fetchMock = vi.fn(
       async () => new Response(JSON.stringify(quoteFor(MINT_A, 1000n)), { status: 200 }),
     );
-    await client(fetchMock).quote({ inputMint: MINT_A, amount: 1000n, slippageBps: 50 });
+    await client(fetchMock).quote({
+      inputMint: MINT_A,
+      amount: 1000n,
+      slippageBps: 50,
+      taker: OWNER,
+    });
     const init = (fetchMock.mock.calls[0] as unknown as [string, RequestInit])[1];
     expect((init.headers as Record<string, string>)['x-api-key']).toBeUndefined();
   });
@@ -333,7 +392,7 @@ describe('Jupiter client', () => {
   });
 
   it('turns HTTP errors, bad shapes and network failures into JupiterError without leaking the key', async () => {
-    const q = { inputMint: MINT_A, amount: 1n, slippageBps: 50 };
+    const q = { inputMint: MINT_A, amount: 1n, slippageBps: 50, taker: OWNER };
     await expect(
       client(
         vi.fn(async () => new Response('x', { status: 429 })),
@@ -372,9 +431,9 @@ describe('Jupiter client', () => {
         t += ms;
       },
     });
-    await c.quote({ inputMint: MINT_A, amount: 1n, slippageBps: 50 });
+    await c.quote({ inputMint: MINT_A, amount: 1n, slippageBps: 50, taker: OWNER });
     t += 200;
-    await c.quote({ inputMint: MINT_A, amount: 1n, slippageBps: 50 });
+    await c.quote({ inputMint: MINT_A, amount: 1n, slippageBps: 50, taker: OWNER });
     expect(sleeps).toEqual([800]);
   });
 });
@@ -482,7 +541,12 @@ describe('runConvertOnce: live', () => {
       signature: 'SIG1',
       outAmount: 500_000_000n,
     });
-    expect(quote).toHaveBeenCalledWith({ inputMint: MINT_A, amount: 1000n, slippageBps: 50 });
+    expect(quote).toHaveBeenCalledWith({
+      inputMint: MINT_A,
+      amount: 1000n,
+      slippageBps: 50,
+      taker: OWNER,
+    });
     expect(swap).toHaveBeenCalledTimes(1);
     expect(send).toHaveBeenCalledWith({
       owner: OWNER,
@@ -603,7 +667,12 @@ describe('runConvertOnce: live', () => {
       config: { ...config, maxInputAmount: 1000n },
     });
     await runConvertOnce(h.deps);
-    expect(h.quote).toHaveBeenCalledWith({ inputMint: MINT_A, amount: 1000n, slippageBps: 50 });
+    expect(h.quote).toHaveBeenCalledWith({
+      inputMint: MINT_A,
+      amount: 1000n,
+      slippageBps: 50,
+      taker: OWNER,
+    });
   });
 
   it('caps the input amount by default', async () => {
@@ -613,6 +682,7 @@ describe('runConvertOnce: live', () => {
       inputMint: MINT_A,
       amount: DEFAULT_CONVERT_MAX_INPUT_AMOUNT,
       slippageBps: 50,
+      taker: OWNER,
     });
   });
 
@@ -643,6 +713,28 @@ describe('runConvertOnce: live', () => {
     const r = await runConvertOnce(h.deps);
     expect(r.items[0]?.outcome).toMatchObject({ status: 'failed' });
     expect(h.send).not.toHaveBeenCalled();
+  });
+
+  it('records a swap refused while assembling (v2) as refused, alerted, nothing sent', async () => {
+    const h = makeHarness(balances);
+    h.swap.mockRejectedValueOnce(new JupiterRefusal('lookup_table_mismatch', 'refused'));
+    const r = await runConvertOnce(h.deps);
+    expect(r.items[0]?.outcome).toEqual({ status: 'refused', reason: 'lookup_table_mismatch' });
+    expect(h.send).not.toHaveBeenCalled();
+    expect((await ledgerOf(h.deps).get(ledgerKey(OWNER, MINT_A, runWindowKey(NOW))))?.status).toBe(
+      'refused',
+    );
+    expect(h.alerts.mock.calls.map((c) => c[1])).toEqual(['CONVERT_TX_REFUSED']);
+    // Any other swap error stays a failure, retried within the window.
+    const other = makeHarness(balances);
+    other.swap.mockRejectedValueOnce(new JupiterError('Jupiter answered with status 500', 500));
+    expect((await runConvertOnce(other.deps)).items[0]?.outcome).toEqual({
+      status: 'failed',
+      error: 'swap: JupiterError',
+    });
+    expect(
+      await ledgerOf(other.deps).get(ledgerKey(OWNER, MINT_A, runWindowKey(NOW))),
+    ).toBeUndefined();
   });
 
   it('refuses a live swap without a sender', async () => {

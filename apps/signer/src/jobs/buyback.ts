@@ -32,9 +32,12 @@
  *      journaled BEFORE it is made and never repeated that day.
  *   4. Orders. Each run executes at most one due slot (TWAP: the day's budget in several slices
  *      at random times). A slot later than `maxLatenessMs` is `missed`. Simulation: quote (if
- *      $FORGE and a quote source exist) and log the would-be order. Live: quote (ExactIn SOL ->
- *      FORGE_MINT, slippage <= 100 bps, price impact <= cap), swap transaction from the route,
- *      static allowlist (Jupiter: `verifySwapTransaction` from convert.ts with the route arguments
+ *      $FORGE and a quote source exist; asked for the vault as taker, since simulation never reads
+ *      the keystore) and log the would-be order. Live: quote (ExactIn SOL -> FORGE_MINT, slippage
+ *      <= 100 bps, price impact <= cap, for the bot as taker), swap transaction from the route
+ *      (Jupiter: JUPITER_SWAP_API=v2 by default, the bot assembles it from the Swap API V2 build
+ *      with its own compute budget, jobs/jupiter-v2.ts; v1 the Metis API's transaction), static
+ *      allowlist (Jupiter: `verifySwapTransaction` from convert.ts with the route arguments
  *      decoded and bound to the quote and the slippage cap; devnet DBC: `assertDbcBuyTx` in
  *      buyback-dbc.ts), simulation with the post-state of every account the bot holds
  *      (`compareBuybackStates`), kill switch re-read, sign, journal (signature + bytes),
@@ -91,16 +94,18 @@ import type { FlagKey } from '@forge/shared';
 import { NO_PRIORITY_FEES, signerBudgetInstructions, type PriorityFees } from './priority.js';
 import type { RevenueBreakdown } from './revenue.js';
 import {
-  DEFAULT_JUPITER_URL,
   JupiterError,
+  JupiterRefusal,
   WSOL_MINT,
   loadLookupTables,
   quoteSchema,
+  selectJupiterApi,
   verifySwapTransaction,
   type AccountDelta,
   type AccountStateLite,
   type JupiterQuote,
   type JupiterSwap,
+  type JupiterSwapApi,
   type SwapConnection,
 } from './convert.js';
 import {
@@ -290,8 +295,9 @@ export interface BuybackConfig {
   /** No order in the first and last `dayMarginMs` of the day. */
   dayMarginMs: number;
   /**
-   * Highest priority fee a swap transaction may carry (lamports): Jupiter's `maxLamports`, and on
-   * the dbc-devnet route the bound of the signer priority fee setting core prices the buy with.
+   * Highest priority fee a swap transaction may carry (lamports): with JUPITER_SWAP_API=v2 (and
+   * on the dbc-devnet route) the cap per transaction of the signer priority fee setting the buy
+   * is priced with; with v1 Jupiter's `maxLamports`.
    */
   maxPriorityFeeLamports: bigint;
   /**
@@ -395,6 +401,8 @@ export function validateBuybackConfig(config: BuybackConfig): void {
 }
 
 export interface BuybackJupiterSettings {
+  /** JUPITER_SWAP_API: v2 (default, `/build` + local assembly) or v1 (Metis `/quote` + `/swap`). */
+  swapApi: JupiterSwapApi;
   baseUrl: string;
   apiKey?: string | undefined;
   minRequestIntervalMs: number;
@@ -417,9 +425,10 @@ const LIVE_RE = /^(true|false)?$/;
  * the 30 bps platform fee of the largest order),
  * BUYBACK_TICK_SECONDS (60), BUYBACK_PAUSED (false), BUYBACK_ROUTE (jupiter | dbc-devnet),
  * FORGE_BUYBACK_DEVNET_TEST (exactly "true" or "false", default false, refused on mainnet-beta),
- * BUYBACK_DEVNET_DBC_POOL (required by the dbc-devnet route), JUPITER_API_URL / JUPITER_API_KEY
- * (shared with the conversion job; the key is required by FORGE_BUYBACK_LIVE=true on
- * mainnet-beta), BUYBACK_REQUEST_INTERVAL_MS (1100), BUYBACK_REQUEST_TIMEOUT_MS (15 000).
+ * BUYBACK_DEVNET_DBC_POOL (required by the dbc-devnet route), JUPITER_SWAP_API (v2 | v1, default
+ * v2) / JUPITER_API_URL / JUPITER_API_KEY (shared with the conversion job, convert.ts
+ * `selectJupiterApi`; the key is required by FORGE_BUYBACK_LIVE=true on mainnet-beta, whatever
+ * the API), BUYBACK_REQUEST_INTERVAL_MS (1100), BUYBACK_REQUEST_TIMEOUT_MS (15 000).
  *
  * The mode decision (live, devnet test or simulation) uses `options.cluster`, the cluster the
  * runtime resolved (devnet unless SOLANA_CLUSTER is mainnet-beta), not the raw variable; without
@@ -468,15 +477,8 @@ export function buybackConfigFromEnv(
     if (v > max) throw new JobError('CONFIG', `${name} is too large`);
     return v;
   };
-  const jupiterUrl = env.JUPITER_API_URL || DEFAULT_JUPITER_URL;
-  let parsedUrl: URL;
-  try {
-    parsedUrl = new URL(jupiterUrl);
-  } catch {
-    throw new JobError('CONFIG', 'JUPITER_API_URL is not a valid URL');
-  }
-  if (parsedUrl.protocol !== 'https:')
-    throw new JobError('CONFIG', 'JUPITER_API_URL must use https');
+  const jupiterApi = selectJupiterApi(env);
+  if (!jupiterApi.ok) throw new JobError('CONFIG', jupiterApi.error);
   const config: BuybackConfig = {
     cluster: options.cluster ?? (env.SOLANA_CLUSTER || 'devnet'),
     live: liveRaw === 'true',
@@ -564,7 +566,8 @@ export function buybackConfigFromEnv(
     config,
     tickMs: tickSeconds * 1_000,
     jupiter: {
-      baseUrl: jupiterUrl.replace(/\/+$/, ''),
+      swapApi: jupiterApi.api,
+      baseUrl: jupiterApi.baseUrl,
       apiKey,
       minRequestIntervalMs: intEnv('BUYBACK_REQUEST_INTERVAL_MS', 1_100, 60_000),
       timeoutMs: intEnv('BUYBACK_REQUEST_TIMEOUT_MS', 15_000, 120_000),
@@ -921,12 +924,17 @@ export interface SpendingLimitWithdrawer {
   }): Promise<WithdrawResult>;
 }
 
-/** Quote + swap for SOL -> $FORGE (Jupiter Swap API). */
+/** Quote + swap for SOL -> $FORGE (Jupiter Swap API, or the devnet DBC pool). */
 export interface BuybackQuoteSource {
+  /**
+   * `taker`: the wallet the swap is built for (Swap API V2 builds its instructions at quote
+   * time): the bot when live, the vault in simulation. The Metis and DBC sources ignore it.
+   */
   quote(input: {
     outputMint: string;
     lamports: bigint;
     slippageBps: number;
+    taker: string;
   }): Promise<JupiterQuote>;
   swap(input: { quote: JupiterQuote; userPublicKey: string }): Promise<JupiterSwap>;
 }
@@ -972,7 +980,7 @@ export interface ForgeTokenReader {
 // ---------------------------------------------------------------------------------------
 // Jupiter client (SOL -> $FORGE)
 
-export interface BuybackJupiterOptions extends BuybackJupiterSettings {
+export interface BuybackJupiterOptions extends Omit<BuybackJupiterSettings, 'swapApi'> {
   fetch?: typeof fetch;
   maxPriorityFeeLamports: bigint;
   now?: () => number;
@@ -985,8 +993,10 @@ const swapResponseSchema = z.object({
 });
 
 /**
- * Same transport rules as the conversion job's client (https only, key in a header, rate limit,
- * errors without URL or headers), for the opposite direction: input wrapped SOL.
+ * Metis Swap API client (JUPITER_SWAP_API=v1, the rollback path for one release; the default is
+ * jobs/jupiter-v2.ts `createJupiterV2BuybackClient`). Same transport rules as the conversion
+ * job's client (https only, key in a header, rate limit, errors without URL or headers), for the
+ * opposite direction: input wrapped SOL.
  */
 export function createJupiterBuybackClient(opts: BuybackJupiterOptions): BuybackQuoteSource {
   let base: URL;
@@ -1362,7 +1372,8 @@ export interface RpcBuybackSwapPreparerOptions {
 }
 
 /**
- * Jupiter transaction -> verified, simulated, signed bytes. Uses the conversion job's static
+ * Jupiter transaction (the Metis API's, or the one assembled from a Swap API V2 build) ->
+ * verified, simulated, signed bytes. Uses the conversion job's static
  * allowlist (`verifySwapTransaction`): it checks the token side of the swap by mint without regard
  * to the direction, so it is called with `inputMint` = the $FORGE mint (owner = only signer and
  * fee payer, ATA creation only for wSOL / $FORGE, wSOL wrap/unwrap only on the owner's account,
@@ -2290,10 +2301,13 @@ export function createBuybackJob(deps: BuybackDeps): BuybackJob {
       note = 'no_quote_source';
     } else {
       try {
+        // Simulation never reads the keystore: the quote is asked for the vault (any wallet gets
+        // a quote; the instructions of a build are discarded).
         const quote = await deps.quotes.quote({
           outputMint: config.forgeMint.toBase58(),
           lamports,
           slippageBps: config.slippageBps,
+          taker: config.vault.toBase58(),
         });
         const rejection = validateBuyQuote(
           quote,
@@ -2363,6 +2377,7 @@ export function createBuybackJob(deps: BuybackDeps): BuybackJob {
         outputMint: forgeMint,
         lamports,
         slippageBps: config.slippageBps,
+        taker: bot.toBase58(),
       });
     } catch (err) {
       return skip(`quote_unavailable:${describeError(err).name}`);
@@ -2384,6 +2399,8 @@ export function createBuybackJob(deps: BuybackDeps): BuybackJob {
     try {
       swap = await l.quotes.swap({ quote, userPublicKey: bot.toBase58() });
     } catch (err) {
+      // Refused while assembling (Swap API V2): nothing signed, alerted like a refused transaction.
+      if (err instanceof JupiterRefusal) return skip(`tx_refused:${err.reason}`, true);
       return skip(`swap_unavailable:${describeError(err).name}`);
     }
     // Kill switch re-read right before the key is used.

@@ -6,6 +6,13 @@
  * Jupiter Swap API (quote then swap), so claims, the cashbox sweep and the multisig only deal
  * with SOL.
  *
+ * Jupiter API (JUPITER_SWAP_API): `v2` by default, Swap API V2 `GET /swap/v2/build` (one call:
+ * the quote and the raw instructions; the signer assembles the transaction itself with its own
+ * compute budget, lookup tables checked against the chain: jobs/jupiter-v2.ts); `v1` keeps the
+ * Metis Swap API (`/swap/v1/quote` then `/swap`, an assembled transaction: `createJupiterClient`
+ * below) for one release, so a rollback is an environment change. Both answers then go through
+ * the same checks below.
+ *
  * Safety model (every line here can move money):
  *   - Mode. The job is dry-run (quote only, nothing signed, nothing sent) unless BOTH
  *     SOLANA_CLUSTER = mainnet-beta AND FORGE_CONVERT_LIVE = true. Jupiter does not index devnet,
@@ -14,7 +21,8 @@
  *     asked mint to wrapped SOL, with slippage and price impact under the caps and an output
  *     above the minimum. Anything else is refused, never adjusted. $FORGE (FORGE_MINT) and the
  *     excluded mints are never sold.
- *   - Transaction validation. The transaction returned by the API is NOT trusted:
+ *   - Transaction validation. The transaction returned by the API (v1) or assembled from its
+ *     instructions (v2) is NOT trusted:
  *       1. static allowlist (`verifySwapTransaction`), lookup tables resolved first: the owner is
  *          the fee payer and only signer; only compute budget (bounded priority fee), idempotent
  *          ATA creation for the owner (wSOL or the input mint), SyncNative / CloseAccount of the
@@ -83,7 +91,57 @@ import {
 } from './shared.js';
 
 export const WSOL_MINT = NATIVE_MINT.toBase58();
-export const DEFAULT_JUPITER_URL = 'https://api.jup.ag/swap/v1';
+
+// ---------------------------------------------------------------------------------------------
+// Jupiter API selection (JUPITER_SWAP_API, JUPITER_API_URL), shared with the buyback
+
+/**
+ * `v2`: Swap API V2 `/build` (jobs/jupiter-v2.ts), the default. `v1`: the Metis Swap API
+ * (`/quote` + `/swap`), no longer maintained by Jupiter, kept for one release as the rollback.
+ */
+export type JupiterSwapApi = 'v1' | 'v2';
+export const JUPITER_SWAP_APIS: readonly JupiterSwapApi[] = ['v2', 'v1'];
+/** Metis Swap API (https://developers.jup.ag/docs/swap-api): JUPITER_SWAP_API=v1. */
+export const DEFAULT_JUPITER_V1_URL = 'https://api.jup.ag/swap/v1';
+/** Swap API V2 (https://developers.jup.ag/docs/swap): JUPITER_SWAP_API=v2, the default. */
+export const DEFAULT_JUPITER_V2_URL = 'https://api.jup.ag/swap/v2';
+
+export type JupiterApiSelection =
+  { ok: true; api: JupiterSwapApi; baseUrl: string } | { ok: false; error: string };
+
+/**
+ * JUPITER_SWAP_API (`v2` when unset or empty, else exactly `v2` or `v1`) and JUPITER_API_URL (the
+ * default base URL of that API when unset or empty; https only, trailing slashes dropped). A URL
+ * ending in the other API's path (`/swap/v1` with v2, `/swap/v2` with v1) is refused: every call
+ * would answer 404. Returns the error for the caller to raise in its own way.
+ */
+export function selectJupiterApi(
+  env: Readonly<Record<string, string | undefined>>,
+): JupiterApiSelection {
+  const raw = env.JUPITER_SWAP_API ?? '';
+  if (raw !== '' && !(JUPITER_SWAP_APIS as readonly string[]).includes(raw)) {
+    return { ok: false, error: 'JUPITER_SWAP_API must be v2 or v1' };
+  }
+  const api: JupiterSwapApi = raw === 'v1' ? 'v1' : 'v2';
+  const url =
+    env.JUPITER_API_URL || (api === 'v1' ? DEFAULT_JUPITER_V1_URL : DEFAULT_JUPITER_V2_URL);
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return { ok: false, error: 'JUPITER_API_URL is not a valid URL' };
+  }
+  if (parsed.protocol !== 'https:') return { ok: false, error: 'JUPITER_API_URL must use https' };
+  const path = parsed.pathname.replace(/\/+$/, '');
+  const other = api === 'v1' ? '/swap/v2' : '/swap/v1';
+  if (path.endsWith(other)) {
+    return {
+      ok: false,
+      error: `JUPITER_API_URL ends with ${other} but JUPITER_SWAP_API is ${api}: unset JUPITER_API_URL or make them agree`,
+    };
+  }
+  return { ok: true, api, baseUrl: url.replace(/\/+$/, '') };
+}
 
 // ---------------------------------------------------------------------------------------------
 // Mode
@@ -116,6 +174,9 @@ export function resolveConvertMode(input: ConvertModeInput): ConvertModeDecision
 // Configuration
 
 export interface ConvertConfig {
+  /** JUPITER_SWAP_API: v2 (default, `/build` + local assembly) or v1 (Metis `/quote` + `/swap`). */
+  swapApi: JupiterSwapApi;
+  /** JUPITER_API_URL, else the default base URL of `swapApi`. */
   jupiterUrl: string;
   /** JUPITER_API_KEY, sent as x-api-key when present. Required when the job runs live. */
   apiKey?: string | undefined;
@@ -132,7 +193,10 @@ export interface ConvertConfig {
    * `DEFAULT_CONVERT_MAX_INPUT_AMOUNT`; a larger balance is converted over several runs.
    */
   maxInputAmount: bigint;
-  /** Highest priority fee (lamports) a swap transaction may carry. */
+  /**
+   * Highest priority fee (lamports) a swap transaction may carry: Jupiter's `maxLamports` (v1);
+   * with v2 the cap per transaction of the signer's own price (SIGNER_PRIORITY_FEE_*).
+   */
   maxPriorityFeeLamports: bigint;
   /** Minimum delay between two Jupiter HTTP calls. */
   minRequestIntervalMs: number;
@@ -140,17 +204,6 @@ export interface ConvertConfig {
   /** Mints never converted (e.g. the $FORGE token the buyback accumulates). */
   excludedMints: readonly string[];
 }
-
-const httpsUrl = z
-  .string()
-  .url()
-  .refine((v) => {
-    try {
-      return new URL(v).protocol === 'https:';
-    } catch {
-      return false;
-    }
-  }, 'JUPITER_API_URL must use https');
 
 /**
  * Default cap of one swap, in raw input units: 1 000 USDC (6 decimals), the main non-SOL
@@ -161,7 +214,6 @@ const httpsUrl = z
 export const DEFAULT_CONVERT_MAX_INPUT_AMOUNT = 1_000_000_000n;
 
 const envSchema = z.object({
-  JUPITER_API_URL: httpsUrl.default(DEFAULT_JUPITER_URL),
   JUPITER_API_KEY: z.string().optional(),
   CONVERT_SLIPPAGE_BPS: z.coerce.number().int().min(1).max(500).default(50),
   CONVERT_MAX_SLIPPAGE_BPS: z.coerce.number().int().min(1).max(500).default(100),
@@ -187,14 +239,17 @@ const envSchema = z.object({
 });
 
 /**
- * Reads the CONVERT_* settings and the Jupiter API settings. The live mode (FORGE_CONVERT_LIVE on
- * `options.cluster`, the cluster the runtime resolved; without it SOLANA_CLUSTER with the devnet
- * default) needs JUPITER_API_KEY: without it, a startup error. Dry-run works without a key.
+ * Reads the CONVERT_* settings and the Jupiter API settings (`selectJupiterApi`:
+ * JUPITER_SWAP_API, JUPITER_API_URL). The live mode (FORGE_CONVERT_LIVE on `options.cluster`, the
+ * cluster the runtime resolved; without it SOLANA_CLUSTER with the devnet default) needs
+ * JUPITER_API_KEY, whatever the API: without it, a startup error. Dry-run works without a key.
  */
 export function parseConvertConfig(
   env: Readonly<Record<string, string | undefined>>,
   options: { cluster?: string } = {},
 ): ConvertConfig {
+  const jupiter = selectJupiterApi(env);
+  if (!jupiter.ok) throw new Error(jupiter.error);
   const p = envSchema.parse(env);
   const excluded = new Set(
     p.CONVERT_EXCLUDED_MINTS.split(',')
@@ -204,7 +259,8 @@ export function parseConvertConfig(
   // The buyback token is never sold by this job.
   if (env.FORGE_MINT) excluded.add(env.FORGE_MINT);
   const config: ConvertConfig = {
-    jupiterUrl: p.JUPITER_API_URL.replace(/\/+$/, ''),
+    swapApi: jupiter.api,
+    jupiterUrl: jupiter.baseUrl,
     slippageBps: p.CONVERT_SLIPPAGE_BPS,
     maxSlippageBps: p.CONVERT_MAX_SLIPPAGE_BPS,
     maxPriceImpactBps: p.CONVERT_MAX_PRICE_IMPACT_BPS,
@@ -267,8 +323,32 @@ export class JupiterError extends Error {
   }
 }
 
+/**
+ * Jupiter's answer was refused while the signer assembled the swap from it (Swap API V2,
+ * jobs/jupiter-v2.ts: a lookup table that disagrees with the chain, a foreign signer, a compute
+ * budget or tip instruction...): nothing was signed. `reason` is a stable code, safe to log.
+ */
+export class JupiterRefusal extends JupiterError {
+  readonly reason: string;
+  constructor(reason: string, message: string) {
+    super(message);
+    this.name = 'JupiterRefusal';
+    this.reason = reason;
+  }
+}
+
 export interface JupiterClient {
-  quote(input: { inputMint: string; amount: bigint; slippageBps: number }): Promise<JupiterQuote>;
+  /**
+   * ExactIn quote of `amount` of `inputMint` to wrapped SOL. `taker`: the wallet that will sign
+   * the swap (Swap API V2 builds the instructions for it; the Metis client ignores it).
+   */
+  quote(input: {
+    inputMint: string;
+    amount: bigint;
+    slippageBps: number;
+    taker: string;
+  }): Promise<JupiterQuote>;
+  /** The swap transaction of a quote this client returned, for `userPublicKey` (= the taker). */
   swap(input: { quote: JupiterQuote; userPublicKey: string }): Promise<JupiterSwap>;
 }
 
@@ -284,6 +364,11 @@ export interface JupiterClientOptions {
   sleep?: (ms: number) => Promise<void>;
 }
 
+/**
+ * Metis Swap API client (JUPITER_SWAP_API=v1, `/quote` then `/swap`): Jupiter assembles the
+ * transaction and prices it (`priorityLevelWithMaxLamports`). The rollback path for one release;
+ * the default is the Swap API V2 client (jobs/jupiter-v2.ts `createJupiterV2Client`).
+ */
 export function createJupiterClient(opts: JupiterClientOptions): JupiterClient {
   let base: URL;
   try {
@@ -645,6 +730,7 @@ async function convertOne(
       inputMint: balance.mint,
       amount,
       slippageBps: config.slippageBps,
+      taker: balance.owner,
     });
   } catch (err) {
     return { status: 'failed', error: `quote: ${errName(err)}` };
@@ -670,6 +756,12 @@ async function convertOne(
   try {
     swap = await deps.jupiter.swap({ quote, userPublicKey: balance.owner });
   } catch (err) {
+    if (err instanceof JupiterRefusal) {
+      // Refused while assembling (v2): nothing signed. Like a refusal of the sender, the next
+      // window may try again with a fresh quote.
+      await ledger.set(key, { status: 'refused', at: (deps.now ?? Date.now)() });
+      return { status: 'refused', reason: err.reason };
+    }
     return { status: 'failed', error: `swap: ${errName(err)}` };
   }
 
@@ -1388,7 +1480,8 @@ function isTokenProgram(id: PublicKey): boolean {
 const refuse = (reason: SwapRefusal): SwapCheck => ({ ok: false, reason });
 
 /**
- * Static allowlist of a Jupiter-provided transaction, before anything is simulated or signed.
+ * Static allowlist of a Jupiter swap transaction (returned by the Metis API, or assembled by the
+ * signer from a Swap API V2 build: jobs/jupiter-v2.ts), before anything is simulated or signed.
  * Every instruction's accounts are resolved (static keys + lookup tables). Allowed:
  * - ComputeBudget SetComputeUnitLimit (<= 1.4M) and SetComputeUnitPrice (total priority fee
  *   <= `maxPriorityFeeLamports`);
@@ -1879,7 +1972,8 @@ export function createRpcSwapSender(opts: RpcSwapSenderOptions): SwapSender {
       });
       if (simulated) return { status: 'refused', reason: simulated };
 
-      // Expiry bound: Jupiter's, else a height observed now (>= the blockhash's) + a safe margin.
+      // Expiry bound: the swap's (Jupiter's on v1, the signer RPC's blockhash on v2), else a
+      // height observed now (>= the blockhash's) + a safe margin.
       const expiry =
         lastValidBlockHeight ??
         (await opts.connection.getBlockHeight('confirmed')) + FALLBACK_EXPIRY_BLOCKS;

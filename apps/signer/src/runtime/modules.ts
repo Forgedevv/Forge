@@ -44,9 +44,12 @@ import {
   createRpcSwapSender,
   parseConvertConfig,
   runConvertOnce,
+  type ConvertConfig,
   type ConvertDeps,
+  type JupiterClient,
   type SwapSender,
 } from '../jobs/convert.js';
+import { createJupiterV2Client } from '../jobs/jupiter-v2.js';
 import {
   RevenueForwardEntry,
   RevenueStateEntry,
@@ -378,6 +381,34 @@ function createKeystoreSwapSender(
   });
 }
 
+/**
+ * The conversion's Jupiter client (JUPITER_SWAP_API): Swap API V2 by default (`/build`, the swap
+ * assembled here from its instructions with the signer's priority fees, capped at
+ * CONVERT_MAX_PRIORITY_FEE_LAMPORTS, its lookup tables read through `ctx.connection`), or the
+ * Metis API (v1, the rollback path for one release).
+ */
+function createConvertJupiterClient(ctx: SignerJobContext, config: ConvertConfig): JupiterClient {
+  const transport = {
+    baseUrl: config.jupiterUrl,
+    apiKey: config.apiKey,
+    minRequestIntervalMs: config.minRequestIntervalMs,
+    timeoutMs: config.requestTimeoutMs,
+    fetch: ctx.fetch,
+  };
+  if (config.swapApi === 'v1') {
+    return createJupiterClient({
+      ...transport,
+      maxPriorityFeeLamports: config.maxPriorityFeeLamports,
+    });
+  }
+  return createJupiterV2Client({
+    ...transport,
+    connection: ctx.connection,
+    priorityFees: ctx.priorityFees,
+    maxPriorityFeeLamports: config.maxPriorityFeeLamports,
+  });
+}
+
 export const convertModule: SignerJobModule = {
   name: 'convert',
   async create(ctx) {
@@ -410,26 +441,21 @@ export const convertModule: SignerJobModule = {
             : sender.send(input),
         ),
     };
+    const logger = ctx.jobLogger('convert');
     const deps: ConvertDeps = {
-      jupiter: createJupiterClient({
-        baseUrl: config.jupiterUrl,
-        apiKey: config.apiKey,
-        minRequestIntervalMs: config.minRequestIntervalMs,
-        timeoutMs: config.requestTimeoutMs,
-        maxPriorityFeeLamports: config.maxPriorityFeeLamports,
-        fetch: ctx.fetch,
-      }),
+      jupiter: createConvertJupiterClient(ctx, config),
       balances: createRpcBalanceSource(ctx.connection, [...owners.keys()]),
       sender: lockedSender,
       ledger: createFileLedger(ctx.journalDir),
       journalDir: ctx.journalDir,
       flags: ctx.flags,
       alerter: ctx.alerter,
-      logger: ctx.jobLogger('convert'),
+      logger,
       config,
       cluster: ctx.cluster,
       liveFlag: ctx.env.FORGE_CONVERT_LIVE,
     };
+    logger.info({ jupiterSwapApi: config.swapApi }, 'convert job wired');
     return {
       runOnce: async () => {
         const summary = await runConvertOnce(deps);
@@ -464,18 +490,13 @@ export const revenueModule: SignerJobModule = {
       return { runOnce: async () => ({ status: 'off' }), delayMs: () => intervalMs };
     }
     let convert: (() => ReturnType<typeof runConvertOnce>) | null = null;
+    let jupiterSwapApi: ConvertConfig['swapApi'] | null = null;
     if (ctx.cluster === 'mainnet-beta') {
       const convertConfig = parseConvertConfig(ctx.env, { cluster: ctx.cluster });
+      jupiterSwapApi = convertConfig.swapApi;
       const owner = revenue.publicKey.toBase58();
       const deps: ConvertDeps = {
-        jupiter: createJupiterClient({
-          baseUrl: convertConfig.jupiterUrl,
-          apiKey: convertConfig.apiKey,
-          minRequestIntervalMs: convertConfig.minRequestIntervalMs,
-          timeoutMs: convertConfig.requestTimeoutMs,
-          maxPriorityFeeLamports: convertConfig.maxPriorityFeeLamports,
-          fetch: ctx.fetch,
-        }),
+        jupiter: createConvertJupiterClient(ctx, convertConfig),
         balances: createRpcBalanceSource(ctx.connection, [owner]),
         sender: createKeystoreSwapSender(
           ctx,
@@ -516,7 +537,10 @@ export const revenueModule: SignerJobModule = {
       onBeforeSend: ctx.onBeforeSend,
       priorityFees: ctx.priorityFees,
     });
-    logger.info({ dryRun: config.dryRun, conversions: convert !== null }, 'revenue job wired');
+    logger.info(
+      { dryRun: config.dryRun, conversions: convert !== null, jupiterSwapApi },
+      'revenue job wired',
+    );
     return { runOnce: () => job.runOnce(), delayMs: () => intervalMs };
   },
 };
