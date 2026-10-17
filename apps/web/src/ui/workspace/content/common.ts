@@ -33,7 +33,6 @@ export const common = {
   light: 'Light mode',
   empty: 'Nothing here yet',
   missing: 'We could not find that launchpad or job.',
-  support: 'Open help',
   sign: 'Sign in your wallet',
   sending: 'Sending…',
   confirmed: 'Confirmed',
@@ -74,7 +73,7 @@ export const common = {
     payment_pending:
       'A payment for this launchpad is still being processed. You can start again once it settles.',
     needs_support:
-      'This launchpad needs a check by our team before it is built again. Please contact support.',
+      'This launchpad needs a check by our team before it is built again. Contact us and quote this launchpad.',
     invalid_spec:
       'This blueprint no longer passes our checks. Design the launchpad again in a new conversation.',
   },

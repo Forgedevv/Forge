@@ -21,6 +21,7 @@ import { useWebClient, useWorkspace } from './provider';
 import { common } from './content/common';
 import { jobCopy } from './content/job';
 import { Muse, type MuseMood } from '../muse';
+import { SupportLinks } from './support';
 
 export function Button({
   variant = 'primary',
@@ -77,7 +78,16 @@ export function Loading({ label = common.loading }: { label?: string }) {
     </div>
   );
 }
-export function ErrorNotice({ message, onRetry }: { message: string; onRetry?: () => void }) {
+export function ErrorNotice({
+  message,
+  onRetry,
+  reference,
+}: {
+  message: string;
+  onRetry?: () => void;
+  /** The id the team needs to help (a job or launchpad id), quoted in the support message. */
+  reference?: string | null;
+}) {
   return (
     <div className="fw-notice fw-notice-error" role="alert">
       <p>{message}</p>
@@ -87,7 +97,7 @@ export function ErrorNotice({ message, onRetry }: { message: string; onRetry?: (
             {common.retry}
           </Button>
         )}
-        <Link href="/faq">{common.support} ↗</Link>
+        <SupportLinks reference={reference} />
       </div>
     </div>
   );

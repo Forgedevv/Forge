@@ -46,7 +46,7 @@ export function DetailScreen({ launchpadId }: { launchpadId: string }) {
           {signupsPaused ? common.paused : copy.refunded}
         </p>
       )}
-      {next.kind === 'on_hold' && <StartAgainHold reason={next.reason} />}
+      {next.kind === 'on_hold' && <StartAgainHold reason={next.reason} reference={launchpad.id} />}
       {restart.error && <ErrorNotice message={restart.error} />}
       <div className="fw-detail-grid">
         <Card>

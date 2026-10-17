@@ -401,7 +401,11 @@ function LaunchpadCard({
         </div>
       )}
       {next.kind === 'on_hold' && (
-        <StartAgainHold reason={next.reason} className="fw-notice fw-pad-notice" />
+        <StartAgainHold
+          reason={next.reason}
+          className="fw-notice fw-pad-notice"
+          reference={pad.id}
+        />
       )}
       {next.kind === 'continue' ? (
         <Link className="fw-current-job" href={next.href}>

@@ -1,11 +1,11 @@
 'use client';
-import Link from 'next/link';
 import { useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import type { JobStatus, LaunchpadSummary, StartAgainBlockedReason } from '@forge/shared';
 import { useWebClient } from './provider';
 import { Button, readableError } from './components';
 import { common } from './content/common';
+import { SupportLinks } from './support';
 
 /*
  * What a launchpad that never went live offers instead of "request a change": "start again" when
@@ -95,14 +95,21 @@ export function StartAgainButton({
 export function StartAgainHold({
   reason,
   className = 'fw-notice',
+  reference,
 }: {
   reason: StartAgainBlockedReason;
   className?: string;
+  /** The launchpad id, quoted to the team when it has to check the launchpad. */
+  reference?: string;
 }) {
   return (
     <div className={className} role="status">
       <p>{common.startAgainBlocked[reason]}</p>
-      {reason === 'needs_support' && <Link href="/faq">{common.support} ↗</Link>}
+      {reason === 'needs_support' && (
+        <p className="fw-support-links">
+          <SupportLinks reference={reference} />
+        </p>
+      )}
     </div>
   );
 }

@@ -20,6 +20,7 @@ import {
 } from './components';
 import { paymentCopy as copy } from './content/payment';
 import { common } from './content/common';
+import { SupportBlock, SupportLinks } from './support';
 
 /** Statuses reached once the payment is confirmed (the job left `spec_ready`). */
 const AWAITING_PAYMENT: ReadonlySet<JobStatus> = new Set(['spec_ready']);
@@ -29,16 +30,19 @@ export const QUOTE_TX_FRESH_MS = 20_000;
 
 /** A sent payment that is not settled: confirmation is retried, a new quote is never offered. */
 function SentPaymentNotice({
+  jobId,
   result,
   busy,
   onCheck,
 }: {
+  jobId: string;
   result: PaymentResult;
   busy: boolean;
   onCheck(): void;
 }) {
   const api = useWebClient();
   const confirming = result.outcome === 'confirming';
+  const context = result.signature ? [`${copy.signature}: ${result.signature}`] : [];
   return (
     <div className={`fw-notice ${confirming ? '' : 'fw-notice-error'}`} role="status">
       <h2>{confirming ? copy.stillConfirming : copy.needsSupport}</h2>
@@ -51,14 +55,16 @@ function SentPaymentNotice({
           </Link>
         </>
       )}
-      <div className="fw-actions">
-        {confirming && (
+      {confirming ? (
+        <div className="fw-actions">
           <Button disabled={busy} onClick={onCheck}>
             {busy ? copy.checking : copy.checkAgain}
           </Button>
-        )}
-        <Link href="/faq">{copy.support} ↗</Link>
-      </div>
+          <SupportLinks reference={jobId} context={context} />
+        </div>
+      ) : (
+        <SupportBlock reference={jobId} context={context} />
+      )}
     </div>
   );
 }
@@ -228,7 +234,12 @@ export function PaymentScreen({
                 {copy.confirming}
               </p>
             ) : (
-              <SentPaymentNotice result={sent} busy={busy} onCheck={() => void recheck()} />
+              <SentPaymentNotice
+                jobId={jobId}
+                result={sent}
+                busy={busy}
+                onCheck={() => void recheck()}
+              />
             )}
             {busy && <TransactionState phase={phase} result={result} />}
           </>

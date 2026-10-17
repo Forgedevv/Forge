@@ -18,6 +18,7 @@ import {
 import { safeUrl } from './safe-url';
 import { jobCopy as copy } from './content/job';
 import { common } from './content/common';
+import { SupportBlock } from './support';
 import { Muse, museMoodForJob } from '../muse';
 import { StartAgainButton, StartAgainHold, draftNext, useStartAgain } from './start-again';
 
@@ -190,7 +191,7 @@ export function JobScreen({
                 </p>
               )}
               {job.error && <p>{job.error}</p>}
-              <Link href="/faq">{common.support} ↗</Link>
+              <SupportBlock reference={jobId} />
             </div>
           )}
           {job.status === 'refunded' && (
@@ -215,7 +216,7 @@ export function JobScreen({
                 </>
               )}
               {job.type === 'create_launchpad' && next?.kind === 'on_hold' && (
-                <StartAgainHold reason={next.reason} />
+                <StartAgainHold reason={next.reason} reference={job.launchpadId} />
               )}
               <ActionLink href="/dashboard" secondary>
                 {common.dashboard}

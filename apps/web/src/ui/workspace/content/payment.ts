@@ -28,8 +28,7 @@ export const paymentCopy = {
   checking: 'Checking…',
   needsSupport: 'This payment needs our help.',
   needsSupportBody:
-    'Contact support with the transaction signature below. Do not pay again for this launchpad.',
+    'Contact us with the reference and the transaction signature below. Do not pay again for this launchpad.',
   signature: 'Transaction signature',
   explorer: 'View on the explorer',
-  support: 'Contact support',
 } as const;

@@ -39,7 +39,7 @@ describe('private beta notice', () => {
     expect(screen.queryByText('Protected workshop')).not.toBeInTheDocument();
     expect(screen.getByRole('link', { name: /How to get an invite/ })).toHaveAttribute(
       'href',
-      '/faq',
+      '/faq#invite',
     );
   });
 

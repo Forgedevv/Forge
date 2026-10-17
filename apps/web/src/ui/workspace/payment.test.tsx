@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createMockController } from '../mocks/client';
 import { PaymentScreen, QUOTE_TX_FRESH_MS } from './payment';
@@ -58,7 +58,12 @@ describe('payment already sent', () => {
     await advance(500);
     expect(screen.getByText(copy.needsSupport)).toBeInTheDocument();
     expect(screen.getByText(/refunded manually/)).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: /Contact support/ })).toHaveAttribute('href', '/faq');
+    const support = screen.getByRole('region', { name: 'Contact us' });
+    expect(within(support).getByRole('link', { name: 'Get help' })).toHaveAttribute(
+      'href',
+      '/faq#support',
+    );
+    expect(within(support).getByRole('button', { name: /Copy reference/ })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: copy.checkAgain })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: copy.fresh })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Pay and start/ })).not.toBeInTheDocument();

@@ -3,6 +3,16 @@ export const faqCopy = {
   title: 'A clearer path to launch.',
   questions: [
     [
+      'invite',
+      'How do I get an invite?',
+      'FORGE is in private beta: only invited wallets can sign in. Ask the FORGE team for an invite and include the wallet address you want to use. Once it is added, connect that wallet and sign in again.',
+    ],
+    [
+      'support',
+      'How do I contact the FORGE team?',
+      'Use the contact below. Quote the reference shown on your payment or build page, and for a payment the transaction signature. The team never asks for your seed phrase or private key: never share them.',
+    ],
+    [
       'fees',
       'How do I claim my fees?',
       'Open your dashboard and choose “Claim my fees” on a launchpad. Review the amount and sign the claim in your wallet. The wallet shows the network fee before you sign.',

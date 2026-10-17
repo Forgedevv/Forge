@@ -99,6 +99,13 @@ Coin uploads are not part of readiness: with a bad R2 block they answer 503 `NOT
 
 `RPC_RELAY_GLOBAL_UNITS_PER_MINUTE` (default 60000, split 25 % FORGE site, 50 % client sites, 15 % server tokens, 10 % anonymous), `RPC_RELAY_GLOBAL_FORGE_UNITS_PER_MINUTE`, `RPC_RELAY_GLOBAL_SITES_UNITS_PER_MINUTE`, `RPC_RELAY_GLOBAL_SERVER_UNITS_PER_MINUTE`, `RPC_RELAY_GLOBAL_ANONYMOUS_UNITS_PER_MINUTE`, `RPC_RELAY_IP_UNITS_PER_MINUTE`, `RPC_RELAY_ORIGIN_UNITS_PER_MINUTE` (alert threshold only), `RPC_RELAY_SERVER_UNITS_PER_MINUTE`, `RPC_RELAY_ANONYMOUS_UNITS_PER_MINUTE` (alert threshold only), `RPC_RELAY_SENDS_PER_MINUTE`, `RPC_RELAY_SERVER_SENDS_PER_MINUTE`. Positive numbers; anything else is a startup error. Leave unset at first boot; size them against the Helius plan behind `RPC_RELAY_UPSTREAM_URL`. `RPC_RELAY_ANONYMOUS_IP_UNITS_PER_MINUTE` is no longer read.
 
+### 2.7 Support contact (public, optional, `src/ui/workspace/support.tsx`)
+
+| Variable | Req. | Mainnet value / how to obtain | Default | If wrong | Secret |
+|---|---|---|---|---|---|
+| `NEXT_PUBLIC_SUPPORT_TELEGRAM_URL` | no (recommended: this one or the email) | the support Telegram link, `https://t.me/<handle>` (https on `t.me` or `telegram.me` only); rebuild after a change | unset | invalid: ignored, as if unset. With no channel set, support links lead to the FAQ, which tells clients to use the channel of their beta invite | |
+| `NEXT_PUBLIC_SUPPORT_EMAIL` | no (recommended: this one or the Telegram link) | the support address, e.g. `support@<FORGE domain>`; the mail opens with the job reference in the subject | unset | same | |
+
 ## 3. apps/builder (VPS 1)
 
 Validated at start-up (`src/index.ts`, `worker/config.ts`, `sandbox/config.ts`, `github.ts`, `vercel.ts`): the process refuses to start and names the variables. Order: environment, FORGE addresses, public variables of client projects, sandbox timeouts, sandbox config, signer cluster check (retried 2, 4, 8, 16 s, then exit), cleanup, gateway, worker.

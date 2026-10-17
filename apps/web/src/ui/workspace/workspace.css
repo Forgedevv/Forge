@@ -2332,3 +2332,68 @@
 .fw-claim-log a {
   color: var(--fw-accent-text);
 }
+
+/* Contact us: the configured support channels and the reference to quote. */
+.fw-support {
+  margin-top: 22px;
+  padding: 18px 20px;
+  border: 1px solid var(--fw-border);
+  border-radius: 14px;
+  background: var(--fw-raised);
+  color: var(--fw-muted);
+  text-align: left;
+}
+.fw-support h3 {
+  color: var(--fw-text);
+  font-size: 16px;
+  margin-bottom: 8px;
+}
+.fw-support > p {
+  font-size: 13px;
+  line-height: 1.7;
+}
+.fw-support .fw-actions {
+  margin-top: 14px;
+}
+.fw-support-reference {
+  margin-top: 14px;
+  font-size: 12px;
+  min-width: 0;
+}
+.fw-support-reference > div {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.fw-support-reference code {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--fw-text);
+}
+.fw-support-reference [role='status'] {
+  margin-top: 6px;
+}
+.fw-support-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  margin-top: 10px;
+  font-size: 12px;
+}
+.fw-support-links a,
+.fw-faq-links a {
+  color: var(--fw-accent-text);
+}
+.fw-faq-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+}
+.fw-faq .fw-support {
+  max-width: 70ch;
+}

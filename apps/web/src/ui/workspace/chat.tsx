@@ -72,7 +72,7 @@ export function ChangeUnavailable({
       </Heading>
       <Card>
         <h2>{launchpad.name}</h2>
-        {next.kind === 'on_hold' && <StartAgainHold reason={next.reason} />}
+        {next.kind === 'on_hold' && <StartAgainHold reason={next.reason} reference={launchpad.id} />}
         {next.kind === 'start_again' && signupsPaused && (
           <p className="fw-notice" role="status">
             {common.paused}
