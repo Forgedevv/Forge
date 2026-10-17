@@ -92,26 +92,22 @@ const httpsUrl = (name: string) =>
 export const CONVERT_ROLES = ['cashbox', 'payer'] as const;
 export type ConvertRole = (typeof CONVERT_ROLES)[number];
 
-const RuntimeEnvSchema = z.object({
+/**
+ * The variables every signer process reads, service and operator commands alike: the cluster
+ * and its RPC, the keystore, the journal directory, the priority fees and the log level.
+ */
+const BaseEnvFields = {
   // Devnet unless mainnet-beta is explicitly set (PLANEXECUTE.md, environments).
   SOLANA_CLUSTER: z.preprocess(
     (v) => (v === undefined || v === '' ? 'devnet' : v),
     z.enum(['devnet', 'mainnet-beta'], { error: 'SOLANA_CLUSTER must be devnet or mainnet-beta' }),
   ),
   RPC_URL: httpsUrl('RPC_URL'),
-  SUPABASE_URL: httpsUrl('SUPABASE_URL'),
-  SUPABASE_SERVICE_ROLE_KEY: z
-    .string({ error: 'SUPABASE_SERVICE_ROLE_KEY is required' })
-    .min(20, { message: 'SUPABASE_SERVICE_ROLE_KEY is too short' }),
   SIGNER_KEYSTORE_PASSPHRASE: z
     .string({ error: 'SIGNER_KEYSTORE_PASSPHRASE is required' })
     .min(32, { message: 'SIGNER_KEYSTORE_PASSPHRASE must be at least 32 characters' }),
   SIGNER_KEYSTORE_DIR: optionalString,
   SIGNER_JOURNAL_DIR: optionalString,
-  SIGNER_HOST: optionalString,
-  SIGNER_COIN_METADATA_URL: z.string({ error: 'SIGNER_COIN_METADATA_URL is required' }).min(1, {
-    message: 'SIGNER_COIN_METADATA_URL is required',
-  }),
   // Priority fees (jobs/priority.ts): floor, cap per CU, percentile, cap per transaction.
   SIGNER_PRIORITY_FEE_MICRO_LAMPORTS: integer(
     DEFAULT_SIGNER_PRIORITY_FEE.floorMicroLamports,
@@ -125,6 +121,22 @@ const RuntimeEnvSchema = z.object({
   ),
   SIGNER_PRIORITY_FEE_PERCENTILE: integer(DEFAULT_SIGNER_PRIORITY_FEE.percentile, 0, 100),
   SIGNER_PRIORITY_FEE_MAX_LAMPORTS: lamports(DEFAULT_SIGNER_PRIORITY_FEE.maxLamports),
+  LOG_LEVEL: z
+    .enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'])
+    .optional()
+    .default('info'),
+};
+
+const RuntimeEnvSchema = z.object({
+  ...BaseEnvFields,
+  SUPABASE_URL: httpsUrl('SUPABASE_URL'),
+  SUPABASE_SERVICE_ROLE_KEY: z
+    .string({ error: 'SUPABASE_SERVICE_ROLE_KEY is required' })
+    .min(20, { message: 'SUPABASE_SERVICE_ROLE_KEY is too short' }),
+  SIGNER_HOST: optionalString,
+  SIGNER_COIN_METADATA_URL: z.string({ error: 'SIGNER_COIN_METADATA_URL is required' }).min(1, {
+    message: 'SIGNER_COIN_METADATA_URL is required',
+  }),
   SIGNER_ROUTES_PAUSED: bool(false),
   SIGNER_MAX_LAUNCHPADS_PER_DAY: integer(DEFAULT_MAX_LAUNCHPADS_PER_DAY, 1, MAX_LAUNCHPADS_PER_DAY),
   SIGNER_MIN_CREATION_PAYMENT_LAMPORTS: lamports(DEFAULT_MIN_PAYMENT_LAMPORTS.creation),
@@ -132,11 +144,10 @@ const RuntimeEnvSchema = z.object({
   SIGNER_CONVERT_ROLES: optionalString,
   SIGNER_CONVERT_INTERVAL_HOURS: integer(24, 1, 24 * 30),
   SIGNER_SHUTDOWN_TIMEOUT_SECONDS: integer(120, 1, 3_600),
-  LOG_LEVEL: z
-    .enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'])
-    .optional()
-    .default('info'),
 });
+
+/** The operator setup commands read the base variables only (no database, no HMAC server). */
+const OperatorEnvSchema = z.object(BaseEnvFields);
 
 export interface RuntimeEnv {
   cluster: 'devnet' | 'mainnet-beta';
@@ -220,10 +231,7 @@ export const CONSUMED_SECRET_VARIABLES = [
   'JUPITER_API_KEY',
 ] as const;
 
-function dropVariables(
-  names: readonly string[],
-  envs: ReadonlyArray<EnvSource | undefined>,
-): void {
+function dropVariables(names: readonly string[], envs: ReadonlyArray<EnvSource | undefined>): void {
   for (const env of envs) {
     if (!env) continue;
     for (const name of names) delete (env as Record<string, unknown>)[name];
@@ -257,19 +265,21 @@ function alertingProblems(env: EnvSource): string[] {
   );
 }
 
-/** Parses the process-level variables. Throws RuntimeConfigError listing every problem. */
-export function parseRuntimeEnv(env: EnvSource): RuntimeEnv {
-  const parsed = RuntimeEnvSchema.safeParse(env);
+type ParsedBase = z.infer<typeof OperatorEnvSchema>;
+
+/** Problems (variable names only) of the zod issues of a schema, then the cross-field rules. */
+function schemaProblems(
+  result: { success: true; data: ParsedBase } | { success: false; error: z.ZodError },
+): string[] {
   // Messages are ours (variable names, rules); zod never echoes the values here.
-  const problems: string[] = parsed.success
+  const problems: string[] = result.success
     ? []
-    : parsed.error.issues.map((issue) => {
+    : result.error.issues.map((issue) => {
         const name = issue.path.map(String).join('.') || 'environment';
         return issue.message.includes(name) ? issue.message : `${name} ${issue.message}`;
       });
-  problems.push(...alertingProblems(env));
-  if (parsed.success) {
-    const p = parsed.data;
+  if (result.success) {
+    const p = result.data;
     if (p.SIGNER_PRIORITY_FEE_MICRO_LAMPORTS > p.SIGNER_PRIORITY_FEE_MAX_MICRO_LAMPORTS) {
       problems.push(
         'SIGNER_PRIORITY_FEE_MICRO_LAMPORTS (the floor) must not be above SIGNER_PRIORITY_FEE_MAX_MICRO_LAMPORTS',
@@ -281,26 +291,68 @@ export function parseRuntimeEnv(env: EnvSource): RuntimeEnv {
       );
     }
   }
-  if (!parsed.success || problems.length > 0) {
-    throw new RuntimeConfigError([...new Set(problems)]);
-  }
-  const p = parsed.data;
+  return problems;
+}
+
+function baseEnv(p: ParsedBase): OperatorEnv {
   return {
     cluster: p.SOLANA_CLUSTER,
     rpcUrl: p.RPC_URL,
-    supabaseUrl: p.SUPABASE_URL,
-    supabaseServiceRoleKey: p.SUPABASE_SERVICE_ROLE_KEY,
     keystorePassphrase: p.SIGNER_KEYSTORE_PASSPHRASE,
     keystoreDir: path.resolve(p.SIGNER_KEYSTORE_DIR ?? DEFAULT_KEYSTORE_DIR),
     journalDir: path.resolve(p.SIGNER_JOURNAL_DIR ?? DEFAULT_JOURNAL_DIR),
-    host: p.SIGNER_HOST ?? '0.0.0.0',
-    coinMetadataUrl: p.SIGNER_COIN_METADATA_URL,
     priorityFee: {
       floorMicroLamports: p.SIGNER_PRIORITY_FEE_MICRO_LAMPORTS,
       maxMicroLamports: p.SIGNER_PRIORITY_FEE_MAX_MICRO_LAMPORTS,
       percentile: p.SIGNER_PRIORITY_FEE_PERCENTILE,
       maxLamports: p.SIGNER_PRIORITY_FEE_MAX_LAMPORTS,
     },
+    logLevel: p.LOG_LEVEL,
+  };
+}
+
+/** The subset of `RuntimeEnv` the operator setup commands need. */
+export type OperatorEnv = Pick<
+  RuntimeEnv,
+  | 'cluster'
+  | 'rpcUrl'
+  | 'keystorePassphrase'
+  | 'keystoreDir'
+  | 'journalDir'
+  | 'priorityFee'
+  | 'logLevel'
+>;
+
+/**
+ * Parses the variables of an operator command that runs before the service is fully configured
+ * (`--setup-revenue-referrals`): the cluster, the RPC, the keystore, the journal directory, the
+ * priority fees and the log level; no database, no HMAC server, no Telegram. Throws
+ * RuntimeConfigError listing every problem (names only).
+ */
+export function parseOperatorEnv(env: EnvSource): OperatorEnv {
+  const parsed = OperatorEnvSchema.safeParse(env);
+  const problems = schemaProblems(parsed);
+  if (!parsed.success || problems.length > 0) {
+    throw new RuntimeConfigError([...new Set(problems)]);
+  }
+  return baseEnv(parsed.data);
+}
+
+/** Parses the process-level variables. Throws RuntimeConfigError listing every problem. */
+export function parseRuntimeEnv(env: EnvSource): RuntimeEnv {
+  const parsed = RuntimeEnvSchema.safeParse(env);
+  const problems = schemaProblems(parsed);
+  problems.push(...alertingProblems(env));
+  if (!parsed.success || problems.length > 0) {
+    throw new RuntimeConfigError([...new Set(problems)]);
+  }
+  const p = parsed.data;
+  return {
+    ...baseEnv(p),
+    supabaseUrl: p.SUPABASE_URL,
+    supabaseServiceRoleKey: p.SUPABASE_SERVICE_ROLE_KEY,
+    host: p.SIGNER_HOST ?? '0.0.0.0',
+    coinMetadataUrl: p.SIGNER_COIN_METADATA_URL,
     routesPaused: p.SIGNER_ROUTES_PAUSED,
     maxLaunchpadsPerDay: p.SIGNER_MAX_LAUNCHPADS_PER_DAY,
     minPaymentLamports: {
@@ -310,6 +362,5 @@ export function parseRuntimeEnv(env: EnvSource): RuntimeEnv {
     convertRoles: parseConvertRoles(p.SIGNER_CONVERT_ROLES),
     convertIntervalMs: p.SIGNER_CONVERT_INTERVAL_HOURS * 60 * 60_000,
     shutdownTimeoutMs: p.SIGNER_SHUTDOWN_TIMEOUT_SECONDS * 1_000,
-    logLevel: p.LOG_LEVEL,
   };
 }
