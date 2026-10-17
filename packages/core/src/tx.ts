@@ -559,6 +559,9 @@ export async function readNonce(
   };
 }
 
+/** Compute unit limit of the nonce account creations when a priority fee is set. */
+export const CREATE_NONCE_ACCOUNT_COMPUTE_UNITS = 10_000;
+
 export interface BuildCreateNonceAccountTxParams {
   connection: Pick<Connection, 'getMinimumBalanceForRentExemption' | 'getLatestBlockhash'>;
   /** Pays the rent and the fee; signs. */
@@ -600,7 +603,7 @@ export async function buildCreateNonceAccountTx(
   if (params.computeUnitPriceMicroLamports !== undefined) {
     transaction.add(
       ...computeBudgetInstructions({
-        units: 10_000,
+        units: CREATE_NONCE_ACCOUNT_COMPUTE_UNITS,
         microLamports: params.computeUnitPriceMicroLamports,
       }),
     );
@@ -704,7 +707,7 @@ export async function buildCreateNonceAccountWithSeedTx(
   const budget =
     params.computeUnitPriceMicroLamports !== undefined
       ? computeBudgetInstructions({
-          units: 10_000,
+          units: CREATE_NONCE_ACCOUNT_COMPUTE_UNITS,
           microLamports: params.computeUnitPriceMicroLamports,
         })
       : [];
