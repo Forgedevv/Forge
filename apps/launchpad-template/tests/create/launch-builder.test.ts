@@ -332,4 +332,32 @@ describe('createLaunchBuilder (launch built by @forge/core)', () => {
     });
     expect(base64ToBytes(response.poolTx).length).toBeLessThanOrEqual(1232);
   });
+
+  it('maps core INVALID_INPUT to a clear 400-class error, never to a network failure', async () => {
+    const { builder, input } = setup();
+    const config = await builder.loadConfig();
+    // 28 characters but 41 UTF-8 bytes: within 32 characters, beyond the 32-byte limit.
+    const accented = await builder
+      .build(config, { ...input, name: 'Café Crème Brûlée Été' + 'é'.repeat(7) })
+      .catch((e: unknown) => e);
+    expect(accented).toBeInstanceOf(LaunchBuildError);
+    expect(accented).toMatchObject({ code: 'invalid_input' });
+    expect((accented as Error).message).toMatch(/at most 32 bytes/);
+
+    const emoji = await builder
+      .build(config, { ...input, name: 'Rocket 🚀🚀🚀🚀🚀🚀🚀' })
+      .catch((e: unknown) => e);
+    expect(emoji).toMatchObject({ code: 'invalid_input' });
+
+    const buy = await builder
+      .build(config, { ...input, firstBuyLamports: BigInt(10_000_000_001) })
+      .catch((e: unknown) => e);
+    expect(buy).toMatchObject({ code: 'invalid_input' });
+    expect((buy as Error).message).toMatch(/10 SOL/);
+
+    const uri = await builder
+      .build(config, { ...input, metadataUri: 'http://example.test/m.json' })
+      .catch((e: unknown) => e);
+    expect(uri).toMatchObject({ code: 'metadata_invalid' });
+  });
 });
