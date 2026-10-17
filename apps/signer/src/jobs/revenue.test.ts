@@ -3,9 +3,13 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   ACCOUNT_SIZE,
+  ASSOCIATED_TOKEN_PROGRAM_ID,
   NATIVE_MINT,
   TOKEN_2022_PROGRAM_ID,
   TOKEN_PROGRAM_ID,
+  createAssociatedTokenAccountIdempotentInstruction,
+  createCloseAccountInstruction,
+  getAssociatedTokenAddressSync,
 } from '@solana/spl-token';
 import {
   ComputeBudgetProgram,
@@ -44,6 +48,7 @@ import {
   type RevenueBreakdown,
   type RevenueConfig,
   type RevenueDeps,
+  type RevenueOutcome,
   type RevenueRpc,
   type RevenueTokenAccount,
   type RevenueUnwrapExpectation,
@@ -71,6 +76,11 @@ const PASSPHRASE = 'revenue job test passphrase, long enough for the keystore';
 const SOL = 1_000_000_000n;
 const SEED = 'unwrap-0123456789abcdef';
 const USDC = new PublicKey('EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v');
+/** The Jupiter aggregator program of the Swap API V2 build fixture (a fake AMM here). */
+const JUPITER_V6 = new PublicKey('JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4');
+/** Output of the fixture jupiter-v2-build-usdc-sol.json: 5 USDC -> 48,014,162 lamports. */
+const FIXTURE_IN_AMOUNT = 5_000_000n;
+const FIXTURE_OUT_AMOUNT = 48_014_162n;
 
 let dir: string;
 let keystore: Keystore;
@@ -125,6 +135,7 @@ class RevenueChain extends FakeChain implements RevenueRpc {
         address: new PublicKey(address),
         mint: a.mint,
         amount: a.amount,
+        lamports: this.balanceOf(new PublicKey(address)),
         programId: a.programId,
         frozen: a.frozen ?? false,
       }));
@@ -143,6 +154,47 @@ class RevenueChain extends FakeChain implements RevenueRpc {
     if (ix.programId.equals(MEMO_PROGRAM_ID)) return;
     // Its fee is charged by FakeChain with the signatures.
     if (ix.programId.equals(ComputeBudgetProgram.programId)) return;
+    if (ix.programId.equals(ASSOCIATED_TOKEN_PROGRAM_ID)) {
+      // CreateIdempotent (u8 1): payer (signer), ata, owner, mint, system, token program. The
+      // setup instruction of a Swap API V2 build with `wrapAndUnwrapSol`.
+      if (Buffer.from(ix.data).toString('hex') !== '01') throw new Error('unsupported ATA call');
+      if (!ix.keys[0]!.isSigner) throw new Error('ATA payer must sign');
+      const ata = key(1).toBase58();
+      if (this.tokenAccounts.has(ata) || ledger.scratch.has(ata)) return;
+      const [owner, mint] = [key(2), key(3)];
+      if (!getAssociatedTokenAddressSync(mint, owner, true, TOKEN_PROGRAM_ID).equals(key(1))) {
+        throw new Error('not the associated token address');
+      }
+      const rent = this.rentExempt(ACCOUNT_SIZE);
+      ledger.debit(key(0), rent);
+      ledger.scratch.set(ata, rent);
+      ledger.onCommit(() =>
+        this.tokenAccounts.set(ata, { mint, owner, amount: 0n, programId: TOKEN_PROGRAM_ID }),
+      );
+      return;
+    }
+    if (ix.programId.equals(JUPITER_V6)) {
+      // Fake aggregator: taker (signer), source token account, destination WSOL account; data =
+      // u64 in amount + u64 out amount. The output lamports appear from the (fake) pools.
+      const data = Buffer.from(ix.data);
+      const [inAmount, outAmount] = [data.readBigUInt64LE(0), data.readBigUInt64LE(8)];
+      const source = key(1).toBase58();
+      const destination = key(2).toBase58();
+      const src = this.tokenAccounts.get(source);
+      if (!src) throw new Error('swap source missing');
+      if (!src.owner.equals(key(0)) || !ix.keys[0]!.isSigner) throw new Error('taker mismatch');
+      if (src.amount < inAmount) throw new Error('insufficient token balance');
+      if (!this.tokenAccounts.has(destination) && !ledger.scratch.has(destination)) {
+        throw new Error('swap destination missing');
+      }
+      ledger.scratch.set(destination, (ledger.scratch.get(destination) ?? 0n) + outAmount);
+      ledger.onCommit(() => {
+        src.amount -= inAmount;
+        const dst = this.tokenAccounts.get(destination);
+        if (dst) dst.amount += outAmount;
+      });
+      return;
+    }
     if (!ix.programId.equals(TOKEN_PROGRAM_ID)) throw new Error('unknown program');
     const data = Buffer.from(ix.data);
     if (data[0] === 18) {
@@ -181,9 +233,15 @@ class RevenueChain extends FakeChain implements RevenueRpc {
       return;
     }
     if (data[0] === 9) {
+      // CloseAccount: everything the account holds (its committed lamports and what it received
+      // in this execution) goes to the destination; the account is gone once landed.
       const account = key(0).toBase58();
       if (!ix.keys[2]!.isSigner) throw new Error('close authority must sign');
-      ledger.credit(key(1), ledger.scratch.get(account) ?? 0n);
+      const existing = this.tokenAccounts.get(account);
+      if (existing && !existing.owner.equals(key(2))) throw new Error('close authority mismatch');
+      const held = existing ? this.balanceOf(key(0)) : 0n;
+      if (held > 0n) ledger.debit(key(0), held);
+      ledger.credit(key(1), held + (ledger.scratch.get(account) ?? 0n));
       ledger.scratch.set(account, 0n);
       ledger.onCommit(() => this.tokenAccounts.delete(account));
       return;
@@ -218,7 +276,9 @@ function setup(options: SetupOptions = {}) {
   const forwards = createMemoryJournal(RevenueForwardEntry);
   const vault = randomAddress();
   const referral = randomAddress();
-  const ownWsol = randomAddress();
+  // The Jupiter referral claims land in the partner's associated WSOL account: the one a swap
+  // with `wrapAndUnwrapSol` creates in its setup and closes in its cleanup.
+  const ownWsol = getAssociatedTokenAddressSync(NATIVE_MINT, revenue, false, TOKEN_PROGRAM_ID);
   chain.setBalance(vault, SOL);
   const rent = chain.rentExempt(0);
   const native = options.native ?? rent + DEFAULT_REVENUE_RESERVE_LAMPORTS + 50_000_000n;
@@ -305,6 +365,65 @@ function setup(options: SetupOptions = {}) {
     state,
     pending,
     retry,
+  };
+}
+
+/**
+ * A conversion in the shape of a Swap API V2 build with `wrapAndUnwrapSol` (fixture
+ * jupiter-v2-build-usdc-sol.json): the idempotent creation of the taker's associated WSOL
+ * account in setup, the swap, and the CloseAccount of that account to the taker in cleanup.
+ * Signed by the revenue key and sent to the fake chain, as the conversion machinery would.
+ */
+async function fixtureShapedSwap(
+  t: ReturnType<typeof setup>,
+  usdcAccount: PublicKey,
+  inAmount = FIXTURE_IN_AMOUNT,
+  outAmount = FIXTURE_OUT_AMOUNT,
+): Promise<string> {
+  const tx = new Transaction();
+  tx.add(
+    createAssociatedTokenAccountIdempotentInstruction(
+      revenue,
+      t.ownWsol,
+      revenue,
+      NATIVE_MINT,
+      TOKEN_PROGRAM_ID,
+    ),
+  );
+  const data = Buffer.alloc(16);
+  data.writeBigUInt64LE(inAmount, 0);
+  data.writeBigUInt64LE(outAmount, 8);
+  tx.add(
+    new TransactionInstruction({
+      programId: JUPITER_V6,
+      keys: [
+        { pubkey: revenue, isSigner: true, isWritable: false },
+        { pubkey: usdcAccount, isSigner: false, isWritable: true },
+        { pubkey: t.ownWsol, isSigner: false, isWritable: true },
+      ],
+      data,
+    }),
+  );
+  tx.add(createCloseAccountInstruction(t.ownWsol, revenue, revenue, [], TOKEN_PROGRAM_ID));
+  const { blockhash } = await t.chain.getLatestBlockhash();
+  tx.recentBlockhash = blockhash;
+  tx.feePayer = revenue;
+  const ref = (await keystore.findRef('revenue'))!;
+  const { raw, signature } = await signWithKeystore(keystore, tx, [{ ref, expected: revenue }]);
+  await t.chain.sendRawTransaction(raw);
+  return signature;
+}
+
+function conversionSummary(items: ConvertRunSummary['items']): ConvertRunSummary {
+  return { status: 'ran', mode: 'live', modeReason: 'test', window: '1', items };
+}
+
+function usdcConversion(signature: string): ConvertRunSummary['items'][number] {
+  return {
+    owner: revenue.toBase58(),
+    mint: USDC.toBase58(),
+    amount: FIXTURE_IN_AMOUNT,
+    outcome: { status: 'confirmed', signature, outAmount: FIXTURE_OUT_AMOUNT },
   };
 }
 
@@ -737,7 +856,7 @@ describe('revenueWiringProblems', () => {
 });
 
 describe('createRevenueRpc', () => {
-  it('lists the token accounts of both programs with their raw amounts', async () => {
+  it('lists the token accounts of both programs with their raw amounts and lamports, at the asked commitment', async () => {
     const owner = randomAddress();
     const classic = randomAddress();
     const t22 = randomAddress();
@@ -754,6 +873,7 @@ describe('createRevenueRpc', () => {
               {
                 pubkey: classic,
                 account: {
+                  lamports: 2_039_403,
                   data: {
                     parsed: {
                       info: {
@@ -765,12 +885,16 @@ describe('createRevenueRpc', () => {
                   },
                 },
               },
-              { pubkey: randomAddress(), account: { data: { parsed: { info: { mint: 'x' } } } } },
+              {
+                pubkey: randomAddress(),
+                account: { lamports: 1, data: { parsed: { info: { mint: 'x' } } } },
+              },
             ]
           : [
               {
                 pubkey: t22,
                 account: {
+                  lamports: 2_039_280,
                   data: {
                     parsed: {
                       info: {
@@ -793,16 +917,28 @@ describe('createRevenueRpc', () => {
         a.address.toBase58(),
         a.mint.toBase58(),
         a.amount,
+        a.lamports,
         a.programId.toBase58(),
         a.frozen,
       ]),
     ).toEqual([
-      [classic.toBase58(), NATIVE_MINT.toBase58(), 123n, TOKEN_PROGRAM_ID.toBase58(), false],
-      [t22.toBase58(), USDC.toBase58(), 7n, TOKEN_2022_PROGRAM_ID.toBase58(), true],
+      [
+        classic.toBase58(),
+        NATIVE_MINT.toBase58(),
+        123n,
+        2_039_403n,
+        TOKEN_PROGRAM_ID.toBase58(),
+        false,
+      ],
+      [t22.toBase58(), USDC.toBase58(), 7n, 2_039_280n, TOKEN_2022_PROGRAM_ID.toBase58(), true],
     ]);
     expect(calls.every((c) => c.startsWith(owner.toBase58()) && c.endsWith(':finalized'))).toBe(
       true,
     );
+    calls.length = 0;
+    await rpc.getTokenAccounts(owner, 'confirmed');
+    expect(calls).toHaveLength(2);
+    expect(calls.every((c) => c.endsWith(':confirmed'))).toBe(true);
   });
 });
 
@@ -1244,6 +1380,169 @@ describe('revenue job', () => {
     const job = t.job();
     const [a, b] = await Promise.all([job.runOnce(), job.runOnce()]);
     expect([a.status, b.status].sort()).toEqual(['busy', 'ran']);
+  });
+
+  // The Swap API V2 build with `wrapAndUnwrapSol` closes the taker's associated WSOL account in
+  // its cleanup: the account where the Jupiter referral claims land. The unwrap must come first.
+  describe('with conversions that close the Jupiter claims account', () => {
+    function mainnet(options: SetupOptions = {}) {
+      const t = setup({ cluster: 'mainnet-beta', ...options });
+      const usdcAccount = randomAddress();
+      t.chain.addTokenAccount(usdcAccount, {
+        mint: USDC,
+        owner: revenue,
+        amount: FIXTURE_IN_AMOUNT,
+        programId: TOKEN_PROGRAM_ID,
+      });
+      return { ...t, usdcAccount, tokenRent: t.chain.rentExempt(ACCOUNT_SIZE) };
+    }
+    const forwarded = (report: { outcome?: RevenueOutcome }) =>
+      report.outcome as Extract<RevenueOutcome, { result: 'forwarded' }>;
+
+    it('unwraps before the conversions, so the swap only returns the rent, and still forwards with the sources attributed', async () => {
+      const t = mainnet({ referralWsol: 30_000_000n, otherWsol: 10_000_000n });
+      let swapSignature = '';
+      const job = t.job({
+        convert: async () => {
+          // The unwrap landed before the conversion: both WSOL accounts are empty but exist.
+          expect(t.chain.tokenAmount(t.referral)).toBe(0n);
+          expect(t.chain.tokenAmount(t.ownWsol)).toBe(0n);
+          swapSignature = await fixtureShapedSwap(t, t.usdcAccount);
+          return conversionSummary([usdcConversion(swapSignature)]);
+        },
+      });
+      const report = await job.runOnce();
+      expect(report.status).toBe('ran');
+      expect(report.outcome?.result).toBe('forwarded');
+      const outcome = forwarded(report);
+      // Landed in this order: the unwrap, the swap, the forward.
+      expect([...t.chain.landed.keys()]).toEqual([t.announced[0], swapSignature, t.announced[1]]);
+      // The swap's cleanup closed the claims account; the referral account remains, emptied.
+      expect(t.chain.tokenAccounts.has(t.ownWsol.toBase58())).toBe(false);
+      expect(t.chain.tokenAmount(t.referral)).toBe(0n);
+      expect(t.chain.tokenAmount(t.usdcAccount)).toBe(0n);
+      // Forwarded: the native balance, the unwrapped WSOL, the swap output and the closed
+      // account's rent, less the unwrap and swap fees and the floor.
+      const expectedAmount =
+        t.native + 40_000_000n + FIXTURE_OUT_AMOUNT + t.tokenRent - 10_000n - t.floor;
+      expect(outcome.lamports).toBe(expectedAmount);
+      expect(t.chain.receivedBy(t.vault)).toBe(expectedAmount);
+      // Attribution: the unwrapped amounts by account, the swap output net of its fee as
+      // Jupiter referral (USDC is a claim mint), the returned rent and the first run's balance
+      // as other.
+      const swapOutput = FIXTURE_OUT_AMOUNT - 5_000n;
+      expect(outcome.breakdown).toEqual({
+        meteora_referral: 30_000_000n,
+        jupiter_referral: 10_000_000n + swapOutput,
+        platform_fee: 0n,
+        other: expectedAmount - 40_000_000n - swapOutput,
+      });
+      expect(outcome.breakdown.other).toBeGreaterThanOrEqual(t.tokenRent);
+      const entry = (await t.forwards.list())[0]!.value;
+      expect(entry.relatedSignatures).toEqual([t.announced[0], swapSignature]);
+      expect(t.alerter.codes()).toEqual([]);
+    });
+
+    it('after a crash between the unwrap and the conversions, the next run converts and forwards without a second unwrap', async () => {
+      const t = mainnet({ referralWsol: 30_000_000n, otherWsol: 10_000_000n });
+      const crashed = await t
+        .job({
+          convert: async () => {
+            throw new Error('process died');
+          },
+        })
+        .runOnce();
+      expect(crashed.status).toBe('error');
+      expect(crashed.reason).toMatch(/process died/);
+      // The unwrap had landed and was booked before the crash: nothing in flight, the amounts
+      // pending by source, the accounts emptied but kept.
+      expect((await t.state()).inFlight).toBeNull();
+      expect(await t.pending()).toEqual({
+        meteora_referral: 30_000_000n,
+        jupiter_referral: 10_000_000n,
+        platform_fee: 0n,
+        other: 0n,
+      });
+      expect(t.chain.tokenAmount(t.referral)).toBe(0n);
+      expect(t.chain.tokenAmount(t.ownWsol)).toBe(0n);
+      expect(t.alerter.codes()).toEqual(['revenue_run_failed']);
+      // Restart: nothing to unwrap, the conversion closes the empty claims account, then the
+      // forward, with the same attribution as an uninterrupted run.
+      let swapSignature = '';
+      const report = await t
+        .job({
+          convert: async () => {
+            swapSignature = await fixtureShapedSwap(t, t.usdcAccount);
+            return conversionSummary([usdcConversion(swapSignature)]);
+          },
+        })
+        .runOnce();
+      expect(report.outcome?.result).toBe('forwarded');
+      const outcome = forwarded(report);
+      expect(t.announced).toHaveLength(2);
+      expect([...t.chain.landed.keys()]).toEqual([t.announced[0], swapSignature, t.announced[1]]);
+      const expectedAmount =
+        t.native + 40_000_000n + FIXTURE_OUT_AMOUNT + t.tokenRent - 10_000n - t.floor;
+      const swapOutput = FIXTURE_OUT_AMOUNT - 5_000n;
+      expect(outcome.lamports).toBe(expectedAmount);
+      expect(outcome.breakdown).toEqual({
+        meteora_referral: 30_000_000n,
+        jupiter_referral: 10_000_000n + swapOutput,
+        platform_fee: 0n,
+        other: expectedAmount - 40_000_000n - swapOutput,
+      });
+      expect((await t.forwards.list())[0]!.value.relatedSignatures).toEqual([
+        t.announced[0],
+        swapSignature,
+      ]);
+    });
+
+    it('books the wrapped SOL a closed account still held to its source, and the rent as other', async () => {
+      // Dust below the unwrap minimum stays in the claims account; the swap closes it anyway.
+      const t = mainnet({ otherWsol: 500_000n, config: { minForwardLamports: 10n * SOL } });
+      let swapSignature = '';
+      await t
+        .job({
+          convert: async () => {
+            expect(t.chain.tokenAmount(t.ownWsol)).toBe(500_000n);
+            swapSignature = await fixtureShapedSwap(t, t.usdcAccount);
+            return conversionSummary([usdcConversion(swapSignature)]);
+          },
+        })
+        .runOnce();
+      expect(t.chain.sendAttempts).toEqual([swapSignature]);
+      expect(t.chain.tokenAccounts.has(t.ownWsol.toBase58())).toBe(false);
+      expect(await t.pending()).toEqual({
+        meteora_referral: 0n,
+        jupiter_referral: 500_000n + FIXTURE_OUT_AMOUNT - 5_000n,
+        platform_fee: 0n,
+        other: t.tokenRent,
+      });
+      expect((await t.state()).expectedNativeLamports).toBe(t.chain.balanceOf(revenue).toString());
+    });
+
+    it('books a swap of unknown outcome that landed as other, with its signature', async () => {
+      const t = mainnet({ otherWsol: 0n, config: { minForwardLamports: 10n * SOL } });
+      let swapSignature = '';
+      await t
+        .job({
+          convert: async () => {
+            swapSignature = await fixtureShapedSwap(t, t.usdcAccount);
+            return conversionSummary([
+              { ...usdcConversion(swapSignature), outcome: { status: 'unknown', signature: swapSignature } },
+            ]);
+          },
+        })
+        .runOnce();
+      expect(await t.pending()).toEqual({
+        meteora_referral: 0n,
+        jupiter_referral: 0n,
+        platform_fee: 0n,
+        other: FIXTURE_OUT_AMOUNT + t.tokenRent - 5_000n,
+      });
+      expect((await t.state()).relatedSignatures).toEqual([swapSignature]);
+      expect(t.alerter.codes()).toEqual([]);
+    });
   });
 });
 

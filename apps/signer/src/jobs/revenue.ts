@@ -16,12 +16,17 @@
  *   2. reads the native balance and reconciles it with the journal: a native inflow since the
  *      last run is the platform fee (the only native stream into this wallet), an unexplained
  *      drop beyond the job's own fees is alerted (`revenue_unexpected_outflow`);
- *   3. converts the non-SOL balances to SOL with the conversion machinery of jobs/convert.ts
- *      (Jupiter, mainnet-beta only, same policy, same `convert_paused` switch and live flag);
- *      on devnet, where Jupiter does not index anything, the swaps are skipped with a log line;
- *   4. unwraps the wrapped SOL: one transaction creates an ephemeral WSOL account (seeded from
+ *   3. unwraps the wrapped SOL: one transaction creates an ephemeral WSOL account (seeded from
  *      the wallet, no extra signer), moves every WSOL balance into it and closes it to the wallet,
- *      so the referral account itself (referenced by every swap) is never closed;
+ *      so the referral account itself (referenced by every swap) is never closed. This comes
+ *      BEFORE the conversions: a Jupiter swap with `wrapAndUnwrapSol` closes the wallet's WSOL
+ *      associated account (where the Jupiter claims land) in its cleanup, and an unwrap planned
+ *      from accounts read before such a swap would be refused at preflight, every run;
+ *   4. converts the non-SOL balances to SOL with the conversion machinery of jobs/convert.ts
+ *      (Jupiter, mainnet-beta only, same policy, same `convert_paused` switch and live flag);
+ *      on devnet, where Jupiter does not index anything, the swaps are skipped with a log line.
+ *      The swaps settle at confirmed, so the balance and the token accounts are re-read there
+ *      before the forward is planned;
  *   5. forwards the native SOL above the reserve (rent + SIGNER_REVENUE_RESERVE_LAMPORTS +
  *      fee buffer) to FORGE_MULTISIG_VAULT, in one policy-checked transfer, when it reaches
  *      SIGNER_REVENUE_MIN_FORWARD_LAMPORTS, and records it in the append-only forward journal
@@ -31,11 +36,14 @@
  * forward: `meteora_referral` (WSOL unwrapped from FORGE_METEORA_REFERRAL_ACCOUNT),
  * `jupiter_referral` (WSOL unwrapped from the wallet's other accounts and the output of the
  * conversions of the Jupiter claim mints, SIGNER_JUPITER_CLAIMS_MINTS), `platform_fee` (native
- * SOL received directly) and `other` (conversions of any other mint, and what a forward cannot
- * explain, e.g. the first run's balance). The job's own network fees are not booked: a forward's
- * breakdown is the pending buckets, scaled down proportionally when they exceed the forwarded
- * amount (fees, reserve; largest remainder, so it sums exactly), the remainder booked as `other`
- * when they fall short; then the buckets are reset.
+ * SOL received directly) and `other` (conversions of any other mint, the rent of a WSOL account
+ * a conversion closed, the output of swaps of unknown outcome, and what a forward cannot
+ * explain, e.g. the first run's balance). The job only sees balance deltas: a native inflow
+ * between two runs is booked as platform fee whoever sent it (an operator top-up included, see
+ * docs/OPERATIONS.md). The job's own network fees are not booked: a forward's breakdown is the
+ * pending buckets, scaled down proportionally when they exceed the forwarded amount (fees,
+ * reserve; largest remainder, so it sums exactly), the remainder booked as `other` when they
+ * fall short; then the buckets are reset.
  *
  * Crash recovery. The state journal is written before every broadcast (signature + signed
  * bytes), so a restart settles the transaction first and never signs a second one. A forward is
@@ -775,35 +783,48 @@ export interface RevenueTokenAccount {
   mint: PublicKey;
   /** Raw units. */
   amount: bigint;
+  /**
+   * Native lamports of the account: its rent plus, for wrapped SOL, `amount`. Closing the account
+   * returns all of it to the wallet.
+   */
+  lamports: bigint;
   programId: PublicKey;
   frozen: boolean;
 }
 
 export interface RevenueRpc extends SolanaRpc {
-  /** Every token account (classic and Token-2022) held by `owner`, at finalized commitment. */
-  getTokenAccounts(owner: PublicKey): Promise<RevenueTokenAccount[]>;
+  /**
+   * Every token account (classic and Token-2022) held by `owner`, at `commitment` (finalized by
+   * default; confirmed right after the conversions, which settle there).
+   */
+  getTokenAccounts(
+    owner: PublicKey,
+    commitment?: 'confirmed' | 'finalized',
+  ): Promise<RevenueTokenAccount[]>;
 }
 
 export function createRevenueRpc(connection: Connection): RevenueRpc {
   return {
     ...rpcFromConnection(connection),
-    async getTokenAccounts(owner) {
+    async getTokenAccounts(owner, commitment = 'finalized') {
       const out: RevenueTokenAccount[] = [];
       for (const programId of [TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID]) {
         const res = await connection.getParsedTokenAccountsByOwner(
           owner,
           { programId },
-          'finalized',
+          commitment,
         );
         for (const { pubkey, account } of res.value) {
           const info = (account.data as { parsed?: { info?: unknown } }).parsed?.info as
             { mint?: string; state?: string; tokenAmount?: { amount?: string } } | undefined;
           const amount = info?.tokenAmount?.amount;
           if (!info?.mint || amount === undefined || !/^[0-9]{1,20}$/.test(amount)) continue;
+          if (!Number.isSafeInteger(account.lamports) || account.lamports < 0) continue;
           out.push({
             address: pubkey,
             mint: new PublicKey(info.mint),
             amount: BigInt(amount),
+            lamports: BigInt(account.lamports),
             programId,
             frozen: info.state === 'frozen',
           });
@@ -1230,78 +1251,29 @@ export function createRevenueJob(deps: RevenueDeps): RevenueJob {
         'revenue_referral_not_owned',
       );
     }
-    const wsol = tokens.filter(
-      (t) =>
-        t.programId.equals(TOKEN_PROGRAM_ID) &&
-        t.mint.equals(NATIVE_MINT) &&
-        !t.frozen &&
-        t.amount > 0n,
+    // Every wrapped SOL account, empty ones included: a conversion may close one of them (below)
+    // and its lamports then come back to the wallet.
+    const wsolHeld = tokens.filter(
+      (t) => t.programId.equals(TOKEN_PROGRAM_ID) && t.mint.equals(NATIVE_MINT),
     );
+    const wsol = wsolHeld.filter((t) => !t.frozen && t.amount > 0n);
     const others = tokens.filter((t) => !t.mint.equals(NATIVE_MINT) && !t.frozen && t.amount > 0n);
+    const sourceOf = (account: PublicKey): RevenueSource =>
+      account.equals(config.meteoraReferral) ? 'meteora_referral' : 'jupiter_referral';
 
-    // 4. Conversions (Jupiter): mainnet-beta only, live runs only.
-    if (others.length > 0) {
-      const mints = others.map((t) => t.mint.toBase58());
-      if (deps.cluster !== 'mainnet-beta') {
-        log.info({ mints }, 'non-SOL balances left as they are: no Jupiter on this cluster');
-        for (const t of others) {
-          await alert(
-            'normal',
-            'revenue_unconvertible_balance',
-            'The revenue wallet holds a token this cluster cannot convert to SOL',
-            { mint: t.mint.toBase58(), amount: t.amount.toString() },
-            `revenue_unconvertible_balance:${t.mint.toBase58()}`,
-          );
-        }
-      } else if (config.dryRun || !deps.convert) {
-        log.info({ mints, dryRun: config.dryRun }, 'non-SOL balances not converted on this run');
-      } else {
-        const summary = await deps.convert();
-        const confirmed = summary.items.filter(
-          (
-            i,
-          ): i is typeof i & {
-            outcome: { status: 'confirmed'; signature: string; outAmount: bigint };
-          } => i.outcome.status === 'confirmed',
-        );
-        const after = await spendableBalance(rpc, config.revenue, retry);
-        if (confirmed.length > 0 && after > balance) {
-          const gain = after - balance;
-          const shares = splitProportionally(
-            gain,
-            confirmed.map((i) => i.outcome.outAmount),
-          );
-          const pending = pendingOf(state);
-          let related = state.relatedSignatures;
-          confirmed.forEach((item, i) => {
-            const mint = new PublicKey(item.mint);
-            const source: RevenueSource = config.jupiterClaimMints.some((m) => m.equals(mint))
-              ? 'jupiter_referral'
-              : 'other';
-            pending[source] += shares[i]!;
-            related = remember(related, item.outcome.signature);
-          });
-          state = {
-            ...state,
-            expectedNativeLamports: after.toString(),
-            pending: breakdownToEntry(pending),
-            relatedSignatures: related,
-          };
-          await journal.put(REVENUE_STATE_KEY, state);
-          log.info({ gain: gain.toString(), conversions: confirmed.length }, 'conversions booked');
-        } else {
-          state = await reconcile(state, after, 'after_conversions');
-        }
-        balance = after;
-      }
-    }
-
-    // 5. Unwrap the wrapped SOL into native SOL, without closing any existing account.
+    // 4. Unwrap the wrapped SOL into native SOL, without closing any existing account. Before
+    //    the conversions: a Jupiter swap with `wrapAndUnwrapSol` creates the wallet's WSOL
+    //    associated account in its setup and CLOSES it in its cleanup, and that account is
+    //    exactly where the Jupiter referral claims land. An unwrap planned from the accounts
+    //    read above but sent after a swap would transfer from a closed account and be refused
+    //    at preflight, every run. Unwrapped first, the swap's close only returns the rent.
     const unwrapTotal = wsol.reduce((t, a) => t + a.amount, 0n);
     const tokenRent = await withRetry(
       () => rpc.getMinimumBalanceForRentExemption(ACCOUNT_SIZE),
       retry,
     );
+    /** Raw units this run's finalized unwrap moved out of each account. */
+    const unwrapped = new Map<string, bigint>();
     if (unwrapTotal >= config.minUnwrapLamports && !config.dryRun) {
       const unwrapFeeBuffer =
         UNWRAP_FEE_BUFFER_LAMPORTS +
@@ -1323,11 +1295,7 @@ export function createRevenueJob(deps: RevenueDeps): RevenueJob {
           .slice(0, MAX_UNWRAP_SOURCES)
           .map((t) => ({ account: t.address, amount: t.amount }));
         const moved = zeroBreakdown();
-        for (const s of sources) {
-          moved[
-            s.account.equals(config.meteoraReferral) ? 'meteora_referral' : 'jupiter_referral'
-          ] += s.amount;
-        }
+        for (const s of sources) moved[sourceOf(s.account)] += s.amount;
         const seed = newSeed();
         const ephemeral = await PublicKey.createWithSeed(config.revenue, seed, TOKEN_PROGRAM_ID);
         const expectation: RevenueUnwrapExpectation = {
@@ -1370,8 +1338,123 @@ export function createRevenueJob(deps: RevenueDeps): RevenueJob {
         );
         state = sent.state;
         if (sent.outcome) return { status: 'ran', outcome: sent.outcome };
+        for (const s of sources) unwrapped.set(s.account.toBase58(), s.amount);
         balance = await spendableBalance(rpc, config.revenue, retry);
         state = await reconcile(state, balance, 'after_unwrap');
+      }
+    }
+
+    // 5. Conversions (Jupiter): mainnet-beta only, live runs only.
+    if (others.length > 0) {
+      const mints = others.map((t) => t.mint.toBase58());
+      if (deps.cluster !== 'mainnet-beta') {
+        log.info({ mints }, 'non-SOL balances left as they are: no Jupiter on this cluster');
+        for (const t of others) {
+          await alert(
+            'normal',
+            'revenue_unconvertible_balance',
+            'The revenue wallet holds a token this cluster cannot convert to SOL',
+            { mint: t.mint.toBase58(), amount: t.amount.toString() },
+            `revenue_unconvertible_balance:${t.mint.toBase58()}`,
+          );
+        }
+      } else if (config.dryRun || !deps.convert) {
+        log.info({ mints, dryRun: config.dryRun }, 'non-SOL balances not converted on this run');
+      } else {
+        const summary = await deps.convert();
+        const confirmed = summary.items.filter(
+          (
+            i,
+          ): i is typeof i & {
+            outcome: { status: 'confirmed'; signature: string; outAmount: bigint };
+          } => i.outcome.status === 'confirmed',
+        );
+        const sent = summary.items.filter(
+          (i): i is typeof i & { outcome: { status: 'confirmed' | 'unknown'; signature: string } } =>
+            i.outcome.status === 'confirmed' || i.outcome.status === 'unknown',
+        );
+        if (sent.length === 0) {
+          // Nothing was signed: the balance can only have moved by an inflow or someone else.
+          const after = await spendableBalance(rpc, config.revenue, retry);
+          state = await reconcile(state, after, 'after_conversions');
+          balance = after;
+        } else {
+          // The swaps settle at confirmed: the balance and the token accounts are read there, so
+          // the forward counts their output and the accounts their cleanup closed.
+          const after = await withRetry(() => rpc.getBalance(config.revenue, 'confirmed'), retry);
+          const remaining = await withRetry(
+            () => rpc.getTokenAccounts(config.revenue, 'confirmed'),
+            retry,
+          );
+          // A WSOL account a swap closed returned its rent (not revenue, booked as `other`) and
+          // the wrapped SOL it still held after the unwrap (revenue of its source).
+          const closed = wsolHeld.filter((t) => !remaining.some((r) => r.address.equals(t.address)));
+          const closedRent = closed.reduce(
+            (sum, t) => sum + (t.lamports > t.amount ? t.lamports - t.amount : 0n),
+            0n,
+          );
+          const closedWrapped = zeroBreakdown();
+          for (const t of closed) {
+            const left = t.amount - (unwrapped.get(t.address.toBase58()) ?? 0n);
+            if (left > 0n) closedWrapped[sourceOf(t.address)] += left;
+          }
+          if (after > balance) {
+            const gain = after - balance;
+            const pending = pendingOf(state);
+            // Rent first, then the wrapped SOL of the closed accounts, the rest is the swaps'
+            // output (net of their fees): by mint over the confirmed swaps, `other` when only
+            // swaps of unknown outcome could have produced it.
+            let left = gain;
+            const take = (amount: bigint): bigint => {
+              const taken = amount < left ? amount : left;
+              left -= taken;
+              return taken;
+            };
+            pending.other += take(closedRent);
+            for (const s of REVENUE_SOURCES) pending[s] += take(closedWrapped[s]);
+            if (left > 0n) {
+              if (confirmed.length > 0) {
+                const shares = splitProportionally(
+                  left,
+                  confirmed.map((i) => i.outcome.outAmount),
+                );
+                confirmed.forEach((item, i) => {
+                  const mint = new PublicKey(item.mint);
+                  pending[
+                    config.jupiterClaimMints.some((m) => m.equals(mint)) ? 'jupiter_referral' : 'other'
+                  ] += shares[i]!;
+                });
+              } else {
+                pending.other += left;
+              }
+            }
+            let related = state.relatedSignatures;
+            for (const item of sent) related = remember(related, item.outcome.signature);
+            state = {
+              ...state,
+              expectedNativeLamports: after.toString(),
+              pending: breakdownToEntry(pending),
+              relatedSignatures: related,
+            };
+            await journal.put(REVENUE_STATE_KEY, state);
+            log.info(
+              {
+                gain: gain.toString(),
+                conversions: confirmed.length,
+                unknown: sent.length - confirmed.length,
+                closedAccounts: closed.length,
+                closedRent: closedRent.toString(),
+              },
+              'conversions booked',
+            );
+          } else {
+            // No gain: the swaps' fees at most (alerted beyond the tolerance), or nothing landed.
+            let related = state.relatedSignatures;
+            for (const item of sent) related = remember(related, item.outcome.signature);
+            state = await reconcile({ ...state, relatedSignatures: related }, after, 'after_conversions');
+          }
+          balance = after;
+        }
       }
     }
 
