@@ -98,7 +98,10 @@ export function describeSendFailure(error: unknown): string {
     : Array.isArray(holder?.logs)
       ? (holder.logs as string[])
       : null;
-  const reason = chainFailureReason(`${stringify(error)} ${stringify(holder?.data?.err ?? '')}`, logs);
+  const reason = chainFailureReason(
+    `${stringify(error)} ${stringify(holder?.data?.err ?? '')}`,
+    logs,
+  );
   const detail = reason === 'unknown' ? '' : ` ${CHAIN_FAILURE_TEXT[reason]}`;
   return `${SEND_ERROR_TEXT.prefix}${detail} ${SEND_ERROR_TEXT.retry}`;
 }

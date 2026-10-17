@@ -100,7 +100,10 @@ function ClaimCreatorFeesList(props: ClaimCreatorFeesProps) {
     } catch (error) {
       setCoins(null);
       setLoadError(
-        messageForUser(error, 'Could not load your coins right now. Check your connection and retry.'),
+        messageForUser(
+          error,
+          'Could not load your coins right now. Check your connection and retry.',
+        ),
       );
     }
   }, [core, wallet]);

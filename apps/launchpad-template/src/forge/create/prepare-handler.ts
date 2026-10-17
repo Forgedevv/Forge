@@ -211,7 +211,12 @@ export function createPrepareHandler(deps: PrepareDeps) {
   function checkFirstBuy(raw: string): bigint {
     const firstBuyLamports = BigInt(raw);
     if (firstBuyLamports > BigInt(FIRST_BUY_MAX_SOL) * LAMPORTS_PER_SOL) {
-      throw new HttpError(400, `First buy cannot exceed ${FIRST_BUY_MAX_SOL} SOL.`, {}, 'invalid_input');
+      throw new HttpError(
+        400,
+        `First buy cannot exceed ${FIRST_BUY_MAX_SOL} SOL.`,
+        {},
+        'invalid_input',
+      );
     }
     if (firstBuyLamports > BigInt(0) && !deps.platformFeeWallet) {
       // The first buy owes the FORGE platform fee and its wallet is not configured.

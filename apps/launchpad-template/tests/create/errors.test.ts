@@ -85,9 +85,9 @@ describe('describeClaimBuildError', () => {
     expect(describeClaimBuildError(wrap(new ClaimError('not_pool_creator', 'raw')))).toMatch(
       /not the creator/,
     );
-    expect(describeClaimBuildError(wrap(new ClaimError('receiver_not_rent_exempt', 'raw')))).toMatch(
-      /little SOL/,
-    );
+    expect(
+      describeClaimBuildError(wrap(new ClaimError('receiver_not_rent_exempt', 'raw'))),
+    ).toMatch(/little SOL/);
     expect(describeClaimBuildError(new Error('There is nothing to claim for this coin.'))).toMatch(
       /nothing to claim/,
     );
@@ -99,7 +99,9 @@ describe('describeClaimBuildError', () => {
 
 describe('getBlockHeight (RPC relay)', () => {
   it('reads the confirmed block height', async () => {
-    const fetch = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ result: 42 }) });
+    const fetch = vi
+      .fn()
+      .mockResolvedValue({ ok: true, status: 200, json: async () => ({ result: 42 }) });
     const chain = createRpcChainClient({ url: 'https://relay.test', fetch });
     expect(await chain.getBlockHeight?.()).toBe(42);
     const body = JSON.parse(fetch.mock.calls[0][1].body);
@@ -107,7 +109,9 @@ describe('getBlockHeight (RPC relay)', () => {
   });
 
   it('refuses a malformed answer', async () => {
-    const fetch = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ result: 'x' }) });
+    const fetch = vi
+      .fn()
+      .mockResolvedValue({ ok: true, status: 200, json: async () => ({ result: 'x' }) });
     const chain = createRpcChainClient({ url: 'https://relay.test', fetch });
     await expect(chain.getBlockHeight?.()).rejects.toBeInstanceOf(RpcError);
   });

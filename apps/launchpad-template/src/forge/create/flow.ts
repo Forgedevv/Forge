@@ -143,7 +143,11 @@ function nowMs(deps: Pick<LaunchDeps, 'now'>): number {
 
 function notConfigured(): TxError {
   // Without the on-chain configuration nothing the server returns could be checked.
-  return new TxError('prepare_failed', 'prepare', 'Coin creation is not configured on this site yet.');
+  return new TxError(
+    'prepare_failed',
+    'prepare',
+    'Coin creation is not configured on this site yet.',
+  );
 }
 
 function firstBuyUnavailable(): TxError {
@@ -313,7 +317,12 @@ export async function rebuildLaunch(
       'The rebuilt transaction is for another coin address. Nothing was signed.',
     );
   }
-  const next = await checkPrepared(response, { ...review.coin, firstBuyLamports }, deps, platformFeeWallet);
+  const next = await checkPrepared(
+    response,
+    { ...review.coin, firstBuyLamports },
+    deps,
+    platformFeeWallet,
+  );
   // The capability belongs to the launch, not to one transaction: keep it.
   return { ...next, rebuildToken: next.rebuildToken ?? review.rebuildToken };
 }

@@ -122,7 +122,8 @@ export function validateCreateCoin(input: CreateCoinInput): ValidationResult {
   const nameBytes = utf8ByteLength(name);
   if (name.length < NAME_MIN) errors.name = VALIDATION_TEXT.nameShort;
   else if (nameBytes > NAME_MAX_BYTES) {
-    errors.name = nameBytes === name.length ? VALIDATION_TEXT.nameLong : VALIDATION_TEXT.nameLongBytes;
+    errors.name =
+      nameBytes === name.length ? VALIDATION_TEXT.nameLong : VALIDATION_TEXT.nameLongBytes;
   } else if (FORBIDDEN_CHARS.test(name)) errors.name = VALIDATION_TEXT.nameChars;
 
   const symbol = normalizeSymbol(input.symbol);

@@ -180,7 +180,10 @@ export function createPreparedLaunchStore(options: {
 }): PreparedLaunchStore {
   const now = options.now ?? Date.now;
   const maxEntries = options.maxEntries ?? 1_000;
-  const entries = new Map<string, { launch: PreparedLaunch; tokenHash: Buffer; expiresAt: number }>();
+  const entries = new Map<
+    string,
+    { launch: PreparedLaunch; tokenHash: Buffer; expiresAt: number }
+  >();
   const prune = (t: number) => {
     for (const [key, entry] of entries) {
       if (entry.expiresAt > t) break;
