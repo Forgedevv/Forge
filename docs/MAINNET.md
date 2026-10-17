@@ -210,8 +210,9 @@ Parsed at start-up (`runtime/env.ts` and the jobs' `...FromEnv` parsers, `server
 | `SUPABASE_SERVICE_ROLE_KEY` | yes | service role key (20 characters or more) | none | start-up fails | S |
 | `TELEGRAM_BOT_TOKEN` | yes | alert bot (required on mainnet-beta and in production) | none | start-up fails | S |
 | `TELEGRAM_CHAT_ID` | yes | team group id | none | start-up fails | |
-| `JUPITER_API_KEY` | cond | Jupiter developer portal key; required as soon as `FORGE_CONVERT_LIVE=true` or `FORGE_BUYBACK_LIVE=true` on mainnet | none | start-up error when a live job lacks it; dry runs work without it | S |
-| `JUPITER_API_URL` | no | leave unset (https only) | `https://api.jup.ag/swap/v1` | quotes fail | |
+| `JUPITER_API_KEY` | cond | Jupiter developer portal key; required as soon as `FORGE_CONVERT_LIVE=true` or `FORGE_BUYBACK_LIVE=true` on mainnet, with either `JUPITER_SWAP_API` | none | start-up error when a live job lacks it; dry runs work without it | S |
+| `JUPITER_API_URL` | no | leave unset (https only) | `https://api.jup.ag/swap/v2` (`/swap/v1` with `JUPITER_SWAP_API=v1`) | a URL of the other API, or http, is a start-up error; quotes fail | |
+| `JUPITER_SWAP_API` | no | leave unset | `v2` (Swap API V2 `/build`, the signer assembles the transaction) | `v1` = Metis rollback for one release (restart, no deploy); any other value is a start-up error | |
 | `NODE_ENV` | no | set `production` explicitly. Anything but `development` or `test` counts as production, unset included | unset (= production) | `development` relaxes the IP allowlist to loopback | |
 | `LOG_LEVEL` | no | `info` | `info` | | |
 
@@ -284,7 +285,7 @@ Parsed at start-up (`runtime/env.ts` and the jobs' `...FromEnv` parsers, `server
 | `CONVERT_MAX_PRICE_IMPACT_BPS` | no | keep | 100 (1 to 1000) | quotes above are refused | |
 | `CONVERT_MIN_OUTPUT_LAMPORTS` | no | keep | 10000000 | smaller swaps skipped as dust | |
 | `CONVERT_MAX_INPUT_AMOUNT` | no | keep (1,000 USDC in raw units); 0 = no cap | 1000000000 | bounds the loss of one run | |
-| `CONVERT_MAX_PRIORITY_FEE_LAMPORTS` | no | keep | 1000000 | | |
+| `CONVERT_MAX_PRIORITY_FEE_LAMPORTS` | no | keep | 1000000 | with V2, the cap per transaction of the signer's own price; the lower of it and `SIGNER_PRIORITY_FEE_MAX_LAMPORTS` applies | |
 | `CONVERT_REQUEST_INTERVAL_MS` | no | keep (free tier: 1 request per second) | 1100 | 429 from Jupiter | |
 | `CONVERT_REQUEST_TIMEOUT_MS` | no | keep | 15000 | | |
 | `CONVERT_EXCLUDED_MINTS` | no | comma-separated mints never sold; `FORGE_MINT` is added automatically | empty | | |
@@ -337,7 +338,7 @@ A refused buyback configuration ("refused" below) disables the buyback alone, wi
 | `BUYBACK_FEE_RESERVE_LAMPORTS` | no | keep; the bot wallet must hold it before the first day (withdrawals never fund it) | 20000000 | orders skipped `insufficient_funds` | |
 | `BUYBACK_MAX_LATENESS_MINUTES` | no | keep | 30 | a slot later than this is skipped | |
 | `BUYBACK_DAY_MARGIN_MINUTES` | no | keep | 10 | | |
-| `BUYBACK_MAX_PRIORITY_FEE_LAMPORTS` | no | keep | 100000 | also feeds the allowance below | |
+| `BUYBACK_MAX_PRIORITY_FEE_LAMPORTS` | no | keep | 100000 | also feeds the allowance below; with V2, the cap per transaction of the signer's own price (the lower of it and `SIGNER_PRIORITY_FEE_MAX_LAMPORTS` applies) | |
 | `BUYBACK_ORDER_FEE_ALLOWANCE_LAMPORTS` | no | leave empty | `BUYBACK_MAX_PRIORITY_FEE_LAMPORTS` + 10000 | raises the Squads minimum (rule 12) | |
 | `BUYBACK_TICK_SECONDS` | no | keep | 60 (5 to 3600) | | |
 | `BUYBACK_PAUSED` | no | `false`; section 8 | `false` | | |
@@ -447,9 +448,9 @@ Enable one at a time, in this order; check the log and Telegram between steps, a
 4. **Jupiter claims**: `jupiter_claims_paused = false`, after a small trade has gone through the plugin on a graduated coin and the referral account has collected.
 5. **Cashbox sweep**: `cashbox_sweep_paused = false` with `SIGNER_CASHBOX_DRY_RUN=true`; read one `dry run: would sweep the cashbox` line (amount; destination is the vault by construction); then `SIGNER_CASHBOX_DRY_RUN=false` and restart.
 6. **Revenue job**: `revenue_paused = false` in dry run; read one `dry run: would unwrap and forward the revenue` line (wrapped amount, forward amount); then `SIGNER_REVENUE_DRY_RUN=false` and restart. Native SOL is forwarded and every forward writes `revenue-forward.<signature>.json`. Non-SOL tokens are still not swapped.
-7. **Conversion**: set `JUPITER_API_KEY`, `FORGE_CONVERT_LIVE=true`, restart, `convert_paused = false`. The revenue job then swaps the revenue wallet's non-SOL balances, and the conversion job those of the cashbox.
+7. **Conversion**: set `JUPITER_API_KEY`, `FORGE_CONVERT_LIVE=true`, restart, `convert_paused = false`. The revenue job then swaps the revenue wallet's non-SOL balances, and the conversion job those of the cashbox. Check that the `convert job wired` log line shows `jupiterSwapApi: v2`; roll back to Metis with `JUPITER_SWAP_API=v1` and a restart.
 8. **$FORGE launch** (D13, after the MVP is validated): `FORGE_MINT` on web and signer, `FORGE_GATING_AMOUNT` on web. The gate turns on; the buyback stays in simulation.
-9. **Buyback go-live**, one restart: `FORGE_SQUADS_MULTISIG`, `FORGE_SQUADS_SPENDING_LIMIT`, `JUPITER_API_KEY`, `BUYBACK_DAILY_CAP_LAMPORTS=5000000000`, `BUYBACK_ORDERS_PER_DAY=10`, `BUYBACK_MAX_ORDER_LAMPORTS=500000000`, `BUYBACK_REVENUE_SINCE=<now>`, `FORGE_BUYBACK_LIVE=true` (a missing or invalid value stops the whole signer, claims and refunds included: keep the previous env file for a quick rollback). Fund the bot wallet with `BUYBACK_FEE_RESERVE_LAMPORTS` first. Then `buyback_paused = false`. If a plan already exists for the current UTC day, the first live plan is made at the next day start; the log line `buyback day planned` shows the budget and the backlog.
+9. **Buyback go-live**, one restart: `FORGE_SQUADS_MULTISIG`, `FORGE_SQUADS_SPENDING_LIMIT`, `JUPITER_API_KEY`, `BUYBACK_DAILY_CAP_LAMPORTS=5000000000`, `BUYBACK_ORDERS_PER_DAY=10`, `BUYBACK_MAX_ORDER_LAMPORTS=500000000`, `BUYBACK_REVENUE_SINCE=<now>`, `FORGE_BUYBACK_LIVE=true` (a missing or invalid value stops the whole signer, claims and refunds included: keep the previous env file for a quick rollback). Fund the bot wallet with `BUYBACK_FEE_RESERVE_LAMPORTS` first. Then `buyback_paused = false`. If a plan already exists for the current UTC day, the first live plan is made at the next day start; the log line `buyback day planned` shows the budget and the backlog. Check that the `buyback job wired` log line shows `jupiterSwapApi: v2` (rollback: `JUPITER_SWAP_API=v1` and a restart).
 
 Roll back by setting the flag back to `true` (within a minute); for a hard stop also set the env pause and restart. `BUYBACK_REVENUE_SINCE` stays where it is.
 
