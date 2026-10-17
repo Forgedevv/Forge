@@ -328,13 +328,13 @@ The signer never takes an address or an amount from the request: it re-reads eve
 
 ## 8. Environment variables
 
-`packages/core/src/addresses.ts` does not require all addresses at load time: each app calls `requireAddresses([...])` at startup with the list of those it uses (columns below) and crashes if one is missing or invalid. `FORGE_MINT` is the only optional address (absent before the $FORGE launch: token-gating disabled, buyback in simulation); if it is present, `FORGE_GATING_AMOUNT` is required on the web side.
+`packages/core/src/addresses.ts` does not require all addresses at load time: each app calls `requireAddresses([...])` at startup with the list of those it uses (columns below) and crashes if one is missing or invalid. Three addresses are optional (`OPTIONAL_FORGE_ADDRESS_NAMES`): `FORGE_MINT` (absent before the $FORGE launch: token-gating disabled, buyback in simulation), `FORGE_SQUADS_MULTISIG` and `FORGE_SQUADS_SPENDING_LIMIT` (absent while the buyback stays in simulation); if `FORGE_MINT` is present, `FORGE_GATING_AMOUNT` is required on the web side.
 
 | Variable | web | template (client site) | builder | signer |
 |---|---|---|---|---|
 | `SOLANA_CLUSTER` / `NEXT_PUBLIC_SOLANA_CLUSTER` | ✓ / ✓ | — / ✓ | ✓ (injected) | ✓ |
 | `RPC_URL` (Helius) | ✓ (server: payments, launches, claims) | | ✓ | ✓ |
-| `RPC_RELAY_UPSTREAM_URL` (optional, separate Helius key for the public relay) | ✓ | | | |
+| `RPC_RELAY_UPSTREAM_URL` (required in production or on mainnet-beta, separate Helius key for the public relay; only local development falls back to `RPC_URL`) | ✓ | | | |
 | `RPC_RELAY_TOKEN_SECRET` | ✓ (relay, uploads) | | ✓ (derives `FORGE_RPC_RELAY_TOKEN`) | |
 | `FORGE_RPC_RELAY_TOKEN`, `NEXT_PUBLIC_FORGE_RPC_RELAY_URL` | | ✓ (server-only token / public URL) | ✓ (injected) | |
 | `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` | ✓ (server) | | ✓ | ✓ |
@@ -351,7 +351,7 @@ The signer never takes an address or an amount from the request: it re-reads eve
 | `FORGE_SQUADS_MULTISIG`, `FORGE_SQUADS_SPENDING_LIMIT`, `FORGE_SQUADS_VAULT_INDEX` (optional, read in `packages/core/src/addresses.ts`) | | | | ✓ (buyback funding) |
 | `BUYBACK_REVENUE_SINCE` (D35: the ISO 8601 instant, with its time zone, from which the trading revenue is bought back; required by `FORGE_BUYBACK_LIVE=true` on mainnet-beta, alert and no buy without it elsewhere), `BUYBACK_DAILY_CAP_LAMPORTS` (5 SOL on mainnet, at most `BUYBACK_ORDERS_PER_DAY` x `BUYBACK_MAX_ORDER_LAMPORTS`) | | | | ✓ (buyback budget) |
 | `FORGE_METEORA_REFERRAL_ACCOUNT`, `FORGE_PLATFORM_FEE_WALLET`, `FORGE_JUPITER_REFERRAL_ACCOUNT` | | ✓ as `NEXT_PUBLIC_*` twins | ✓ (injects the public twins) | ✓ |
-| `NEXT_PUBLIC_POOL_CONFIG_KEY`, `NEXT_PUBLIC_R2_PUBLIC_URL`, `NEXT_PUBLIC_SITE_NAME` | | ✓ | ✓ (injected) | |
+| `NEXT_PUBLIC_POOL_CONFIG_KEY`, `NEXT_PUBLIC_R2_PUBLIC_URL` | | ✓ | ✓ (injected) | |
 | `JUPITER_API_KEY` | ✓ | | | ✓ (required when the fee conversion or the buyback runs live) |
 | `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET`, `R2_PUBLIC_URL` | ✓ (presigned uploads) | | | |
 | `CLIENTS_DOMAIN` | ✓ (coin metadata, previews) | | ✓ | |
