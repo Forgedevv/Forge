@@ -67,7 +67,7 @@ the optional server-only `FORGE_RPC_RELAY_TOKEN` (a rate limit tier, nothing mor
 | `FORGE_RPC_RELAY_TOKEN` | optional, server only (never `NEXT_PUBLIC_`): per-launchpad token sent by `/api/upload` as `X-Forge-Relay-Token` to the relay and the upload endpoint (rate limit tier only) |
 | `NEXT_PUBLIC_POOL_CONFIG_KEY` | launchpad pool config(s), filters the coin lists |
 | `R2_PUBLIC_URL`, `NEXT_PUBLIC_R2_PUBLIC_URL` | public base URL of coin images and metadata (read only) |
-| `NEXT_PUBLIC_FORGE_JUPITER_REFERRAL_ACCOUNT` | Jupiter integrator fee account (30 bps after graduation) |
+| `NEXT_PUBLIC_FORGE_JUPITER_REFERRAL_ACCOUNT` | Jupiter integrator fee account (50 bps after graduation; a named referral account of Jupiter's Ultra project) |
 | `NEXT_PUBLIC_FORGE_PLATFORM_FEE_WALLET` | recipient of the 0.3% platform fee on curve swaps and on the first buy of a coin created on the site |
 | `NEXT_PUBLIC_FORGE_METEORA_REFERRAL_ACCOUNT` | Meteora referral token account used by curve swaps |
 | `NEXT_PUBLIC_FORGE_MULTISIG_VAULT` | optional: FORGE multisig vault; when set, a curve swap is refused unless the Meteora referral account is held by it |

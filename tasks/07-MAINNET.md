@@ -7,7 +7,7 @@
 - [ ] The devnet integration flow (`tasks/06`) passes entirely.
 - [ ] Mainnet Squads multisig created, members and threshold validated (Q1).
 - [ ] Anthropic spending limit set; per-job budget verified.
-- [ ] Helius and Supabase moved to a paid plan; Jupiter key created; Jupiter referral account and SOL + USDC token accounts created, held by the multisig.
+- [ ] Helius and Supabase moved to a paid plan; Jupiter key created; Jupiter referral account created with a name under Jupiter's Ultra project (`docs/METEORA.md`, "The platform fee") and SOL + USDC token accounts created, held by the multisig.
 - [ ] Meteora referral account (WSOL) held by the multisig.
 - [ ] `SOLANA_CLUSTER=mainnet-beta` only on production environments.
 

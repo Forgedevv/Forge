@@ -15,7 +15,7 @@ export const PRICING = {
 
 export const FEES = {
   platformFeeBps: 30,          // our platform fee on our buy button
-  jupiterIntegratorFeeBps: 30, // after graduation, Jupiter keeps 20%
+  jupiterIntegratorFeeBps: 50, // after graduation (Jupiter accepts 50..255), Jupiter keeps 20%
   forgeCreatorSharePct: 25,    // FORGE creator share on each launchpad's coin
 } as const;
 

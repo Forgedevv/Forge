@@ -10,7 +10,7 @@ A client describes their launchpad to an AI agent; the agent codes their site, F
 |---|---|---|---|
 | Client (e.g. Hugo) | Has a launchpad built | ~$33 in SOL at creation, holds $FORGE | Partner share of all coins on their launchpad; their first-buy tokens |
 | Coin creator (e.g. Lisa) | Launches a coin on the client's launchpad | Creation fee set by the client | Creator share of their coin |
-| Trader | Buys and sells | Meteora fee (~1%) + FORGE platform fee (0.3%) | — |
+| Trader | Buys and sells | Meteora fee (~1%) + FORGE platform fee (0.3%; 0.5% Jupiter integrator fee after graduation) | — |
 | FORGE | Builds, hosts, launches the launchpad coin | AI, servers, RPC | Creation price, creator share of the launchpad coin, referral, platform fee |
 | Meteora | On-chain contracts | — | 20% of trading fees (minus the referral) |
 | Jupiter | Trading of graduated coins | — | 20% of our integrator fee |
@@ -58,13 +58,13 @@ If the trade goes through a bot or a terminal (not our button): FORGE only recei
 
 ### Graduated coin (after migration)
 
-The trade goes through the Jupiter plugin with our integrator fee of 30 bps; Jupiter keeps 20%. No more Meteora referral for us.
+The trade goes through the Jupiter plugin with our integrator fee of 50 bps (the minimum Jupiter accepts); Jupiter keeps 20%, so FORGE keeps 0.4%. No more Meteora referral for us.
 
 | | $MOON | $CAT |
 |---|---|---|
-| Integrator fee (0.3% − 20%) | $2.40 | $2.40 |
+| Integrator fee (0.5% − 20%) | $4.00 | $4.00 |
 | Creator share (via pool liquidity, assumption) | ~$2 | $0 |
-| **FORGE total** | **~$4.40** | **$2.40** |
+| **FORGE total** | **~$6.00** | **$4.00** |
 
 ### Where the money goes
 
@@ -81,7 +81,7 @@ The trade goes through the Jupiter plugin with our integrator fee of 30 bps; Jup
 | Attempts before refund | 2 |
 | Token-gating threshold | fixed amount of $FORGE (~$100), reviewed weekly |
 | FORGE creator share on the launchpad coin | 25% |
-| Platform fee | 30 bps (our button); 30 bps Jupiter integrator fee after graduation |
+| Platform fee | 30 bps (our button); 50 bps Jupiter integrator fee after graduation (Jupiter keeps 20%) |
 | Trading fees offered to clients | between 50 and 200 bps |
 | Migration threshold | 10 SOL |
 | Sleep mode | 30 days without a trade |

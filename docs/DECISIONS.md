@@ -12,7 +12,7 @@ Kept up to date by the lead session. Agents read it, do not modify it.
 | D4 | Agent failure | 2 attempts, then automatic refund |
 | D5 | Agent access | hold a fixed amount of $FORGE (~$100), reviewed weekly, rechecked on each use |
 | D6 | FORGE creator share | 25% on each launchpad's coin, FORGE is its creator |
-| D7 | Platform fee | 30 bps on our buy button before graduation; 30 bps Jupiter integrator fee after |
+| D7 | Platform fee | 30 bps on our buy button before graduation; 50 bps Jupiter integrator fee after (Jupiter keeps 20%, FORGE keeps 0.4%). Amended 2026-10-17: was 30 bps, but Jupiter Ultra, which the plugin calls, only accepts a referral fee of 50 to 255 bps (verified 2026-10-17) |
 | D8 | Trading revenue | 100% $FORGE buyback, no burn, tokens held in the treasury |
 | D9 | Fallback rule | if creations no longer cover fixed costs, 10 to 20% of trading revenue goes to the cashbox (manual decision) |
 | D10 | Builder agent | codes the design of each launchpad, one repo + one Vercel deployment per client |

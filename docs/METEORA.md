@@ -61,10 +61,11 @@ Our own (stricter) bounds are in `INTERFACES.md`, section 1.
 - The referral account is a token account of the quote currency (WSOL for a SOL pool), held by the multisig.
 - **Only when the swap goes through our own code** (`@forge/core`). When the trade goes through Jupiter, Jupiter collects the referral.
 
-## The platform fee (0.3%)
+## The platform fee (0.3%; 0.5% through Jupiter after graduation)
 
 - **Before graduation**: a SOL transfer instruction of 0.3% of the amount is added to the swap transaction built by `@forge/core`, to `FORGE_PLATFORM_FEE_WALLET`. On a buy: 0.3% of the SOL spent. On a sell: 0.3% of the quoted SOL out (not of the slippage minimum). The fee is always rounded up to the lamport (FORGE gains less than 1 lamport) and the fee transfer is the **last** instruction, so a sell pays it from the proceeds.
-- **After graduation**: a Jupiter transaction cannot be modified. We use the **Jupiter integrator fee** (`referralAccount` + `referralFee` = 30 bps). Jupiter keeps 20% of this fee. A Jupiter referral account must be created, along with token accounts for each currency Jupiter may collect in (at minimum SOL and USDC).
+- **After graduation**: a Jupiter transaction cannot be modified. We use the **Jupiter integrator fee** (`referralAccount` + `referralFee` = 50 bps). The plugin passes `referralFee` as is to Ultra `/order`, which only accepts 50 to 255 bps (a 30 bps fee is refused, verified on 2026-10-17); core's `assertJupiterReferralFeeBps` checks the range and the template fails closed outside it. Jupiter keeps 20% of this fee, so FORGE keeps 0.4% of the volume. A Jupiter referral account must be created, along with token accounts for each currency Jupiter may collect in (at minimum SOL and USDC).
+- The referral account must belong to **Jupiter's Ultra project** (`DkiqsTrw1u1bYFumumC7sCG2S8K25qc2vemJFHyW2wJc`, referral program `REFER4ZgmyYx9c6He5XfaTMiGfdLwRnkV4RPp9t9iF3`) and be **created with a name** (`initialize_referral_account_with_name`, PDA `["referral", project, name]`). The plugin's fees land in the referral account's associated token accounts, which only `claim_v2` empties, and `claim_v2` refuses an unnamed account: an unnamed one could never claim them. Core's claim builder refuses another project and builds a v2 claim only for a named PDA (mainnet only; on devnet it refuses the cluster before any read).
 
 ## Migration (graduation)
 
@@ -84,7 +85,7 @@ Our own (stricter) bounds are in `INTERFACES.md`, section 1.
 - API key required (Jupiter developer portal). Free tier limited to 1 request per second.
 - The Ultra API is replaced by Swap V2: use the current version.
 - Jupiter transactions cannot be modified.
-- Integrator fee: Jupiter keeps 20%, and chooses the currency it collects in.
+- Integrator fee: 50 to 255 bps (Ultra and the plugin); Jupiter keeps 20%, and chooses the currency it collects in.
 
 ## Sources
 
@@ -92,4 +93,6 @@ Our own (stricter) bounds are in `INTERFACES.md`, section 1.
 - https://docs.meteora.ag/overview/products/dbc/what-is-dbc.md
 - https://github.com/MeteoraAg/meteora-invent (scaffolds/fun-launch)
 - https://developers.jup.ag/docs/ultra/add-fees-to-ultra
+- https://developers.jup.ag/docs/swap/fees
+- https://github.com/TeamRaccoons/referral (Jupiter referral program: `claim.rs`, `claim_v2.rs`)
 - https://developers.jup.ag/docs/ultra/get-started
