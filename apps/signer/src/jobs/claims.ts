@@ -234,8 +234,12 @@ export interface ClaimsDeps {
   rpc: SolanaRpc;
   keystore: KeystoreLike;
   journal: Journal<ClaimJournalEntry>;
-  /** Append-only receipts of the claims the vault received (`ClaimReceiptEntry`). */
-  receipts: Journal<ClaimReceiptEntry>;
+  /**
+   * Append-only receipts of the claims the vault received (`ClaimReceiptEntry`), the buyback
+   * budget's creator-fee revenue. The runtime always wires it; without it (devnet scripts) the
+   * claims are not booked, which only ever lowers that budget (logged at creation).
+   */
+  receipts?: Journal<ClaimReceiptEntry>;
   flags: FlagsReader;
   alerter: JobAlerter;
   logger: JobLogger;
@@ -325,6 +329,9 @@ export function createClaimsJob(deps: ClaimsDeps): ClaimsJob {
   let rotation = 0;
   /** Set when the kill switch flips during a run: the run stops before the next claim. */
   let stopReason: PauseReason | null = null;
+  if (!receipts) {
+    log.warn({}, 'no claim receipt journal: claims are not booked for the buyback budget');
+  }
 
   const iso = () => new Date(now()).toISOString();
   const alert = (
@@ -395,6 +402,7 @@ export function createClaimsJob(deps: ClaimsDeps): ClaimsJob {
     inFlight: NonNullable<ClaimJournalEntry['inFlight']>,
     commitment: 'confirmed' | 'finalized',
   ): Promise<void> {
+    if (!receipts) return;
     if (await receipts.get(inFlight.signature)) return;
     const at = iso();
     await receipts.put(inFlight.signature, {
