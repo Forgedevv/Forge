@@ -18,7 +18,7 @@
  * network call is the optional `readMeteoraReferralAccount`. Any cluster: a WSOL token account
  * exists on devnet too (the devnet proof of the revenue job uses one).
  */
-import { createHash } from 'node:crypto';
+import { sha256 } from '@noble/hashes/sha2';
 import {
   ACCOUNT_SIZE,
   NATIVE_MINT,
@@ -102,11 +102,9 @@ export function deriveMeteoraReferralAccount(
   seed: string = METEORA_REFERRAL_ACCOUNT_SEED,
 ): PublicKey {
   assertMeteoraReferralSeed(seed);
-  const digest = createHash('sha256')
-    .update(payer.toBuffer())
-    .update(Buffer.from(seed, 'utf8'))
-    .update(TOKEN_PROGRAM_ID.toBuffer())
-    .digest();
+  const digest = sha256(
+    Buffer.concat([payer.toBuffer(), Buffer.from(seed, 'utf8'), TOKEN_PROGRAM_ID.toBuffer()]),
+  );
   return new PublicKey(digest);
 }
 

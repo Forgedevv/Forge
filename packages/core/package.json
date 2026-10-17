@@ -1,6 +1,6 @@
 {
   "name": "@forge/core",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": true,
   "description": "FORGE transaction core: Meteora Dynamic Bonding Curve configs, pools, swaps, claims and on-chain checks. Published on npm as @forgedevv/core.",
   "license": "UNLICENSED",
@@ -58,6 +58,7 @@
     "@forge/shared": "workspace:*",
     "@meteora-ag/cp-amm-sdk": "1.5.1",
     "@meteora-ag/dynamic-bonding-curve-sdk": "1.5.13",
+    "@noble/hashes": "1.8.0",
     "@solana/spl-token": "0.4.15",
     "@solana/web3.js": "1.99.0",
     "bn.js": "5.2.5"

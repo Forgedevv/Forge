@@ -29,6 +29,7 @@ describe('@forge/core has no import side effects', () => {
     await import('@meteora-ag/dynamic-bonding-curve-sdk');
     await import('@meteora-ag/cp-amm-sdk');
     await import('bn.js');
+    await import('@noble/hashes/sha2');
     await import('@forge/shared');
 
     const globalsBefore = Object.getOwnPropertyNames(globalThis).sort();

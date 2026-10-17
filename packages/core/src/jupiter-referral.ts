@@ -37,7 +37,7 @@
  * project with the revenue wallet as partner, and the v2 collection accounts of the currencies
  * Jupiter collects in. Only the payer signs; the program facts are listed there.
  */
-import { createHash } from 'node:crypto';
+import { sha256 } from '@noble/hashes/sha2';
 import {
   ASSOCIATED_TOKEN_PROGRAM_ID,
   TOKEN_2022_PROGRAM_ID,
@@ -86,7 +86,7 @@ export const JUPITER_ULTRA_REFERRAL_PROJECT = new PublicKey(
 );
 
 function anchorDiscriminator(name: string): Buffer {
-  return createHash('sha256').update(name).digest().subarray(0, 8);
+  return Buffer.from(sha256(new TextEncoder().encode(name))).subarray(0, 8);
 }
 
 export const JUPITER_REFERRAL_ACCOUNT_DISCRIMINATOR: Buffer =
