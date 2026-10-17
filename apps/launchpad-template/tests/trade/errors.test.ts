@@ -26,6 +26,11 @@ describe('mapTradeError', () => {
     ['rate limit', new Error('429 Too Many Requests'), 'rate_limited'],
     ['network', new TypeError('Failed to fetch'), 'network'],
     ['relay down', new Error('503 Service Unavailable'), 'network'],
+    [
+      'untranslated core read error',
+      Object.assign(new Error('DBC pool not found: x'), { name: 'DbcReadError' }),
+      'pool_unavailable',
+    ],
     ['anything else', new Error('weird'), 'unknown'],
   ];
   for (const [name, input, code] of cases) {

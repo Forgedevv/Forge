@@ -19,6 +19,7 @@
  * no-op outside the test environment (`NODE_ENV === 'test'`).
  */
 import {
+  DbcReadError,
   ForgeAddressError,
   SwapError,
   assertPoolConfigAllowed,
@@ -121,11 +122,25 @@ const SWAP_ERROR_MAP: Record<string, { code: TradeErrorCode; message?: string }>
   RPC_ERROR: { code: 'network' },
 };
 
+/**
+ * Core read errors: the pool or its config account is missing on-chain (the coin is not live
+ * yet, or the site reads another network). Any future code falls back to the same message.
+ */
+const READ_ERROR_MAP: Record<string, TradeErrorCode> = {
+  pool_not_found: 'pool_unavailable',
+  config_not_found: 'pool_unavailable',
+};
+
 /** Core errors become `TradeError`s; anything else is left for `mapTradeError`. */
 export function translateCoreError(error: unknown): unknown {
   if (error instanceof SwapError) {
     const mapped = SWAP_ERROR_MAP[error.code] ?? { code: 'unknown' as const };
     return new TradeError(mapped.code, mapped.message, { cause: error });
+  }
+  if (error instanceof DbcReadError) {
+    return new TradeError(READ_ERROR_MAP[error.code] ?? 'pool_unavailable', undefined, {
+      cause: error,
+    });
   }
   if (error instanceof ForgeAddressError) {
     // The FORGE fee accounts are missing from the public environment of this site.
