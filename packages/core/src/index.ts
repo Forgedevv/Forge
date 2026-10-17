@@ -71,9 +71,11 @@ export type {
 } from './swap.js';
 // Claims, reads, payments, gating.
 export {
+  CLAIM_COMPUTE_UNITS,
   CLAIM_LAMPORTS_PER_SIGNATURE,
   ClaimError,
   PARTNER_POOL_CREATION_FEE_CLAIMED_BIT,
+  POOL_CREATION_FEE_CLAIM_COMPUTE_UNITS,
   buildCreatorClaimTx,
   buildForgeCreatorClaimTx,
   buildPartnerClaimTx,
@@ -108,6 +110,7 @@ export {
   getDammV2PoolState,
   isPositionClaimWorthwhile,
   migratedDammV2Pool,
+  positionClaimComputeUnits,
   positionPendingFees,
   sumPendingFees,
   summarizePosition,
@@ -199,6 +202,7 @@ export {
   JUPITER_CLAIM_V2_DISCRIMINATOR,
   JUPITER_CREATE_ADMIN_TOKEN_ACCOUNT_DISCRIMINATOR,
   JUPITER_PROJECT_DISCRIMINATOR,
+  JUPITER_REFERRAL_CLAIM_COMPUTE_UNITS,
   JUPITER_REFERRAL_ACCOUNT_DISCRIMINATOR,
   JUPITER_REFERRAL_PROGRAM_ID,
   JUPITER_ULTRA_REFERRAL_PROJECT,

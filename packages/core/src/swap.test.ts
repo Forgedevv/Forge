@@ -1841,14 +1841,7 @@ describe('fee account ownership', () => {
     // Even with every account in order on-chain: the configuration itself is refused.
     const held = mockConnection(chainWithFeeAccounts(f, user, other));
     await expectSwapErrorAsync(
-      buildBuyTx({
-        pool: ACTIVE_POOL,
-        user,
-        amountInLamports: SOL / 100n,
-        slippageBps: 100,
-        env,
-        connection: held,
-      }),
+      buildBuyTx({ pool: ACTIVE_POOL, user, amountInLamports: SOL / 100n, slippageBps: 100, env, connection: held }),
       'PLATFORM_FEE_WALLET_MISMATCH',
     );
     await expectSwapErrorAsync(

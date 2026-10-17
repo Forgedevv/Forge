@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import {
+  ComputeBudgetProgram,
   Connection as Web3Connection,
   Keypair,
   PublicKey,
@@ -25,9 +26,11 @@ import {
 import { describe, expect, it, vi } from 'vitest';
 import { ForgeAddressError } from './addresses.js';
 import {
+  CLAIM_COMPUTE_UNITS,
   CLAIM_LAMPORTS_PER_SIGNATURE,
   ClaimError,
   PARTNER_POOL_CREATION_FEE_CLAIMED_BIT,
+  POOL_CREATION_FEE_CLAIM_COMPUTE_UNITS,
   buildCreatorClaimTx,
   buildForgeCreatorClaimTx,
   buildPartnerClaimTx,
@@ -119,6 +122,8 @@ interface MockOptions {
   extra?: Record<string, AccountInfo<Buffer>>;
   /** Rent-exempt minimum override for a given data size. */
   rentOverride?: Record<number, number>;
+  /** Answer of getRecentPrioritizationFees (micro-lamports per slot). */
+  priorityFees?: number[];
 }
 
 function mockConnection(options: MockOptions = {}) {
@@ -156,6 +161,9 @@ function mockConnection(options: MockOptions = {}) {
       async (size: number) => options.rentOverride?.[size] ?? rent(size),
     ),
     getLatestBlockhash,
+    getRecentPrioritizationFees: vi.fn(async (_config?: { lockedWritableAccounts?: PublicKey[] }) =>
+      (options.priorityFees ?? []).map((prioritizationFee, slot) => ({ slot, prioritizationFee })),
+    ),
   } as unknown as Connection;
   return { connection, getLatestBlockhash };
 }
@@ -523,6 +531,102 @@ describe('buildCreatorClaimTx — checks and skips', () => {
       noRetry,
     ).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(DbcReadError);
+  });
+});
+
+describe('claims — priority fee', () => {
+  const budget = (tx: Transaction) =>
+    tx.instructions.filter((ix) => ix.programId.equals(ComputeBudgetProgram.programId));
+
+  it('puts a bounded priority fee first and counts it in the costs', async () => {
+    const mock = mockConnection({ priorityFees: [0, 200_000, 300_000, 400_000] });
+    const plain = await buildCreatorClaimTx(
+      mockConnection().connection,
+      { pool: key('test2Pool'), creator: FORGE_CREATOR, receiver: RECEIVER },
+      noRetry,
+    );
+    const result = await buildCreatorClaimTx(
+      mock.connection,
+      { pool: key('test2Pool'), creator: FORGE_CREATOR, receiver: RECEIVER },
+      { ...noRetry, priority: {} },
+    );
+    const tx = result.transaction!;
+    const [limit, price] = tx.instructions;
+    expect(limit!.programId.equals(ComputeBudgetProgram.programId)).toBe(true);
+    expect(limit!.data.readUInt32LE(1)).toBe(CLAIM_COMPUTE_UNITS);
+    expect(price!.data.readBigUInt64LE(1)).toBe(300_000n);
+    expect(budget(tx)).toHaveLength(2);
+    // The claim itself is unchanged.
+    expect(shape(tx).slice(2)).toEqual(shape(plain.transaction!));
+    expect(result.summary.priorityFee).toEqual({
+      computeUnitLimit: CLAIM_COMPUTE_UNITS,
+      microLamports: 300_000,
+      priorityFeeLamports: 60_000n,
+      maxLamports: 500_000n,
+      source: 'recent_fees',
+    });
+    expect(result.summary.costs.networkFeeLamports).toBe(
+      plain.summary.costs.networkFeeLamports + 60_000n,
+    );
+    expect(result.summary.netLamports).toBe(plain.summary.netLamports - 60_000n);
+    const asked = (
+      mock.connection.getRecentPrioritizationFees as unknown as {
+        mock: { calls: [{ lockedWritableAccounts: PublicKey[] }][] };
+      }
+    ).mock.calls[0]![0].lockedWritableAccounts.map(String);
+    expect(asked).toContain(key('test2Pool').toBase58());
+  });
+
+  it('skips a claim the priority fee makes not worthwhile', async () => {
+    const result = await buildCreatorClaimTx(
+      mockConnection({ priorityFees: [1_000_000] }).connection,
+      { pool: key('test2Pool'), creator: FORGE_CREATOR, receiver: RECEIVER },
+      { ...noRetry, priority: {}, minNetLamports: TEST2_CREATOR_QUOTE - 150_000n },
+    );
+    expect(result.skipReason).toBe('not_worthwhile');
+    expect(result.summary.priorityFee?.priorityFeeLamports).toBe(200_000n);
+  });
+
+  it('prices the partner pool creation fee claim', async () => {
+    const result = await buildPartnerPoolCreationFeeClaimTx(
+      mockConnection({
+        extra: { [PARTNER.toBase58()]: systemAccount(1_000_000_000) },
+        priorityFees: [50_000],
+      }).connection,
+      { pool: key('test2Pool'), feeClaimer: PARTNER },
+      { ...noRetry, priority: {} },
+    );
+    const tx = result.transaction!;
+    expect(tx.instructions).toHaveLength(3);
+    expect(tx.instructions[0]!.data.readUInt32LE(1)).toBe(POOL_CREATION_FEE_CLAIM_COMPUTE_UNITS);
+    expect(tx.instructions[1]!.data.readBigUInt64LE(1)).toBe(50_000n);
+    expect(tx.instructions[2]!.programId.equals(DYNAMIC_BONDING_CURVE_PROGRAM_ID)).toBe(true);
+    expect(result.summary.networkFeeLamports).toBe(CLAIM_LAMPORTS_PER_SIGNATURE + 5_000n);
+    expect(result.summary.netLamports).toBe(900_000n - CLAIM_LAMPORTS_PER_SIGNATURE - 5_000n);
+  });
+
+  it('carries no compute budget without the option, and refuses a bad setting first', async () => {
+    const mock = mockConnection();
+    const plain = await buildPartnerClaimTx(
+      mock.connection,
+      { pool: key('test2Pool'), feeClaimer: PARTNER, receiver: PARTNER },
+      noRetry,
+    );
+    if (plain.transaction) expect(budget(plain.transaction)).toHaveLength(0);
+    expect(plain.summary.priorityFee).toBeNull();
+    const before = (mock.connection.getMultipleAccountsInfo as unknown as { mock: { calls: [] } })
+      .mock.calls.length;
+    await expect(
+      buildPartnerClaimTx(
+        mock.connection,
+        { pool: key('test2Pool'), feeClaimer: PARTNER },
+        { ...noRetry, priority: { maxLamports: -1n } },
+      ),
+    ).rejects.toThrow(RangeError);
+    expect(
+      (mock.connection.getMultipleAccountsInfo as unknown as { mock: { calls: [] } }).mock.calls
+        .length,
+    ).toBe(before);
   });
 });
 

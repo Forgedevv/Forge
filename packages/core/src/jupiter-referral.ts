@@ -51,6 +51,14 @@ import {
   type Connection,
 } from '@solana/web3.js';
 import { PaymentError, assertCluster } from './payments.js';
+import {
+  estimatePriorityFee,
+  priorityFeeInstructions,
+  resolvePriorityFeePolicy,
+  writableAccountsOf,
+  type PriorityFeeQuote,
+  type PriorityFeeSetting,
+} from './priority-fee.js';
 import { retryRpc, type RetryOptions } from './reads.js';
 
 // ---------------------------------------------------------------------------------------------
@@ -361,7 +369,19 @@ export interface BuildJupiterReferralClaimTxParams {
   commitment?: Commitment;
   retry?: RetryOptions;
   programId?: PublicKey;
+  /**
+   * Priority fee read from the cluster for the claim's writable accounts, bounded by this setting
+   * (priority-fee.ts): `setComputeUnitLimit` (`JUPITER_REFERRAL_CLAIM_COMPUTE_UNITS`) then
+   * `setComputeUnitPrice`, first. Default: none.
+   */
+  priority?: PriorityFeeSetting;
 }
+
+/**
+ * Compute unit limit of a Jupiter referral claim with a priority fee: up to two token account
+ * creations and two claims (each a token transfer pair), with a wide margin.
+ */
+export const JUPITER_REFERRAL_CLAIM_COMPUTE_UNITS = 300_000;
 
 export interface JupiterReferralClaimItem {
   version: JupiterReferralClaimVersion;
@@ -393,6 +413,8 @@ export interface JupiterReferralClaimTx {
   transaction: Transaction | null;
   lastValidBlockHeight: number | null;
   summary: JupiterReferralClaimSummary;
+  /** The priority fee (price, fee, cap), or null without a `priority` setting or transaction. */
+  priorityFee: PriorityFeeQuote | null;
 }
 
 function tokenAmount(
@@ -456,6 +478,7 @@ export async function buildJupiterReferralClaimTx(
   const { connection } = p;
   const commitment = p.commitment ?? 'confirmed';
   const programId = p.programId ?? JUPITER_REFERRAL_PROGRAM_ID;
+  if (p.priority !== undefined) resolvePriorityFeePolicy(p.priority);
   const expectedProject = p.expectedProject ?? JUPITER_ULTRA_REFERRAL_PROJECT;
   const retry = p.retry ?? {};
   if (p.payer.equals(p.referralAccount) || p.mint.equals(p.referralAccount)) {
@@ -562,7 +585,9 @@ export async function buildJupiterReferralClaimTx(
     createsPartnerTokenAccount: claims.length > 0 && !partnerInfo,
     createsAdminTokenAccount: claims.length > 0 && !adminInfo,
   };
-  if (claims.length === 0) return { transaction: null, lastValidBlockHeight: null, summary };
+  if (claims.length === 0) {
+    return { transaction: null, lastValidBlockHeight: null, summary, priorityFee: null };
+  }
 
   const transaction = new Transaction();
   if (summary.createsPartnerTokenAccount) {
@@ -611,8 +636,18 @@ export async function buildJupiterReferralClaimTx(
       ),
     );
   }
+  let priorityFee: PriorityFeeQuote | null = null;
+  if (p.priority !== undefined) {
+    priorityFee = await estimatePriorityFee({
+      connection,
+      writableAccounts: writableAccountsOf(transaction.instructions),
+      computeUnitLimit: JUPITER_REFERRAL_CLAIM_COMPUTE_UNITS,
+      setting: p.priority,
+    });
+    transaction.instructions.unshift(...priorityFeeInstructions(priorityFee));
+  }
   const latest = await retryRpc(() => connection.getLatestBlockhash(commitment), retry);
   transaction.feePayer = p.payer;
   transaction.recentBlockhash = latest.blockhash;
-  return { transaction, lastValidBlockHeight: latest.lastValidBlockHeight, summary };
+  return { transaction, lastValidBlockHeight: latest.lastValidBlockHeight, summary, priorityFee };
 }

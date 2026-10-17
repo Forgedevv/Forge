@@ -39,6 +39,7 @@ import {
   getDammV2PoolState,
   isPositionClaimWorthwhile,
   migratedDammV2Pool,
+  positionClaimComputeUnits,
   sumPendingFees,
   type PositionClaimTxResult,
 } from './position-claims.js';
@@ -406,6 +407,31 @@ describe('buildCreatorPositionFeeClaimTx', () => {
       options,
     );
   }
+
+  it('puts a bounded priority fee first with a priority setting', async () => {
+    const mock = mockConnection({
+      overrides: { [fx('creatorPosition').address]: await withPendingFees() },
+    });
+    (mock.connection as unknown as Record<string, unknown>).getRecentPrioritizationFees = vi.fn(
+      async () => [{ slot: 1, prioritizationFee: 25_000 }],
+    );
+    const plain = await build();
+    const result = await build({}, mock, { ...noRetry, priority: {} });
+    const tx = result.transaction!;
+    expect(tx.instructions[0]!.data.readUInt32LE(1)).toBe(positionClaimComputeUnits(1));
+    expect(tx.instructions[1]!.data.readBigUInt64LE(1)).toBe(25_000n);
+    expect(shape(tx).slice(2)).toEqual(shape(plain.transaction!));
+    expect(result.summary.priorityFee).toMatchObject({
+      microLamports: 25_000,
+      source: 'recent_fees',
+    });
+    expect(result.summary.costs.networkFeeLamports).toBe(
+      plain.summary.costs.networkFeeLamports + result.summary.priorityFee!.priorityFeeLamports,
+    );
+    expect(plain.summary.priorityFee).toBeNull();
+    expect(positionClaimComputeUnits(1)).toBe(200_000);
+    expect(positionClaimComputeUnits(100)).toBe(1_400_000);
+  });
 
   it('claims the position fees to the receiver: coin to its account, SOL unwrapped to it', async () => {
     const result = await build();
