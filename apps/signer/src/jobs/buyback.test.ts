@@ -37,12 +37,15 @@ import {
   dayJournalKey,
   planDay,
   resolveBuybackMode,
+  unplannedLamports,
   utcDay,
   validateBuyQuote,
+  type BuybackBudgetSource,
   type BuybackConfig,
   type BuybackDayEntry,
   type BuybackDeps,
   type BuybackQuoteSource,
+  type BuybackRevenueFigures,
   type BuybackSwapPreparer,
   type BuyExpectation,
   type ForgeTokenReader,
@@ -92,6 +95,7 @@ function baseConfig(over: Partial<BuybackConfig> = {}): BuybackConfig {
     forgeMint: FORGE,
     vault: VAULT,
     dailyCapLamports: 1n * SOL,
+    revenueSince: null,
     ordersPerDay: 6,
     minOrderLamports: 50_000_000n,
     maxOrderLamports: 300_000_000n,
@@ -129,6 +133,27 @@ class Clock {
   constructor(public t: number) {}
   readonly now = () => this.t;
 }
+
+/** Revenue figures a budget source would report for a backlog (one Meteora forward). */
+function figures(backlog: bigint, spent = 0n): BuybackRevenueFigures {
+  const revenue = backlog + spent;
+  return {
+    since: '2026-10-01T00:00:00Z',
+    forwards: {
+      count: 1,
+      lamports: revenue,
+      breakdown: { meteora_referral: revenue, jupiter_referral: 0n, platform_fee: 0n, other: 0n },
+    },
+    claims: { count: 0, lamports: 0n, dbc: 0n, position: 0n, awaitingFinality: 0 },
+    revenueLamports: revenue,
+    spent: { withdrawals: spent > 0n ? 1 : 0, lamports: spent },
+    backlogLamports: backlog,
+  };
+}
+
+const okBudget = (backlog: bigint, spent = 0n): BuybackBudgetSource => ({
+  backlog: async () => ({ status: 'ok', figures: figures(backlog, spent) }),
+});
 
 // ---------------------------------------------------------------------------------------
 // Mode and configuration
@@ -219,6 +244,60 @@ describe('buybackConfigFromEnv', () => {
       /https/,
     );
   });
+  it('refuses a daily cap the orders could not place in one day', () => {
+    // Default 8 orders of at most 0.25 SOL hold 2 SOL.
+    expect(() =>
+      buybackConfigFromEnv({ BUYBACK_DAILY_CAP_LAMPORTS: '2000000001' }, addresses),
+    ).toThrow(/exceeds BUYBACK_ORDERS_PER_DAY x BUYBACK_MAX_ORDER_LAMPORTS/);
+    expect(
+      buybackConfigFromEnv({ BUYBACK_DAILY_CAP_LAMPORTS: '2000000000' }, addresses).config
+        .dailyCapLamports,
+    ).toBe(2n * SOL);
+    // The mainnet values (D35): 5 SOL a day in 10 orders of at most 0.5 SOL.
+    const mainnet = buybackConfigFromEnv(
+      {
+        BUYBACK_DAILY_CAP_LAMPORTS: '5000000000',
+        BUYBACK_ORDERS_PER_DAY: '10',
+        BUYBACK_MAX_ORDER_LAMPORTS: '500000000',
+      },
+      addresses,
+    ).config;
+    expect(mainnet.dailyCapLamports).toBe(5n * SOL);
+    expect(() =>
+      buybackConfigFromEnv(
+        { BUYBACK_DAILY_CAP_LAMPORTS: '5000000000', BUYBACK_ORDERS_PER_DAY: '10' },
+        addresses,
+      ),
+    ).toThrow(/exceeds/);
+  });
+  it('reads BUYBACK_REVENUE_SINCE as an instant and requires it for a live mainnet buyback', () => {
+    const live = { SOLANA_CLUSTER: 'mainnet-beta', FORGE_BUYBACK_LIVE: 'true', JUPITER_API_KEY: 'k' };
+    expect(() => buybackConfigFromEnv(live, addresses)).toThrow(
+      /BUYBACK_REVENUE_SINCE is required when FORGE_BUYBACK_LIVE=true on mainnet-beta/,
+    );
+    expect(
+      buybackConfigFromEnv({ ...live, BUYBACK_REVENUE_SINCE: '2026-11-01T00:00:00Z' }, addresses)
+        .config.revenueSince,
+    ).toBe('2026-11-01T00:00:00Z');
+    expect(
+      buybackConfigFromEnv({ BUYBACK_REVENUE_SINCE: ' 2026-11-01T08:30:00.000+02:00 ' }, addresses)
+        .config.revenueSince,
+    ).toBe('2026-11-01T08:30:00.000+02:00');
+    // Not required in simulation, nor off mainnet-beta: null then (the budget source alerts).
+    expect(buybackConfigFromEnv({}, addresses).config.revenueSince).toBeNull();
+    expect(
+      buybackConfigFromEnv({ SOLANA_CLUSTER: 'mainnet-beta' }, addresses).config.revenueSince,
+    ).toBeNull();
+    expect(
+      buybackConfigFromEnv({ ...live, SOLANA_CLUSTER: 'devnet' }, addresses).config.revenueSince,
+    ).toBeNull();
+    // An instant, with its zone: a bare date or a local time is ambiguous.
+    for (const bad of ['2026-11-01', '2026-11-01T00:00:00', 'yesterday', '2026-13-01T00:00:00Z']) {
+      expect(() => buybackConfigFromEnv({ BUYBACK_REVENUE_SINCE: bad }, addresses)).toThrow(
+        /BUYBACK_REVENUE_SINCE must be an ISO 8601 instant/,
+      );
+    }
+  });
   it('reads the live flag strictly', () => {
     expect(buybackConfigFromEnv({ FORGE_BUYBACK_LIVE: 'true' }, addresses).config.live).toBe(true);
     expect(buybackConfigFromEnv({ FORGE_BUYBACK_LIVE: 'false' }, addresses).config.live).toBe(
@@ -227,17 +306,18 @@ describe('buybackConfigFromEnv', () => {
   });
   it('requires the Jupiter API key for a live buyback on mainnet-beta only', () => {
     const mainnet = { cluster: 'mainnet-beta' };
+    const since = { BUYBACK_REVENUE_SINCE: '2026-11-01T00:00:00Z' };
     for (const key of [undefined, '', ' ']) {
       expect(() =>
         buybackConfigFromEnv(
-          { FORGE_BUYBACK_LIVE: 'true', JUPITER_API_KEY: key },
+          { FORGE_BUYBACK_LIVE: 'true', JUPITER_API_KEY: key, ...since },
           addresses,
           mainnet,
         ),
       ).toThrow(/JUPITER_API_KEY is required/);
     }
     const withKey = buybackConfigFromEnv(
-      { FORGE_BUYBACK_LIVE: 'true', JUPITER_API_KEY: 'jup-key' },
+      { FORGE_BUYBACK_LIVE: 'true', JUPITER_API_KEY: 'jup-key', ...since },
       addresses,
       mainnet,
     );
@@ -347,6 +427,30 @@ describe('planDay', () => {
   it('caps the large orders at the maximum and never exceeds the budget', () => {
     const slots = planDay({ ...input, orders: 2, budgetLamports: 10n * SOL, rng: seeded(3) });
     expect(slots.map((s) => s.lamports)).toEqual([300_000_000n, 300_000_000n]);
+  });
+
+  it('places the whole budget whenever the orders can hold it (a capped surplus is spread again)', () => {
+    // 8 orders of at most 0.3 SOL hold 2.4 SOL: random weights push some slots above the
+    // maximum, and their surplus must land on the others instead of being dropped.
+    for (let seed = 1; seed <= 200; seed++) {
+      const slots = planDay({ ...input, budgetLamports: 2_200_000_000n, rng: seeded(seed) });
+      expect(slots.reduce((a, s) => a + s.lamports, 0n)).toBe(2_200_000_000n);
+      for (const s of slots) {
+        expect(s.lamports).toBeGreaterThanOrEqual(input.minOrderLamports);
+        expect(s.lamports).toBeLessThanOrEqual(input.maxOrderLamports);
+      }
+      expect(unplannedLamports(2_200_000_000n, slots)).toBe(0n);
+    }
+    // Exactly full: every slot at the maximum. Dust (a prime budget): still placed in full.
+    expect(
+      planDay({ ...input, budgetLamports: 2_400_000_000n, rng: seeded(1) }).map((s) => s.lamports),
+    ).toEqual(Array<bigint>(8).fill(300_000_000n));
+    const odd = planDay({ ...input, budgetLamports: 1_000_000_007n, rng: seeded(9) });
+    expect(odd.reduce((a, s) => a + s.lamports, 0n)).toBe(1_000_000_007n);
+    // Above what the orders can hold: the rest is measured, never silently gone.
+    const over = planDay({ ...input, budgetLamports: 3n * SOL, rng: seeded(1) });
+    expect(over.reduce((a, s) => a + s.lamports, 0n)).toBe(2_400_000_000n);
+    expect(unplannedLamports(3n * SOL, over)).toBe(600_000_000n);
   });
 
   it('is deterministic for a given RNG and differs across seeds', () => {
@@ -893,12 +997,125 @@ describe('buyback job, simulation', () => {
     expect(r.outcome?.result).toBe('no_budget');
   });
 
-  it('caps the plan by the injected budget source', async () => {
-    const h = simHarness({ budget: { budgetLamports: async () => 120_000_000n } });
-    await h.make().runOnce();
+  it('plans the day from the revenue backlog, within the cap, and records the figures', async () => {
+    const h = simHarness({ budget: okBudget(120_000_000n, 30_000_000n) });
+    const r = await h.make().runOnce();
     const p = await plan(h.journal);
     expect(p.budgetLamports).toBe('120000000');
-    expect(p.slots.reduce((a, s) => a + BigInt(s.lamports), 0n)).toBeLessThanOrEqual(120_000_000n);
+    expect(p.unplannedLamports).toBe('0');
+    expect(p.botAvailableLamports).toBeUndefined();
+    expect(p.revenue).toEqual({
+      since: '2026-10-01T00:00:00Z',
+      forwards: {
+        count: 1,
+        lamports: '150000000',
+        meteora_referral: '150000000',
+        jupiter_referral: '0',
+        platform_fee: '0',
+        other: '0',
+      },
+      claims: { count: 0, lamports: '0', dbc: '0', position: '0', awaitingFinality: 0 },
+      revenueLamports: '150000000',
+      spent: { withdrawals: 1, lamports: '30000000' },
+      backlogLamports: '120000000',
+    });
+    expect(p.slots.reduce((a, s) => a + BigInt(s.lamports), 0n)).toBe(120_000_000n);
+    // The run summary carries the same figures (nothing secret in them).
+    expect(r.budget).toEqual({
+      day: DAY,
+      budgetLamports: 120_000_000n,
+      capLamports: 1n * SOL,
+      plannedLamports: 120_000_000n,
+      unplannedLamports: 0n,
+      botAvailableLamports: null,
+      revenue: p.revenue,
+    });
+    const planned = h.logger.lines.find((l) => l.msg === 'buyback day planned');
+    expect(planned?.fields).toMatchObject({
+      budget: '0.12 SOL',
+      cap: '1 SOL',
+      backlog: '0.12 SOL',
+      botAvailable: null,
+      fundable: null,
+      unplanned: '0 SOL',
+      revenue: { total: '0.15 SOL', meteoraReferral: '0.15 SOL', spent: '0.03 SOL', withdrawals: 1 },
+    });
+
+    // A backlog above the cap: the cap binds, the rest waits in the backlog.
+    const big = simHarness({ budget: okBudget(10n * SOL) });
+    const rb = await big.make().runOnce();
+    expect((await plan(big.journal)).budgetLamports).toBe('1000000000');
+    expect(rb.budget?.budgetLamports).toBe(1n * SOL);
+    expect(rb.budget?.revenue?.backlogLamports).toBe('10000000000');
+  });
+
+  it('plans nothing, writes nothing and alerts when the budget is unconfigured (fail closed)', async () => {
+    const h = simHarness({
+      budget: {
+        backlog: async () => ({ status: 'unconfigured', reason: 'BUYBACK_REVENUE_SINCE is not set' }),
+      },
+    });
+    const r = await h.make().runOnce();
+    expect(r).toEqual({
+      status: 'ran',
+      mode: 'simulation',
+      day: DAY,
+      outcome: { result: 'no_budget', reason: 'budget_unconfigured' },
+    });
+    expect(await h.journal.list()).toEqual([]);
+    expect(h.quote).not.toHaveBeenCalled();
+    expect(h.alerter.alerts).toEqual([
+      expect.objectContaining({
+        level: 'high',
+        code: 'buyback_budget_unconfigured',
+        details: { day: DAY, reason: 'BUYBACK_REVENUE_SINCE is not set' },
+        dedupKey: 'buyback_budget_unconfigured',
+      }),
+    ]);
+  });
+
+  it('plans nothing while the budget is unavailable, then plans once the journals read again', async () => {
+    let broken = true;
+    const h = simHarness({
+      budget: {
+        backlog: async () =>
+          broken
+            ? { status: 'unavailable', reason: 'JOURNAL_CORRUPT: revenue-forward entry is invalid' }
+            : { status: 'ok', figures: figures(200_000_000n) },
+      },
+    });
+    const job = h.make();
+    expect((await job.runOnce()).outcome).toEqual({
+      result: 'no_budget',
+      reason: 'budget_unavailable',
+    });
+    expect(await h.journal.list()).toEqual([]);
+    expect(h.alerter.alerts).toEqual([
+      expect.objectContaining({
+        level: 'high',
+        code: 'buyback_budget_unavailable',
+        details: { day: DAY, reason: 'JOURNAL_CORRUPT: revenue-forward entry is invalid' },
+      }),
+    ]);
+    // Same process, next tick: the journals are readable again.
+    broken = false;
+    expect((await job.runOnce()).outcome?.result).toBe('idle');
+    expect((await plan(h.journal)).budgetLamports).toBe('200000000');
+    expect(h.alerter.alerts).toHaveLength(1);
+  });
+
+  it('keeps the day plan over a restart whatever the budget source says afterwards', async () => {
+    const h = simHarness({ budget: okBudget(120_000_000n) });
+    await h.make().runOnce();
+    const first = await plan(h.journal);
+    // A restart with a source now reporting more, or nothing: the plan written first stands.
+    await h.make({ budget: okBudget(5n * SOL) }).runOnce();
+    expect(await plan(h.journal)).toEqual(first);
+    await h
+      .make({ budget: { backlog: async () => ({ status: 'unavailable', reason: 'io' }) } })
+      .runOnce();
+    expect(await plan(h.journal)).toEqual(first);
+    expect(h.alerter.alerts).toHaveLength(0);
   });
 
   it('stops when buyback_paused is set, missing or unreadable (fail closed)', async () => {
@@ -1080,7 +1297,7 @@ describe('buyback job, live flow', () => {
     const onBeforeSend = vi.fn((sig: string) => {
       order.push(`announce:${sig}`);
     });
-    const make = (cfg: Partial<BuybackConfig> = {}) =>
+    const make = (cfg: Partial<BuybackConfig> = {}, extra: Partial<BuybackDeps> = {}) =>
       createBuybackJob({
         config: baseConfig({ cluster: 'mainnet-beta', live: true, ...cfg }),
         journal,
@@ -1101,6 +1318,7 @@ describe('buyback job, live flow', () => {
         tokens,
         walletLock: new Mutex(),
         onBeforeSend,
+        ...extra,
       });
     return {
       rpc,
@@ -1208,6 +1426,57 @@ describe('buyback job, live flow', () => {
     expect(withdrawn).toBeLessThanOrEqual(allowance);
     expect(withdrawn + available).toBeGreaterThanOrEqual(total + fee * BigInt(planned.length));
     expect(p.funding?.status).toBe('confirmed');
+  });
+
+  it('plans from the backlog plus the SOL already on the bot, never withdrawing that SOL twice', async () => {
+    // 0.01 SOL above the reserve on the bot (left by an earlier day), 0.1 SOL of backlog.
+    const h = liveHarness();
+    const r = await h.make({ minOrderLamports: 10_000_000n }, { budget: okBudget(100_000_000n) }).runOnce();
+    const p = await plan(h.journal);
+    expect(p.budgetLamports).toBe('110000000');
+    expect(p.botAvailableLamports).toBe('10000000');
+    expect(p.revenue?.backlogLamports).toBe('100000000');
+    expect(r.budget).toMatchObject({ budgetLamports: 110_000_000n, botAvailableLamports: 10_000_000n });
+    const planned = p.slots.filter((s) => s.status === 'planned');
+    const total = planned.reduce((a, s) => a + BigInt(s.lamports), 0n);
+    expect(total).toBe(110_000_000n);
+    // The withdrawal covers the orders minus what the bot already holds: at most the backlog.
+    expect(h.withdraw).toHaveBeenCalledTimes(1);
+    expect(h.withdraw.mock.calls[0]![0].lamports).toBe(100_000_000n);
+    expect(p.funding).toMatchObject({ status: 'confirmed', lamports: '100000000' });
+  });
+
+  it('withdraws nothing when the vault owes nothing, whatever the spending limit allows', async () => {
+    const h = liveHarness();
+    const r = await h.make({}, { budget: okBudget(0n) }).runOnce();
+    // The 0.01 SOL above the reserve is buyable but below the minimum order: nothing planned.
+    expect(r.outcome).toEqual({ result: 'no_budget', reason: 'budget below one order' });
+    expect(h.withdraw).not.toHaveBeenCalled();
+    const p = await plan(h.journal);
+    expect(p.budgetLamports).toBe('10000000');
+    expect(p.slots).toEqual([]);
+    expect(p.funding?.status).toBe('not_needed');
+  });
+
+  it('still bounds the backlog by the spending limit and the bot wallet', async () => {
+    // 0.2 SOL left on the limit, 0.01 SOL on the bot, 3 SOL of backlog: the limit binds.
+    const h = liveHarness(undefined, { remainingLamports: 200_000_000n });
+    await h.make({ minOrderLamports: 10_000_000n }, { budget: okBudget(3n * SOL) }).runOnce();
+    const p = await plan(h.journal);
+    expect(p.budgetLamports).toBe('210000000');
+    expect(p.revenue?.backlogLamports).toBe('3000000000');
+    expect(h.withdraw.mock.calls[0]![0].lamports).toBeLessThanOrEqual(200_000_000n);
+  });
+
+  it('plans nothing and withdraws nothing when the budget cannot be established (live)', async () => {
+    const h = liveHarness();
+    const r = await h
+      .make({}, { budget: { backlog: async () => ({ status: 'unavailable', reason: 'io' }) } })
+      .runOnce();
+    expect(r.outcome).toEqual({ result: 'no_budget', reason: 'budget_unavailable' });
+    expect(h.withdraw).not.toHaveBeenCalled();
+    expect(await h.journal.get(dayJournalKey(DAY))).toBeUndefined();
+    expect(h.alerter.codes()).toEqual(['buyback_budget_unavailable']);
   });
 
   it('binds the swap transaction check to the validated quote and the slippage cap', async () => {

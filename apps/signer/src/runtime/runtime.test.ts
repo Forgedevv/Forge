@@ -629,15 +629,26 @@ describe('operator command --revoke-launch', () => {
 
 describe('buyback module', () => {
   it('wires the buyback job with the shared lock, the watcher hook and its own tick', async () => {
-    type Cfg = { maxPriorityFeeLamports: bigint; route: 'jupiter'; devnetPool: null };
+    type Cfg = {
+      maxPriorityFeeLamports: bigint;
+      route: 'jupiter';
+      devnetPool: null;
+      revenueSince: string | null;
+    };
     const captured: Array<BuybackDepsLike<Cfg>> = [];
+    const budgets: Array<{ journalDir: string; since: string | null; vault: string }> = [];
     const lib: BuybackLibrary<Cfg> = {
       buybackConfigFromEnv: (_env, addresses, options) => {
         expect(addresses.forgeMint).toBeNull();
         // The runtime's resolved cluster (devnet by default), not the raw SOLANA_CLUSTER.
         expect(options).toEqual({ cluster: 'devnet' });
         return {
-          config: { maxPriorityFeeLamports: 100_000n, route: 'jupiter', devnetPool: null },
+          config: {
+            maxPriorityFeeLamports: 100_000n,
+            route: 'jupiter',
+            devnetPool: null,
+            revenueSince: '2026-11-01T00:00:00Z',
+          },
           tickMs: 45_000,
           jupiter: { baseUrl: 'https://jup.test', minRequestIntervalMs: 1_100, timeoutMs: 15_000 },
         };
@@ -646,6 +657,11 @@ describe('buyback module', () => {
       createJupiterBuybackClient: (opts) => ({ quotes: opts.baseUrl }),
       createRpcBuybackSwapPreparer: () => ({ preparer: true }),
       createRpcForgeTokenReader: () => ({ tokens: true }),
+      createFileBuybackBudgetSource: (opts) => {
+        expect(opts.rpc).toBeDefined();
+        budgets.push({ journalDir: opts.journalDir, since: opts.since, vault: opts.vault.toBase58() });
+        return { budget: true };
+      },
       createBuybackJob: (deps) => {
         captured.push(deps);
         return { mode: 'simulation', runOnce: async () => ({ status: 'paused' }) };
@@ -663,6 +679,15 @@ describe('buyback module', () => {
     expect(deps.flags).toBe(runtime.context.flags);
     expect(deps.keystore).toBe(runtime.context.keystore);
     expect(deps.tickMs).toBe(45_000);
+    // The revenue budget source: the journal directory, the configured instant, the vault.
+    expect(deps.budget).toEqual({ budget: true });
+    expect(budgets).toEqual([
+      {
+        journalDir: runtime.context.journalDir,
+        since: '2026-11-01T00:00:00Z',
+        vault: runtime.context.addresses.vault.toBase58(),
+      },
+    ]);
     expect(await runtime.scheduler.runNow('buyback')).toEqual({ status: 'paused' });
     expect(runtime.scheduler.states().buyback).toMatchObject({ lastStatus: 'paused', runs: 1 });
   });
@@ -684,13 +709,24 @@ describe('buyback module', () => {
   it('stops the signer at startup when a live buyback on mainnet-beta is refused', async () => {
     const onMainnet = { connection: mockConnection(CLUSTER_GENESIS_HASH['mainnet-beta']) };
     const live = mainnetOverrides({ FORGE_BUYBACK_LIVE: 'true', FORGE_MINT: address() });
-    // No Jupiter API key, then no Squads spending limit (no withdrawer): both refused.
+    // No Jupiter API key, then no revenue instant (D35), then no Squads spending limit (no
+    // withdrawer): all refused.
     await expect(create(live, { ...onMainnet, extraJobs: [buybackJobModule()] })).rejects.toThrow(
       /JUPITER_API_KEY is required/,
     );
     await expect(
       create(
         { ...live, JUPITER_API_KEY: 'jupiter-key-test' },
+        { ...onMainnet, extraJobs: [buybackJobModule()] },
+      ),
+    ).rejects.toThrow(/BUYBACK_REVENUE_SINCE is required when FORGE_BUYBACK_LIVE=true/);
+    await expect(
+      create(
+        {
+          ...live,
+          JUPITER_API_KEY: 'jupiter-key-test',
+          BUYBACK_REVENUE_SINCE: '2026-11-01T00:00:00Z',
+        },
         { ...onMainnet, extraJobs: [buybackJobModule()] },
       ),
     ).rejects.toThrow(/live buyback refused: no Squads spending limit withdrawer/);

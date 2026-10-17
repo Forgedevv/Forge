@@ -8,13 +8,22 @@
  * (SECURITY.md 8).
  *
  * Daily flow:
- *   1. Budget. budget = min(daily cap from the environment, injected budget source when wired
- *      (e.g. revenue collected), and in live mode what the bot can actually spend: its SOL above
- *      the fee reserve plus the spending limit still available). No formula linking revenue to a
- *      daily amount is documented yet: without a budget source the cap alone is the budget.
+ *   1. Budget (D35). The budget source (jobs/buyback-budget.ts) reports the revenue backlog: the
+ *      trading revenue that reached the vault since BUYBACK_REVENUE_SINCE (revenue forwards and
+ *      the creator claims to the vault, finalized only; never a client payment) minus what the
+ *      buyback already took out of the vault since then (its spending-limit withdrawals;
+ *      simulated orders move nothing and count for nothing). The day's budget = min(backlog +
+ *      the SOL already on the bot above its reserve, BUYBACK_DAILY_CAP_LAMPORTS, and in live
+ *      mode what the bot can fund: that SOL plus the spending limit still available, minus the
+ *      fee allowance of the orders). What the cap leaves out stays in the backlog and is bought
+ *      on the following days. A budget the source cannot establish (journal unreadable, a
+ *      corrupt entry, BUYBACK_REVENUE_SINCE unset) is 0 for the run, with a high alert, and no
+ *      plan is written: the next tick tries again. Without a budget source (direct callers) the
+ *      cap alone is the budget.
  *   2. Plan. The day (UTC) is split into N equal segments with a random time in each, and the
- *      budget into N random amounts in [min order, max order] (`planDay`, injectable RNG). The plan
- *      is written to the journal before anything else, so a restart reuses it (never re-rolls).
+ *      budget into N random amounts in [min order, max order] (`planDay`, injectable RNG; the
+ *      configuration is refused when the cap could not fit in N maximum orders). The plan is
+ *      written to the journal before anything else, so a restart reuses it (never re-rolls).
  *      Slots already in the past when the plan is created are `missed` (no catch-up burst).
  *   3. Funding (live). Once per day the missing SOL (the planned orders plus a fee allowance per
  *      order, minus what the bot already holds above its reserve) is withdrawn from the vault to
@@ -73,6 +82,7 @@ import {
 import { z } from 'zod';
 import { PLATFORM_FEE_BPS, platformFeeLamports } from '@forge/core';
 import type { FlagKey } from '@forge/shared';
+import type { RevenueBreakdown } from './revenue.js';
 import {
   DEFAULT_JUPITER_URL,
   JupiterError,
@@ -238,8 +248,19 @@ export interface BuybackConfig {
   forgeMint: PublicKey | null;
   /** FORGE_MULTISIG_VAULT: the bought tokens end up in its associated token account. */
   vault: PublicKey;
-  /** Most lamports spent on buybacks per UTC day. 0 disables buying (plans stay empty). */
+  /**
+   * Most lamports spent on buybacks per UTC day; what the revenue backlog holds above it waits
+   * for the following days. 0 disables buying (plans stay empty). At most ordersPerDay x
+   * maxOrderLamports (refused otherwise: the day could not place its whole budget).
+   */
   dailyCapLamports: bigint;
+  /**
+   * BUYBACK_REVENUE_SINCE: the ISO 8601 instant (with its time zone) from which the trading
+   * revenue is bought back; nothing before it ever is. Null when unset: required for a live
+   * buyback on mainnet-beta (startup error), elsewhere the budget source reports it unconfigured
+   * (alert, budget 0). Not read by the job itself: the budget source is built from it.
+   */
+  revenueSince: string | null;
   /** Orders per day when the budget allows it (1..48). */
   ordersPerDay: number;
   minOrderLamports: bigint;
@@ -273,6 +294,17 @@ export interface BuybackConfig {
   settle?: Partial<SettleTiming>;
 }
 
+/**
+ * BUYBACK_REVENUE_SINCE must name an instant: an ISO 8601 date-time with an explicit time zone
+ * (`2026-11-01T00:00:00Z`). A date without a zone would be read in the machine's zone.
+ */
+const REVENUE_SINCE_RE =
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,3})?)?(Z|[+-]\d{2}:\d{2})$/;
+
+export function isRevenueSince(value: string): boolean {
+  return REVENUE_SINCE_RE.test(value) && Number.isFinite(Date.parse(value));
+}
+
 /** Throws CONFIG when the configuration is not safe to run. */
 export function validateBuybackConfig(config: BuybackConfig): void {
   const fail = (rule: string): never => {
@@ -301,6 +333,16 @@ export function validateBuybackConfig(config: BuybackConfig): void {
     fail('BUYBACK_MAX_ORDER_LAMPORTS must be at least BUYBACK_MIN_ORDER_LAMPORTS');
   }
   if (config.dailyCapLamports < 0n || config.feeReserveLamports < 0n) fail('negative amount');
+  // The day's plan holds at most ordersPerDay orders of maxOrderLamports: a cap above that could
+  // never be placed in one day, and a budget must never be dropped silently (D35).
+  if (config.dailyCapLamports > BigInt(config.ordersPerDay) * config.maxOrderLamports) {
+    fail(
+      `BUYBACK_DAILY_CAP_LAMPORTS (${config.dailyCapLamports}) exceeds BUYBACK_ORDERS_PER_DAY x BUYBACK_MAX_ORDER_LAMPORTS (${config.ordersPerDay} x ${config.maxOrderLamports}): raise the orders or the maximum order so a whole day's budget fits`,
+    );
+  }
+  if (config.revenueSince !== null && !isRevenueSince(config.revenueSince)) {
+    fail('BUYBACK_REVENUE_SINCE must be an ISO 8601 instant with its time zone');
+  }
   if (!Number.isInteger(config.maxLatenessMs) || config.maxLatenessMs < 60_000) {
     fail('BUYBACK_MAX_LATENESS_MINUTES must be at least 1');
   }
@@ -347,7 +389,9 @@ const LIVE_RE = /^(true|false)?$/;
 /**
  * Reads the buyback settings. Addresses (vault, mint) come from @forge/core `requireAddresses`.
  * FORGE_BUYBACK_LIVE (exactly "true" or "false", default false), BUYBACK_DAILY_CAP_LAMPORTS
- * (default 0: nothing is bought), BUYBACK_ORDERS_PER_DAY (8), BUYBACK_MIN_ORDER_LAMPORTS
+ * (default 0: nothing is bought; 5 SOL on mainnet, D35; at most orders x max order),
+ * BUYBACK_REVENUE_SINCE (ISO 8601 instant with its zone; required by FORGE_BUYBACK_LIVE=true on
+ * mainnet-beta), BUYBACK_ORDERS_PER_DAY (8), BUYBACK_MIN_ORDER_LAMPORTS
  * (0.01 SOL), BUYBACK_MAX_ORDER_LAMPORTS (0.25 SOL), BUYBACK_SLIPPAGE_BPS (50, max 100),
  * BUYBACK_MAX_PRICE_IMPACT_BPS (100, max 100), BUYBACK_FEE_RESERVE_LAMPORTS (0.02 SOL),
  * BUYBACK_MAX_LATENESS_MINUTES (30), BUYBACK_DAY_MARGIN_MINUTES (10),
@@ -390,6 +434,13 @@ export function buybackConfigFromEnv(
   if (!/^(true|false|1|0)?$/.test(pausedRaw)) {
     throw new JobError('CONFIG', 'BUYBACK_PAUSED must be true or false');
   }
+  const sinceRaw = env.BUYBACK_REVENUE_SINCE?.trim() ?? '';
+  if (sinceRaw !== '' && !isRevenueSince(sinceRaw)) {
+    throw new JobError(
+      'CONFIG',
+      'BUYBACK_REVENUE_SINCE must be an ISO 8601 instant with its time zone (e.g. 2026-11-01T00:00:00Z)',
+    );
+  }
   const intEnv = (name: string, fallback: number, max: number): number => {
     const v = parsePositiveIntEnv(env[name], name, fallback);
     if (v > max) throw new JobError('CONFIG', `${name} is too large`);
@@ -414,6 +465,7 @@ export function buybackConfigFromEnv(
       'BUYBACK_DAILY_CAP_LAMPORTS',
       0n,
     ),
+    revenueSince: sinceRaw === '' ? null : sinceRaw,
     ordersPerDay: intEnv('BUYBACK_ORDERS_PER_DAY', 8, MAX_ORDERS_PER_DAY),
     minOrderLamports: parseLamportsEnv(
       env.BUYBACK_MIN_ORDER_LAMPORTS,
@@ -471,6 +523,14 @@ export function buybackConfigFromEnv(
       'JUPITER_API_KEY is required when FORGE_BUYBACK_LIVE=true on mainnet-beta',
     );
   }
+  // A live buyback on mainnet-beta must know from when the revenue is bought back (D35): with
+  // no instant, the history before the go-live would be. Elsewhere the budget source alerts.
+  if (config.cluster === 'mainnet-beta' && config.live && config.revenueSince === null) {
+    throw new JobError(
+      'CONFIG',
+      'BUYBACK_REVENUE_SINCE is required when FORGE_BUYBACK_LIVE=true on mainnet-beta: set it to the go-live instant so no earlier revenue is bought back',
+    );
+  }
   const tickSeconds = intEnv('BUYBACK_TICK_SECONDS', 60, 3_600);
   if (tickSeconds < 5) throw new JobError('CONFIG', 'BUYBACK_TICK_SECONDS must be at least 5');
   return {
@@ -521,8 +581,10 @@ export interface PlannedSlot {
 
 /**
  * Pure: the day's orders. Invariants: at most `orders` slots and never more than
- * budget / minOrder; every amount in [minOrder, maxOrder]; total <= budget; slot i lies in the
- * i-th equal segment of [dayStart + margin, dayEnd - margin) (spread over the day, sorted).
+ * budget / minOrder; every amount in [minOrder, maxOrder]; total <= budget, and total = budget
+ * whenever the slots can hold it (budget <= slots x maxOrder: nothing is dropped silently, the
+ * rest stays in the revenue backlog); slot i lies in the i-th equal segment of
+ * [dayStart + margin, dayEnd - margin) (spread over the day, sorted).
  */
 export function planDay(input: PlanInput): PlannedSlot[] {
   const { budgetLamports: budget, minOrderLamports: min, maxOrderLamports: max } = input;
@@ -544,15 +606,47 @@ export function planDay(input: PlanInput): PlannedSlot[] {
       input.dayStartMs + input.marginMs + i * segment + Math.floor(draw(input.rng) * segment);
     slots.push({ index: i, at, lamports: min });
   }
-  // Every slot gets the minimum, then the rest of the budget is spread by random weights.
-  const extra = budget - min * BigInt(n);
+  // Every slot gets the minimum, then the rest of the budget is spread by random weights. A slot
+  // the weights push above the maximum stops there and its surplus is spread again, by weight,
+  // over the slots still below it, until nothing is left or every slot is at the maximum (each
+  // round closes at least one slot, so this ends). What `n` maximum orders cannot hold is left
+  // out, measured by the caller and kept in the revenue backlog.
+  let remaining = budget - min * BigInt(n);
   const weights = slots.map(() => BigInt(1 + Math.floor(draw(input.rng) * WEIGHT_RANGE)));
-  const totalWeight = weights.reduce((a, b) => a + b, 0n);
-  slots.forEach((slot, i) => {
-    const amount = min + (extra * weights[i]!) / totalWeight;
-    slot.lamports = amount > max ? max : amount;
-  });
+  let open = slots.map((_, i) => i);
+  while (remaining > 0n && open.length > 0) {
+    const totalWeight = open.reduce((a, i) => a + weights[i]!, 0n);
+    const pool = remaining;
+    let capped = false;
+    for (const i of open) {
+      const slot = slots[i]!;
+      const room = max - slot.lamports;
+      const share = (pool * weights[i]!) / totalWeight;
+      if (share >= room) {
+        capped = true;
+        slot.lamports = max;
+        remaining -= room;
+      } else {
+        slot.lamports += share;
+        remaining -= share;
+      }
+    }
+    open = open.filter((i) => slots[i]!.lamports < max);
+    if (!capped) {
+      // Only the integer-division dust is left (fewer lamports than open slots): one each.
+      for (const i of open) {
+        if (remaining === 0n) break;
+        slots[i]!.lamports += 1n;
+        remaining -= 1n;
+      }
+    }
+  }
   return slots;
+}
+
+/** Lamports of a budget the plan could not place (budget above slots x maxOrder). */
+export function unplannedLamports(budget: bigint, slots: readonly PlannedSlot[]): bigint {
+  return budget - slots.reduce((a, s) => a + s.lamports, 0n);
 }
 
 /** UTC day of a timestamp: `YYYY-MM-DD`. */
@@ -607,6 +701,41 @@ export const FundingRecord = z.object({
 });
 export type FundingRecord = z.infer<typeof FundingRecord>;
 
+const countField = z.number().int().nonnegative();
+
+/**
+ * The revenue figures the day's budget was derived from (D35), as the budget source reported
+ * them when the plan was made: what reached the vault since `since`, what the buyback already
+ * took, the backlog. Absent in journals written before the revenue budget existed.
+ */
+export const BuybackRevenueRecord = z.object({
+  since: z.string(),
+  /** Finalized revenue forwards (jobs/revenue.ts) since `since`, with their breakdown by source. */
+  forwards: z.object({
+    count: countField,
+    lamports: lamportsString,
+    meteora_referral: lamportsString,
+    jupiter_referral: lamportsString,
+    platform_fee: lamportsString,
+    other: lamportsString,
+  }),
+  /** Finalized creator claims to the vault (jobs/claims.ts receipts) since `since`. */
+  claims: z.object({
+    count: countField,
+    lamports: lamportsString,
+    dbc: lamportsString,
+    position: lamportsString,
+    /** Receipts seen confirmed but not finalized yet: not counted until they are. */
+    awaitingFinality: countField,
+  }),
+  revenueLamports: lamportsString,
+  /** Taken out of the vault by the buyback since `since`: its spending-limit withdrawals. */
+  spent: z.object({ withdrawals: countField, lamports: lamportsString }),
+  /** revenue - spent, never negative: what the vault still owes the buyback. */
+  backlogLamports: lamportsString,
+});
+export type BuybackRevenueRecord = z.infer<typeof BuybackRevenueRecord>;
+
 export const BuybackDayEntry = z.object({
   kind: z.literal('day'),
   v: z.literal(1),
@@ -615,6 +744,11 @@ export const BuybackDayEntry = z.object({
   createdAt: z.string(),
   budgetLamports: lamportsString,
   capLamports: lamportsString,
+  /** Lamports of the budget the plan could not place (never with a valid configuration). */
+  unplannedLamports: lamportsString.optional(),
+  /** SOL above the bot's reserve when the day was planned (live), counted as buyable. */
+  botAvailableLamports: lamportsString.optional(),
+  revenue: BuybackRevenueRecord.optional(),
   slots: z.array(BuybackSlot).max(MAX_ORDERS_PER_DAY),
   funding: FundingRecord.nullable(),
 });
@@ -671,9 +805,60 @@ export function committedLamports(slots: readonly BuybackSlot[]): bigint {
 // ---------------------------------------------------------------------------------------
 // Collaborators
 
-/** Daily budget from the revenue collected (optional; the env cap applies on top). */
+/** The revenue figures behind a budget, in lamports (jobs/buyback-budget.ts computes them). */
+export interface BuybackRevenueFigures {
+  since: string;
+  forwards: { count: number; lamports: bigint; breakdown: RevenueBreakdown };
+  claims: {
+    count: number;
+    lamports: bigint;
+    dbc: bigint;
+    position: bigint;
+    awaitingFinality: number;
+  };
+  revenueLamports: bigint;
+  spent: { withdrawals: number; lamports: bigint };
+  backlogLamports: bigint;
+}
+
+export type BuybackBudgetResult =
+  | { status: 'ok'; figures: BuybackRevenueFigures }
+  /** BUYBACK_REVENUE_SINCE is not set: nothing can be bought (alerted, no plan). */
+  | { status: 'unconfigured'; reason: string }
+  /** A journal is unreadable or holds a corrupt entry: budget 0 for the run (alerted, no plan). */
+  | { status: 'unavailable'; reason: string };
+
+/**
+ * The revenue backlog (D35): what reached the vault as trading revenue since
+ * BUYBACK_REVENUE_SINCE minus what the buyback already took out of it, never negative. The env
+ * cap, the spending limit and the bot's balance apply on top (`computeBudget`).
+ */
 export interface BuybackBudgetSource {
-  budgetLamports(day: string): Promise<bigint>;
+  backlog(): Promise<BuybackBudgetResult>;
+}
+
+export function revenueFiguresToRecord(f: BuybackRevenueFigures): BuybackRevenueRecord {
+  return {
+    since: f.since,
+    forwards: {
+      count: f.forwards.count,
+      lamports: f.forwards.lamports.toString(),
+      meteora_referral: f.forwards.breakdown.meteora_referral.toString(),
+      jupiter_referral: f.forwards.breakdown.jupiter_referral.toString(),
+      platform_fee: f.forwards.breakdown.platform_fee.toString(),
+      other: f.forwards.breakdown.other.toString(),
+    },
+    claims: {
+      count: f.claims.count,
+      lamports: f.claims.lamports.toString(),
+      dbc: f.claims.dbc.toString(),
+      position: f.claims.position.toString(),
+      awaitingFinality: f.claims.awaitingFinality,
+    },
+    revenueLamports: f.revenueLamports.toString(),
+    spent: { withdrawals: f.spent.withdrawals, lamports: f.spent.lamports.toString() },
+    backlogLamports: f.backlogLamports.toString(),
+  };
 }
 
 export type WithdrawResult =
@@ -1414,12 +1599,39 @@ export type BuybackOutcome =
   | { result: 'failed'; slot?: number; signature?: string; error: string }
   | { result: 'skipped'; slot?: number; reason: string };
 
+/** The day's budget as planned, for the run summary and the logs (nothing secret). */
+export interface BuybackBudgetSummary {
+  day: string;
+  budgetLamports: bigint;
+  capLamports: bigint;
+  /** Lamports planned in orders (every slot, whatever its status). */
+  plannedLamports: bigint;
+  unplannedLamports: bigint;
+  botAvailableLamports: bigint | null;
+  revenue: BuybackRevenueRecord | null;
+}
+
+export function summarizeBudget(entry: BuybackDayEntry): BuybackBudgetSummary {
+  return {
+    day: entry.day,
+    budgetLamports: BigInt(entry.budgetLamports),
+    capLamports: BigInt(entry.capLamports),
+    plannedLamports: entry.slots.reduce((a, s) => a + BigInt(s.lamports), 0n),
+    unplannedLamports: BigInt(entry.unplannedLamports ?? '0'),
+    botAvailableLamports:
+      entry.botAvailableLamports === undefined ? null : BigInt(entry.botAvailableLamports),
+    revenue: entry.revenue ?? null,
+  };
+}
+
 export interface BuybackRunReport {
   status: 'ran' | 'paused' | 'busy' | 'error';
   mode: BuybackMode;
   reason?: string;
   day?: string;
   outcome?: BuybackOutcome;
+  /** The day's plan figures, once a plan exists for the day. */
+  budget?: BuybackBudgetSummary;
 }
 
 export interface BuybackJob {
@@ -1517,18 +1729,57 @@ export function createBuybackJob(deps: BuybackDeps): BuybackJob {
 
   // ----- plan ---------------------------------------------------------------------------
 
-  async function computeBudget(day: string, bot: PublicKey | null): Promise<bigint> {
-    let budget = config.dailyCapLamports;
+  type NoBudgetReason = 'budget_unconfigured' | 'budget_unavailable';
+
+  interface BudgetDecision {
+    budget: bigint;
+    figures: BuybackRevenueFigures | null;
+    /** What bounded the budget: the cap, the backlog, the bot's SOL and what it can fund. */
+    backlog: bigint | null;
+    botAvailable: bigint | null;
+    fundable: bigint | null;
+  }
+
+  /**
+   * budget = min(cap, backlog + SOL already on the bot above its reserve, what the bot can fund).
+   * The backlog is what the vault still owes the buyback (D35); the SOL already withdrawn to the
+   * bot was counted as spent by the source and is buyable on top of it (never re-withdrawn).
+   * Returns the reason instead of a budget when the source cannot establish one: nothing is
+   * planned then (fail closed, alerted, retried on the next tick).
+   */
+  async function computeBudget(
+    day: string,
+    bot: PublicKey | null,
+  ): Promise<BudgetDecision | NoBudgetReason> {
+    let figures: BuybackRevenueFigures | null = null;
+    let backlog: bigint | null = null;
     if (deps.budget) {
-      const fromSource = await deps.budget.budgetLamports(day);
-      if (typeof fromSource !== 'bigint' || fromSource < 0n) {
+      const result = await deps.budget.backlog();
+      if (result.status !== 'ok') {
+        await alert(
+          'high',
+          `buyback_budget_${result.status}`,
+          result.status === 'unconfigured'
+            ? 'The buyback budget is not configured (BUYBACK_REVENUE_SINCE): nothing is bought until it is set'
+            : 'The buyback budget cannot be established from the journals (unreadable or corrupt entry): nothing is bought until it is fixed',
+          { day, reason: result.reason },
+          `buyback_budget_${result.status}`,
+        );
+        log.warn({ day, status: result.status, reason: result.reason }, 'buyback budget unknown');
+        return result.status === 'unconfigured' ? 'budget_unconfigured' : 'budget_unavailable';
+      }
+      figures = result.figures;
+      backlog = figures.backlogLamports;
+      if (typeof backlog !== 'bigint' || backlog < 0n) {
         throw new JobError('INVALID_AMOUNT', 'budget source returned an invalid amount');
       }
-      if (fromSource < budget) budget = fromSource;
     }
+    let budget = config.dailyCapLamports;
+    let botAvailable: bigint | null = null;
+    let fundable: bigint | null = null;
     if (live && bot) {
       const spendable = await spendableBalance(live.rpc, bot, retry);
-      const available =
+      botAvailable =
         spendable > config.feeReserveLamports ? spendable - config.feeReserveLamports : 0n;
       const allowance = await live.withdrawer.remainingLamports(bot);
       if (typeof allowance !== 'bigint' || allowance < 0n) {
@@ -1539,23 +1790,31 @@ export function createBuybackJob(deps: BuybackDeps): BuybackJob {
       // that used the whole limit would leave the last orders unfunded (skipped as
       // insufficient_funds) once the limit binds.
       const fees = BigInt(config.ordersPerDay) * config.orderFeeAllowanceLamports;
-      const fundable = available + allowance > fees ? available + allowance - fees : 0n;
+      fundable = botAvailable + allowance > fees ? botAvailable + allowance - fees : 0n;
       if (fundable < budget) budget = fundable;
     }
-    return budget;
+    if (backlog !== null) {
+      const buyable = backlog + (botAvailable ?? 0n);
+      if (buyable < budget) budget = buyable;
+    }
+    return { budget, figures, backlog, botAvailable, fundable };
   }
 
-  async function loadOrCreatePlan(day: string, bot: PublicKey | null): Promise<BuybackDayEntry> {
+  type PlanResult = { entry: BuybackDayEntry } | { entry: null; reason: NoBudgetReason };
+
+  async function loadOrCreatePlan(day: string, bot: PublicKey | null): Promise<PlanResult> {
     const key = dayJournalKey(day);
     const existing = await journal.get(key);
     if (existing) {
       if (existing.kind !== 'day' || existing.day !== day) {
         throw new JobError('JOURNAL_CORRUPT', 'buyback day entry does not match its key');
       }
-      return existing;
+      return { entry: existing };
     }
     const t = now();
-    const budget = await computeBudget(day, bot);
+    const decision = await computeBudget(day, bot);
+    if (typeof decision === 'string') return { entry: null, reason: decision };
+    const { budget } = decision;
     const planned = planDay({
       dayStartMs: dayStartMs(t),
       budgetLamports: budget,
@@ -1565,6 +1824,7 @@ export function createBuybackJob(deps: BuybackDeps): BuybackJob {
       marginMs: config.dayMarginMs,
       rng,
     });
+    const unplanned = unplannedLamports(budget, planned);
     const entry: BuybackDayEntry = {
       kind: 'day',
       v: 1,
@@ -1573,6 +1833,11 @@ export function createBuybackJob(deps: BuybackDeps): BuybackJob {
       createdAt: iso(),
       budgetLamports: budget.toString(),
       capLamports: config.dailyCapLamports.toString(),
+      unplannedLamports: unplanned.toString(),
+      ...(decision.botAvailable !== null
+        ? { botAvailableLamports: decision.botAvailable.toString() }
+        : {}),
+      ...(decision.figures ? { revenue: revenueFiguresToRecord(decision.figures) } : {}),
       slots: planned.map((s) => ({
         index: s.index,
         at: s.at,
@@ -1584,18 +1849,52 @@ export function createBuybackJob(deps: BuybackDeps): BuybackJob {
     };
     await journal.put(key, entry);
     const active = entry.slots.filter((s) => s.status === 'planned');
+    const f = decision.figures;
     log.info(
       {
         day,
         mode,
         budget: formatSol(budget),
+        cap: formatSol(config.dailyCapLamports),
+        backlog: decision.backlog === null ? null : formatSol(decision.backlog),
+        botAvailable: decision.botAvailable === null ? null : formatSol(decision.botAvailable),
+        fundable: decision.fundable === null ? null : formatSol(decision.fundable),
+        unplanned: formatSol(unplanned),
         orders: active.length,
         missedAtCreation: entry.slots.length - active.length,
         total: formatSol(active.reduce((a, s) => a + BigInt(s.lamports), 0n)),
+        ...(f
+          ? {
+              revenue: {
+                since: f.since,
+                total: formatSol(f.revenueLamports),
+                forwards: formatSol(f.forwards.lamports),
+                meteoraReferral: formatSol(f.forwards.breakdown.meteora_referral),
+                jupiterReferral: formatSol(f.forwards.breakdown.jupiter_referral),
+                platformFee: formatSol(f.forwards.breakdown.platform_fee),
+                other: formatSol(f.forwards.breakdown.other),
+                dbcClaims: formatSol(f.claims.dbc),
+                positionClaims: formatSol(f.claims.position),
+                claimsAwaitingFinality: f.claims.awaitingFinality,
+                spent: formatSol(f.spent.lamports),
+                withdrawals: f.spent.withdrawals,
+              },
+            }
+          : {}),
       },
       'buyback day planned',
     );
-    return entry;
+    if (unplanned > 0n) {
+      // Impossible with a validated configuration (cap <= orders x max order): said loudly.
+      await alert(
+        'high',
+        'buyback_budget_unplanned',
+        'Part of the day budget could not be placed in orders: it stays in the revenue backlog; check BUYBACK_ORDERS_PER_DAY and BUYBACK_MAX_ORDER_LAMPORTS',
+        { day, unplanned: unplanned.toString(), budget: budget.toString() },
+        'buyback_budget_unplanned',
+      );
+    }
+    return { entry };
   }
 
   async function saveSlot(
@@ -2112,23 +2411,45 @@ export function createBuybackJob(deps: BuybackDeps): BuybackJob {
     if (settled) return { status: 'ran', mode, day, outcome: settled };
     const returned = await returnTokens(l, bot, botRef);
     if (returned) return { status: 'ran', mode, day, outcome: returned };
-    let entry = await loadOrCreatePlan(day, bot);
+    const planned = await loadOrCreatePlan(day, bot);
+    if (!planned.entry) {
+      return { status: 'ran', mode, day, outcome: { result: 'no_budget', reason: planned.reason } };
+    }
+    let entry = planned.entry;
     if (entry.mode === 'live') entry = await ensureFunding(l, entry, bot);
-    return { status: 'ran', mode, day, outcome: await processDueSlot(entry, l, bot, botRef) };
-  }
-
-  async function runSimulation(): Promise<BuybackRunReport> {
-    const day = utcDay(now());
-    const entry = await loadOrCreatePlan(day, null);
+    const budget = summarizeBudget(entry);
     if (entry.slots.length === 0) {
       return {
         status: 'ran',
         mode,
         day,
         outcome: { result: 'no_budget', reason: 'budget below one order' },
+        budget,
       };
     }
-    return { status: 'ran', mode, day, outcome: await processDueSlot(entry, null, null, null) };
+    const outcome = await processDueSlot(entry, l, bot, botRef);
+    return { status: 'ran', mode, day, outcome, budget };
+  }
+
+  async function runSimulation(): Promise<BuybackRunReport> {
+    const day = utcDay(now());
+    const planned = await loadOrCreatePlan(day, null);
+    if (!planned.entry) {
+      return { status: 'ran', mode, day, outcome: { result: 'no_budget', reason: planned.reason } };
+    }
+    const entry = planned.entry;
+    const budget = summarizeBudget(entry);
+    if (entry.slots.length === 0) {
+      return {
+        status: 'ran',
+        mode,
+        day,
+        outcome: { result: 'no_budget', reason: 'budget below one order' },
+        budget,
+      };
+    }
+    const outcome = await processDueSlot(entry, null, null, null);
+    return { status: 'ran', mode, day, outcome, budget };
   }
 
   async function runOnce(): Promise<BuybackRunReport> {

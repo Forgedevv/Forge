@@ -4,7 +4,9 @@
  * What it wires: the settings from `buybackConfigFromEnv` (vault and FORGE_MINT from the startup
  * `requireAddresses`), the file journals, the Postgrest flags reader, the live collaborators the
  * process already has (keystore, RPC, token reader, the shared `walletLock`, the watcher's
- * `onBeforeSend`), the Squads v4 spending-limit withdrawer (jobs/squads.ts) when
+ * `onBeforeSend`), the revenue budget source (jobs/buyback-budget.ts: the forwards, claim
+ * receipts and buyback journals of SIGNER_JOURNAL_DIR from BUYBACK_REVENUE_SINCE, the RPC for
+ * the claims' finality), the Squads v4 spending-limit withdrawer (jobs/squads.ts) when
  * FORGE_SQUADS_MULTISIG and FORGE_SQUADS_SPENDING_LIMIT are set, and the buy route:
  * - `jupiter` (default, the only route on mainnet-beta): Jupiter quote client + the RPC swap
  *   preparer (static allowlist + simulation + keystore signature);
@@ -28,6 +30,7 @@ import {
   createRpcForgeTokenReader,
   type BuybackRouteKind,
 } from '../jobs/buyback.js';
+import { createFileBuybackBudgetSource } from '../jobs/buyback-budget.js';
 import { createDbcDevnetBuybackRoute } from '../jobs/buyback-dbc.js';
 import {
   createSquadsJournal,
@@ -58,6 +61,8 @@ export interface BuybackConfigLike {
   maxPriorityFeeLamports: bigint;
   route: BuybackRouteKind;
   devnetPool: PublicKey | null;
+  /** BUYBACK_REVENUE_SINCE (null when unset: the budget source reports it unconfigured). */
+  revenueSince: string | null;
 }
 
 export interface BuybackDepsLike<Config> {
@@ -67,6 +72,7 @@ export interface BuybackDepsLike<Config> {
   alerter: JobAlerter;
   logger: JobLogger;
   quotes?: unknown;
+  budget?: unknown;
   tickMs?: number;
   withdrawer?: unknown;
   keystore?: KeystoreLike;
@@ -102,6 +108,13 @@ export interface BuybackLibrary<Config extends BuybackConfigLike> {
     maxPriorityFeeLamports: bigint;
   }): unknown;
   createRpcForgeTokenReader(connection: Connection): unknown;
+  createFileBuybackBudgetSource(opts: {
+    journalDir: string;
+    since: string | null;
+    vault: PublicKey;
+    rpc: SolanaRpc;
+    logger: JobLogger;
+  }): unknown;
   createBuybackJob(deps: BuybackDepsLike<Config>): {
     readonly mode: string;
     runOnce(): Promise<unknown>;
@@ -134,6 +147,7 @@ export const REAL_BUYBACK_LIBRARY = {
   createJupiterBuybackClient,
   createRpcBuybackSwapPreparer,
   createRpcForgeTokenReader,
+  createFileBuybackBudgetSource,
   createBuybackJob,
   squadsConfigFromEnv,
   createSquadsJournal,
@@ -219,6 +233,18 @@ export function buybackJobModule<Config extends BuybackConfigLike>(
         });
       }
 
+      // The revenue backlog (D35): forwards, claim receipts and the buyback's own withdrawals
+      // since BUYBACK_REVENUE_SINCE, from the journal directory; the RPC settles the claims'
+      // finality. Unset on mainnet-beta live is refused by the configuration above; elsewhere
+      // the job alerts and plans nothing.
+      const budget = lib.createFileBuybackBudgetSource({
+        journalDir: ctx.journalDir,
+        since: config.revenueSince,
+        vault: ctx.addresses.vault,
+        rpc: ctx.rpc,
+        logger: ctx.jobLogger('buyback-budget'),
+      });
+
       const job = lib.createBuybackJob({
         config,
         journal: lib.createBuybackJournal(ctx.journalDir),
@@ -226,6 +252,7 @@ export function buybackJobModule<Config extends BuybackConfigLike>(
         alerter: ctx.alerter,
         logger,
         quotes,
+        budget,
         tickMs,
         ...(withdrawer !== undefined ? { withdrawer } : {}),
         keystore: ctx.keystore,
@@ -236,7 +263,12 @@ export function buybackJobModule<Config extends BuybackConfigLike>(
         onBeforeSend: ctx.onBeforeSend,
       });
       logger.info(
-        { mode: job.mode, route: config.route, withdrawer: withdrawer !== undefined },
+        {
+          mode: job.mode,
+          route: config.route,
+          withdrawer: withdrawer !== undefined,
+          revenueSince: config.revenueSince,
+        },
         'buyback job wired',
       );
       return { runOnce: () => job.runOnce(), delayMs: () => tickMs };
