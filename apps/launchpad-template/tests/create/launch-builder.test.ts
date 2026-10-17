@@ -108,6 +108,11 @@ function mockConnection(accounts: Map<string, AccountInfo<Buffer>>) {
     getMinimumBalanceForRentExemption: async (size: number) => rent(size),
     getLatestBlockhash: async () => ({ blockhash: BLOCKHASH, lastValidBlockHeight: 1_000 }),
     getFeeForMessage: async () => ({ context: { slot: 1 }, value: 10_000 }),
+    // The relay answers the recent fees of the launch's writable accounts.
+    getRecentPrioritizationFees: async () => [
+      { slot: 1, prioritizationFee: 0 },
+      { slot: 2, prioritizationFee: 20_000 },
+    ],
   };
 }
 
@@ -179,6 +184,10 @@ describe('createLaunchBuilder (launch built by @forge/core)', () => {
     expect(tx.signatures[1]?.some((b) => b !== 0)).toBe(true);
     const ixs = instructionsOf(response);
     expect(ixs[0]?.programId.toBase58()).toBe(COMPUTE_BUDGET_PROGRAM_ID);
+    // The site's priority fee, priced by core: the limit then the price, first.
+    expect(ixs[1]?.programId.toBase58()).toBe(COMPUTE_BUDGET_PROGRAM_ID);
+    expect(ixs[1]!.data[0]).toBe(3);
+    expect(Buffer.from(ixs[1]!.data).readBigUInt64LE(1)).toBe(BigInt(20_000));
   });
 
   it('ends with the 0.3% platform fee transfer to FORGE_PLATFORM_FEE_WALLET', async () => {
@@ -206,7 +215,8 @@ describe('createLaunchBuilder (launch built by @forge/core)', () => {
       poolCreationFeeLamports: FEE.toString(),
       firstBuyLamports: FIRST_BUY.toString(),
       platformFeeLamports: PLATFORM_FEE.toString(),
-      estimatedNetworkFeeLamports: '10000',
+      // Two signatures and the priority fee (300,000 CU at 20,000 micro-lamports).
+      estimatedNetworkFeeLamports: '16000',
       accountRentLamports: String(expectedRent),
       metadataFeeLamports: METAPLEX_CREATE_METADATA_FEE_LAMPORTS.toString(),
     });

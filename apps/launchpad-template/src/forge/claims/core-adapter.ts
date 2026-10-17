@@ -7,6 +7,7 @@ import {
   listCoinsOfCreator,
 } from '@forge/core';
 import { forgeConfig } from '../config';
+import { SITE_PRIORITY_FEE } from '../priority-fee';
 import { getRelayConnection } from '../trade/connection';
 
 /**
@@ -18,8 +19,9 @@ import { getRelayConnection } from '../trade/connection';
  *    the `fees` of each coin;
  *  - `buildCreatorClaimTx` (claims.ts) builds the claim with `receiver` = the connected wallet; the
  *    legacy transaction it returns is wrapped in a `VersionedTransaction` for the signing flow, and
- *    the costs the core computed (`summary.costs`: network fee, the coin account rent of a first
- *    claim, the temporary WSOL rent) are handed over as they are, for the review and balance check.
+ *    the costs the core computed (`summary.costs`: network fee with its priority fee, the coin
+ *    account rent of a first claim, the temporary WSOL rent) are handed over as they are, for the
+ *    review and balance check. The priority fee is `SITE_PRIORITY_FEE` (../priority-fee.ts).
  * Every chain read goes through the FORGE RPC relay connection. Names and symbols are not read
  * here (the UI falls back to the coin address).
  */
@@ -41,7 +43,7 @@ export interface CreatorCoin {
 
 /** What the claim costs the wallet (fee payer), lamports, as computed by `@forge/core`. */
 export interface CreatorClaimCosts {
-  /** Signature fees (no priority fee). */
+  /** Signature fees plus the priority fee. */
   networkFeeLamports: bigint;
   /** Rent of the wallet's coin account, created on the first claim of a pool (0 when it exists). */
   receiverTokenAccountRentLamports: bigint;
@@ -111,11 +113,15 @@ export function createCoreClaimsCore(options: CoreClaimsOptions): ClaimsCore {
       const connection = requireConnection(options);
       let result;
       try {
-        result = await coreBuildCreatorClaimTx(connection, {
-          pool: new PublicKey(pool),
-          creator: new PublicKey(creator),
-          receiver: new PublicKey(receiver),
-        });
+        result = await coreBuildCreatorClaimTx(
+          connection,
+          {
+            pool: new PublicKey(pool),
+            creator: new PublicKey(creator),
+            receiver: new PublicKey(receiver),
+          },
+          { priority: SITE_PRIORITY_FEE },
+        );
       } catch (error) {
         if (error instanceof ClaimError || error instanceof DbcReadError) {
           throw new Error(error.message, { cause: error });

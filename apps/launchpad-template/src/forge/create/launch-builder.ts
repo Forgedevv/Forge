@@ -17,6 +17,7 @@ import {
   type Connection,
   type Keypair,
 } from '@solana/web3.js';
+import { SITE_PRIORITY_FEE } from '../priority-fee';
 import type { PrepareLaunchResponse } from './api';
 import { decodeTransaction } from '../tx/decode';
 import { networkFeeLamports } from '../tx/fees';
@@ -26,7 +27,7 @@ import { MAX_FIRST_BUY_SLIPPAGE_BPS } from './verify';
  * LOCKED ZONE. Server-only. Builds the launch transaction of a coin created by a user on this
  * launchpad's config with `@forge/core` (`buildUserCoinLaunchTx`, PLANEXECUTE rule 6): the user is
  * pool creator, rent payer, fee payer and buyer; the fresh mint signs; the user signs last in the
- * browser. A first buy pays the 0.3% FORGE platform fee (one SOL transfer to
+ * browser. Its priority fee is `SITE_PRIORITY_FEE` (../priority-fee.ts), priced by core. A first buy pays the 0.3% FORGE platform fee (one SOL transfer to
  * `FORGE_PLATFORM_FEE_WALLET`, the last instruction, added by core). Core compares the on-chain
  * config field by field with the launchpad config it builds (owner wallet and creation fee of
  * this site pinned), checks the platform fee wallet, quotes the first buy and reads the rent from
@@ -222,6 +223,7 @@ export function createLaunchBuilder(options: LaunchBuilderOptions): LaunchBuilde
           firstBuyLamports: input.firstBuyLamports,
           slippageBps,
           computeUnitLimit: LAUNCH_COMPUTE_UNITS,
+          priority: SITE_PRIORITY_FEE,
           // The fee wallet of this site's public environment, and nothing else.
           env: { FORGE_PLATFORM_FEE_WALLET: options.platformFeeWallet ?? undefined },
           expectedConfig,

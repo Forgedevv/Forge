@@ -1,6 +1,7 @@
 import { getAssociatedTokenAddressSync } from '@solana/spl-token';
 import type { Connection, PublicKey } from '@solana/web3.js';
 import { useCallback, useEffect, useState } from 'react';
+import { SWAP_MAX_PRIORITY_FEE_LAMPORTS } from '../priority-fee';
 import { LAMPORTS_PER_SIGNATURE, TOKEN_ACCOUNT_SIZE } from './constants';
 
 export interface WalletBalances {
@@ -81,18 +82,28 @@ export function useWalletBalances(
 export interface NetworkFeeEstimate {
   /** Fixed signature fee for the transaction. */
   base: bigint;
+  /**
+   * The most the trade's priority fee can be (`SWAP_MAX_PRIORITY_FEE_LAMPORTS`): its price is read
+   * from the network when the transaction is built, and never goes above this.
+   */
+  maxPriorityFee: bigint;
   /** One-time, refundable rent for the coin's token account on a first buy; 0 otherwise. */
   accountRent: bigint;
+  /** Everything above, i.e. the most the trade costs on top of the amounts and the FORGE fee. */
   total: bigint;
 }
 
-/** Pre-sign estimate: one signature plus the token account rent when a buy must create it. */
+/**
+ * Pre-sign estimate: one signature, the priority fee at its cap, plus the token account rent when
+ * a buy must create it.
+ */
 export function estimateNetworkFee(
   side: 'buy' | 'sell',
   balances: WalletBalances | null,
 ): NetworkFeeEstimate {
   const base = LAMPORTS_PER_SIGNATURE;
+  const maxPriorityFee = SWAP_MAX_PRIORITY_FEE_LAMPORTS;
   const accountRent =
     side === 'buy' && balances && !balances.hasTokenAccount ? balances.tokenAccountRent : BigInt(0);
-  return { base, accountRent, total: base + accountRent };
+  return { base, maxPriorityFee, accountRent, total: base + maxPriorityFee + accountRent };
 }

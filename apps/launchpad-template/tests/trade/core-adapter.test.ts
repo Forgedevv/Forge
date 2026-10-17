@@ -38,6 +38,7 @@ import {
   translateCoreError,
 } from '../../src/forge/trade/core-adapter';
 import { createMockSwapCore } from '../../src/forge/trade/core-adapter.mock';
+import { SITE_PRIORITY_FEE, SWAP_MAX_PRIORITY_FEE_LAMPORTS } from '../../src/forge/priority-fee';
 
 const connection = {} as Connection;
 const pool = Keypair.generate().publicKey;
@@ -174,6 +175,8 @@ describe('swap core backed by @forge/core', () => {
       minAmountOut: BigInt(4_000),
       env: { FORGE_PLATFORM_FEE_WALLET: feeWallet, FORGE_METEORA_REFERRAL_ACCOUNT: referral },
       allowedConfigs: [configs.users, configs.coin],
+      // The site's fixed priority fee setting (the core defaults, at most 0.0005 SOL).
+      priority: SITE_PRIORITY_FEE,
     });
   });
 
@@ -237,8 +240,18 @@ describe('swap core backed by @forge/core', () => {
       minAmountOut: BigInt(900),
     });
     expect(core.buildSellTx).toHaveBeenCalledWith(
-      expect.objectContaining({ amountInTokens: BigInt(7_000), minAmountOut: BigInt(900) }),
+      expect.objectContaining({
+        amountInTokens: BigInt(7_000),
+        minAmountOut: BigInt(900),
+        priority: SITE_PRIORITY_FEE,
+      }),
     );
+  });
+
+  it('prices trades with the core defaults, at most 0.00015 SOL per swap', () => {
+    expect(SITE_PRIORITY_FEE).toEqual({});
+    expect(Object.isFrozen(SITE_PRIORITY_FEE)).toBe(true);
+    expect(SWAP_MAX_PRIORITY_FEE_LAMPORTS).toBe(BigInt(150_000));
   });
 
   it('turns core refusals into trade errors', async () => {

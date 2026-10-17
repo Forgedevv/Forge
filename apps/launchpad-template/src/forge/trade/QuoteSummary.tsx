@@ -38,7 +38,8 @@ function Row({
 
 /**
  * Everything the user must see BEFORE signing: expected output, price impact, the pool trading
- * fee, the FORGE platform fee (explicitly, with its rate), the network fee estimate and the total.
+ * fee, the FORGE platform fee (explicitly, with its rate), the network fee estimate, the most the
+ * priority fee can be, and the total (with that maximum).
  */
 export function QuoteSummary({ quote, symbol, tokenDecimals, networkFee }: QuoteSummaryProps) {
   const impactWarn = quote.priceImpactBps >= PRICE_IMPACT_WARN_BPS;
@@ -69,6 +70,11 @@ export function QuoteSummary({ quote, symbol, tokenDecimals, networkFee }: Quote
         value={sol(quote.platformFee)}
       />
       <Row id="network-fee" label="Network fee (estimate)" value={sol(networkFee.base)} />
+      <Row
+        id="priority-fee"
+        label="Priority fee (at most)"
+        value={sol(networkFee.maxPriorityFee)}
+      />
       {networkFee.accountRent > BigInt(0) ? (
         <Row
           id="account-rent"
@@ -79,7 +85,7 @@ export function QuoteSummary({ quote, symbol, tokenDecimals, networkFee }: Quote
       {isBuy ? (
         <Row
           id="total"
-          label="Total from your wallet"
+          label="Total from your wallet (at most)"
           value={sol(quote.amountIn + quote.platformFee + networkFee.total, 9)}
           emphasis
         />
@@ -88,8 +94,8 @@ export function QuoteSummary({ quote, symbol, tokenDecimals, networkFee }: Quote
           id="total"
           label="Estimated SOL you keep"
           value={sol(
-            quote.amountOut > quote.platformFee + networkFee.base
-              ? quote.amountOut - quote.platformFee - networkFee.base
+            quote.amountOut > quote.platformFee + networkFee.base + networkFee.maxPriorityFee
+              ? quote.amountOut - quote.platformFee - networkFee.base - networkFee.maxPriorityFee
               : BigInt(0),
             9,
           )}
