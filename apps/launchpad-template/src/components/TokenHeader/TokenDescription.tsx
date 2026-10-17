@@ -5,6 +5,7 @@ import { useTokenAddress, useTokenInfo } from '@/hooks/queries';
 import { cn } from '@/lib/utils';
 import { useQuery } from '@tanstack/react-query';
 import { ApeQueries } from '../Explore/queries';
+import { content } from '@/content';
 
 type TokenDescriptionProps = {
   className?: string;
@@ -69,9 +70,11 @@ const Description: React.FC<{ description: string }> = ({ description }) => {
       {hasOverflow && (
         <button
           onClick={() => setExpanded(!expanded)}
-          className="self-start text-xs font-medium text-neutral-500 hover:text-primary"
+          type="button"
+          aria-expanded={expanded}
+          className="self-start text-xs font-medium uppercase text-neutral-500 hover:text-primary"
         >
-          {expanded ? 'SHOW LESS' : 'READ MORE'}
+          {expanded ? content.strings.showLess : content.strings.readMore}
         </button>
       )}
     </div>

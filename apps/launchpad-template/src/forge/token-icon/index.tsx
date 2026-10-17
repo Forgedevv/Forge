@@ -5,7 +5,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { TokenIconInfo, TrenchesTokenIconContext, useTrenchesTokenIconContext } from './Context';
 import { Asset } from '@/components/Explore/types';
 import { cn } from '@/lib/utils';
-import { TrenchesTokenIconLaunchpad } from '@/components/LaunchpadIndicator/LaunchpadIndicator';
 
 export const getBaseUrl = () => {
   if (process.env.NODE_ENV === 'development') {
@@ -217,18 +216,22 @@ type DefaultTokenIconProps = React.ComponentPropsWithoutRef<'img'> & {
   token: TokenIconInfo | Asset | undefined | null;
   width?: number;
   height?: number;
+  /** Kept for compatibility: no launchpad chip is drawn any more. */
   hideLaunchpad?: boolean;
+  /** Kept for compatibility: no launchpad chip is drawn any more. */
   launchpadClassName?: string;
 };
 
 /**
- * Display a token icon
+ * Display a token icon. No launchpad chip: every coin of a FORGE launchpad is on the same
+ * launchpad (`@/components/LaunchpadIndicator` keeps an optional, theme-colored one).
  */
 export const TrenchesTokenIcon: React.FunctionComponent<DefaultTokenIconProps> = ({
   token,
   width,
   height,
   hideLaunchpad,
+  launchpadClassName: _launchpadClassName,
   className,
   style,
   onError,
@@ -246,7 +249,6 @@ export const TrenchesTokenIcon: React.FunctionComponent<DefaultTokenIconProps> =
       onError={onError}
     >
       {children ?? <TrenchesTokenIconImage {...imgProps} />}
-      <TrenchesTokenIconLaunchpad />
     </TrenchesTokenIconRoot>
   );
 };

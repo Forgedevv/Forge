@@ -179,8 +179,20 @@ export function isAuditTopHoldersPass(audit: Audit) {
   );
 }
 
+/**
+ * Number of passed checks out of `AUDIT_MAX_SCORE`, or undefined while any check is unknown (no
+ * indexer data, e.g. the on-chain fallback has no holder list): an unknown check is never counted
+ * as a failure.
+ */
 export function getAuditScore(audit?: Audit) {
   if (!audit) return;
+  if (
+    audit.mintAuthorityDisabled === undefined ||
+    audit.freezeAuthorityDisabled === undefined ||
+    audit.topHoldersPercentage === undefined
+  ) {
+    return;
+  }
 
   return (
     (audit.mintAuthorityDisabled ? 1 : 0) +

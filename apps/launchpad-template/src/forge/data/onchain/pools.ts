@@ -17,8 +17,9 @@ import type { MintInfo, TokenMetadata } from './accounts';
  * What the chain gives, and what it does not: price, market cap and liquidity come from the pool's
  * `sqrtPrice`, quote reserve and the mint supply (USD through the Pyth SOL/USD price); curve
  * progress and graduation from core (`curveProgress`, `graduationStatus`); the creation time from
- * the pool's activation point. Volumes, price changes, holders and audits need an indexer: they
- * are left undefined (the cards then show no value).
+ * the pool's activation point; the mint and freeze authority checks of the audit from the mint
+ * account. Volumes, price changes, holders and the other audit values need an indexer: they are
+ * left undefined (the cards then show no value, never a failed check).
  */
 
 /** Largest number of coins in each on-chain list (the data API pages its lists too). */
@@ -136,6 +137,12 @@ export function toPool(coin: OnchainCoin, ctx: PoolContext): Pool {
       mcap,
       fdv: mcap,
       liquidity,
+      audit: {
+        mintAuthorityDisabled: mint.mintAuthorityDisabled,
+        freezeAuthorityDisabled: mint.freezeAuthorityDisabled,
+        topHoldersPercentage: undefined,
+        lpBurnedPercentage: undefined,
+      },
       organicScoreLabel: 'low',
     },
   };

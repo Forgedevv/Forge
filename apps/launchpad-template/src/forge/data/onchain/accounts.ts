@@ -56,13 +56,29 @@ function i32(data: Uint8Array, offset: number): number {
 
 // --- SPL mint ------------------------------------------------------------------------------------
 
-/** SPL / Token-2022 mint base layout: supply (u64) at 36, decimals (u8) at 44, 82 bytes. */
+/**
+ * SPL / Token-2022 mint base layout, 82 bytes: mint authority `COption<Pubkey>` at 0 (u32 tag,
+ * then 32 bytes), supply (u64) at 36, decimals (u8) at 44, initialized (u8) at 45, freeze
+ * authority `COption<Pubkey>` at 46 (u32 tag, then 32 bytes).
+ */
 const MINT_SIZE = 82;
+const MINT_AUTHORITY_OFFSET = 0;
+const FREEZE_AUTHORITY_OFFSET = 46;
 
 export interface MintInfo {
   supply: bigint;
   decimals: number;
   tokenProgram: string;
+  /** True when no one can mint more of the coin (`mint_authority` is `None`). */
+  mintAuthorityDisabled: boolean;
+  /** True when no one can freeze a holder's account (`freeze_authority` is `None`). */
+  freezeAuthorityDisabled: boolean;
+}
+
+/** `COption` tag at `offset`: false for `None` (0), true for `Some` (1), null for anything else. */
+function optionIsSome(data: Uint8Array, offset: number): boolean | null {
+  const tag = u32(data, offset);
+  return tag === 0 ? false : tag === 1 ? true : null;
 }
 
 export function decodeMint(account: RawAccount | null | undefined): MintInfo | null {
@@ -73,7 +89,16 @@ export function decodeMint(account: RawAccount | null | undefined): MintInfo | n
   if (data.length < MINT_SIZE) return null;
   const decimals = data[44] as number;
   if (data[45] !== 1 || decimals > 18) return null; // not initialized, or not a mint
-  return { supply: u64(data, 36), decimals, tokenProgram: owner };
+  const mintAuthority = optionIsSome(data, MINT_AUTHORITY_OFFSET);
+  const freezeAuthority = optionIsSome(data, FREEZE_AUTHORITY_OFFSET);
+  if (mintAuthority === null || freezeAuthority === null) return null; // not a mint layout
+  return {
+    supply: u64(data, 36),
+    decimals,
+    tokenProgram: owner,
+    mintAuthorityDisabled: !mintAuthority,
+    freezeAuthorityDisabled: !freezeAuthority,
+  };
 }
 
 // --- Metaplex token metadata ---------------------------------------------------------------------

@@ -34,7 +34,18 @@ export const content = {
     unavailableHoldersBody: 'The holder list could not be loaded. Prices and trading still work.',
     unavailableTxns: 'Transactions temporarily unavailable',
     unavailableTxnsBody: 'Recent trades could not be loaded. Prices and trading still work.',
+    devnetHolders: 'No holder list on devnet',
+    devnetHoldersBody:
+      'Holder data comes from Jupiter, which does not index devnet. Prices and trading still work.',
+    devnetTxns: 'No transaction history on devnet',
+    devnetTxnsBody:
+      'Trade history comes from Jupiter, which does not index devnet. Prices and trading still work.',
     retry: 'Retry',
+    auditEnabled: 'Enabled',
+    auditDisabled: 'Disabled',
+    auditUnknown: 'Unknown',
+    readMore: 'Read more',
+    showLess: 'Show less',
     tokenAddress: 'Token address',
     backToMarket: 'Back to market',
     lightMode: 'Switch to light mode',

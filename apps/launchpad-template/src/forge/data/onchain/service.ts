@@ -41,8 +41,10 @@ import { selectListed, toLists, toPool, type OffchainMetadata, type SlotClock } 
  * - one coin: its pool on this launchpad's configs (derived from the mint, `candidatePools`);
  * - for the listed coins only: the mint (decimals, supply) and its Metaplex metadata (name,
  *   symbol, URI) in `getMultipleAccounts` batches, the Pyth SOL/USD price, and the metadata JSON
- *   (image, description) when it lives on this site's storage (`R2_PUBLIC_URL`): no other host is
- *   ever fetched.
+ *   (image, description) when it lives on this site's storage (`R2_PUBLIC_URL`) or, for the
+ *   launchpad's own coin, on FORGE's coin metadata route (`<FORGE origin>/api/coin-meta/<slug>`,
+ *   the URI FORGE writes on-chain): no other host is ever fetched, and an image is only kept when
+ *   it is on this site's storage.
  *
  * Request storms: every result is cached (lists 15 s, one coin 10 s, served stale for up to
  * 5 minutes when the chain cannot be read), concurrent requests share one read, mint metadata is
@@ -98,8 +100,14 @@ export interface OnchainCoinService {
 
 export interface OnchainCoinServiceOptions {
   connection: Connection;
-  /** Origin of this site's public storage (`R2_PUBLIC_URL`), the only host metadata JSON is read from. */
+  /** Origin of this site's public storage (`R2_PUBLIC_URL`), the only host images are kept from. */
   storageOrigin: string | null;
+  /**
+   * Origin of the FORGE app (`forgeAppOrigin`), whose `/api/coin-meta/` route serves the
+   * launchpad coin's metadata JSON: the only other host metadata JSON is read from, and only for
+   * the launchpad's own coin (`onchain.launchpadCoinMint`).
+   */
+  forgeOrigin?: string | null;
   fetch?: typeof fetch;
   now?: () => number;
 }
@@ -109,27 +117,65 @@ interface Cached<T> {
   at: number;
 }
 
-/** Fetches a small JSON document from the storage origin only; null on any failure. */
+/** Path of FORGE's launchpad coin metadata route (apps/web `GET /api/coin-meta/:slug`). */
+export const FORGE_COIN_META_PATH = '/api/coin-meta/';
+
+/**
+ * Origin of the FORGE app, as this site already knows it: `NEXT_PUBLIC_FORGE_API_URL` when set,
+ * else the origin of the RPC relay URL (the same rule as the upload client). https only, no
+ * credentials; null when unusable.
+ */
+export function forgeAppOrigin(
+  apiUrl: string | undefined,
+  relayUrl: string | undefined,
+): string | null {
+  const raw = apiUrl || relayUrl;
+  if (!raw) return null;
+  try {
+    const url = new URL(raw);
+    if (url.protocol !== 'https:' || url.username || url.password) return null;
+    return url.origin;
+  } catch {
+    return null;
+  }
+}
+
+/** True when `url` may be fetched as metadata JSON: storage, or FORGE's coin metadata route. */
+function offchainAllowed(url: URL, storageOrigin: string | null, forgeOrigin: string | null) {
+  if (url.protocol !== 'https:' || url.username || url.password) return false;
+  if (storageOrigin && url.origin === storageOrigin) return true;
+  return (
+    !!forgeOrigin &&
+    url.origin === forgeOrigin &&
+    url.pathname.startsWith(FORGE_COIN_META_PATH) &&
+    url.pathname.length > FORGE_COIN_META_PATH.length
+  );
+}
+
+/**
+ * Fetches a small JSON document from the storage origin or FORGE's coin metadata route only (no
+ * redirect, size cap, timeout); null on any failure. The image is kept only on the storage origin.
+ */
 async function fetchOffchain(
   uri: string,
   storageOrigin: string | null,
+  forgeOrigin: string | null,
   fetchImpl: typeof fetch,
 ): Promise<OffchainMetadata | null> {
-  if (!storageOrigin) return null;
   let url: URL;
   try {
     url = new URL(uri);
   } catch {
     return null;
   }
-  if (url.protocol !== 'https:' || url.origin !== storageOrigin) return null;
+  if (!offchainAllowed(url, storageOrigin, forgeOrigin)) return null;
   try {
     const res = await fetchImpl(url.toString(), {
       signal: AbortSignal.timeout(OFFCHAIN_TIMEOUT_MS),
       headers: { accept: 'application/json' },
       redirect: 'error',
     });
-    if (!res.ok) return null;
+    if (!res.ok || res.redirected) return null;
     const declared = Number(res.headers.get('content-length') ?? '0');
     if (declared > OFFCHAIN_MAX_BYTES) return null;
     const text = await res.text();
@@ -138,7 +184,8 @@ async function fetchOffchain(
     const out: OffchainMetadata = {};
     if (typeof json.image === 'string' && /^https:\/\/[^\s]+$/.test(json.image)) {
       try {
-        out.image = new URL(json.image).toString();
+        const image = new URL(json.image);
+        if (storageOrigin && image.origin === storageOrigin) out.image = image.toString();
       } catch {
         // not a URL: no icon
       }
@@ -169,6 +216,7 @@ function isMissing(err: unknown): boolean {
 
 export function createOnchainCoinService(options: OnchainCoinServiceOptions): OnchainCoinService {
   const { connection, storageOrigin } = options;
+  const forgeOrigin = options.forgeOrigin ?? null;
   const fetchImpl = options.fetch ?? fetch;
   const now = options.now ?? Date.now;
 
@@ -239,14 +287,22 @@ export function createOnchainCoinService(options: OnchainCoinServiceOptions): On
       trimCache(mintCache, MAX_CACHED_COINS * 2);
     }
 
-    const uris = new Set<string>();
+    // uri -> may it be read from FORGE's coin metadata route (the launchpad's own coin only).
+    const uris = new Map<string, boolean>();
+    const coinMint = launchpadCoinMint();
     for (const mint of mints) {
       const uri = mintCache.get(mint)?.value.metadata?.uri;
-      if (uri && !fresh(offchainCache.get(uri), OFFCHAIN_TTL_MS)) uris.add(uri);
+      if (!uri || fresh(offchainCache.get(uri), OFFCHAIN_TTL_MS)) continue;
+      uris.set(uri, uris.get(uri) === true || mint === coinMint);
     }
-    await mapLimit([...uris], OFFCHAIN_CONCURRENCY, async (uri) => {
+    await mapLimit([...uris], OFFCHAIN_CONCURRENCY, async ([uri, launchpadCoin]) => {
       offchainCache.set(uri, {
-        value: await fetchOffchain(uri, storageOrigin, fetchImpl),
+        value: await fetchOffchain(
+          uri,
+          storageOrigin,
+          launchpadCoin ? forgeOrigin : null,
+          fetchImpl,
+        ),
         at: now(),
       });
     });

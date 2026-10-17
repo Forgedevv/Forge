@@ -28,7 +28,7 @@ vi.mock('../../src/forge/config', async () => {
   };
 });
 
-import { ForgeAddressError, SwapError } from '@forge/core';
+import { DbcReadError, ForgeAddressError, SwapError } from '@forge/core';
 import { TradeError } from '../../src/forge/trade/errors';
 import {
   createCoreSwapCore,
@@ -283,6 +283,26 @@ describe('swap core backed by @forge/core', () => {
     expect((missing as TradeError).code).toBe('not_configured');
     const other = new Error('boom');
     expect(translateCoreError(other)).toBe(other);
+  });
+
+  it('maps core read errors to pool_unavailable, never unknown', () => {
+    for (const readCode of ['pool_not_found', 'config_not_found'] as const) {
+      const cause = new DbcReadError(readCode, 'DBC pool not found: x');
+      const mapped = translateCoreError(cause) as TradeError;
+      expect(mapped).toBeInstanceOf(TradeError);
+      expect(mapped.code).toBe('pool_unavailable');
+      expect(mapped.message).not.toMatch(/something went wrong/i);
+      expect(mapped.message).not.toContain('DBC pool not found');
+      expect(mapped.cause).toBe(cause);
+    }
+  });
+
+  it('surfaces a missing pool from quoteSwap as pool_unavailable', async () => {
+    core.fetchSwapPoolState.mockRejectedValue(new DbcReadError('pool_not_found', 'missing'));
+    const swap = createCoreSwapCore();
+    await expect(
+      swap.quoteSwap({ connection, pool, side: 'buy', amountIn: BigInt(1_000), slippageBps: 100 }),
+    ).rejects.toMatchObject({ code: 'pool_unavailable' });
   });
 
   it('does not reimplement swap logic or touch the SDK', () => {

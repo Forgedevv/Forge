@@ -19,6 +19,8 @@ export type TradeErrorCode =
   | 'not_configured'
   /** The coin is not on this launchpad's configs: this site does not trade it. */
   | 'not_on_launchpad'
+  /** The pool (or its config) could not be read on-chain: not live yet, or wrong network. */
+  | 'pool_unavailable'
   | 'core_unavailable'
   | 'unknown';
 
@@ -49,6 +51,8 @@ export const TRADE_ERROR_MESSAGES: Record<TradeErrorCode, string> = {
   network: 'Network error while reaching the Solana network. Check your connection and try again.',
   not_configured: 'Trading is not configured on this site.',
   not_on_launchpad: 'This coin is not on this launchpad, so it cannot be traded here.',
+  pool_unavailable:
+    "This coin's pool could not be found on the network. It may not be live yet; try again in a moment.",
   core_unavailable: 'Trading is temporarily unavailable.',
   unknown: 'Something went wrong. Nothing was charged unless a transaction link is shown.',
 };
@@ -99,6 +103,11 @@ export function mapTradeError(error: unknown): TradeError {
     coded === 4001
   ) {
     return make('user_rejected');
+  }
+  // A core read error (`DbcReadError`) that reached here without `translateCoreError`, e.g. from
+  // a second copy of @forge/core in the bundle where `instanceof` fails.
+  if ((error as { name?: unknown } | null)?.name === 'DbcReadError') {
+    return make('pool_unavailable');
   }
   if (message.includes('swapcorenotlinked') || message.includes('core is not linked')) {
     return make('core_unavailable');

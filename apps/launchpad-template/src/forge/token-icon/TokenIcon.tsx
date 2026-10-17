@@ -2,7 +2,6 @@ import * as React from 'react';
 import { formatPoolAsTokenInfo } from '@/components/Explore/pool-utils';
 import { Pool } from '@/contexts/types';
 import { TrenchesTokenIconImage, TrenchesTokenIconRoot } from '.';
-import { TrenchesTokenIconLaunchpad } from '@/components/LaunchpadIndicator/LaunchpadIndicator';
 
 type TrenchesPoolTokenIconProps = Omit<
   React.ComponentProps<typeof TrenchesTokenIconRoot>,
@@ -17,7 +16,8 @@ const CIRCLE_CIRCUMFERENCE_FACTOR = 2 * Math.PI;
 const STROKE_WIDTH = 2;
 
 /**
- * Display a token icon with a bonding curve progress ring
+ * Display a token icon with a bonding curve progress ring (no launchpad chip: every coin of the
+ * site is on the same launchpad).
  */
 export const TrenchesPoolTokenIcon: React.FC<TrenchesPoolTokenIconProps> = ({
   pool,
@@ -91,7 +91,6 @@ export const TrenchesPoolTokenIcon: React.FC<TrenchesPoolTokenIconProps> = ({
           className="text-primary transition-all"
         />
       </svg>
-      <TrenchesTokenIconLaunchpad className="-bottom-0.5 -right-0.5" />
     </TrenchesTokenIconRoot>
   );
 };

@@ -119,7 +119,7 @@ export function createDataFeed(
         }));
 
         if (rawBars.length === 0) {
-          console.error('[getBars]: 0 bars returned from query');
+          // Normal for a young coin or a quiet period: not an error, nothing to log.
           // "noData" should be set if there is no data in the requested period.
           onHistoryCallback([], {
             noData: true,

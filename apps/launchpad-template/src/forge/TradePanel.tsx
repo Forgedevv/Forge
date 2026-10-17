@@ -17,7 +17,10 @@ export interface TradePanelProps {
    * any other launchpad cannot be traded here.
    */
   mint: string;
-  /** Ticker shown in labels. */
+  /**
+   * Ticker shown in labels (from the coin data: the data API, or the on-chain fallback). Without
+   * one the labels stay neutral ("Buy", "Sell"): no placeholder ticker is ever shown.
+   */
   symbol?: string;
   /**
    * Decimals from a data API, display fallback only: amounts use the on-chain mint decimals.
@@ -77,7 +80,8 @@ export function TradePanel(props: TradePanelProps) {
 }
 
 function LiveTradePanel(props: TradePanelProps) {
-  const { mint, symbol = 'TOKEN', displayDecimals, className } = props;
+  const { mint, displayDecimals, className } = props;
+  const symbol = props.symbol?.trim() || undefined;
   const connection = useMemo(() => getRelayConnection(), []);
   const { state: poolState, retry: retryPool } = useLaunchpadPool(connection, mint);
   const launchpadPool = poolState.status === 'ready' ? poolState.pool : null;
