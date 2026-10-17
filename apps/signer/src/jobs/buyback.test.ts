@@ -9,6 +9,7 @@ import {
   getAssociatedTokenAddressSync,
 } from '@solana/spl-token';
 import {
+  ComputeBudgetProgram,
   Keypair,
   MessageV0,
   PublicKey,
@@ -18,11 +19,13 @@ import {
   VersionedTransaction,
 } from '@solana/web3.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { checkComputeBudgetInstructions } from '@forge/core';
 import { openKeystore, type Keystore } from '../keystore.js';
 import {
   BUYBACK_FLAG,
   BuybackJournalEntry,
   DAY_MS,
+  FORGE_RETURN_COMPUTE_UNITS,
   INFLIGHT_KEY,
   MAX_BUYBACK_SLIPPAGE_BPS,
   RETURN_MEMO,
@@ -35,6 +38,7 @@ import {
   createJupiterBuybackClient,
   createRpcBuybackSwapPreparer,
   dayJournalKey,
+  forgeReturnWritableAccounts,
   planDay,
   resolveBuybackMode,
   unplannedLamports,
@@ -59,6 +63,7 @@ import {
   type JupiterQuote,
   type SwapConnection,
 } from './convert.js';
+import { createPriorityFees, type PriorityFees } from './priority.js';
 import {
   Mutex,
   base58Encode,
@@ -379,6 +384,42 @@ describe('buybackConfigFromEnv', () => {
         addresses,
       ),
     ).toThrow(/mainnet-beta/);
+  });
+  it('puts the return priority fee cap of the signer setting in the default fee allowance', () => {
+    // Signer defaults: 1 lamport per CU, at most 0.0005 SOL; the return requests 100,000 CU.
+    const priorityFees = createPriorityFees(null);
+    expect(priorityFees.maxFeeLamports(FORGE_RETURN_COMPUTE_UNITS)).toBe(100_000n);
+    const allowance = (env: Record<string, string>, fees?: PriorityFees) =>
+      buybackConfigFromEnv(env, addresses, fees ? { priorityFees: fees } : {}).config
+        .orderFeeAllowanceLamports;
+    // The buy's cap (100,000) + the return's cap (100,000) + 10,000 of network fees.
+    expect(allowance({}, priorityFees)).toBe(210_000n);
+    expect(allowance({ BUYBACK_MAX_PRIORITY_FEE_LAMPORTS: '50000' }, priorityFees)).toBe(160_000n);
+    // A tighter setting: 0.00002 SOL per transaction at most.
+    const tight = {
+      floorMicroLamports: 0,
+      maxMicroLamports: 1_000_000,
+      percentile: 75,
+      maxLamports: 20_000n,
+    };
+    expect(allowance({}, createPriorityFees(null, tight))).toBe(130_000n);
+    // Priority fees off, or no setting given: the buy's cap and the network fees only.
+    expect(allowance({})).toBe(110_000n);
+    const off = createPriorityFees(null, { ...tight, maxMicroLamports: 0 });
+    expect(allowance({}, off)).toBe(110_000n);
+    // The dbc-devnet route still adds 30 bps of the largest order (0.25 SOL by default).
+    const devnet = buybackConfigFromEnv(
+      {
+        BUYBACK_ROUTE: 'dbc-devnet',
+        BUYBACK_DEVNET_DBC_POOL: randomAddress().toBase58(),
+        FORGE_BUYBACK_DEVNET_TEST: 'true',
+      },
+      addresses,
+      { priorityFees },
+    );
+    expect(devnet.config.orderFeeAllowanceLamports).toBe(210_000n + 750_000n);
+    // An explicit allowance is taken as it is.
+    expect(allowance({ BUYBACK_ORDER_FEE_ALLOWANCE_LAMPORTS: '7' }, priorityFees)).toBe(7n);
   });
 });
 
@@ -825,6 +866,145 @@ describe('assertForgeReturnTx', () => {
     extra.add(SystemProgram.transfer({ fromPubkey: bot, toPubkey: randomAddress(), lamports: 1 }));
     expect(() => assertForgeReturnTx(extra, params)).toThrow(/program not allowed/);
   });
+
+  // 100,000 CU at 500,000 micro-lamports per CU: 50,000 lamports.
+  const quote = {
+    computeUnitLimit: FORGE_RETURN_COMPUTE_UNITS,
+    microLamports: 500_000,
+    priorityFeeLamports: 50_000n,
+    maxLamports: 100_000n,
+    source: 'recent_fees' as const,
+  };
+  const limit = (units = FORGE_RETURN_COMPUTE_UNITS) =>
+    ComputeBudgetProgram.setComputeUnitLimit({ units });
+  const price = (microLamports = 500_000) =>
+    ComputeBudgetProgram.setComputeUnitPrice({ microLamports });
+  /** The return's own instructions (no compute budget), around which a test places others. */
+  const body = () => buildForgeReturnTx(params).instructions;
+  const withInstructions = (instructions: TransactionInstruction[]) => {
+    const tx = new Transaction().add(...instructions);
+    tx.feePayer = bot;
+    tx.recentBlockhash = PublicKey.default.toBase58();
+    return tx;
+  };
+
+  it('puts the priced compute budget first, and nothing without a quote or at a zero price', () => {
+    const priced = buildForgeReturnTx(params, quote);
+    expect(priced.instructions).toHaveLength(5);
+    expect(priced.instructions.slice(0, 2).map((ix) => ix.programId.toBase58())).toEqual([
+      ComputeBudgetProgram.programId.toBase58(),
+      ComputeBudgetProgram.programId.toBase58(),
+    ]);
+    expect(priced.instructions[0]!.data).toEqual(limit().data);
+    expect(priced.instructions[1]!.data).toEqual(price().data);
+    expect(priced.instructions.slice(2)).toEqual(body());
+    expect(buildForgeReturnTx(params).instructions).toHaveLength(3);
+    expect(buildForgeReturnTx(params, { ...quote, microLamports: 0 }).instructions).toEqual(body());
+  });
+
+  it('accepts the priced return within the cap of its setting', () => {
+    const tx = buildForgeReturnTx(params, quote);
+    tx.recentBlockhash = PublicKey.default.toBase58();
+    expect(() => assertForgeReturnTx(tx, params)).not.toThrow();
+    expect(() =>
+      assertForgeReturnTx(tx, { ...params, maxPriorityFeeLamports: 50_000n }),
+    ).not.toThrow();
+    expect(() => assertForgeReturnTx(tx, { ...params, maxPriorityFeeLamports: 49_999n })).toThrow(
+      /priority fee too high/,
+    );
+    // Priority fees off: the unpriced return only.
+    expect(() =>
+      assertForgeReturnTx(built(), { ...params, maxPriorityFeeLamports: 0n }),
+    ).not.toThrow();
+    expect(() => assertForgeReturnTx(tx, { ...params, maxPriorityFeeLamports: 0n })).toThrow(
+      /priority fee too high/,
+    );
+  });
+
+  it.each<[string, () => TransactionInstruction[], RegExp]>([
+    // 1,400,000 CU at 1 lamport per CU: 0.0014 SOL, above the signer's 0.001 SOL ceiling.
+    [
+      'a priority fee above the ceiling',
+      () => [limit(1_400_000), price(1_000_000), ...body()],
+      /priority fee too high/,
+    ],
+    [
+      'a price above the cap per CU',
+      () => [limit(1_000), price(1_000_001), ...body()],
+      /price too high/,
+    ],
+    [
+      'a limit above the compute ceiling',
+      () => [limit(1_400_001), price(1), ...body()],
+      /limit out of range/,
+    ],
+    ['a price without a limit', () => [price(), ...body()], /pair expected first/],
+    ['a limit without a price', () => [limit(), ...body()], /pair expected first/],
+    ['the price before the limit', () => [price(), limit(), ...body()], /limit expected first/],
+    ['two limits', () => [limit(), limit(), ...body()], /price expected after the limit/],
+    [
+      'a duplicated pair',
+      () => [limit(), price(), limit(), price(), ...body()],
+      /pair expected first/,
+    ],
+    ['the pair after the transfer', () => [...body(), limit(), price()], /pair expected first/],
+    [
+      'the pair after the account creation',
+      () => [body()[0]!, limit(), price(), ...body().slice(1)],
+      /pair expected first/,
+    ],
+    [
+      'a heap frame request',
+      () => [limit(), ComputeBudgetProgram.requestHeapFrame({ bytes: 64 * 1024 }), ...body()],
+      /price expected after the limit/,
+    ],
+    [
+      'a compute budget instruction with an account',
+      () => [
+        limit(),
+        new TransactionInstruction({
+          programId: ComputeBudgetProgram.programId,
+          keys: [{ pubkey: bot, isSigner: false, isWritable: true }],
+          data: price().data,
+        }),
+        ...body(),
+      ],
+      /with accounts/,
+    ],
+    [
+      'compute budget bytes under another program',
+      () => [
+        limit(),
+        new TransactionInstruction({ programId: randomAddress(), keys: [], data: price().data }),
+        ...body(),
+      ],
+      /pair expected first/,
+    ],
+    [
+      'the unit price under another program with the pair',
+      () => [
+        limit(),
+        price(),
+        new TransactionInstruction({ programId: randomAddress(), keys: [], data: price().data }),
+        ...body(),
+      ],
+      /program not allowed in a return/,
+    ],
+    ['a second memo', () => [limit(), price(), ...body(), body()[2]!], /duplicate instruction/],
+    ['a second transfer', () => [limit(), price(), ...body(), body()[1]!], /exactly one transfer/],
+  ])('refuses %s', (_name, instructions, error) => {
+    expect(() => assertForgeReturnTx(withInstructions(instructions()), params)).toThrow(error);
+  });
+
+  it('prices the return for the accounts it writes', () => {
+    expect(forgeReturnWritableAccounts(params).map((k) => k.toBase58())).toEqual(
+      [
+        bot,
+        getAssociatedTokenAddressSync(FORGE, bot, true, TOKEN_PROGRAM_ID),
+        getAssociatedTokenAddressSync(FORGE, VAULT, true, TOKEN_PROGRAM_ID),
+      ].map((k) => k.toBase58()),
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------------------
@@ -1247,7 +1427,7 @@ describe('buyback job, live flow', () => {
 
   function liveHarness(
     prepare?: BuybackSwapPreparer['prepare'],
-    options: { remainingLamports?: bigint } = {},
+    options: { remainingLamports?: bigint; withdrawalFeeLamports?: bigint } = {},
   ) {
     const order: string[] = [];
     const rpc = new FakeRpc(order);
@@ -1271,6 +1451,9 @@ describe('buyback job, live flow', () => {
     const withdrawer: SpendingLimitWithdrawer = {
       remainingLamports: async () => options.remainingLamports ?? 5n * SOL,
       withdraw,
+      ...(options.withdrawalFeeLamports !== undefined
+        ? { maxFeeLamports: () => options.withdrawalFeeLamports! }
+        : {}),
     };
     let forgeBalance = 0n;
     const tokens: ForgeTokenReader = {
@@ -1404,6 +1587,112 @@ describe('buyback job, live flow', () => {
     expect(h.withdraw.mock.calls[0]![0]).toMatchObject({
       lamports: total + 150_000n * BigInt(planned.length) - 10_000_000n,
     });
+  });
+
+  it('withdraws the fee of the withdrawal on top of the orders and their allowance', async () => {
+    const h = liveHarness(undefined, { withdrawalFeeLamports: 205_000n });
+    await h.make({ orderFeeAllowanceLamports: 150_000n }).runOnce();
+    const planned = (await plan(h.journal)).slots.filter((s) => s.status === 'planned');
+    const total = planned.reduce((a, s) => a + BigInt(s.lamports), 0n);
+    expect(h.withdraw.mock.calls[0]![0]).toMatchObject({
+      lamports: total + 150_000n * BigInt(planned.length) - 10_000_000n + 205_000n,
+    });
+  });
+
+  it('pays no withdrawal fee when the bot already holds the day', async () => {
+    const h = liveHarness(undefined, { withdrawalFeeLamports: 205_000n });
+    h.rpc.balances.set(bot.toBase58(), 5n * SOL);
+    await h.make().runOnce();
+    expect(h.withdraw).not.toHaveBeenCalled();
+    expect((await plan(h.journal)).funding).toMatchObject({ status: 'not_needed', lamports: '0' });
+  });
+
+  it('refuses a withdrawer reporting a negative fee before planning', async () => {
+    const h = liveHarness(undefined, { withdrawalFeeLamports: -1n });
+    const r = await h.make().runOnce();
+    expect(r).toMatchObject({ status: 'error', reason: expect.stringMatching(/invalid fee/) });
+    expect(await h.journal.list()).toEqual([]);
+    expect(h.withdraw).not.toHaveBeenCalled();
+  });
+
+  it('plans a day a binding spending limit can fund, the withdrawal fee included', async () => {
+    const fee = 150_000n;
+    const withdrawalFee = 205_000n;
+    const allowance = 200_000_000n;
+    const available = 30_000_000n - 20_000_000n;
+    const h = liveHarness(undefined, {
+      remainingLamports: allowance,
+      withdrawalFeeLamports: withdrawalFee,
+    });
+    await h.make({ orderFeeAllowanceLamports: fee, minOrderLamports: 10_000_000n }).runOnce();
+    const p = await plan(h.journal);
+    expect(BigInt(p.budgetLamports)).toBe(available + allowance - 6n * fee - withdrawalFee);
+    const planned = p.slots.filter((s) => s.status === 'planned');
+    const total = planned.reduce((a, s) => a + BigInt(s.lamports), 0n);
+    // One withdrawal within the limit that covers the orders, their allowance and its own fee.
+    const withdrawn = h.withdraw.mock.calls[0]![0].lamports;
+    expect(withdrawn).toBeLessThanOrEqual(allowance);
+    expect(withdrawn + available).toBeGreaterThanOrEqual(
+      total + fee * BigInt(planned.length) + withdrawalFee,
+    );
+  });
+
+  it('prices the return from the recent fees of the accounts it writes', async () => {
+    const reader = {
+      getRecentPrioritizationFees: vi.fn(async () => [{ slot: 1, prioritizationFee: 400_000 }]),
+    };
+    const priorityFees = createPriorityFees(reader);
+    const h = liveHarness();
+    h.setForge(995_000n);
+    const r = await h.make({}, { priorityFees }).runOnce();
+    expect(r.outcome).toMatchObject({ result: 'returned', amount: 995_000n });
+    const params = {
+      bot,
+      vault: VAULT,
+      mint: FORGE,
+      programId: TOKEN_PROGRAM_ID,
+      decimals: 6,
+      amount: 995_000n,
+    };
+    const ret = Transaction.from(h.rpc.sent.at(-1)!);
+    expect(ret.instructions.slice(0, 2).map((ix) => ix.programId.toBase58())).toEqual([
+      ComputeBudgetProgram.programId.toBase58(),
+      ComputeBudgetProgram.programId.toBase58(),
+    ]);
+    // 100,000 CU at 400,000 micro-lamports: 40,000 lamports, under the 100,000 cap.
+    expect(checkComputeBudgetInstructions(ret.instructions)).toEqual({
+      computeUnitLimit: FORGE_RETURN_COMPUTE_UNITS,
+      microLamports: 400_000n,
+      priorityFeeLamports: 40_000n,
+    });
+    expect(() =>
+      assertForgeReturnTx(ret, {
+        ...params,
+        maxPriorityFeeLamports: priorityFees.maxFeeLamports(FORGE_RETURN_COMPUTE_UNITS),
+      }),
+    ).not.toThrow();
+    expect(reader.getRecentPrioritizationFees).toHaveBeenCalledWith({
+      lockedWritableAccounts: forgeReturnWritableAccounts(params),
+    });
+  });
+
+  it('returns at the floor price when the recent fees cannot be read', async () => {
+    const reader = {
+      getRecentPrioritizationFees: vi.fn(async () => Promise.reject(new Error('429'))),
+    };
+    const priorityFees = createPriorityFees(reader, {
+      floorMicroLamports: 10_000,
+      maxMicroLamports: 1_000_000,
+      percentile: 75,
+      maxLamports: 500_000n,
+    });
+    const h = liveHarness();
+    h.setForge(1n);
+    expect((await h.make({}, { priorityFees }).runOnce()).outcome).toMatchObject({
+      result: 'returned',
+    });
+    const ret = Transaction.from(h.rpc.sent.at(-1)!);
+    expect(checkComputeBudgetInstructions(ret.instructions).microLamports).toBe(10_000n);
   });
 
   it('plans a day the wallet and a binding spending limit can fund, fee allowance included', async () => {

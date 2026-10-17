@@ -24,11 +24,14 @@ import {
   DEFAULT_MIN_PAYMENT_LAMPORTS,
   JobError,
   MAX_QUOTED_SOL_USD_PRICE,
+  MAX_SIGNER_PRIORITY_FEE_LAMPORTS,
   MEMO_PROGRAM_ID,
   Mutex,
   PAYMENT_FLOOR_MARGIN_BPS,
+  assertComputeBudgetSet,
   assertCreatorClaimTx,
   assertCreatorPositionClaimTx,
+  assertSignerBudgetPair,
   assertSolTransferTx,
   awaitSettlement,
   base58Encode,
@@ -476,6 +479,56 @@ describe('transaction policy', () => {
     expect(() => assertCreatorClaimTx(tx, { ...expected, dbcProgramId: randomAddress() })).toThrow(
       JobError,
     );
+  });
+});
+
+describe('compute budget of the signer transactions', () => {
+  const limit = (units: number) => ComputeBudgetProgram.setComputeUnitLimit({ units });
+  const price = (microLamports: number) =>
+    ComputeBudgetProgram.setComputeUnitPrice({ microLamports });
+  const other = SystemProgram.transfer({
+    fromPubkey: randomAddress(),
+    toPubkey: randomAddress(),
+    lamports: 1n,
+  });
+
+  it('bounds the priority fee by the given cap, never above the signer ceiling', () => {
+    // 100,000 CU at 1 lamport per CU: 100,000 lamports.
+    const set = [limit(100_000), price(1_000_000)];
+    expect(() => assertComputeBudgetSet(set)).not.toThrow();
+    expect(() => assertComputeBudgetSet(set, 100_000n)).not.toThrow();
+    expect(() => assertComputeBudgetSet(set, 99_999n)).toThrow(/priority fee too high/);
+    // A cap above the ceiling is the ceiling: 1,000,001 lamports is refused anyway.
+    const above = [limit(1_000_001), price(1_000_000)];
+    expect(() => assertComputeBudgetSet(above, MAX_SIGNER_PRIORITY_FEE_LAMPORTS * 2n)).toThrow(
+      /priority fee too high/,
+    );
+    expect(() =>
+      assertComputeBudgetSet([limit(1_000_000), price(1_000_000)], 10n ** 9n),
+    ).not.toThrow();
+  });
+
+  it('accepts no compute budget, or exactly a limit then a price first', () => {
+    expect(assertSignerBudgetPair([other])).toBe(0);
+    expect(assertSignerBudgetPair([other], 0n)).toBe(0);
+    expect(assertSignerBudgetPair([limit(30_000), price(1_000), other])).toBe(2);
+    expect(assertSignerBudgetPair([limit(30_000), price(1_000), other], 30n)).toBe(2);
+  });
+
+  it.each<[string, TransactionInstruction[], RegExp]>([
+    ['a price alone', [price(1), other], /pair expected first/],
+    ['a limit alone', [limit(1), other], /pair expected first/],
+    ['the pair after another instruction', [other, limit(1), price(1)], /pair expected first/],
+    ['the price first', [price(1), limit(1), other], /limit expected first/],
+    ['two limits', [limit(1), limit(2), other], /price expected after the limit/],
+    [
+      'a third compute budget instruction',
+      [limit(1), price(1), price(1), other],
+      /pair expected first/,
+    ],
+    ['a fee above the given cap', [limit(30_000), price(1_000), other], /priority fee too high/],
+  ])('refuses %s', (_name, instructions, error) => {
+    expect(() => assertSignerBudgetPair(instructions, 29n)).toThrow(error);
   });
 });
 

@@ -963,19 +963,52 @@ function policy(rule: string): never {
  * The compute budget of a whole transaction (on top of `checkComputeBudget` per instruction): at
  * most one unit limit and one unit price (a second one would make the transaction fail, or hide
  * another price), within `MAX_COMPUTE_UNIT_LIMIT` and `MAX_COMPUTE_UNIT_PRICE`, and a priority fee
- * of at most `MAX_SIGNER_PRIORITY_FEE_LAMPORTS`. TX_POLICY otherwise.
+ * of at most `maxPriorityFeeLamports` (the cap of the setting the transaction was priced with),
+ * never above `MAX_SIGNER_PRIORITY_FEE_LAMPORTS`. TX_POLICY otherwise.
  */
-export function assertComputeBudgetSet(instructions: readonly TransactionInstruction[]): void {
+export function assertComputeBudgetSet(
+  instructions: readonly TransactionInstruction[],
+  maxPriorityFeeLamports: bigint = MAX_SIGNER_PRIORITY_FEE_LAMPORTS,
+): void {
+  const cap =
+    maxPriorityFeeLamports < MAX_SIGNER_PRIORITY_FEE_LAMPORTS
+      ? maxPriorityFeeLamports
+      : MAX_SIGNER_PRIORITY_FEE_LAMPORTS;
   try {
     checkComputeBudgetInstructions(instructions, {
       maxComputeUnits: MAX_COMPUTE_UNIT_LIMIT,
       maxMicroLamports: MAX_COMPUTE_UNIT_PRICE,
-      maxPriorityFeeLamports: MAX_SIGNER_PRIORITY_FEE_LAMPORTS,
+      maxPriorityFeeLamports: cap,
     });
   } catch (error) {
     if (error instanceof ComputeBudgetCheckError) policy(error.message);
     throw error;
   }
+}
+
+/**
+ * The compute budget of a transaction the signer builds itself (jobs/priority.ts
+ * `signerBudgetInstructions`): none, or exactly a unit limit then a unit price as the first two
+ * instructions, bounded by `assertComputeBudgetSet` with `maxPriorityFeeLamports`. Returns how
+ * many instructions it takes (0 or 2). TX_POLICY otherwise: a compute budget instruction after
+ * another program, a limit or a price alone, the two in the other order, a third one.
+ */
+export function assertSignerBudgetPair(
+  instructions: readonly TransactionInstruction[],
+  maxPriorityFeeLamports?: bigint,
+): 0 | 2 {
+  const isBudget = (ix: TransactionInstruction | undefined): boolean =>
+    !!ix && ix.programId.equals(ComputeBudgetProgram.programId);
+  const count = instructions.filter((ix) => isBudget(ix)).length;
+  if (count === 0) return 0;
+  const [limit, price] = instructions;
+  if (count !== 2 || !isBudget(limit) || !isBudget(price)) {
+    policy('compute budget pair expected first');
+  }
+  if (limit!.data[0] !== 2) policy('compute unit limit expected first');
+  if (price!.data[0] !== 3) policy('compute unit price expected after the limit');
+  assertComputeBudgetSet(instructions, maxPriorityFeeLamports);
+  return 2;
 }
 
 function sameKey(a: PublicKey | undefined | null, b: PublicKey): boolean {

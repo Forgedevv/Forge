@@ -15,8 +15,8 @@
  *      simulated orders move nothing and count for nothing). The day's budget = min(backlog +
  *      the SOL already on the bot above its reserve, BUYBACK_DAILY_CAP_LAMPORTS, and in live
  *      mode what the bot can fund: that SOL plus the spending limit still available, minus the
- *      fee allowance of the orders). What the cap leaves out stays in the backlog and is bought
- *      on the following days. A budget the source cannot establish (journal unreadable, a
+ *      fee allowance of the orders and the withdrawal's fee). What the cap leaves out stays in
+ *      the backlog and is bought on the following days. A budget the source cannot establish (journal unreadable, a
  *      corrupt entry, BUYBACK_REVENUE_SINCE unset) is 0 for the run, with a high alert, and no
  *      plan is written: the next tick tries again. Without a budget source (direct callers) the
  *      cap alone is the budget.
@@ -26,10 +26,10 @@
  *      written to the journal before anything else, so a restart reuses it (never re-rolls).
  *      Slots already in the past when the plan is created are `missed` (no catch-up burst).
  *   3. Funding (live). Once per day the missing SOL (the planned orders plus a fee allowance per
- *      order, minus what the bot already holds above its reserve) is withdrawn from the vault to
- *      the bot wallet through the `SpendingLimitWithdrawer` (jobs/squads.ts: the bot's own Squads
- *      v4 spending limit, SECURITY.md 7). The request is journaled BEFORE it is made and never
- *      repeated that day.
+ *      order, minus what the bot already holds above its reserve, plus the withdrawal's own fee)
+ *      is withdrawn from the vault to the bot wallet through the `SpendingLimitWithdrawer`
+ *      (jobs/squads.ts: the bot's own Squads v4 spending limit, SECURITY.md 7). The request is
+ *      journaled BEFORE it is made and never repeated that day.
  *   4. Orders. Each run executes at most one due slot (TWAP: the day's budget in several slices
  *      at random times). A slot later than `maxLatenessMs` is `missed`. Simulation: quote (if
  *      $FORGE and a quote source exist) and log the would-be order. Live: quote (ExactIn SOL ->
@@ -41,8 +41,14 @@
  *      `onBeforeSend`, send, settle by polling. One attempt per slot: a slot that may have reached
  *      the network is never retried.
  *   5. Return. Any $FORGE on the bot wallet is transferred to the vault's associated token
- *      account (`assertForgeReturnTx` policy, preflight simulation, journaled in flight). The
- *      leftover SOL stays on the bot within its fee reserve.
+ *      account (`assertForgeReturnTx` policy, preflight simulation, journaled in flight), with a
+ *      priority fee priced like the signer's other transactions (SIGNER_PRIORITY_FEE_*,
+ *      jobs/priority.ts). The leftover SOL stays on the bot within its fee reserve.
+ *
+ * Fees: each order's fee allowance covers the buy (BUYBACK_MAX_PRIORITY_FEE_LAMPORTS) and its
+ * return (the signer priority fee cap at FORGE_RETURN_COMPUTE_UNITS), network fees included; the
+ * funding withdrawal adds its own fee (`SpendingLimitWithdrawer.maxFeeLamports`) to the amount it
+ * withdraws. The reserve is never what pays them.
  *
  * Routes (BUYBACK_ROUTE): `jupiter` (default, the only route allowed on mainnet-beta) and
  * `dbc-devnet` (devnet only: Jupiter does not index devnet, so a devnet test buys the stand-in
@@ -80,8 +86,9 @@ import {
   type Connection,
 } from '@solana/web3.js';
 import { z } from 'zod';
-import { PLATFORM_FEE_BPS, platformFeeLamports } from '@forge/core';
+import { PLATFORM_FEE_BPS, platformFeeLamports, type PriorityFeeQuote } from '@forge/core';
 import type { FlagKey } from '@forge/shared';
+import { NO_PRIORITY_FEES, signerBudgetInstructions, type PriorityFees } from './priority.js';
 import type { RevenueBreakdown } from './revenue.js';
 import {
   DEFAULT_JUPITER_URL,
@@ -103,6 +110,7 @@ import {
   JobError,
   MEMO_PROGRAM_ID,
   alertAbnormalPause,
+  assertSignerBudgetPair,
   awaitSettlement,
   base58Encode,
   broadcast,
@@ -148,6 +156,12 @@ export const MAX_BUYBACK_PRICE_IMPACT_BPS = 100;
 export const MAX_ORDERS_PER_DAY = 48;
 export const DAY_MS = 24 * 60 * 60_000;
 export const RETURN_MEMO = 'forge:buyback-return';
+/**
+ * Compute unit limit of the return transfer with a priority fee: an idempotent creation of the
+ * vault's $FORGE account (core's devnet swap measurements put a coin account creation at about
+ * 15,000 CU), a TransferChecked and a memo without signer, with a wide margin.
+ */
+export const FORGE_RETURN_COMPUTE_UNITS = 100_000;
 export const INFLIGHT_KEY = 'inflight';
 /** Upper bound of the weights used to split the budget (amounts stay in bigint). */
 const WEIGHT_RANGE = 1_000_000;
@@ -275,12 +289,15 @@ export interface BuybackConfig {
   maxLatenessMs: number;
   /** No order in the first and last `dayMarginMs` of the day. */
   dayMarginMs: number;
-  /** Highest priority fee a swap transaction may carry (lamports). */
+  /**
+   * Highest priority fee a swap transaction may carry (lamports): Jupiter's `maxLamports`, and on
+   * the dbc-devnet route the bound of the signer priority fee setting core prices the buy with.
+   */
   maxPriorityFeeLamports: bigint;
   /**
    * Lamports withdrawn on top of each planned order to cover its fees (network and priority fees
-   * of the buy and of the return; on the devnet route the 30 bps platform fee core adds), so the
-   * reserve is never eaten by the day's orders.
+   * of the buy and of the return, each at its cap; on the devnet route the 30 bps platform fee
+   * core adds), so the reserve is never eaten by the day's orders.
    */
   orderFeeAllowanceLamports: bigint;
   /** BUYBACK_ROUTE: jupiter (mainnet) or dbc-devnet (devnet only). */
@@ -395,8 +412,9 @@ const LIVE_RE = /^(true|false)?$/;
  * (0.01 SOL), BUYBACK_MAX_ORDER_LAMPORTS (0.25 SOL), BUYBACK_SLIPPAGE_BPS (50, max 100),
  * BUYBACK_MAX_PRICE_IMPACT_BPS (100, max 100), BUYBACK_FEE_RESERVE_LAMPORTS (0.02 SOL),
  * BUYBACK_MAX_LATENESS_MINUTES (30), BUYBACK_DAY_MARGIN_MINUTES (10),
- * BUYBACK_MAX_PRIORITY_FEE_LAMPORTS (100 000), BUYBACK_ORDER_FEE_ALLOWANCE_LAMPORTS (priority fee
- * cap + 10 000; the dbc-devnet route adds the 30 bps platform fee of the largest order),
+ * BUYBACK_MAX_PRIORITY_FEE_LAMPORTS (100 000), BUYBACK_ORDER_FEE_ALLOWANCE_LAMPORTS (that cap +
+ * the return's priority fee cap under `options.priorityFees` + 10 000; the dbc-devnet route adds
+ * the 30 bps platform fee of the largest order),
  * BUYBACK_TICK_SECONDS (60), BUYBACK_PAUSED (false), BUYBACK_ROUTE (jupiter | dbc-devnet),
  * FORGE_BUYBACK_DEVNET_TEST (exactly "true" or "false", default false, refused on mainnet-beta),
  * BUYBACK_DEVNET_DBC_POOL (required by the dbc-devnet route), JUPITER_API_URL / JUPITER_API_KEY
@@ -410,7 +428,11 @@ const LIVE_RE = /^(true|false)?$/;
 export function buybackConfigFromEnv(
   env: Readonly<Record<string, string | undefined>>,
   addresses: { vault: PublicKey; forgeMint: PublicKey | null },
-  options: { cluster?: string } = {},
+  options: {
+    cluster?: string;
+    /** The signer's priority fees (SIGNER_PRIORITY_FEE_*): the return's cap is in the allowance. */
+    priorityFees?: Pick<PriorityFees, 'maxFeeLamports'>;
+  } = {},
 ): { config: BuybackConfig; tickMs: number; jupiter: BuybackJupiterSettings } {
   const liveRaw = env.FORGE_BUYBACK_LIVE ?? '';
   if (!LIVE_RE.test(liveRaw))
@@ -501,10 +523,15 @@ export function buybackConfigFromEnv(
     devnetPool,
     paused: pausedRaw === 'true' || pausedRaw === '1',
   };
+  // Per order: the buy's priority fee cap, the return's (priced by the signer's setting) and the
+  // network fees of both.
+  const returnPriorityFee = (options.priorityFees ?? NO_PRIORITY_FEES).maxFeeLamports(
+    FORGE_RETURN_COMPUTE_UNITS,
+  );
   config.orderFeeAllowanceLamports = parseLamportsEnv(
     env.BUYBACK_ORDER_FEE_ALLOWANCE_LAMPORTS,
     'BUYBACK_ORDER_FEE_ALLOWANCE_LAMPORTS',
-    config.maxPriorityFeeLamports + 10_000n,
+    config.maxPriorityFeeLamports + returnPriorityFee + 10_000n,
   );
   if (route === 'dbc-devnet') {
     // Core adds the 30 bps platform fee on top of every buy (docs/METEORA.md).
@@ -878,10 +905,14 @@ export type WithdrawResult =
  * - `withdraw` moves exactly `lamports`, policy-checks and simulates the transaction before
  *   signing, calls `onBeforeSend(signature)` before the first broadcast (outflow watcher), and
  *   settles by polling `getSignatureStatuses`. It is idempotent per `idempotencyKey`. The job
- *   journals the request first and never calls it twice for the same day.
+ *   journals the request first and never calls it twice for the same day;
+ * - `maxFeeLamports` (optional, 0 when absent) is the most the withdrawal transaction costs its
+ *   fee payer, the bot (network fee and priority fee at its cap): the job withdraws it on top of
+ *   the orders so the reserve does not pay it.
  */
 export interface SpendingLimitWithdrawer {
   remainingLamports(destination: PublicKey): Promise<bigint>;
+  maxFeeLamports?(): bigint;
   withdraw(input: {
     lamports: bigint;
     destination: PublicKey;
@@ -1412,13 +1443,30 @@ function assertTokenProgram(programId: PublicKey): void {
   }
 }
 
-/** Unsigned: idempotent vault ATA creation (paid by the bot), TransferChecked of `amount`, memo. */
-export function buildForgeReturnTx(params: ForgeReturnParams): Transaction {
+/** What the return writes: the bot (fee payer), its $FORGE account and the vault's. */
+export function forgeReturnWritableAccounts(params: ForgeReturnParams): PublicKey[] {
+  return [
+    params.bot,
+    getAssociatedTokenAddressSync(params.mint, params.bot, true, params.programId),
+    getAssociatedTokenAddressSync(params.mint, params.vault, true, params.programId),
+  ];
+}
+
+/**
+ * Unsigned: the compute budget of `priorityFee` first (unit limit then price, nothing at a zero
+ * price or without a quote), idempotent vault ATA creation (paid by the bot), TransferChecked of
+ * `amount`, memo.
+ */
+export function buildForgeReturnTx(
+  params: ForgeReturnParams,
+  priorityFee?: PriorityFeeQuote,
+): Transaction {
   assertTokenProgram(params.programId);
   const botAta = getAssociatedTokenAddressSync(params.mint, params.bot, true, params.programId);
   const vaultAta = getAssociatedTokenAddressSync(params.mint, params.vault, true, params.programId);
   const tx = new Transaction();
   tx.add(
+    ...(priorityFee ? signerBudgetInstructions(priorityFee) : []),
     createAssociatedTokenAccountIdempotentInstruction(
       params.bot,
       vaultAta,
@@ -1450,13 +1498,24 @@ function policy(rule: string): never {
   throw new JobError('TX_POLICY', rule);
 }
 
+export interface ForgeReturnExpectation extends ForgeReturnParams {
+  /**
+   * Highest priority fee the return may carry, lamports: the cap of the setting it was priced
+   * with (`PriorityFees.maxFeeLamports(FORGE_RETURN_COMPUTE_UNITS)`). Default and ceiling:
+   * MAX_SIGNER_PRIORITY_FEE_LAMPORTS.
+   */
+  maxPriorityFeeLamports?: bigint;
+}
+
 /**
- * Return policy: fee payer and only signer = the bot; at most one idempotent ATA creation (paid by
- * the bot, for the vault, of the $FORGE mint, before the transfer); exactly one TransferChecked of
- * exactly `amount` from the bot's $FORGE ATA to the vault's, authority = the bot; at most one memo
- * equal to RETURN_MEMO without keys. Nothing else (no compute budget, no other program).
+ * Return policy: fee payer and only signer = the bot; optionally the compute budget pair first
+ * (a unit limit then a unit price, `assertSignerBudgetPair`, priority fee within
+ * `maxPriorityFeeLamports`); at most one idempotent ATA creation (paid by the bot, for the vault,
+ * of the $FORGE mint, before the transfer); exactly one TransferChecked of exactly `amount` from
+ * the bot's $FORGE ATA to the vault's, authority = the bot; at most one memo equal to RETURN_MEMO
+ * without keys. Nothing else (no other compute budget instruction, no other program).
  */
-export function assertForgeReturnTx(tx: Transaction, expected: ForgeReturnParams): void {
+export function assertForgeReturnTx(tx: Transaction, expected: ForgeReturnExpectation): void {
   assertTokenProgram(expected.programId);
   if (expected.amount <= 0n) policy('return amount must be positive');
   if (expected.bot.equals(expected.vault)) policy('bot and vault must differ');
@@ -1477,10 +1536,11 @@ export function assertForgeReturnTx(tx: Transaction, expected: ForgeReturnParams
     true,
     expected.programId,
   );
+  const budget = assertSignerBudgetPair(tx.instructions, expected.maxPriorityFeeLamports);
   let creates = 0;
   let transfers = 0;
   let memos = 0;
-  for (const ix of tx.instructions) {
+  for (const ix of tx.instructions.slice(budget)) {
     const data = Buffer.from(ix.data);
     const key = (i: number): PublicKey => {
       const meta = ix.keys[i];
@@ -1587,6 +1647,11 @@ export interface BuybackDeps {
   walletLock?: Mutex;
   /** Called with each signature right before it is first broadcast (outflow watcher). */
   onBeforeSend?: BeforeSendHook;
+  /**
+   * Priority fee of the return transfer (SIGNER_PRIORITY_FEE_*, jobs/priority.ts), the setting
+   * `buybackConfigFromEnv` sized the fee allowance with. Default: none.
+   */
+  priorityFees?: PriorityFees;
 }
 
 export type BuybackOutcome =
@@ -1702,6 +1767,7 @@ export function createBuybackJob(deps: BuybackDeps): BuybackJob {
   const sleep = deps.sleep ?? realSleep;
   const retry = deps.retry ?? DEFAULT_RETRY;
   const settleTiming = { ...DEFAULT_SETTLE, ...config.settle };
+  const priorityFees = deps.priorityFees ?? NO_PRIORITY_FEES;
   const iso = () => new Date(now()).toISOString();
   const alert = (
     level: 'immediate' | 'high' | 'normal',
@@ -1725,6 +1791,15 @@ export function createBuybackJob(deps: BuybackDeps): BuybackJob {
   async function stillAllowed(): Promise<boolean> {
     const pause = await checkPaused(deps.flags, BUYBACK_FLAG, config.paused, log);
     return !pause.paused;
+  }
+
+  /** The withdrawal transaction's own fee, paid by the bot and withdrawn with the orders. */
+  function withdrawalFeeLamports(l: LiveDeps): bigint {
+    const fee = l.withdrawer.maxFeeLamports?.() ?? 0n;
+    if (typeof fee !== 'bigint' || fee < 0n) {
+      throw new JobError('INVALID_AMOUNT', 'spending limit withdrawer returned an invalid fee');
+    }
+    return fee;
   }
 
   // ----- plan ---------------------------------------------------------------------------
@@ -1786,10 +1861,12 @@ export function createBuybackJob(deps: BuybackDeps): BuybackJob {
         throw new JobError('INVALID_AMOUNT', 'spending limit returned an invalid amount');
       }
       // What the wallet and the spending limit can put behind the day, minus the fee allowance
-      // of every order: `ensureFunding` withdraws the orders plus that allowance, so a budget
-      // that used the whole limit would leave the last orders unfunded (skipped as
-      // insufficient_funds) once the limit binds.
-      const fees = BigInt(config.ordersPerDay) * config.orderFeeAllowanceLamports;
+      // of every order and the withdrawal's own fee: `ensureFunding` withdraws the orders plus
+      // those, so a budget that used the whole limit would leave the last orders unfunded
+      // (skipped as insufficient_funds) once the limit binds.
+      const fees =
+        BigInt(config.ordersPerDay) * config.orderFeeAllowanceLamports +
+        withdrawalFeeLamports(live);
       fundable = botAvailable + allowance > fees ? botAvailable + allowance - fees : 0n;
       if (fundable < budget) budget = fundable;
     }
@@ -2061,13 +2138,21 @@ export function createBuybackJob(deps: BuybackDeps): BuybackJob {
       decimals,
       amount,
     };
-    const tx = buildForgeReturnTx(params);
+    // Priced from the recent fees of the accounts it writes; the compute budget comes first.
+    const priorityFee = await priorityFees.quote(
+      forgeReturnWritableAccounts(params),
+      FORGE_RETURN_COMPUTE_UNITS,
+    );
+    const tx = buildForgeReturnTx(params, priorityFee);
     const { blockhash, lastValidBlockHeight } = await withRetry(
       () => l.rpc.getLatestBlockhash(),
       retry,
     );
     tx.recentBlockhash = blockhash;
-    assertForgeReturnTx(tx, params);
+    assertForgeReturnTx(tx, {
+      ...params,
+      maxPriorityFeeLamports: priorityFees.maxFeeLamports(FORGE_RETURN_COMPUTE_UNITS),
+    });
     const { raw, signature } = await signWithKeystore(l.keystore, tx, [
       { ref: botRef, expected: bot },
     ]);
@@ -2081,7 +2166,13 @@ export function createBuybackJob(deps: BuybackDeps): BuybackJob {
     };
     await putInFlight(inFlight);
     log.info(
-      { signature, amount: amount.toString(), vault: config.vault.toBase58() },
+      {
+        signature,
+        amount: amount.toString(),
+        vault: config.vault.toBase58(),
+        priorityFeeLamports: priorityFee.priorityFeeLamports.toString(),
+        priorityFeeSource: priorityFee.source,
+      },
       'returning $FORGE to the vault',
     );
     return sendTracked(l, inFlight, raw);
@@ -2121,6 +2212,8 @@ export function createBuybackJob(deps: BuybackDeps): BuybackJob {
       spendable > config.feeReserveLamports ? spendable - config.feeReserveLamports : 0n;
     let need = remaining > available ? remaining - available : 0n;
     if (need > 0n) {
+      // The withdrawal pays its own fee (and priority fee) from what it brings.
+      need += withdrawalFeeLamports(l);
       const allowance = await l.withdrawer.remainingLamports(bot);
       if (allowance < need) need = allowance;
     }
