@@ -10,6 +10,7 @@ import { getAuditScore } from '../Explore/pool-utils';
 import { cn } from '@/lib/utils';
 import { HoverPopover, HoverPopoverContent, HoverPopoverTrigger } from '../ui/HoverPopover';
 import { formatReadablePercentChange } from '@/lib/format/number';
+import { content } from '@/content';
 
 type ChecklistProps = {
   className?: string;
@@ -66,14 +67,27 @@ const ChecklistAuthority: React.FC = () => {
       </HoverPopover>
 
       <div className={cn('inline-flex items-center text-sm')}>
-        <div className={cn(audit?.mintAuthorityDisabled ? 'text-emerald' : 'text-rose')}>
-          {audit?.mintAuthorityDisabled ? 'Disabled' : 'Enabled'}
-        </div>
+        <AuthorityValue disabled={audit?.mintAuthorityDisabled} />
         <span className="px-1 text-xs text-neutral-750">&bull;</span>
-        <div className={cn(audit?.freezeAuthorityDisabled ? 'text-emerald' : 'text-rose')}>
-          {audit?.freezeAuthorityDisabled ? 'Disabled' : 'Enabled'}
-        </div>
+        <AuthorityValue disabled={audit?.freezeAuthorityDisabled} />
       </div>
+    </div>
+  );
+};
+
+/** One authority check: green when revoked, red when still set, a muted dash when unknown. */
+const AuthorityValue: React.FC<{ disabled: boolean | undefined }> = ({ disabled }) => {
+  if (disabled === undefined) {
+    return (
+      <div className="text-neutral-500" title={content.strings.auditUnknown}>
+        <span aria-hidden="true">–</span>
+        <span className="sr-only">{content.strings.auditUnknown}</span>
+      </div>
+    );
+  }
+  return (
+    <div className={cn(disabled ? 'text-emerald' : 'text-rose')}>
+      {disabled ? content.strings.auditDisabled : content.strings.auditEnabled}
     </div>
   );
 };
@@ -90,7 +104,9 @@ const ChecklistTopHolders: React.FC = () => {
         </HoverPopoverTrigger>
         <HoverPopoverContent>
           <AuditTooltipInfo
-            approved={audit && isAuditTopHoldersPass(audit)}
+            approved={
+              audit?.topHoldersPercentage === undefined ? undefined : isAuditTopHoldersPass(audit)
+            }
             label={`Top 10 Holders < 15%`}
             description={`% owned by top 10 holders. Green check if top 10 holders owns less than ${AUDIT_TOP_HOLDERS_THRESHOLD.toFixed(0)}%`}
           />
@@ -117,6 +133,7 @@ const ChecklistTopHolders: React.FC = () => {
 };
 
 export const AuditTooltipInfo: React.FC<{
+  /** Undefined when the check is unknown: shown muted, never as a failure. */
   approved?: boolean;
   label: string;
   description: string;
@@ -130,8 +147,9 @@ export const AuditTooltipInfo: React.FC<{
       <div className="flex items-center gap-x-1.5">
         <div
           className={cn('flex size-4 items-center justify-center', {
-            'text-primary': approved,
-            'text-rose': !approved,
+            'text-primary': approved === true,
+            'text-rose': approved === false,
+            'text-neutral-500': approved === undefined,
           })}
         >
           <span className="iconify text-primary ph--check-bold" />
