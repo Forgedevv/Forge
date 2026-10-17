@@ -305,7 +305,7 @@ function setup(scenario: Scenario = {}, mints?: JupiterClaimsConfig['mints']): F
   const reservations = new PayerReservations();
   const config: JupiterClaimsConfig = {
     referralAccount: referral,
-    vault,
+    partner: vault,
     mints: mints ?? [{ mint, minAmount: 1_000_000n }],
     settle: { timeoutMs: 10_000, pollMs: 1_000, rebroadcastMs: 2_000 },
   };
@@ -626,8 +626,8 @@ describe('createJupiterClaimsJob', () => {
     const t = setup();
     expect(() => t.job({ payerLock: undefined as unknown as Mutex })).toThrow(/payerLock/);
     expect(() => t.job({ onBeforeSend: undefined as unknown as () => void })).toThrow(/onBeforeSend/);
-    expect(() => t.job({}, { vault: t.referral })).toThrow(/must differ/);
-    expect(() => t.job({}, { mints: [{ mint: t.vault, minAmount: 1n }] })).toThrow(/referral account or the vault/);
+    expect(() => t.job({}, { partner: t.referral })).toThrow(/must differ/);
+    expect(() => t.job({}, { mints: [{ mint: t.vault, minAmount: 1n }] })).toThrow(/referral account or the partner/);
     expect(() => t.job({}, { mints: [] })).toThrow(/no mint/);
     expect(() => t.job({}, { mints: [{ mint: t.mint, minAmount: 0n }] })).toThrow(/positive/);
   });
@@ -659,6 +659,7 @@ describe('jupiterClaimsModule', () => {
         platformFee: randomAddress(),
         meteoraReferral: randomAddress(),
         jupiterReferral: t.referral,
+        revenue: t.vault,
         forgeMint: null,
       },
       connection: untouchable,
@@ -770,12 +771,12 @@ describe('parseJupiterClaimMints', () => {
 });
 
 describe('jupiterClaimsConfigFromEnv', () => {
-  const addresses = { vault: randomAddress(), jupiterReferral: randomAddress() };
+  const addresses = { partner: randomAddress(), jupiterReferral: randomAddress() };
 
   it('applies the defaults', () => {
     const { config, intervalMs } = jupiterClaimsConfigFromEnv({}, addresses);
     expect(config.referralAccount.equals(addresses.jupiterReferral)).toBe(true);
-    expect(config.vault.equals(addresses.vault)).toBe(true);
+    expect(config.partner.equals(addresses.partner)).toBe(true);
     expect(config.mints).toHaveLength(2);
     expect(config.paused).toBe(false);
     expect(intervalMs).toBe(DAY_MS);
@@ -803,14 +804,14 @@ describe('jupiterClaimsConfigFromEnv', () => {
       jupiterClaimsConfigFromEnv({ SIGNER_JUPITER_CLAIMS_PAUSED: 'yes' }, addresses),
     ).toThrow(/SIGNER_JUPITER_CLAIMS_PAUSED/);
     expect(() =>
-      jupiterClaimsConfigFromEnv({}, { vault: addresses.vault, jupiterReferral: addresses.vault }),
+      jupiterClaimsConfigFromEnv({}, { partner: addresses.partner, jupiterReferral: addresses.partner }),
     ).toThrow(/must differ/);
     expect(() =>
       jupiterClaimsConfigFromEnv(
-        { SIGNER_JUPITER_CLAIMS_MINTS: `${addresses.vault.toBase58()}:1` },
+        { SIGNER_JUPITER_CLAIMS_MINTS: `${addresses.partner.toBase58()}:1` },
         addresses,
       ),
-    ).toThrow(/referral account or the vault/);
+    ).toThrow(/referral account or the partner/);
   });
 });
 

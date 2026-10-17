@@ -65,7 +65,14 @@ import { JobError, createFileJournal, describeError, type Journal } from './shar
 // Types
 
 export type WatchRole =
-  'vault' | 'platformFee' | 'cashbox' | 'creator' | 'referral' | 'payer' | 'buyback';
+  | 'vault'
+  | 'platformFee'
+  | 'cashbox'
+  | 'creator'
+  | 'referral'
+  | 'payer'
+  | 'buyback'
+  | 'revenue';
 
 export interface WatchedAccount {
   address: string;
@@ -199,6 +206,7 @@ export interface WatchConfig {
     payer: bigint;
     creator: bigint;
     buyback: bigint;
+    revenue: bigint;
   };
 }
 
@@ -233,6 +241,8 @@ const envSchema = z.object({
   WATCH_MIN_CREATOR_LAMPORTS: lamportsString.optional(),
   /** 0 (default) disables the check: the bot wallet is empty until the buyback goes live. */
   WATCH_MIN_BUYBACK_LAMPORTS: lamportsString.default(0n),
+  /** The revenue wallet keeps rent plus a fee reserve (default 0.005 SOL, below the reserve). */
+  WATCH_MIN_REVENUE_LAMPORTS: lamportsString.default(5_000_000n),
 });
 
 /** Reads the WATCH_* variables (all optional, with defaults). Throws on malformed values. */
@@ -253,6 +263,7 @@ export function parseWatchConfig(env: Readonly<Record<string, string | undefined
       payer: parsed.WATCH_MIN_PAYER_LAMPORTS,
       creator: parsed.WATCH_MIN_CREATOR_LAMPORTS ?? (creatorsPay ? 5_000_000n : 0n),
       buyback: parsed.WATCH_MIN_BUYBACK_LAMPORTS,
+      revenue: parsed.WATCH_MIN_REVENUE_LAMPORTS,
     },
   };
 }
@@ -267,6 +278,48 @@ export interface ForgeWatchAddresses {
   payer?: string;
   /** The $FORGE buyback bot wallet (keystore role `buyback`), when it exists. */
   buyback?: string;
+  /**
+   * The revenue wallet (keystore role `revenue`, FORGE_REVENUE_WALLET, D34). It is also the
+   * platform fee wallet: the two entries are merged into one (no double alert, no double scan).
+   */
+  revenue?: string;
+}
+
+/**
+ * Two roles on one address make one entry: the strictest of both (highest minimum, rent check
+ * and outflow watch when either asks; the destinations allowed by every watching entry). The
+ * role and label of the entry that watches outflows win (it drives the alert levels).
+ */
+export function mergeSameAddress(accounts: readonly WatchedAccount[]): WatchedAccount[] {
+  const out: WatchedAccount[] = [];
+  for (const a of accounts) {
+    const i = out.findIndex((x) => x.address === a.address);
+    if (i < 0) {
+      out.push({ ...a });
+      continue;
+    }
+    const prev = out[i]!;
+    const lead = a.watchOutflows && !prev.watchOutflows ? a : prev;
+    const other = lead === a ? prev : a;
+    const minLamports =
+      (prev.minLamports ?? 0n) > (a.minLamports ?? 0n) ? prev.minLamports! : (a.minLamports ?? 0n);
+    const watchOutflows = !!(prev.watchOutflows || a.watchOutflows);
+    const destinations =
+      prev.watchOutflows && a.watchOutflows
+        ? (prev.allowedDestinations ?? []).filter((d) => (a.allowedDestinations ?? []).includes(d))
+        : (lead.allowedDestinations ?? []);
+    out[i] = {
+      address: a.address,
+      label: `${lead.label} (${other.label})`,
+      role: lead.role,
+      ...(minLamports > 0n ? { minLamports } : {}),
+      ...(prev.requireRentExempt || a.requireRentExempt ? { requireRentExempt: true } : {}),
+      ...(watchOutflows ? { watchOutflows: true } : {}),
+      ...(prev.watchTokenAccounts || a.watchTokenAccounts ? { watchTokenAccounts: true } : {}),
+      ...(watchOutflows ? { allowedDestinations: destinations } : {}),
+    };
+  }
+  return out;
 }
 
 /** Account list for the fixed FORGE addresses (pass it as `WatchDeps.staticAccounts`). */
@@ -329,6 +382,19 @@ export function buildStaticAccounts(
       allowedDestinations: [addresses.vault],
     });
   }
+  if (addresses.revenue) {
+    // The revenue job unwraps (announced) and forwards to the vault; nothing else leaves it.
+    out.push({
+      address: addresses.revenue,
+      label: 'revenue wallet',
+      role: 'revenue',
+      minLamports: config.minLamports.revenue,
+      requireRentExempt: true,
+      watchOutflows: true,
+      watchTokenAccounts: true,
+      allowedDestinations: [addresses.vault],
+    });
+  }
   (addresses.referrals ?? []).forEach((address, i) => {
     out.push({
       address,
@@ -337,7 +403,7 @@ export function buildStaticAccounts(
       requireRentExempt: true,
     });
   });
-  return out;
+  return mergeSameAddress(out);
 }
 
 /** Account entries for creator wallets: SOL left for rent and fees. */
@@ -372,6 +438,7 @@ const LOW_BALANCE_LEVEL: Record<WatchRole, AlertLevel> = {
   creator: 'normal',
   referral: 'high',
   buyback: 'high',
+  revenue: 'high',
 };
 
 export function detectLowBalance(account: WatchedAccount, snap: AccountSnapshot): Detection | null {

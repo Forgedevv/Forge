@@ -45,6 +45,13 @@ import {
   type SwapSender,
 } from '../jobs/convert.js';
 import {
+  RevenueForwardEntry,
+  RevenueStateEntry,
+  createRevenueJob,
+  createRevenueRpc,
+  revenueConfigFromEnv,
+} from '../jobs/revenue.js';
+import {
   RefundJournalEntry,
   RefundManualMark,
   createFileRefundLedger,
@@ -87,6 +94,8 @@ export interface SignerAddresses {
   platformFee: PublicKey;
   meteoraReferral: PublicKey;
   jupiterReferral: PublicKey;
+  /** FORGE_REVENUE_WALLET (D34): the keystore `revenue` wallet, also the platform fee wallet. */
+  revenue: PublicKey;
   /** Null before the $FORGE launch. */
   forgeMint: PublicKey | null;
 }
@@ -107,6 +116,14 @@ export interface SignerJobContext {
   /** Fixed keystore wallets, checked at startup (cashbox = FORGE_CASHBOX_WALLET). */
   payer: KeyHandle;
   cashbox: KeyHandle;
+  /**
+   * The revenue wallet (FORGE_REVENUE_WALLET) when the keystore `revenue` key is that address;
+   * null on devnet when the wiring is refused (alerted, the revenue job is then off). On
+   * mainnet-beta a refused wiring stops the startup (runtime.ts).
+   */
+  revenue: KeyHandle | null;
+  /** SIGNER_PRIORITY_FEE_MICRO_LAMPORTS, for the jobs' own transactions. */
+  priorityFeeMicroLamports: number;
   db: PostgrestClient;
   supabase: { url: string; serviceRoleKey: string };
   flags: FlagsReader;
@@ -174,7 +191,7 @@ export const jupiterClaimsModule: SignerJobModule = {
   name: 'jupiter-claims',
   create(ctx) {
     const { config, intervalMs } = jupiterClaimsConfigFromEnv(ctx.env, {
-      vault: ctx.addresses.vault,
+      partner: ctx.addresses.revenue,
       jupiterReferral: ctx.addresses.jupiterReferral,
     });
     const logger = ctx.jobLogger('jupiter-claims');
@@ -288,6 +305,7 @@ export const watchModule: SignerJobModule = {
           referrals: [addresses.meteoraReferral.toBase58(), addresses.jupiterReferral.toBase58()],
           payer: ctx.payer.publicKey.toBase58(),
           ...(buyback ? { buyback } : {}),
+          revenue: addresses.revenue.toBase58(),
         },
         config,
       ),
@@ -312,12 +330,42 @@ export const watchModule: SignerJobModule = {
   },
 };
 
+/**
+ * Jupiter swap sender signing with the keystore keys of `owners` (address -> ref) only, every
+ * signature announced to the outflow watcher before its broadcast.
+ */
+function createKeystoreSwapSender(
+  ctx: SignerJobContext,
+  owners: ReadonlyMap<string, string>,
+  maxPriorityFeeLamports: bigint,
+): SwapSender {
+  return createRpcSwapSender({
+    connection: ctx.connection,
+    maxPriorityFeeLamports,
+    async signTransaction(owner: string, tx: VersionedTransaction) {
+      const ref = owners.get(owner);
+      if (!ref) throw new JobError('CONFIG', 'not a conversion wallet');
+      await ctx.keystore.withSigner(ref, (signer) => {
+        if (signer.publicKey.toBase58() !== owner) throw new JobError('SIGNER_MISMATCH');
+        signer.signTransaction(tx);
+      });
+      const first = tx.signatures[0];
+      if (!first || first.length !== 64 || first.every((b) => b === 0)) {
+        throw new JobError('NOT_SIGNED', 'swap transaction is not signed');
+      }
+      // Signed, not sent yet: the watcher learns the signature first (a throw stops the send).
+      ctx.onBeforeSend(base58Encode(first));
+    },
+  });
+}
+
 export const convertModule: SignerJobModule = {
   name: 'convert',
   async create(ctx) {
     const config = parseConvertConfig(ctx.env, { cluster: ctx.cluster });
     // Wallets whose non-SOL fee balances are swapped to SOL: never the buyback bot (its $FORGE
-    // goes to the vault, and FORGE_MINT is excluded anyway).
+    // goes to the vault, and FORGE_MINT is excluded anyway); the revenue wallet is converted by
+    // its own job (revenueModule), which books the output by source.
     const owners = new Map<string, string>();
     for (const role of ctx.convertRoles) {
       const handle = role === 'cashbox' ? ctx.cashbox : ctx.payer;
@@ -328,24 +376,10 @@ export const convertModule: SignerJobModule = {
       const bot = (await ctx.keystore.getPublicKey(buybackRef)).toBase58();
       if (owners.has(bot)) throw new JobError('CONFIG', 'the buyback wallet is not converted');
     }
-    const sender = createRpcSwapSender({
-      connection: ctx.connection,
-      maxPriorityFeeLamports: config.maxPriorityFeeLamports,
-      async signTransaction(owner: string, tx: VersionedTransaction) {
-        const ref = owners.get(owner);
-        if (!ref) throw new JobError('CONFIG', 'not a conversion wallet');
-        await ctx.keystore.withSigner(ref, (signer) => {
-          if (signer.publicKey.toBase58() !== owner) throw new JobError('SIGNER_MISMATCH');
-          signer.signTransaction(tx);
-        });
-        const first = tx.signatures[0];
-        if (!first || first.length !== 64 || first.every((b) => b === 0)) {
-          throw new JobError('NOT_SIGNED', 'swap transaction is not signed');
-        }
-        // Signed, not sent yet: the watcher learns the signature first (a throw stops the send).
-        ctx.onBeforeSend(base58Encode(first));
-      },
-    });
+    if (owners.has(ctx.addresses.revenue.toBase58())) {
+      throw new JobError('CONFIG', 'the revenue wallet is converted by the revenue job');
+    }
+    const sender = createKeystoreSwapSender(ctx, owners, config.maxPriorityFeeLamports);
     // Every conversion holds the wallet lock; one of the payer wallet also holds the payer lock
     // (shared with the signing routes and the claims). Order: wallet lock, then payer lock.
     const payerAddress = ctx.payer.publicKey.toBase58();
@@ -387,6 +421,85 @@ export const convertModule: SignerJobModule = {
   },
 };
 
+/**
+ * Revenue wallet job (jobs/revenue.ts): unwraps the wrapped SOL, converts the other balances
+ * (mainnet-beta, through the conversion machinery of jobs/convert.ts over the revenue wallet
+ * only, same policy and `convert_paused` switch) and forwards the native SOL to the vault.
+ * Off (health status `off`) when the keystore has no `revenue` key matching FORGE_REVENUE_WALLET:
+ * only possible on devnet, where the startup alerts instead of failing.
+ */
+export const revenueModule: SignerJobModule = {
+  name: 'revenue',
+  create(ctx) {
+    const { config, intervalMs } = revenueConfigFromEnv(ctx.env, {
+      revenue: ctx.addresses.revenue,
+      vault: ctx.addresses.vault,
+      meteoraReferral: ctx.addresses.meteoraReferral,
+      computeUnitPriceMicroLamports: ctx.priorityFeeMicroLamports,
+    });
+    const logger = ctx.jobLogger('revenue');
+    const revenue = ctx.revenue;
+    if (!revenue) {
+      logger.warn({}, 'revenue job off: the keystore revenue key is not FORGE_REVENUE_WALLET');
+      return { runOnce: async () => ({ status: 'off' }), delayMs: () => intervalMs };
+    }
+    let convert: (() => ReturnType<typeof runConvertOnce>) | null = null;
+    if (ctx.cluster === 'mainnet-beta') {
+      const convertConfig = parseConvertConfig(ctx.env, { cluster: ctx.cluster });
+      const owner = revenue.publicKey.toBase58();
+      const deps: ConvertDeps = {
+        jupiter: createJupiterClient({
+          baseUrl: convertConfig.jupiterUrl,
+          apiKey: convertConfig.apiKey,
+          minRequestIntervalMs: convertConfig.minRequestIntervalMs,
+          timeoutMs: convertConfig.requestTimeoutMs,
+          maxPriorityFeeLamports: convertConfig.maxPriorityFeeLamports,
+          fetch: ctx.fetch,
+        }),
+        balances: createRpcBalanceSource(ctx.connection, [owner]),
+        sender: createKeystoreSwapSender(
+          ctx,
+          new Map([[owner, revenue.ref]]),
+          convertConfig.maxPriorityFeeLamports,
+        ),
+        ledger: createFileLedger(ctx.journalDir),
+        journalDir: ctx.journalDir,
+        flags: ctx.flags,
+        alerter: ctx.alerter,
+        logger,
+        config: convertConfig,
+        cluster: ctx.cluster,
+        liveFlag: ctx.env.FORGE_CONVERT_LIVE,
+      };
+      convert = () => runConvertOnce(deps);
+    }
+    const job = createRevenueJob({
+      rpc: createRevenueRpc(ctx.connection),
+      core: ctx.core,
+      keystore: ctx.keystore,
+      journal: createFileJournal({
+        dir: ctx.journalDir,
+        namespace: 'revenue',
+        schema: RevenueStateEntry,
+      }),
+      forwards: createFileJournal({
+        dir: ctx.journalDir,
+        namespace: 'revenue-forward',
+        schema: RevenueForwardEntry,
+      }),
+      flags: ctx.flags,
+      alerter: ctx.alerter,
+      logger,
+      config,
+      cluster: ctx.cluster,
+      convert,
+      onBeforeSend: ctx.onBeforeSend,
+    });
+    logger.info({ dryRun: config.dryRun, conversions: convert !== null }, 'revenue job wired');
+    return { runOnce: () => job.runOnce(), delayMs: () => intervalMs };
+  },
+};
+
 /** The jobs every signer process runs, in this order. */
 export const BUILTIN_JOB_MODULES: readonly SignerJobModule[] = [
   claimsModule,
@@ -395,4 +508,5 @@ export const BUILTIN_JOB_MODULES: readonly SignerJobModule[] = [
   refundsModule,
   watchModule,
   convertModule,
+  revenueModule,
 ];
