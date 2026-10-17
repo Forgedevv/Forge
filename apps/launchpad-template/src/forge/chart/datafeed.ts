@@ -12,6 +12,7 @@ import {
 } from '@/components/AdvancedTradingView/charting_library';
 import { GetChartRequest, Pool } from '@/components/Explore/types';
 import { ApeClient } from '@/forge/data/client';
+import { isDataUnavailable } from '@/forge/data/source';
 import { asMarks } from '@/contexts/TokenChart/marks';
 
 export type ISymbolInfo = LibrarySymbolInfo & { address: string };
@@ -27,6 +28,8 @@ export function createDataFeed(
   showUserTradesRef: MutableRefObject<boolean>,
   isMarksLoadingRef: MutableRefObject<boolean>,
   resetCacheFnRef: MutableRefObject<Record<string, () => void>>,
+  /** Called when the price history is unavailable (data API down): the chart shows its panel. */
+  onUnavailableRef?: MutableRefObject<(() => void) | undefined>,
 ): IExternalDatafeed & IDatafeedChartApi {
   return {
     onReady: (callback) => {
@@ -149,6 +152,7 @@ export function createDataFeed(
           noData: false,
         });
       } catch (error: any) {
+        if (isDataUnavailable(error)) onUnavailableRef?.current?.();
         onErrorCallback(String(error));
       }
     },

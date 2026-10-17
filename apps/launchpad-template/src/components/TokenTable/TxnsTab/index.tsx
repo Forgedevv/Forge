@@ -5,12 +5,14 @@ import { ApeQueries } from '../../Explore/queries';
 import { TxTable } from './TxTable';
 import { columns } from './columns';
 import { Tx } from '../../Explore/types';
+import { DataUnavailable } from '../../ui/DataUnavailable';
+import { content } from '@/content';
 
 export const TxnsTab: React.FC = memo(() => {
   const tokenId = useTokenAddress();
   const { data: symbol } = useTokenInfo((data) => data?.baseAsset.symbol);
 
-  const { data, isFetching, fetchNextPage, hasNextPage } = useInfiniteQuery({
+  const { data, isFetching, isError, fetchNextPage, hasNextPage, refetch } = useInfiniteQuery({
     ...ApeQueries.tokenTxs({ id: tokenId || '' }),
     enabled: !!tokenId,
   });
@@ -40,6 +42,18 @@ export const TxnsTab: React.FC = memo(() => {
   // Don't render if tokenId is not available
   if (!tokenId) {
     return null;
+  }
+
+  // The market data service is down (or the site runs on devnet): no transactions to show.
+  if (isError && allRows.length === 0) {
+    return (
+      <DataUnavailable
+        title={content.strings.unavailableTxns}
+        body={content.strings.unavailableTxnsBody}
+        retryLabel={content.strings.retry}
+        onRetry={() => void refetch()}
+      />
+    );
   }
 
   return (
