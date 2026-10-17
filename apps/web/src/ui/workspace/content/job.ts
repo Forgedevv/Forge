@@ -43,5 +43,12 @@ export const jobCopy = {
   deploying: 'Taking your launchpad live…',
   building: 'Your launchpad is taking shape.',
   waiting: 'Your next step is ready.',
-  frame: 'Launchpad preview',
+  previewCard: {
+    body: 'Your preview opens in a new tab, exactly as your visitors will see it.',
+    open: 'Open the preview',
+    devices: 'Open the preview at a device size',
+    desktop: 'Desktop size',
+    mobile: 'Mobile size',
+    check: 'Check the pages, texts and colors at both sizes before you approve it.',
+  },
 } as const;

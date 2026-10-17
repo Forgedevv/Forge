@@ -50,7 +50,7 @@ For each screen: route, data (see `CONTRACT.md`), actions, states. "Global" appl
 - States by status (labels in `CONTRACT.md`):
   - `spec_ready` → button to the payment;
   - `paid`, `building` → "Building", attempt N/2 if `attempts = 2`;
-  - `preview_ready` → **Preview** block (link + embedded frame if possible) + "Approve the preview" button + "Request a change" (back to the chat, counts as a change);
+  - `preview_ready` → **Preview** block (opens in a new tab, at a desktop or a phone size; never embedded: the client site forbids framing) + "Approve the preview" button + "Request a change" (back to the chat, counts as a change);
   - `approved`, `onchain_setup` → "Connecting to Meteora";
   - `awaiting_owner_signature` → redirect to A7;
   - `owner_signed`, `deploying` → "Going live";

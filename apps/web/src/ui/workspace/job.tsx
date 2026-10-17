@@ -22,6 +22,7 @@ import { safeUrl } from './safe-url';
 import { jobCopy as copy } from './content/job';
 import { common } from './content/common';
 import { SupportBlock } from './support';
+import { PreviewCard } from './preview-card';
 import { Muse, museMoodForJob } from '../muse';
 import { StartAgainButton, StartAgainHold, draftNext, useStartAgain } from './start-again';
 
@@ -109,19 +110,7 @@ export function JobScreen({
               <h2>{copy.preview}</h2>
               <p>{copy.previewBody}</p>
               {preview ? (
-                <>
-                  <iframe
-                    className="fw-preview-frame"
-                    src={preview}
-                    title={copy.frame}
-                    sandbox="allow-scripts allow-forms"
-                    referrerPolicy="no-referrer"
-                    loading="lazy"
-                  />
-                  <Link href={preview} target="_blank" rel="noreferrer">
-                    {common.newTab} ↗
-                  </Link>
-                </>
+                <PreviewCard url={preview} />
               ) : (
                 <p>{common.pending}</p>
               )}

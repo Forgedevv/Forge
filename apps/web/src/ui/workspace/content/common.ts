@@ -59,7 +59,6 @@ export const common = {
   claimStalled: 'Other pools are still updating. Claim them again in a minute.',
   cancel: 'Cancel',
   rawUnits: 'raw token units',
-  newTab: 'Open in a new tab',
   yes: 'Yes',
   no: 'No',
   pending: 'Not set yet',
