@@ -20,6 +20,7 @@ The client (example: Hugo) describes their launchpad and pays ~$33 in SOL; the a
 | [docs/SECURITY.md](./docs/SECURITY.md) | Known vulnerabilities and their protections |
 | [docs/DEVNET_TESTS.md](./docs/DEVNET_TESTS.md) | The 4 on-chain tests to run first, with plan B |
 | [docs/OPERATIONS.md](./docs/OPERATIONS.md) | Alerts, kill switches, sleep mode, support |
+| [docs/MAINNET.md](./docs/MAINNET.md) | Mainnet configuration reference: every environment variable per service, consistency rules, go-live values, first-boot order, pre-boot checklist |
 | [docs/DECISIONS.md](./docs/DECISIONS.md) | All decisions made and the questions still open |
 
 ## Tasks by agent
