@@ -232,21 +232,44 @@ describe('POST /api/upload handler', () => {
     expect(broken.statusCode).toBe(400);
   });
 
-  it('rate-limits per IP (429 with Retry-After)', async () => {
+  it('rate-limits coin creations per IP (429 with Retry-After)', async () => {
     const { handle } = setup();
-    const statuses: number[] = [];
+    const nonce = (i: number) => `${'0'.repeat(31)}${i}`;
     for (let i = 0; i < 5; i++) {
-      const res = await call(handle, null, { raw: '{' });
-      statuses.push(res.statusCode);
+      const res = await call(handle, signedBody({ nonce: nonce(i) }));
+      expect(res.statusCode, `request ${i}`).toBe(200);
     }
-    expect(statuses).toEqual([400, 400, 400, 400, 400]);
-    const limited = await call(handle, signedBody());
+    const limited = await call(handle, signedBody({ nonce: nonce(5) }));
     expect(limited.statusCode).toBe(429);
+    expect(limited.body).toMatchObject({ code: 'rate_limited' });
     expect(Number(limited.headers['Retry-After'])).toBeGreaterThan(0);
-    const other = await call(handle, signedBody(), {
+    const other = await call(handle, signedBody({ nonce: nonce(6) }), {
       headers: { 'x-forwarded-for': '198.51.100.1' },
     });
     expect(other.statusCode).toBe(200);
+  });
+
+  it('refuses invalid requests before they use a creation slot', async () => {
+    const { handle, uploadClient } = setup();
+    // A visitor fixing mistakes: invalid JSON, a bad name, a wrong signature...
+    for (let i = 0; i < 6; i++) {
+      expect((await call(handle, null, { raw: '{' })).statusCode).toBe(400);
+      const badName = signedBody({ name: 'ab', nonce: `${'1'.repeat(31)}${i}` });
+      expect((await call(handle, badName)).statusCode).toBe(400);
+      const badSigner = signedBody({ signer: Keypair.generate(), nonce: `${'2'.repeat(31)}${i}` });
+      expect((await call(handle, badSigner)).statusCode).toBe(401);
+    }
+    expect(uploadClient.uploadCoin).not.toHaveBeenCalled();
+    // ...still gets the coin prepared afterwards.
+    expect((await call(handle, signedBody())).statusCode).toBe(200);
+  });
+
+  it('bounds any flood of requests per IP before reading the body', async () => {
+    const { handle } = setup();
+    const statuses: number[] = [];
+    for (let i = 0; i < 31; i++) statuses.push((await call(handle, null, { raw: '{' })).statusCode);
+    expect(statuses.slice(0, 30).every((status) => status === 400)).toBe(true);
+    expect(statuses[30]).toBe(429);
   });
 
   it('refuses a body above the cap before parsing it (413)', async () => {
@@ -319,7 +342,7 @@ describe('POST /api/upload handler', () => {
       signedBody({ name: 'ab' }),
       signedBody({ symbol: 'moon' }),
       signedBody({ name: ' Moon Coin' }),
-      signedBody({ firstBuy: '100000000001' }),
+      signedBody({ firstBuy: '10000000001' }),
       { ...signedBody(), userWallet: 'not-a-wallet' },
     ].entries()) {
       const { handle } = setup();
@@ -404,5 +427,132 @@ describe('POST /api/upload handler', () => {
     expect(res.statusCode).toBe(500);
     expect(res.body).toEqual({ error: 'Could not prepare the coin. Try again later.' });
     expect(log).toHaveBeenCalledWith(expect.stringMatching(/self-verification/));
+  });
+
+  it('maps core INVALID_INPUT (name too long in bytes) to 400 invalid_input, not 502', async () => {
+    const { handle, launchBuilder } = setup();
+    launchBuilder.build.mockRejectedValueOnce(
+      new LaunchBuildError('invalid_input', 'The coin name is too long: it holds at most 32 bytes.'),
+    );
+    const res = await call(handle, signedBody());
+    expect(res.statusCode).toBe(400);
+    expect(res.body).toEqual({
+      error: 'The coin name is too long: it holds at most 32 bytes.',
+      code: 'invalid_input',
+    });
+  });
+
+  it('refuses a name beyond 32 UTF-8 bytes before anything is uploaded', async () => {
+    const { handle, uploadClient } = setup();
+    const res = await call(handle, signedBody({ name: '\u00e9'.repeat(17) }));
+    expect(res.statusCode).toBe(400);
+    expect((res.body as { error: string }).error).toMatch(/bytes/);
+    expect(uploadClient.uploadCoin).not.toHaveBeenCalled();
+  });
+});
+
+type Prepared = Awaited<ReturnType<typeof prepared>>;
+
+async function prepared(overrides: Partial<PrepareDeps> = {}) {
+  const s = setup(overrides);
+  const res = await call(s.handle, signedBody());
+  expect(res.statusCode).toBe(200);
+  const token = (res.body as { rebuildToken: string }).rebuildToken;
+  expect(token).toMatch(/^[A-Za-z0-9_-]{43}$/);
+  const mint = (res.body as { mint: string }).mint;
+  const body = (
+    o: { token?: string; firstBuy?: string; wallet?: string; mint?: string } = {},
+  ) => ({
+    rebuild: {
+      mint: o.mint ?? mint,
+      token: o.token ?? token,
+      firstBuyLamports: o.firstBuy ?? '500000000',
+    },
+    userWallet: o.wallet ?? user.publicKey.toBase58(),
+  });
+  return { ...s, token, mint, body };
+}
+
+describe('POST /api/upload rebuild (same launch, no new upload)', () => {
+  it('rebuilds with the same mint and metadata, without uploading again', async () => {
+    const s = await prepared();
+    const res = await call(s.handle, s.body());
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toMatchObject({ mint: s.mint, rebuildToken: s.token });
+    expect(s.uploadClient.uploadCoin).toHaveBeenCalledTimes(1);
+    expect(s.launchBuilder.build).toHaveBeenCalledTimes(2);
+    const first = s.launchBuilder.build.mock.calls[0]?.[1] as any;
+    const again = s.launchBuilder.build.mock.calls[1]?.[1] as any;
+    expect(again.mint).toBe(first.mint);
+    expect(again.metadataUri).toBe(first.metadataUri);
+    expect(again.wallet).toBe(user.publicKey.toBase58());
+    expect(again.name).toBe('Moon Coin');
+  });
+
+  it('rebuilds with another first buy (self-verified against it)', async () => {
+    const s = await prepared();
+    const lower = buildFixtureLaunch({
+      wallet: user.publicKey,
+      name: 'Moon Coin',
+      symbol: 'MOON',
+      firstBuyLamports: BigInt(100_000_000),
+      launchpadConfig: FIXTURE_LAUNCHPAD_CONFIG,
+      poolCreationFeeLamports: FEE,
+      mint: s.fixture.mint,
+    });
+    s.launchBuilder.build.mockResolvedValueOnce({ success: true, ...lower.response });
+    const res = await call(s.handle, s.body({ firstBuy: '100000000' }));
+    expect(res.statusCode).toBe(200);
+    expect((s.launchBuilder.build.mock.calls[1]?.[1] as any).firstBuyLamports).toBe(
+      BigInt(100_000_000),
+    );
+  });
+
+  it('answers 410 prepare_again for an unknown token, another wallet or another mint', async () => {
+    const cases: ((s: Prepared) => unknown)[] = [
+      (s) => s.body({ token: 'A'.repeat(43) }),
+      (s) => s.body({ wallet: Keypair.generate().publicKey.toBase58() }),
+      (s) => s.body({ mint: Keypair.generate().publicKey.toBase58() }),
+    ];
+    for (const make of cases) {
+      const s = await prepared();
+      const res = await call(s.handle, make(s));
+      expect(res.statusCode).toBe(410);
+      expect(res.body).toMatchObject({ code: 'prepare_again' });
+      expect(s.launchBuilder.build).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it('forgets a prepared launch after its lifetime', async () => {
+    let clock = NOW;
+    const s = await prepared({ now: () => clock });
+    clock += 10 * 60 * 1000 + 1;
+    const res = await call(s.handle, s.body());
+    expect(res.statusCode).toBe(410);
+  });
+
+  it('caps the rebuilds of one launch and refuses a malformed rebuild', async () => {
+    const s = await prepared();
+    const statuses: number[] = [];
+    for (let i = 0; i < 9; i++) statuses.push((await call(s.handle, s.body())).statusCode);
+    expect(statuses.slice(0, 8).every((status) => status === 200)).toBe(true);
+    expect(statuses[8]).toBe(410);
+    const malformed = await call(s.handle, { rebuild: { mint: s.mint }, userWallet: 'x' });
+    expect(malformed.statusCode).toBe(400);
+  });
+
+  it('keeps the first-buy bound on a rebuild', async () => {
+    const s = await prepared();
+    const res = await call(s.handle, s.body({ firstBuy: '10000000001' }));
+    expect(res.statusCode).toBe(400);
+    expect(s.launchBuilder.build).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports an already created coin (409 already_launched) when the mint exists', async () => {
+    const s = await prepared();
+    s.launchBuilder.build.mockRejectedValueOnce(new LaunchBuildError('mint_exists', 'in use'));
+    const res = await call(s.handle, s.body());
+    expect(res.statusCode).toBe(409);
+    expect(res.body).toMatchObject({ code: 'already_launched' });
   });
 });

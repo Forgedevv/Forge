@@ -1,5 +1,11 @@
-import { createHash, createPublicKey, verify as verifySignature } from 'node:crypto';
-import { PublicKey } from '@solana/web3.js';
+import {
+  createHash,
+  createPublicKey,
+  randomBytes,
+  timingSafeEqual,
+  verify as verifySignature,
+} from 'node:crypto';
+import { PublicKey, type Keypair } from '@solana/web3.js';
 
 /**
  * LOCKED ZONE. Server-only guards of the coin preparation route: per-IP rate limit, single-use
@@ -137,4 +143,75 @@ export function verifyWalletSignature(
   } catch {
     return false;
   }
+}
+
+/** A launch the server prepared, kept so it can be rebuilt without a new upload. */
+export interface PreparedLaunch {
+  wallet: string;
+  name: string;
+  symbol: string;
+  /** The fresh mint generated for this launch (it only signs this coin's creation). */
+  mint: Keypair;
+  metadataUri: string;
+  /** Rebuilds served so far (bounded by `maxRebuilds`). */
+  rebuilds: number;
+}
+
+export interface PreparedLaunchStore {
+  /** Stores a prepared launch and returns the rebuild capability (43 base64url characters). */
+  put(launch: Omit<PreparedLaunch, 'rebuilds'>): string;
+  /**
+   * The launch of `mint` when `token` is its capability and it has not expired, else null.
+   * Comparison in constant time.
+   */
+  get(mint: string, token: string): PreparedLaunch | null;
+}
+
+/**
+ * Prepared launches by mint, in the memory of one server instance, for `ttlMs`. The capability is
+ * a random 256-bit token handed to the browser that prepared the launch (it already proved the
+ * wallet with a signed message); only its SHA-256 is stored. A miss (another instance, a restart,
+ * an expiry) only means the browser prepares the launch again: nothing depends on this store.
+ */
+export function createPreparedLaunchStore(options: {
+  ttlMs: number;
+  maxEntries?: number;
+  now?: () => number;
+}): PreparedLaunchStore {
+  const now = options.now ?? Date.now;
+  const maxEntries = options.maxEntries ?? 1_000;
+  const entries = new Map<string, { launch: PreparedLaunch; tokenHash: Buffer; expiresAt: number }>();
+  const prune = (t: number) => {
+    for (const [key, entry] of entries) {
+      if (entry.expiresAt > t) break;
+      entries.delete(key);
+    }
+  };
+  return {
+    put(launch) {
+      const t = now();
+      prune(t);
+      const token = randomBytes(32).toString('base64url');
+      const key = launch.mint.publicKey.toBase58();
+      entries.delete(key);
+      entries.set(key, {
+        launch: { ...launch, rebuilds: 0 },
+        tokenHash: createHash('sha256').update(token).digest(),
+        expiresAt: t + options.ttlMs,
+      });
+      while (entries.size > maxEntries) {
+        const first = entries.keys().next().value as string;
+        entries.delete(first);
+      }
+      return token;
+    },
+    get(mint, token) {
+      const t = now();
+      prune(t);
+      const entry = entries.get(mint);
+      if (!entry || entry.expiresAt <= t) return null;
+      const hash = createHash('sha256').update(token).digest();
+      return timingSafeEqual(hash, entry.tokenHash) ? entry.launch : null;
+    },
+  };
 }
