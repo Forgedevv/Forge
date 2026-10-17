@@ -30,7 +30,7 @@ import {
   createOnchainCoinService,
   forgeAppOrigin,
 } from '../../src/forge/data/onchain/service';
-import { dbcPoolAddress } from '../../src/forge/tx/programs';
+import { TOKEN_PROGRAM_ID as TOKEN_PROGRAM, dbcPoolAddress } from '../../src/forge/tx/programs';
 import {
   PYTH_PUBLISH_MS,
   PYTH_SOL_USD_PRICE,
@@ -126,6 +126,46 @@ describe('account decoders', () => {
       PYTH_SOL_USD_PRICE,
       8,
     );
+  });
+
+  it('decode the mint and freeze authorities of real devnet mints', () => {
+    // Devnet, slot 512138531: a FORGE DBC coin (both authorities revoked by the DBC program; the
+    // old key bytes stay behind a `None` tag) and devnet USDC (both authorities set).
+    const dbcCoin = {
+      owner: TOKEN_PROGRAM,
+      data: Buffer.from(
+        'AAAAANpjaB9yhrzIBnGeLCtQogFXJDv8lmixFSC8U4Q+3NsIAIDGpH6NAwAGAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==',
+        'base64',
+      ),
+    };
+    const usdc = {
+      owner: TOKEN_PROGRAM,
+      data: Buffer.from(
+        'AQAAAOuFRM+RGCd6ljLpmVBmZRu/sUCLhXPrwC5T76tavw4LMVMEabU4BuIGAQEAAACoBjP/Bn2I36XUNXv0TibOzM8IZmiBA8a6YJ+kTBjSCA==',
+        'base64',
+      ),
+    };
+    expect(decodeMint(dbcCoin)).toMatchObject({
+      decimals: 6,
+      mintAuthorityDisabled: true,
+      freezeAuthorityDisabled: true,
+    });
+    expect(decodeMint(usdc)).toMatchObject({
+      decimals: 6,
+      mintAuthorityDisabled: false,
+      freezeAuthorityDisabled: false,
+    });
+    // Only one of them set.
+    const mixed = Buffer.from(dbcCoin.data);
+    mixed.writeUInt32LE(1, 46);
+    expect(decodeMint({ owner: TOKEN_PROGRAM, data: mixed })).toMatchObject({
+      mintAuthorityDisabled: true,
+      freezeAuthorityDisabled: false,
+    });
+    // A tag that is neither None nor Some is not a mint.
+    const bad = Buffer.from(dbcCoin.data);
+    bad.writeUInt32LE(2, 0);
+    expect(decodeMint({ owner: TOKEN_PROGRAM, data: bad })).toBeNull();
   });
 
   it('refuse foreign, malformed or stale accounts', () => {
@@ -339,6 +379,13 @@ describe('one coin on-chain', () => {
     expect(user?.pool?.id).toBe(fixture('test1Pool').address);
     expect(user?.pool?.baseAsset.symbol).toBe('MOON');
     expect(user?.description).toBe(`About ${USER_COIN}`);
+    // Mint and freeze authorities come from the mint account; the rest of the audit is unknown.
+    expect(user?.pool?.baseAsset.audit).toEqual({
+      mintAuthorityDisabled: true,
+      freezeAuthorityDisabled: true,
+      topHoldersPercentage: undefined,
+      lpBurnedPercentage: undefined,
+    });
     const pad = await service.coin(LAUNCHPAD_COIN);
     expect(pad?.pool?.id).toBe(fixture('test2Pool').address);
   });
