@@ -23,7 +23,11 @@
  *   clock the way the program does it (a stale `remainingAmount` is never trusted upwards);
  * - the transaction is exactly one `spending_limit_use` instruction of the Squads program, fee
  *   payer and only signer = the bot, accounts = [multisig, bot (signer), spending limit, vault,
- *   bot (destination), System Program], data = the amount, 9 decimals and the fixed memo.
+ *   bot (destination), System Program], data = the amount, 9 decimals and the fixed memo; with a
+ *   priority fee (SIGNER_PRIORITY_FEE_*, jobs/priority.ts), the compute budget pair comes first
+ *   (a unit limit then a unit price, bounded by the setting's cap) and nothing else.
+ * Fee: the bot pays the withdrawal's network fee and priority fee (`maxFeeLamports` at the cap);
+ * the buyback job withdraws them with the orders.
  * Idempotency: a withdrawal is journaled under its idempotency key BEFORE it is sent; a key seen
  * before is never built again (its earlier transaction is settled and reported instead).
  * The instruction itself is built by the official SDK (`@sqds/multisig`, pinned) and re-decoded
@@ -49,10 +53,13 @@ import {
   type SquadsAddresses,
 } from '@forge/core';
 import type { SpendingLimitWithdrawer, WithdrawResult } from './buyback.js';
+import { BASE_FEE_LAMPORTS_PER_SIGNATURE } from './convert.js';
+import { NO_PRIORITY_FEES, signerBudgetInstructions, type PriorityFees } from './priority.js';
 import {
   DEFAULT_RETRY,
   DEFAULT_SETTLE,
   JobError,
+  assertSignerBudgetPair,
   awaitSettlement,
   broadcast,
   checkSettlement,
@@ -95,6 +102,11 @@ export const PERIOD_SECONDS: Readonly<Record<number, bigint | null>> = {
   3: 2_592_000n, // Month (30 days)
 };
 export const PERIOD_DAY = 1;
+/**
+ * Compute unit limit of a withdrawal with a priority fee. Not measured: the runtime's default for
+ * a single instruction, so the limit is never tighter than the same transaction without one.
+ */
+export const SPENDING_LIMIT_USE_COMPUTE_UNITS = 200_000;
 
 const KEY_RE = /^[A-Za-z0-9_-]{1,80}$/;
 
@@ -348,6 +360,11 @@ export interface SpendingLimitUseExpectation {
   vault: PublicKey;
   bot: PublicKey;
   lamports: bigint;
+  /**
+   * Highest priority fee the withdrawal may carry, lamports: the cap of the setting it was priced
+   * with. Default and ceiling: MAX_SIGNER_PRIORITY_FEE_LAMPORTS.
+   */
+  maxPriorityFeeLamports?: bigint;
 }
 
 function policy(rule: string): never {
@@ -355,11 +372,14 @@ function policy(rule: string): never {
 }
 
 /**
- * Withdrawal policy: fee payer and only signer = the bot; exactly one instruction, of the Squads
- * program, `spending_limit_use` on the expected multisig and spending limit, from the expected
- * vault, to the bot, of exactly `lamports` with 9 decimals and the funding memo; the accounts in
- * the SDK's order with the SDK's flags, the four optional token accounts left as the program id
- * placeholders (no token path). Nothing else (no compute budget, no memo program).
+ * Withdrawal policy: fee payer and only signer = the bot; optionally the compute budget pair
+ * first (a unit limit then a unit price, `assertSignerBudgetPair`, priority fee within
+ * `maxPriorityFeeLamports`), then exactly one instruction, of the Squads program,
+ * `spending_limit_use` on the expected multisig and spending limit, from the expected vault, to
+ * the bot, of exactly `lamports` with 9 decimals and the funding memo; the accounts in the SDK's
+ * order with the SDK's flags, the four optional token accounts left as the program id
+ * placeholders (no token path). Nothing else (no other compute budget instruction, no memo
+ * program).
  */
 export function assertSpendingLimitUseTx(
   tx: Transaction,
@@ -372,8 +392,11 @@ export function assertSpendingLimitUseTx(
   for (const s of requiredSigners(tx)) {
     if (!s.equals(expected.bot)) policy('unexpected required signer');
   }
-  if (tx.instructions.length !== 1) policy('exactly one instruction expected');
-  const ix = tx.instructions[0]!;
+  const budget = assertSignerBudgetPair(tx.instructions, expected.maxPriorityFeeLamports);
+  if (tx.instructions.length !== budget + 1) {
+    policy('exactly one instruction expected after the compute budget');
+  }
+  const ix = tx.instructions[budget]!;
   if (!ix.programId.equals(expected.programId)) policy('program not allowed in a withdrawal');
   if (ix.keys.length !== 10) policy('unexpected account count');
   // A SOL use: the four optional token accounts are the program id placeholders of the SDK.
@@ -441,9 +464,13 @@ export interface SquadsWithdrawerDeps {
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
   settle?: Partial<SettleTiming>;
+  /** Priority fee of the withdrawal (SIGNER_PRIORITY_FEE_*, jobs/priority.ts). Default: none. */
+  priorityFees?: PriorityFees;
 }
 
 export interface SquadsWithdrawer extends SpendingLimitWithdrawer {
+  /** The most a withdrawal costs the bot: one signature and the priority fee at its cap. */
+  maxFeeLamports(): bigint;
   /** Current policy-checked state of the spending limit (throws TX_POLICY when it is wrong). */
   readLimit(bot: PublicKey): Promise<{ state: SpendingLimitState; remainingLamports: bigint }>;
   /** Settles a journaled withdrawal (null when the key is unknown). */
@@ -456,6 +483,7 @@ export function createSquadsSpendingLimitWithdrawer(deps: SquadsWithdrawerDeps):
   const sleep = deps.sleep ?? realSleep;
   const now = deps.now ?? Date.now;
   const settleTiming = { ...DEFAULT_SETTLE, ...deps.settle };
+  const priorityFees = deps.priorityFees ?? NO_PRIORITY_FEES;
   const iso = () => new Date(now()).toISOString();
   if (config.vault.equals(config.multisig)) throw new JobError('CONFIG', 'vault equals multisig');
   if (!deriveSquadsVault(config.multisig, config.vaultIndex, config.programId).equals(config.vault)) {
@@ -543,6 +571,13 @@ export function createSquadsSpendingLimitWithdrawer(deps: SquadsWithdrawerDeps):
   return {
     readLimit,
 
+    maxFeeLamports() {
+      return (
+        BASE_FEE_LAMPORTS_PER_SIGNATURE +
+        priorityFees.maxFeeLamports(SPENDING_LIMIT_USE_COMPUTE_UNITS)
+      );
+    },
+
     async settle(idempotencyKey) {
       const entry = await journal.get(idempotencyKey);
       return entry ? settleEntry(entry, false) : null;
@@ -566,7 +601,14 @@ export function createSquadsSpendingLimitWithdrawer(deps: SquadsWithdrawerDeps):
       if (lamports > remainingLamports) {
         return { status: 'refused', reason: 'amount above the remaining spending limit' };
       }
+      // Priced from the recent fees of what it writes (the bot, the spending limit, the vault);
+      // the compute budget comes first.
+      const priorityFee = await priorityFees.quote(
+        [handle.publicKey, config.spendingLimit, config.vault],
+        SPENDING_LIMIT_USE_COMPUTE_UNITS,
+      );
       const tx = new Transaction().add(
+        ...signerBudgetInstructions(priorityFee),
         buildSpendingLimitUseIx({
           multisig: config.multisig,
           spendingLimit: config.spendingLimit,
@@ -589,6 +631,7 @@ export function createSquadsSpendingLimitWithdrawer(deps: SquadsWithdrawerDeps):
         vault: config.vault,
         bot: handle.publicKey,
         lamports,
+        maxPriorityFeeLamports: priorityFees.maxFeeLamports(SPENDING_LIMIT_USE_COMPUTE_UNITS),
       });
       const { raw, signature } = await signWithKeystore(keystore, tx, [
         { ref: handle.ref, expected: handle.publicKey },
@@ -613,7 +656,13 @@ export function createSquadsSpendingLimitWithdrawer(deps: SquadsWithdrawerDeps):
         return { status: 'failed', error: note, signature };
       }
       log.info(
-        { key: idempotencyKey, signature, lamports: lamports.toString() },
+        {
+          key: idempotencyKey,
+          signature,
+          lamports: lamports.toString(),
+          priorityFeeLamports: priorityFee.priorityFeeLamports.toString(),
+          priorityFeeSource: priorityFee.source,
+        },
         'withdrawing from the vault spending limit',
       );
       const sent = await broadcast(rpc, raw, retry);

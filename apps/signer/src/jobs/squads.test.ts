@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import * as multisig from '@sqds/multisig';
 import {
+  ComputeBudgetProgram,
   Keypair,
   PublicKey,
   SYSVAR_CLOCK_PUBKEY,
@@ -11,10 +12,13 @@ import {
   TransactionInstruction,
 } from '@solana/web3.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { checkComputeBudgetInstructions } from '@forge/core';
 import { openKeystore, type Keystore } from '../keystore.js';
+import { createPriorityFees, type PriorityFees } from './priority.js';
 import {
   FUNDING_MEMO,
   SDK_SPENDING_LIMIT_USE_DISCRIMINATOR,
+  SPENDING_LIMIT_USE_COMPUTE_UNITS,
   SPENDING_LIMIT_USE_DISCRIMINATOR,
   SQUADS_PROGRAM_ID,
   SquadsWithdrawalEntry,
@@ -154,6 +158,9 @@ describe('Squads v4 layout', () => {
     expect(() => assertSpendingLimitUseTx(make([ix, memo]), expected)).toThrow(
       /exactly one instruction/,
     );
+    expect(() => assertSpendingLimitUseTx(make([ix, ix]), expected)).toThrow(
+      /exactly one instruction/,
+    );
     const elsewhere = new TransactionInstruction({
       programId: ix.programId,
       keys: ix.keys.map((k, i) => (i === 4 ? { ...k, pubkey: randomAddress() } : k)),
@@ -166,6 +173,101 @@ describe('Squads v4 layout', () => {
       data: ix.data,
     });
     expect(() => assertSpendingLimitUseTx(make([other]), expected)).toThrow(/spending limit/);
+  });
+});
+
+describe('withdrawal policy with a priority fee', () => {
+  const bot = randomAddress();
+  const lamports = 50_000_000n;
+  const ix = buildSpendingLimitUseIx({
+    multisig: MULTISIG,
+    spendingLimit: LIMIT,
+    vaultIndex: 0,
+    bot,
+    lamports,
+  });
+  const expected = {
+    programId: SQUADS_PROGRAM_ID,
+    multisig: MULTISIG,
+    spendingLimit: LIMIT,
+    vault: VAULT,
+    bot,
+    lamports,
+  };
+  const limit = (units = SPENDING_LIMIT_USE_COMPUTE_UNITS) =>
+    ComputeBudgetProgram.setComputeUnitLimit({ units });
+  const price = (microLamports = 500_000) =>
+    ComputeBudgetProgram.setComputeUnitPrice({ microLamports });
+  const make = (instructions: TransactionInstruction[]) => {
+    const tx = new Transaction().add(...instructions);
+    tx.feePayer = bot;
+    tx.recentBlockhash = randomAddress().toBase58();
+    return tx;
+  };
+
+  it('accepts the use alone or after the compute budget pair, within the cap', () => {
+    expect(() => assertSpendingLimitUseTx(make([ix]), expected)).not.toThrow();
+    expect(() =>
+      assertSpendingLimitUseTx(make([ix]), { ...expected, maxPriorityFeeLamports: 0n }),
+    ).not.toThrow();
+    // 200,000 CU at 500,000 micro-lamports: 100,000 lamports.
+    const priced = make([limit(), price(), ix]);
+    expect(() => assertSpendingLimitUseTx(priced, expected)).not.toThrow();
+    expect(() =>
+      assertSpendingLimitUseTx(priced, { ...expected, maxPriorityFeeLamports: 100_000n }),
+    ).not.toThrow();
+    expect(() =>
+      assertSpendingLimitUseTx(priced, { ...expected, maxPriorityFeeLamports: 99_999n }),
+    ).toThrow(/priority fee too high/);
+  });
+
+  it.each<[string, () => TransactionInstruction[], RegExp]>([
+    [
+      'a priority fee above the signer ceiling',
+      () => [limit(1_400_000), price(1_000_000), ix],
+      /priority fee too high/,
+    ],
+    ['a price above the cap per CU', () => [limit(1_000), price(1_000_001), ix], /price too high/],
+    ['a price alone', () => [price(), ix], /pair expected first/],
+    ['a limit alone', () => [limit(), ix], /pair expected first/],
+    ['the price before the limit', () => [price(), limit(), ix], /limit expected first/],
+    ['the pair after the use', () => [ix, limit(), price()], /pair expected first/],
+    ['a duplicated price', () => [limit(), price(), price(), ix], /pair expected first/],
+    ['a second use after the pair', () => [limit(), price(), ix, ix], /exactly one instruction/],
+    [
+      'a memo after the pair',
+      () => [
+        limit(),
+        price(),
+        ix,
+        new TransactionInstruction({
+          programId: MEMO_PROGRAM_ID,
+          keys: [],
+          data: Buffer.from('x'),
+        }),
+      ],
+      /exactly one instruction/,
+    ],
+    [
+      'the use under another program',
+      () => [
+        limit(),
+        price(),
+        new TransactionInstruction({ programId: randomAddress(), keys: ix.keys, data: ix.data }),
+      ],
+      /program not allowed/,
+    ],
+    [
+      'compute budget bytes under another program',
+      () => [
+        limit(),
+        new TransactionInstruction({ programId: randomAddress(), keys: [], data: price().data }),
+        ix,
+      ],
+      /pair expected first/,
+    ],
+  ])('refuses %s', (_name, instructions, error) => {
+    expect(() => assertSpendingLimitUseTx(make(instructions()), expected)).toThrow(error);
   });
 });
 
@@ -323,7 +425,11 @@ describe('createSquadsSpendingLimitWithdrawer', () => {
     await fs.rm(dir, { recursive: true, force: true });
   });
 
-  function harness(over: Partial<SpendingLimitState> = {}, unix = 1_000_000n + 100n) {
+  function harness(
+    over: Partial<SpendingLimitState> = {},
+    unix = 1_000_000n + 100n,
+    priorityFees?: PriorityFees,
+  ) {
     const rpc = new FakeRpc();
     const journal = createMemoryJournal(SquadsWithdrawalEntry);
     const accounts = new Map<string, { owner: PublicKey; data: Buffer }>();
@@ -347,9 +453,65 @@ describe('createSquadsSpendingLimitWithdrawer', () => {
         rpc.height += 1;
       },
       settle: { timeoutMs: 10_000, pollMs: 1_000, rebroadcastMs: 3_000 },
+      ...(priorityFees ? { priorityFees } : {}),
     });
     return { rpc, journal, withdrawer, accounts };
   }
+
+  it('prices the withdrawal from the recent fees of what it writes, budget first', async () => {
+    const reader = {
+      getRecentPrioritizationFees: vi.fn(async () => [{ slot: 1, prioritizationFee: 400_000 }]),
+    };
+    const priorityFees = createPriorityFees(reader);
+    const h = harness({}, 1_000_000n + 100n, priorityFees);
+    // One signature and the cap: 200,000 CU at 1 lamport per CU, at most 0.0005 SOL.
+    expect(h.withdrawer.maxFeeLamports()).toBe(5_000n + 200_000n);
+    const r = await h.withdrawer.withdraw({
+      lamports: 100_000_000n,
+      destination: bot,
+      idempotencyKey: 'buyback-funding-2026-10-17',
+      onBeforeSend: () => undefined,
+    });
+    expect(r.status).toBe('confirmed');
+    const tx = Transaction.from(h.rpc.sent[0]!);
+    expect(tx.instructions.map((ix) => ix.programId.toBase58())).toEqual([
+      ComputeBudgetProgram.programId.toBase58(),
+      ComputeBudgetProgram.programId.toBase58(),
+      SQUADS_PROGRAM_ID.toBase58(),
+    ]);
+    // 200,000 CU at 400,000 micro-lamports: 80,000 lamports.
+    expect(checkComputeBudgetInstructions(tx.instructions)).toEqual({
+      computeUnitLimit: SPENDING_LIMIT_USE_COMPUTE_UNITS,
+      microLamports: 400_000n,
+      priorityFeeLamports: 80_000n,
+    });
+    expect(decodeSpendingLimitUse(Buffer.from(tx.instructions[2]!.data))?.amount).toBe(
+      100_000_000n,
+    );
+    expect(reader.getRecentPrioritizationFees).toHaveBeenCalledWith({
+      lockedWritableAccounts: [bot, LIMIT, VAULT],
+    });
+  });
+
+  it('costs one signature and sends the use alone without priority fees', async () => {
+    const h = harness();
+    expect(h.withdrawer.maxFeeLamports()).toBe(5_000n);
+    const none = createPriorityFees(null, {
+      floorMicroLamports: 0,
+      maxMicroLamports: 0,
+      percentile: 75,
+      maxLamports: 0n,
+    });
+    const off = harness({}, 1_000_000n + 100n, none);
+    expect(off.withdrawer.maxFeeLamports()).toBe(5_000n);
+    await off.withdrawer.withdraw({
+      lamports: 1n,
+      destination: bot,
+      idempotencyKey: 'k-off',
+      onBeforeSend: () => undefined,
+    });
+    expect(Transaction.from(off.rpc.sent[0]!).instructions).toHaveLength(1);
+  });
 
   it('withdraws once per key: policy, journal before the send, confirmed, never twice', async () => {
     const h = harness({ remainingAmount: 500_000_000n });

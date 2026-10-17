@@ -11,13 +11,17 @@
  * Same two collaborators as the Jupiter route:
  * - `quotes.quote`: core `quoteSwap` turned into the Jupiter quote shape the job validates
  *   (`validateBuyQuote`: wrapped SOL in, FORGE_MINT out, ExactIn, slippage and price impact caps);
- * - `quotes.swap`: core `buildBuyTx` pinned to the validated quote's minimum output, serialized;
+ * - `quotes.swap`: core `buildBuyTx` pinned to the validated quote's minimum output, priced with
+ *   the signer's priority fee setting (SIGNER_PRIORITY_FEE_*, jobs/priority.ts) whose cap per
+ *   transaction is lowered to BUYBACK_MAX_PRIORITY_FEE_LAMPORTS (`dbcBuyPrioritySetting`), the
+ *   bound the static check applies, serialized;
  * - `swapPreparer.prepare`: the transaction is re-checked against a static policy of core's own
- *   layout (`checkDbcBuyInstructions`: compute budget, the bot's wrapped SOL and coin ATAs only,
- *   one wrap transfer of exactly the order, one DBC `swap` on the expected pool with exactly the
- *   order and the quote's minimum, one unwrap, the 30 bps platform fee last), simulated with the
- *   job's `checkBuybackSimulation` (the SOL drop bound includes that platform fee) and signed with
- *   the keystore. Never sent from here.
+ *   layout (`checkDbcBuyInstructions`: compute budget (one unit limit and one unit price at most,
+ *   the priority fee within BUYBACK_MAX_PRIORITY_FEE_LAMPORTS), the bot's wrapped SOL and coin
+ *   ATAs only, one wrap transfer of exactly the order, one DBC `swap` on the expected pool with
+ *   exactly the order and the quote's minimum, one unwrap, the 30 bps platform fee last),
+ *   simulated with the job's `checkBuybackSimulation` (the SOL drop bound includes that platform
+ *   fee) and signed with the keystore. Never sent from here.
  */
 import {
   ASSOCIATED_TOKEN_PROGRAM_ID,
@@ -40,6 +44,7 @@ import {
   DynamicBondingCurveIdl,
 } from '@meteora-ag/dynamic-bonding-curve-sdk';
 import {
+  DEFAULT_PRIORITY_FEE_POLICY,
   PLATFORM_FEE_BPS,
   assertCluster,
   buildBuyTx,
@@ -48,6 +53,7 @@ import {
   swapFeeAddresses,
   type BuildBuyTxParams,
   type BuiltSwapTransaction,
+  type PriorityFeeSetting,
   type QuoteSwapParams,
   type SwapQuote,
 } from '@forge/core';
@@ -59,6 +65,7 @@ import {
   type PreparedSwap,
 } from './buyback.js';
 import { WSOL_MINT, type JupiterQuote } from './convert.js';
+import type { PriorityFees } from './priority.js';
 import {
   JobError,
   MAX_COMPUTE_UNIT_LIMIT,
@@ -108,7 +115,10 @@ export interface DbcBuyExpectation {
   inLamports: bigint;
   /** Minimum output the validated quote guarantees (raw $FORGE units). */
   minOutAmount: bigint;
-  /** Highest priority fee the compute budget may imply (lamports). */
+  /**
+   * Highest priority fee the compute budget may imply (lamports). Without a unit limit the price
+   * is counted for MAX_COMPUTE_UNIT_LIMIT, the most the runtime may apply.
+   */
   maxPriorityFeeLamports: bigint;
 }
 
@@ -308,7 +318,7 @@ export function checkDbcBuyInstructions(
   ) {
     return refuse('instruction_order');
   }
-  const limit = BigInt(computeUnitLimit ?? 200_000);
+  const limit = BigInt(computeUnitLimit ?? MAX_COMPUTE_UNIT_LIMIT);
   const price = computeUnitPrice ?? 0n;
   const priorityFee = (limit * price + 999_999n) / 1_000_000n;
   if (priorityFee > expected.maxPriorityFeeLamports) return refuse('priority_fee_too_high');
@@ -322,6 +332,21 @@ export function checkDbcBuyInstructions(
 
 // ---------------------------------------------------------------------------------------
 // Route
+
+/**
+ * The priority setting core prices a devnet buy with: the signer's setting with its cap per
+ * transaction lowered to `maxPriorityFeeLamports` (BUYBACK_MAX_PRIORITY_FEE_LAMPORTS), so the
+ * built transaction always passes `checkDbcBuyInstructions`. Undefined (no price) when priority
+ * fees are off or that cap is 0.
+ */
+export function dbcBuyPrioritySetting(
+  setting: PriorityFeeSetting | undefined,
+  maxPriorityFeeLamports: bigint,
+): PriorityFeeSetting | undefined {
+  if (!setting || maxPriorityFeeLamports <= 0n) return undefined;
+  const cap = setting.maxLamports ?? DEFAULT_PRIORITY_FEE_POLICY.maxLamports;
+  return { ...setting, maxLamports: cap < maxPriorityFeeLamports ? cap : maxPriorityFeeLamports };
+}
 
 /** The core functions the route depends on (injectable for tests). */
 export interface DbcRouteCore {
@@ -341,7 +366,10 @@ export interface DbcDevnetRouteOptions {
   keystore: KeystoreLike;
   /** SOLANA_CLUSTER: anything but devnet is refused. */
   cluster: string | undefined;
+  /** BUYBACK_MAX_PRIORITY_FEE_LAMPORTS: the bound of the buy's priority fee. */
   maxPriorityFeeLamports: bigint;
+  /** The signer's priority fees (SIGNER_PRIORITY_FEE_*): their setting prices the buy. */
+  priorityFees?: Pick<PriorityFees, 'setting'>;
   computeUnitLimit?: number;
   core?: DbcRouteCore;
 }
@@ -358,7 +386,9 @@ export function createDbcDevnetBuybackRoute(o: DbcDevnetRouteOptions): DbcDevnet
     throw new JobError('CONFIG', 'the dbc-devnet buyback route only runs on devnet');
   }
   if (o.pool.equals(o.forgeMint)) throw new JobError('CONFIG', 'pool and mint must differ');
+  if (o.maxPriorityFeeLamports < 0n) throw new JobError('CONFIG', 'negative priority fee cap');
   const core: DbcRouteCore = o.core ?? { quoteSwap, buildBuyTx, assertCluster };
+  const priority = dbcBuyPrioritySetting(o.priorityFees?.setting, o.maxPriorityFeeLamports);
   const { platformFeeWallet, referralTokenAccount } = swapFeeAddresses(o.env);
   const computeUnitLimit = o.computeUnitLimit ?? DEFAULT_DBC_COMPUTE_UNIT_LIMIT;
   let clusterChecked: Promise<void> | null = null;
@@ -412,6 +442,7 @@ export function createDbcDevnetBuybackRoute(o: DbcDevnetRouteOptions): DbcDevnet
         minAmountOut: BigInt(quote.otherAmountThreshold),
         env: o.env,
         computeUnitLimit,
+        ...(priority ? { priority } : {}),
       });
       return {
         swapTransaction: Buffer.from(built.transaction.serialize()).toString('base64'),
