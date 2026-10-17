@@ -21,7 +21,8 @@ export interface TradeFormProps {
    * is no raw pool or mint prop: a handle that was not issued by findLaunchpadPool trades nothing.
    */
   launchpadPool: LaunchpadPool;
-  symbol: string;
+  /** Ticker of the coin; labels stay neutral without one. */
+  symbol?: string;
   /**
    * Decimals from a data API, for display only while the on-chain mint is being read. Raw amounts
    * (sell input, Max) always use the decimals of the on-chain mint.
@@ -70,6 +71,8 @@ export function TradeForm(props: TradeFormProps) {
     quoteRefreshMs,
     confirmOptions,
   } = props;
+  /** Unit of token amounts: the ticker, or a neutral word when the coin data has none. */
+  const tokenUnit = symbol || 'tokens';
 
   const { setShowModal } = useUnifiedWalletContext();
   const execution = useTradeExecution(confirmOptions);
@@ -240,7 +243,11 @@ export function TradeForm(props: TradeFormProps) {
 
       <div className="flex flex-col gap-1.5">
         <label htmlFor="forge-trade-amount" className="text-sm text-[var(--color-text-muted)]">
-          {side === 'buy' ? 'Amount to spend (SOL)' : `Amount to sell (${symbol})`}
+          {side === 'buy'
+            ? 'Amount to spend (SOL)'
+            : symbol
+              ? `Amount to sell (${symbol})`
+              : 'Amount to sell'}
         </label>
         <input
           id="forge-trade-amount"
@@ -294,7 +301,7 @@ export function TradeForm(props: TradeFormProps) {
               Balance:{' '}
               {side === 'buy'
                 ? `${formatUnits(balances.sol, SOL_DECIMALS, 4)} SOL`
-                : `${formatUnits(balances.token, tokenDecimals, 4)} ${symbol}`}
+                : `${formatUnits(balances.token, tokenDecimals, 4)} ${tokenUnit}`}
             </span>
           ) : null}
         </div>
@@ -357,7 +364,7 @@ export function TradeForm(props: TradeFormProps) {
         {quote ? (
           <QuoteSummary
             quote={quote}
-            symbol={symbol}
+            symbol={tokenUnit}
             tokenDecimals={tokenDecimals}
             networkFee={networkFee}
           />
@@ -463,7 +470,7 @@ function buttonState(args: {
   connected: boolean;
   insufficient: boolean;
   side: TradeSide;
-  symbol: string;
+  symbol: string | undefined;
   /** Status of the on-chain mint read, on the sell side only. */
   sellDecimals: 'idle' | 'loading' | 'ready' | 'error' | null;
 }): { label: string; disabled: boolean } {
@@ -484,7 +491,7 @@ function buttonState(args: {
   if (!args.connected) return { label: 'Connect wallet', disabled: false };
   if (args.insufficient) return { label: 'Insufficient balance', disabled: true };
   return {
-    label: args.side === 'buy' ? `Buy ${args.symbol}` : `Sell ${args.symbol}`,
+    label: `${args.side === 'buy' ? 'Buy' : 'Sell'}${args.symbol ? ` ${args.symbol}` : ''}`,
     disabled: false,
   };
 }

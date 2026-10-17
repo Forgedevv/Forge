@@ -162,6 +162,15 @@ describe('fee shown before signing', () => {
     expect(connection.sendRawTransaction).not.toHaveBeenCalled();
   });
 
+  it('never shows a placeholder ticker when the coin data has no symbol', async () => {
+    renderPanel({ symbol: undefined });
+    await readyToTrade('0.1', /^Buy$/);
+    expect(document.body.textContent).not.toContain('TOKEN');
+    expect(
+      within(screen.getByTestId('quote-summary')).getByTestId('quote-row-out').textContent,
+    ).toContain('tokens');
+  });
+
   it('shows the quote even when no wallet is connected, then asks to connect', async () => {
     wallet.publicKey = null;
     wallet.signTransaction = null;
