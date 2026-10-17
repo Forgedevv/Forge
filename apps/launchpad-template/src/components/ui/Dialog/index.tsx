@@ -113,7 +113,7 @@ const DialogSubmitButton: React.FC<React.ComponentProps<'button'>> = ({ classNam
   return (
     <button
       className={cn(
-        'w-full rounded-lg bg-primary py-2.5 text-base font-semibold text-neutral-950',
+        'w-full rounded-lg bg-primary py-2.5 text-base font-semibold text-primary-950',
         'enabled:hover:bg-primary-300',
         'disabled:opacity-50',
         className,

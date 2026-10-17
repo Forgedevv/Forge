@@ -27,7 +27,8 @@ export function BuyButton({
   const stop = (event: MouseEvent) => {
     event.stopPropagation();
   };
-  const buttonClass = `rounded-[var(--radius)] bg-[var(--color-primary,#7c3aed)] px-3 py-1 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50 ${className ?? ''}`;
+  // Theme tokens only: `primary-950` is the readable text colour on the brand colour.
+  const buttonClass = `rounded-[var(--radius)] bg-primary px-3 py-1 text-xs font-semibold text-primary-950 enabled:hover:bg-primary-300 disabled:cursor-not-allowed disabled:opacity-50 touch:min-h-[2.5rem] touch:px-4 touch:text-sm ${className ?? ''}`;
 
   if (!live) {
     return (

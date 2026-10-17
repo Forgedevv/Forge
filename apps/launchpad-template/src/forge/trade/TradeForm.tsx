@@ -44,6 +44,16 @@ const SLIPPAGE_PRESETS = ['0.5', '1', '3'];
 
 const TEXT = TRADE_TEXT.form;
 
+/*
+ * Colours are theme tokens only: `primary` is the brand colour and `primary-950` the readable text
+ * on it (dark or white, from its luminance), so light brands (yellow, lime) stay legible. Small
+ * controls stay compact on desktop and grow to a 40px tap target on touch screens and phones
+ * (`touch:` variant, tailwind.config.js).
+ */
+const chipClass =
+  'inline-flex items-center justify-center rounded-[var(--radius)] border px-2 py-1 text-xs touch:min-h-[2.5rem] touch:min-w-[2.75rem] touch:px-3 touch:text-sm';
+const textButtonClass = 'self-start underline touch:min-h-[2.5rem]';
+
 function safeKey(value: string): PublicKey | null {
   try {
     return new PublicKey(value);
@@ -224,9 +234,9 @@ export function TradeForm(props: TradeFormProps) {
             aria-selected={side === tab}
             disabled={busy}
             onClick={() => changeSide(tab)}
-            className={`rounded-[var(--radius)] px-3 py-2 text-sm font-semibold transition-colors ${
+            className={`min-h-[2.5rem] rounded-[var(--radius)] px-3 py-2 text-sm font-semibold transition-colors touch:min-h-[2.75rem] ${
               side === tab
-                ? 'bg-[var(--color-primary,#7c3aed)] text-white'
+                ? 'bg-primary text-primary-950'
                 : 'bg-transparent text-[var(--color-text-muted)] hover:text-[var(--color-text)]'
             }`}
           >
@@ -249,7 +259,7 @@ export function TradeForm(props: TradeFormProps) {
           onChange={(event) => editAmount(event.target.value)}
           aria-invalid={amountError !== null}
           aria-describedby={amountError ? 'forge-trade-amount-error' : undefined}
-          className="w-full rounded-[var(--radius)] border border-[var(--color-border)] bg-transparent p-3 text-base text-[var(--color-text)] focus:outline-none focus:ring-1 focus:ring-[var(--color-primary,#7c3aed)]"
+          className="w-full rounded-[var(--radius)] border border-[var(--color-border)] bg-transparent p-3 text-base text-[var(--color-text)] focus:outline-none focus:ring-1 focus:ring-primary"
         />
         {amountError ? (
           <p
@@ -268,7 +278,7 @@ export function TradeForm(props: TradeFormProps) {
                   type="button"
                   disabled={busy}
                   onClick={() => editAmount(preset)}
-                  className="rounded-[var(--radius)] border border-[var(--color-border)] px-2 py-1 text-xs text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
+                  className={`${chipClass} border-[var(--color-border)] text-[var(--color-text-muted)] hover:text-[var(--color-text)]`}
                 >
                   {TEXT.presetSol(preset)}
                 </button>
@@ -281,7 +291,7 @@ export function TradeForm(props: TradeFormProps) {
               onClick={() =>
                 editAmount(formatUnits(balances.token, chainDecimals).replace(/,/g, ''))
               }
-              className="rounded-[var(--radius)] border border-[var(--color-border)] px-2 py-1 text-xs text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
+              className={`${chipClass} border-[var(--color-border)] text-[var(--color-text-muted)] hover:text-[var(--color-text)]`}
             >
               {TEXT.max}
             </button>
@@ -298,7 +308,7 @@ export function TradeForm(props: TradeFormProps) {
         {side === 'sell' && mintDecimals.status === 'error' ? (
           <div role="alert" className="flex flex-col gap-1 text-xs" data-testid="mint-error">
             <p className="text-[var(--color-danger)]">{mintDecimals.error}</p>
-            <button type="button" onClick={retryMintDecimals} className="self-start underline">
+            <button type="button" onClick={retryMintDecimals} className={textButtonClass}>
               {TEXT.retry}
             </button>
           </div>
@@ -315,9 +325,9 @@ export function TradeForm(props: TradeFormProps) {
               disabled={busy}
               aria-pressed={slippageText === preset}
               onClick={() => setSlippageText(preset)}
-              className={`rounded-[var(--radius)] border px-2 py-1 text-xs ${
+              className={`${chipClass} ${
                 slippageText === preset
-                  ? 'border-[var(--color-primary,#7c3aed)] text-[var(--color-text)]'
+                  ? 'border-primary text-[var(--color-text)]'
                   : 'border-[var(--color-border)] text-[var(--color-text-muted)]'
               }`}
             >
@@ -335,7 +345,7 @@ export function TradeForm(props: TradeFormProps) {
             disabled={busy}
             onChange={(event) => setSlippageText(event.target.value)}
             aria-invalid={slippageError !== null}
-            className="w-20 rounded-[var(--radius)] border border-[var(--color-border)] bg-transparent px-2 py-1 text-xs text-[var(--color-text)]"
+            className="w-20 rounded-[var(--radius)] border border-[var(--color-border)] bg-transparent px-2 py-1 text-xs text-[var(--color-text)] focus:outline-none focus:ring-1 focus:ring-primary touch:min-h-[2.5rem] touch:text-base"
           />
           <span className="text-xs text-[var(--color-text-muted)]">{TEXT.percent}</span>
         </div>
@@ -409,7 +419,7 @@ export function TradeForm(props: TradeFormProps) {
         onClick={submit}
         disabled={button.disabled}
         data-testid="trade-submit"
-        className="w-full rounded-[var(--radius)] bg-[var(--color-primary,#7c3aed)] px-4 py-3 text-sm font-semibold text-white transition-opacity disabled:cursor-not-allowed disabled:opacity-50"
+        className="min-h-[2.75rem] w-full rounded-[var(--radius)] bg-primary px-4 py-3 text-sm font-semibold text-primary-950 transition-[background-color,opacity] enabled:hover:bg-primary-300 disabled:cursor-not-allowed disabled:opacity-50"
       >
         {button.label}
       </button>

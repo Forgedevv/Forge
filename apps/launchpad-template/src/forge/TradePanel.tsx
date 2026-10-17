@@ -96,7 +96,7 @@ function LiveTradePanel(props: TradePanelProps) {
   const routeError = (message: string, onRetry: () => void) => (
     <div role="alert" className="flex flex-col gap-2 text-sm" data-testid="trade-route-error">
       <p className="text-[var(--color-danger)]">{message}</p>
-      <button type="button" onClick={onRetry} className="self-start underline">
+      <button type="button" onClick={onRetry} className="self-start underline touch:min-h-[2.5rem]">
         {TEXT.retry}
       </button>
     </div>
