@@ -12,7 +12,7 @@ Everything below was verified by reading the code of the `@meteora-ag/dynamic-bo
 | Swap | `swap(params)` / `swap2(params)` | `referralTokenAccount` = our referral account |
 | Claim the creator share | `claimCreatorTradingFeeToReceiver` / `claimCreatorTradingFee2` | `receiver` = multisig |
 | Claim the partner share | `claimPartnerTradingFeeToReceiver` / `claimPartnerTradingFee2` | signed by the client |
-| List a config's coins | `getPoolsByConfig(config)` | plan B if the Jupiter data goes down |
+| List a config's coins | `getPoolsByConfig(config)` | on-chain fallback of the coin list (core `listPoolStatesOfConfig`, template `/api/coins`), see "The fun-launch template" below |
 | Fee metrics | `getPoolFeeMetrics`, `getPoolFeeBreakdown`, `getPoolsFeesByConfig` | for the dashboard |
 | Curve progress | `getPoolQuoteTokenCurveProgress` | to know whether a coin has graduated |
 | Transfer the creator role | `transferPoolCreator` | **danger**: see SECURITY.md, mandatory alert |
@@ -75,10 +75,17 @@ Our own (stricter) bounds are in `INTERFACES.md`, section 1.
 ## The fun-launch template (as found in the code)
 
 - Trading: **Jupiter plugin** (`plugin.jup.ag`), with `referralAccount` / `referralFee` available in its types.
-- Data (coin list, price, transactions, holders): `https://datapi.jup.ag` and the `wss://trench-stream.jup.ag/ws` stream, filtered by `NEXT_PUBLIC_POOL_CONFIG_KEY`. **API not publicly documented**: plan an on-chain plan B with `getPoolsByConfig`.
+- Data (coin list, price, transactions, holders): `https://datapi.jup.ag` and the `wss://trench-stream.jup.ag/ws` stream, filtered by `NEXT_PUBLIC_POOL_CONFIG_KEY`. **API not publicly documented** (no docs, no SLA, no key).
+- **On-chain fallback (FORGE template, `src/forge/data/`)**: Jupiter stays the primary source on mainnet. When the data API fails, times out (6 s) or returns nothing, and always on devnet, the coin lists, coin info and descriptions come from the site's own `GET /api/coins` route, which reads the chain through the FORGE RPC relay with the site's server token:
+  - coin list: one `getPoolsByConfig` scan of the users config (core `listPoolStatesOfConfig`; the relay accepts this `getProgramAccounts` shape, discriminator at 0 and config at 72, for server tokens only, 30 units), plus the launchpad coin's own pool read directly (the launchpad coin config is open to anyone and is never scanned). Look-alikes are dropped (`isListedLaunchpadCoin`). Lists: trading coins newest first, trading coins from 10% curve progress, completed curves; 30 coins each;
+  - per coin: price from the pool `sqrtPrice` (core `poolSpotPrice`), market cap from the mint supply, USD through the Pyth SOL/USD account (`7UVimffxr9ow1uXYxsr4LHAcV58mLzhmwaeKvJ1pjLiE`, mainnet and devnet), curve progress and graduation from core, creation time from the activation point, name and symbol from the Metaplex metadata, image and description from the metadata JSON when it is on the site storage (`R2_PUBLIC_URL`, no other host is fetched);
+  - caching: lists 15 s, one coin 10 s (CDN `s-maxage` as well), stale for up to 5 min on read errors, single-flight, small read budgets; a 30 s cooldown skips the data API after an outage;
+  - not available on-chain: chart candles, holders, transactions, volumes and price changes. The chart, holders and transactions tabs show a "temporarily unavailable" state; trading through the FORGE panel never depends on the data API;
+  - live updates: when the trench stream cannot be reached (2 failed connections), and always on devnet, the coin lists and coin info are polled every 15 s while the tab is visible.
+  - Limit: the scan answer holds every pool of the config (about 750 bytes each); the relay caps a response at 1 MiB, so a config past roughly 1,300 pools cannot be listed on-chain (the route then answers 503 and the market shows its error state).
 - Coin creation: server routes `/api/upload` (image + metadata on Cloudflare R2) and `/api/send-transaction`. The RPC key stays server-side.
 - Variables: `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_ACCOUNT_ID`, `R2_BUCKET`, `RPC_URL`, `POOL_CONFIG_KEY`.
-- **Jupiter does not index devnet**: the interface can only be tested on mainnet.
+- **Jupiter does not index devnet**: on devnet the FORGE template reads its coin data on-chain only (see above); charts, holders and transactions can only be tested on mainnet.
 
 ## Jupiter
 
