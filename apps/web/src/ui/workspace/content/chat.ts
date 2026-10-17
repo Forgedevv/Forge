@@ -18,7 +18,7 @@ export const chatCopy = {
   confirming: 'Confirming your blueprint…',
   edit: 'Ask for a change in the conversation before confirming.',
   ready: 'Your blueprint is ready',
-  readyHint: 'Check it on the right, then confirm. You can still ask for a change below.',
+  readyHint: 'Check your blueprint, then confirm. You can still ask for a change below.',
   incomplete: 'A few details are still missing',
   limited: 'Slow down a bit. You have reached the message limit. Please try again shortly.',
   locked: 'On-chain settings are final. Trading fees, shares, and fee recipients cannot change.',
