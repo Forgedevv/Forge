@@ -1,5 +1,5 @@
 import { useUnifiedWalletContext, useWallet } from '@jup-ag/wallet-adapter';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { siteConfig } from './config';
 import { JUPITER_REFERRAL_FEE_BPS } from './trade/constants';
@@ -17,17 +17,43 @@ const PLUGIN_CONTAINER_ID = 'jupiter-plugin';
 const PLUGIN_HEIGHT = 568;
 const PLUGIN_SCRIPT_ID = 'jupiter-plugin-script';
 const PLUGIN_SCRIPT_URL = 'https://plugin.jup.ag/plugin-v1.js';
+/** How long the plugin may take to load before the fallback (retry, jup.ag link) is shown. */
+const PLUGIN_LOAD_TIMEOUT_MS = 15_000;
+const PLUGIN_POLL_MS = 250;
 
-/** Loads the Jupiter Plugin script once (kept here so no free zone injects external scripts). */
-function ensurePluginScript() {
-  if (typeof document === 'undefined' || document.getElementById(PLUGIN_SCRIPT_ID)) {
-    return;
+/** The coin's page on jup.ag (fallback when the plugin cannot load); the mint is encoded. */
+export function jupiterCoinUrl(mint: string): string {
+  return `https://jup.ag/tokens/${encodeURIComponent(mint)}`;
+}
+
+const pluginReady = () =>
+  typeof window !== 'undefined' && typeof window.Jupiter?.init === 'function';
+
+/**
+ * Loads the Jupiter Plugin script once (kept here so no free zone injects external scripts) and
+ * reports a load error. A script that already failed is replaced, so a retry loads it again.
+ */
+function ensurePluginScript(onError: () => void): () => void {
+  if (typeof document === 'undefined') return () => {};
+  let script = document.getElementById(PLUGIN_SCRIPT_ID) as HTMLScriptElement | null;
+  if (script?.dataset.failed === 'true') {
+    script.remove();
+    script = null;
   }
-  const script = document.createElement('script');
-  script.id = PLUGIN_SCRIPT_ID;
-  script.src = PLUGIN_SCRIPT_URL;
-  script.async = true;
-  document.head.appendChild(script);
+  if (!script) {
+    const created = document.createElement('script');
+    created.id = PLUGIN_SCRIPT_ID;
+    created.src = PLUGIN_SCRIPT_URL;
+    created.async = true;
+    created.addEventListener('error', () => {
+      created.dataset.failed = 'true';
+    });
+    document.head.appendChild(created);
+    script = created;
+  }
+  const current = script;
+  current.addEventListener('error', onError);
+  return () => current.removeEventListener('error', onError);
 }
 
 export interface JupiterTradeProps {
@@ -37,6 +63,8 @@ export interface JupiterTradeProps {
    * object, another launchpad's coin, a look-alike on the launchpad coin config) opens nothing.
    */
   launchpadPool: LaunchpadPool;
+  /** Load timeout of the plugin script, mostly for tests. */
+  loadTimeoutMs?: number;
 }
 
 /**
@@ -51,12 +79,15 @@ export interface JupiterTradeProps {
  *   plugin is NOT loaded: the platform fee would be lost silently, so the widget fails closed.
  * - The referral fee must be one Jupiter accepts (50 to 255 bps, `resolveJupiterReferralFee`):
  *   Jupiter refuses every swap with any other fee, so the widget fails closed the same way.
+ * - The plugin script must load within `PLUGIN_LOAD_TIMEOUT_MS`; on a timeout or a script error
+ *   (blocked by the browser, the network or an extension) a fallback offers a retry and a plain
+ *   link to the coin on jup.ag, instead of a loader that never ends.
  * - Jupiter does not index devnet: this can only be exercised on mainnet.
  *
  * @see https://dev.jup.ag/docs/tool-kits/plugin
  * @see https://github.com/jup-ag/plugin
  */
-export function JupiterTrade({ launchpadPool }: JupiterTradeProps) {
+export function JupiterTrade({ launchpadPool, loadTimeoutMs }: JupiterTradeProps) {
   if (siteConfig.mode !== 'live') return null;
   if (!isLaunchpadPool(launchpadPool)) {
     return (
@@ -83,40 +114,65 @@ export function JupiterTrade({ launchpadPool }: JupiterTradeProps) {
       </div>
     );
   }
-  return <JupiterPlugin mint={mint} referralAccount={referralAccount} referralFee={referralFee} />;
+  return (
+    <JupiterPlugin
+      mint={mint}
+      referralAccount={referralAccount}
+      referralFee={referralFee}
+      loadTimeoutMs={loadTimeoutMs ?? PLUGIN_LOAD_TIMEOUT_MS}
+    />
+  );
 }
 
 function JupiterPlugin({
   mint,
   referralAccount,
   referralFee,
+  loadTimeoutMs,
 }: {
   mint: string;
   referralAccount: string;
   referralFee: number;
+  loadTimeoutMs: number;
 }) {
   const walletContext = useWallet();
   const { setShowModal } = useUnifiedWalletContext();
 
-  const [isReady, setIsReady] = useState(false);
+  const [load, setLoad] = useState<'loading' | 'ready' | 'failed'>('loading');
+  const [attempt, setAttempt] = useState(0);
+  const isReady = load === 'ready';
+  const retry = useCallback(() => {
+    setLoad('loading');
+    setAttempt((n) => n + 1);
+  }, []);
 
-  // The plugin script is injected on mount, so poll until it is available
+  // The plugin script is injected on mount, so poll until it is available, within a time limit.
   useEffect(() => {
-    ensurePluginScript();
-    if (typeof window.Jupiter?.init === 'function') {
-      setIsReady(true);
+    if (pluginReady()) {
+      setLoad('ready');
       return;
     }
-
+    let settled = false;
+    const finish = (next: 'ready' | 'failed') => {
+      if (settled) return;
+      settled = true;
+      clearInterval(intervalId);
+      clearTimeout(timeoutId);
+      setLoad(next);
+    };
+    const stopListening = ensurePluginScript(() => finish('failed'));
     const intervalId = setInterval(() => {
-      if (typeof window.Jupiter?.init === 'function') {
-        setIsReady(true);
-        clearInterval(intervalId);
-      }
-    }, 250);
+      if (pluginReady()) finish('ready');
+    }, PLUGIN_POLL_MS);
+    const timeoutId = setTimeout(() => finish(pluginReady() ? 'ready' : 'failed'), loadTimeoutMs);
 
-    return () => clearInterval(intervalId);
-  }, []);
+    return () => {
+      settled = true;
+      clearInterval(intervalId);
+      clearTimeout(timeoutId);
+      stopListening();
+    };
+  }, [attempt, loadTimeoutMs]);
 
   // (Re-)initialize the plugin when it is ready or the token changes
   useEffect(() => {
@@ -159,6 +215,36 @@ function JupiterPlugin({
       passthroughWalletContextState: walletContext,
     });
   }, [isReady, walletContext]);
+
+  if (load === 'failed') {
+    return (
+      <div
+        role="alert"
+        className="flex flex-col gap-3 rounded-[var(--radius)] border border-[var(--color-border)] p-4 text-sm"
+        data-testid="jupiter-load-failed"
+      >
+        <p className="font-semibold text-[var(--color-text)]">{TRADE_TEXT.jupiter.failedTitle}</p>
+        <p className="text-[var(--color-text-muted)]">{TRADE_TEXT.jupiter.failedBody}</p>
+        <div className="flex flex-wrap items-center gap-3">
+          <button
+            type="button"
+            onClick={retry}
+            className="inline-flex min-h-[2.5rem] items-center justify-center rounded-[var(--radius)] bg-primary px-4 text-sm font-semibold text-primary-950 transition-colors hover:bg-primary-300"
+          >
+            {TRADE_TEXT.jupiter.retry}
+          </button>
+          <a
+            href={jupiterCoinUrl(mint)}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex min-h-[2.5rem] items-center text-[var(--color-text)] underline underline-offset-4 hover:text-primary"
+          >
+            {TRADE_TEXT.jupiter.openOnJupiter}
+          </a>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex h-full w-full flex-col">
