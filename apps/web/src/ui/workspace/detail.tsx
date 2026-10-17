@@ -46,7 +46,7 @@ export function DetailScreen({ launchpadId }: { launchpadId: string }) {
           {signupsPaused ? common.paused : copy.refunded}
         </p>
       )}
-      {next.kind === 'on_hold' && <StartAgainHold reason={next.reason} />}
+      {next.kind === 'on_hold' && <StartAgainHold reason={next.reason} reference={launchpad.id} />}
       {restart.error && <ErrorNotice message={restart.error} />}
       <div className="fw-detail-grid">
         <Card>
@@ -96,7 +96,7 @@ export function DetailScreen({ launchpadId }: { launchpadId: string }) {
                       <p>{version.request ?? copy.original}</p>
                       {safeUrl(version.previewUrl) && (
                         <Link href={safeUrl(version.previewUrl)!} target="_blank" rel="noreferrer">
-                          {copy.preview} ↗
+                          {copy.preview} <span aria-hidden="true">↗</span>
                         </Link>
                       )}
                     </div>
@@ -118,7 +118,9 @@ export function DetailScreen({ launchpadId }: { launchpadId: string }) {
                       <p>
                         {new Date(job.createdAt).toLocaleDateString('en-GB', { timeZone: 'UTC' })}
                       </p>
-                      <Link href={`/jobs/${job.id}`}>{copy.openJob} ↗</Link>
+                      <Link href={`/jobs/${job.id}`}>
+                        {copy.openJob} <span aria-hidden="true">→</span>
+                      </Link>
                     </div>
                   </li>
                 ))}

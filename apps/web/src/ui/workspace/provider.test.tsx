@@ -307,8 +307,11 @@ it('shows a failed real access check and unlocks only after a successful retry',
   expect(screen.queryByText('Access-controlled chat')).not.toBeInTheDocument();
   accessReady = true;
   fireEvent.click(screen.getByRole('button', { name: common.retry }));
-  fireEvent.click(await screen.findByRole('button', { name: new RegExp(gatingCopy.continue) }));
-  expect(screen.getByText('Access-controlled chat')).toBeInTheDocument();
+  // The check is disabled before $FORGE launches: straight to the chat, no "Continue".
+  expect(await screen.findByText('Access-controlled chat')).toBeInTheDocument();
+  expect(
+    screen.queryByRole('button', { name: new RegExp(gatingCopy.continue) }),
+  ).not.toBeInTheDocument();
 });
 
 it('retains dialog focus when successful authentication replaces the login controls', async () => {

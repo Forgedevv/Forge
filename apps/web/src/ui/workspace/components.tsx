@@ -21,6 +21,9 @@ import { useWebClient, useWorkspace } from './provider';
 import { common } from './content/common';
 import { jobCopy } from './content/job';
 import { Muse, type MuseMood } from '../muse';
+import { SupportLinks } from './support';
+import { errorDetail, readableError } from './errors';
+import { errorCopy } from './content/errors';
 
 export function Button({
   variant = 'primary',
@@ -31,6 +34,10 @@ export function Button({
     <button type="button" className={`fw-button fw-button-${variant} ${className}`} {...props} />
   );
 }
+/** A link to another site (opened in a new tab, marked ↗); anything else stays in the app. */
+export function isExternalHref(href: string): boolean {
+  return /^(https?:)?\/\//i.test(href);
+}
 export function ActionLink({
   href,
   children,
@@ -40,10 +47,17 @@ export function ActionLink({
   children: ReactNode;
   secondary?: boolean;
 }) {
-  return (
-    <Link className={`fw-button fw-button-${secondary ? 'secondary' : 'primary'}`} href={href}>
+  const className = `fw-button fw-button-${secondary ? 'secondary' : 'primary'}`;
+  // ↗ only for another site; an action inside the workshop gets a plain arrow.
+  return isExternalHref(href) ? (
+    <a className={className} href={href} target="_blank" rel="noopener noreferrer">
       {children}
       <span aria-hidden="true">↗</span>
+    </a>
+  ) : (
+    <Link className={className} href={href}>
+      {children}
+      <span aria-hidden="true">→</span>
     </Link>
   );
 }
@@ -77,17 +91,51 @@ export function Loading({ label = common.loading }: { label?: string }) {
     </div>
   );
 }
-export function ErrorNotice({ message, onRetry }: { message: string; onRetry?: () => void }) {
+/** The technical side of a failure, collapsed: for support, never in the message itself. */
+export function ErrorDetails({
+  detail,
+  reference,
+}: {
+  detail?: string | null;
+  reference?: string | null;
+}) {
+  if (!detail && !reference) return null;
+  return (
+    <details className="fw-error-details">
+      <summary>{errorCopy.details}</summary>
+      {reference && (
+        <p>
+          {errorCopy.reference}: <code>{reference}</code>
+        </p>
+      )}
+      {detail && <code className="fw-wrap">{detail}</code>}
+    </details>
+  );
+}
+export function ErrorNotice({
+  message,
+  onRetry,
+  reference,
+  detail,
+}: {
+  message: string;
+  onRetry?: () => void;
+  /** The id the team needs to help (a job or launchpad id), quoted in the support message. */
+  reference?: string | null;
+  /** Technical detail of the failure, shown collapsed for support. */
+  detail?: string | null;
+}) {
   return (
     <div className="fw-notice fw-notice-error" role="alert">
       <p>{message}</p>
+      <ErrorDetails detail={detail} reference={reference} />
       <div className="fw-actions">
         {onRetry && (
           <Button variant="secondary" onClick={onRetry}>
             {common.retry}
           </Button>
         )}
-        <Link href="/faq">{common.support} ↗</Link>
+        <SupportLinks reference={reference} />
       </div>
     </div>
   );
@@ -186,7 +234,7 @@ export function TransactionState({ phase, result }: { phase: TxPhase; result?: T
       {phase === 'error' && <ErrorNotice message={result?.error ?? common.txError} />}
       {phase === 'confirmed' && result?.signature && (
         <Link href={api.explorerTxUrl(result.signature)} target="_blank" rel="noreferrer">
-          {common.receipt} ↗
+          {common.receipt} <span aria-hidden="true">↗</span>
         </Link>
       )}
     </div>
@@ -447,7 +495,7 @@ export function ClaimButton({
               </span>
               {entry.signature && (
                 <Link href={api.explorerTxUrl(entry.signature)} target="_blank" rel="noreferrer">
-                  {common.receipt} ↗
+                  {common.receipt} <span aria-hidden="true">↗</span>
                 </Link>
               )}
             </li>
@@ -459,9 +507,7 @@ export function ClaimButton({
     </div>
   );
 }
-export function readableError(error: unknown) {
-  return error instanceof Error ? error.message : common.error;
-}
+export { describeError, readableError, type FriendlyError } from './errors';
 export class ScreenBoundary extends Component<
   { children: ReactNode; onRetry(): void },
   { error: Error | null }
@@ -471,9 +517,11 @@ export class ScreenBoundary extends Component<
     return { error };
   }
   render() {
+    // A crash is a bug: a stable message, the error itself only in the details.
     return this.state.error ? (
       <ErrorNotice
-        message={this.state.error.message}
+        message={errorCopy.crash}
+        detail={errorDetail(this.state.error)}
         onRetry={() => {
           this.props.onRetry();
           this.setState({ error: null });

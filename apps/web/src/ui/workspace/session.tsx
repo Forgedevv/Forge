@@ -6,6 +6,8 @@ import { useWebClient, useWorkspace } from './provider';
 import { Address, Button, ErrorNotice, readableError } from './components';
 import { sessionCopy as copy } from './content/session';
 import { common } from './content/common';
+import { supportCopy } from './content/support';
+import { SupportLinks } from './support';
 import { Muse } from '../muse';
 import { MuseHero } from './muse-hero';
 
@@ -32,7 +34,8 @@ export function BetaNotice({ onSwitch }: { onSwitch(): void | Promise<void> }) {
         >
           {copy.betaSwitch}
         </Button>
-        <Link href="/faq">{copy.betaHelp} ↗</Link>
+        <Link href="/faq#invite">{copy.betaHelp}</Link>
+        <SupportLinks subject={supportCopy.inviteSubject} fallback={false} />
       </div>
     </section>
   );
@@ -87,7 +90,7 @@ export function LoginPanel({ initialMessage = '' }: { initialMessage?: string })
         <>
           <Address value={session.wallet} />
           <Link className="fw-button fw-button-primary" href="/dashboard" onClick={closeLogin}>
-            {copy.continue} ↗
+            {copy.continue} <span aria-hidden="true">→</span>
           </Link>
         </>
       ) : (
@@ -103,7 +106,6 @@ export function LoginPanel({ initialMessage = '' }: { initialMessage?: string })
                 >
                   <span className="fw-wallet-icon">{i === 0 ? '◕' : '▣'}</span>
                   {wallet}
-                  <span>↗</span>
                 </Button>
               ))}
             </div>

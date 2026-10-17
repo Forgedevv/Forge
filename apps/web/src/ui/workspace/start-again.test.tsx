@@ -151,7 +151,10 @@ describe('dashboard', () => {
     expect(startAgain()).not.toBeInTheDocument();
     const notice = screen.getByRole('status');
     expect(notice).toHaveTextContent(common.startAgainBlocked.needs_support);
-    expect(within(notice).getByRole('link', { name: /Open help/ })).toHaveAttribute('href', '/faq');
+    expect(within(notice).getByRole('link', { name: 'Get help' })).toHaveAttribute(
+      'href',
+      '/faq#support',
+    );
   });
 
   it('reloads after a refusal, so the reason replaces the button', async () => {

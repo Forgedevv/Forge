@@ -325,7 +325,7 @@
   color: var(--fw-accent-text);
   background: transparent;
   padding: 6px 8px;
-  min-height: 36px;
+  min-height: 40px;
 }
 .fw-button-primary:not(:disabled):hover {
   filter: brightness(1.08);
@@ -833,6 +833,7 @@
   list-style: none;
   max-height: 510px;
   overflow-y: auto;
+  overscroll-behavior: contain;
   scrollbar-width: thin;
 }
 .fw-event-log li {
@@ -861,14 +862,72 @@
   margin: 6px 0 0;
   line-height: 1.65;
 }
-.fw-preview-frame {
-  display: block;
-  background: var(--fw-bg);
+/* The preview opens in its own tab: a large card stands where a frame would be. */
+.fw-preview-card {
+  margin: 20px 0 6px;
   border: 1px solid var(--fw-border);
-  border-radius: 12px;
-  width: 100%;
-  height: 330px;
-  margin: 20px 0 14px;
+  border-radius: 16px;
+  background: var(--fw-bg);
+  overflow: hidden;
+}
+.fw-preview-window {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--fw-border);
+  background: var(--fw-raised);
+}
+.fw-preview-dots {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.fw-preview-dots i {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  border: 1px solid var(--fw-border);
+}
+.fw-preview-host {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 6px 12px;
+  border: 1px solid var(--fw-border);
+  border-radius: 999px;
+  color: var(--fw-muted);
+  font:
+    11px/1.4 'Courier New',
+    monospace;
+}
+.fw-preview-body {
+  display: grid;
+  justify-items: start;
+  gap: 16px;
+  padding: clamp(24px, 5vw, 56px) clamp(20px, 4vw, 40px);
+  min-height: clamp(220px, 32vw, 360px);
+  align-content: center;
+  background:
+    radial-gradient(ellipse at 85% 0%, var(--fw-glow), transparent 55%), var(--fw-surface);
+}
+.fw-preview-body > p:first-child {
+  margin: 0;
+  max-width: 40ch;
+  color: var(--fw-text);
+  font-size: clamp(17px, 2vw, 22px);
+  line-height: 1.5;
+}
+.fw-preview-devices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.fw-preview-body .fw-caption {
+  margin: 0;
 }
 .fw-job-stage > .fw-button {
   margin-top: 20px;
@@ -1048,7 +1107,7 @@
   scrollbar-width: thin;
 }
 .fw-pad-filters button {
-  min-height: 38px;
+  min-height: 40px;
   padding: 7px 12px;
   flex: 0 0 auto;
   display: inline-flex;
@@ -2142,7 +2201,7 @@
   padding: 12px;
 }
 .fw-pad-card .fw-notice .fw-button {
-  min-height: 36px;
+  min-height: 40px;
 }
 .fw-pad-card .fw-current-job {
   margin: 0 18px 12px;
@@ -2160,7 +2219,7 @@
 }
 .fw-pad-actions a {
   color: var(--fw-text);
-  min-height: 28px;
+  min-height: 40px;
   display: flex;
   align-items: center;
 }
@@ -2331,4 +2390,211 @@
 }
 .fw-claim-log a {
   color: var(--fw-accent-text);
+}
+
+/* Contact us: the configured support channels and the reference to quote. */
+.fw-support {
+  margin-top: 22px;
+  padding: 18px 20px;
+  border: 1px solid var(--fw-border);
+  border-radius: 14px;
+  background: var(--fw-raised);
+  color: var(--fw-muted);
+  text-align: left;
+}
+.fw-support h3 {
+  color: var(--fw-text);
+  font-size: 16px;
+  margin-bottom: 8px;
+}
+.fw-support > p {
+  font-size: 13px;
+  line-height: 1.7;
+}
+.fw-support .fw-actions {
+  margin-top: 14px;
+}
+.fw-support-reference {
+  margin-top: 14px;
+  font-size: 12px;
+  min-width: 0;
+}
+.fw-support-reference > div {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.fw-support-reference code {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--fw-text);
+}
+.fw-support-reference [role='status'] {
+  margin-top: 6px;
+}
+.fw-support-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  margin-top: 10px;
+  font-size: 12px;
+}
+.fw-support-links a,
+.fw-faq-links a {
+  color: var(--fw-accent-text);
+}
+.fw-faq-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+}
+.fw-faq .fw-support {
+  max-width: 70ch;
+}
+
+/* Technical detail of a failure, collapsed, for support. */
+.fw-error-details {
+  margin-top: 12px;
+  font-size: 12px;
+  color: var(--fw-muted);
+}
+.fw-error-details summary {
+  cursor: pointer;
+  min-height: 40px;
+  display: inline-flex;
+  align-items: center;
+}
+.fw-error-details p {
+  margin: 6px 0 !important;
+  overflow-wrap: anywhere;
+}
+.fw-error-details code {
+  font-size: 11px;
+  color: var(--fw-text);
+  overflow-wrap: anywhere;
+}
+.fw-error-details > code.fw-wrap {
+  max-height: 160px;
+  overflow-y: auto;
+  padding: 10px 12px;
+  border: 1px solid var(--fw-border);
+  border-radius: 10px;
+  background: var(--fw-bg);
+  white-space: pre-wrap;
+}
+
+/* Mobile pass: tap targets of at least 40px, no page overflow, no zoom on focus. */
+.fw-actions > a:not(.fw-button),
+.fw-support-links a,
+.fw-faq-links a,
+.fw-header nav a,
+.fw-footer nav a,
+.fw-back,
+.fw-current-job,
+.fw-history a,
+.fw-claim-log a,
+.fw-transaction > a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 40px;
+}
+.fw-faq summary,
+.fw-summary > details > summary {
+  min-height: 40px;
+}
+.fw-summary > details > summary {
+  display: flex;
+  align-items: center;
+}
+.fw-job-heading {
+  flex-wrap: wrap;
+  gap: 10px 18px;
+}
+.fw-account summary > span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fw-address > div {
+  min-width: 0;
+  flex-wrap: wrap;
+}
+.fw-address code {
+  overflow-wrap: anywhere;
+}
+.fw-event-log p,
+.fw-history p,
+.fw-notice p {
+  overflow-wrap: anywhere;
+}
+@media (max-width: 800px), (pointer: coarse) {
+  /* Below 16px, iOS Safari zooms the page into a focused field. */
+  .fw textarea,
+  .fw input:not([type='checkbox']):not([type='radio']),
+  .fw select {
+    font-size: 16px;
+  }
+}
+@media (max-width: 800px) {
+  .fw-event-log {
+    max-height: min(420px, 55svh);
+  }
+  .fw-chat-ready .fw-button,
+  .fw-composer .fw-button {
+    width: 100%;
+  }
+  .fw-job-stage .fw-actions .fw-button,
+  .fw-preview-open {
+    flex: 1 1 auto;
+  }
+  .fw-preview-devices .fw-button {
+    flex: 1 1 140px;
+  }
+  .fw-preview-body {
+    min-height: 0;
+  }
+  .fw-support .fw-actions .fw-button {
+    flex: 1 1 100%;
+  }
+}
+@media (max-width: 540px) {
+  .fw-step-tracker li {
+    padding-right: 8px;
+    overflow-wrap: anywhere;
+    hyphens: auto;
+  }
+  .fw-transaction ol {
+    gap: 8px;
+  }
+  .fw-transaction li {
+    overflow-wrap: anywhere;
+  }
+  .fw-quote-time {
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+  .fw-message {
+    max-width: 100%;
+  }
+  .fw-message-user {
+    padding: 16px 18px;
+  }
+  .fw-messages {
+    padding-right: 6px;
+  }
+  .fw-composer {
+    padding: 14px;
+  }
+  .fw-header-tools {
+    gap: 8px;
+  }
+  .fw-account summary > span:last-child {
+    max-width: 88px;
+  }
 }

@@ -92,12 +92,19 @@ Coin uploads are not part of readiness: with a bad R2 block they answer 503 `NOT
 | `R2_BUCKET` | yes | bucket name; add a lifecycle rule deleting `pending/` after 1 day (OPERATIONS.md) | none | uploads 503 | |
 | `R2_PUBLIC_URL` | yes | public https base of the bucket, no query; same value as the builder's | none | uploads 503; CSP `img-src` lacks the host; images not rendered | |
 | `R2_ENDPOINT` | no | S3 endpoint override. | `https://<account>.r2.cloudflarestorage.com` | uploads 503 if invalid | |
-| `CLIENTS_DOMAIN` | cond | yes on mainnet: the clients domain, same as the builder's (a domain separate from FORGE's) | none | no `<slug>.<domain>` origin in the relay, uploads, coin metadata `external_url` or CSP `frame-src`; only recorded `site_host` values work | |
+| `CLIENTS_DOMAIN` | cond | yes on mainnet: the clients domain, same as the builder's (a domain separate from FORGE's) | none | no `<slug>.<domain>` origin in the relay, uploads, or coin metadata `external_url`; only recorded `site_host` values work | |
 | `FORGE_INTERNAL_CRON_SECRET` | cond | yes if the upload sweep runs (it should): at least 32 bytes, sent as `Authorization: Bearer` by an external scheduler. | unset (route answers 503) | wrong: 401; unset: abandoned uploads in `pending/` are never swept | S |
 
 ### 2.6 Relay rate-limit overrides (tuning, all optional, `src/server/rpc/config.ts`)
 
 `RPC_RELAY_GLOBAL_UNITS_PER_MINUTE` (default 60000, split 25 % FORGE site, 50 % client sites, 15 % server tokens, 10 % anonymous), `RPC_RELAY_GLOBAL_FORGE_UNITS_PER_MINUTE`, `RPC_RELAY_GLOBAL_SITES_UNITS_PER_MINUTE`, `RPC_RELAY_GLOBAL_SERVER_UNITS_PER_MINUTE`, `RPC_RELAY_GLOBAL_ANONYMOUS_UNITS_PER_MINUTE`, `RPC_RELAY_IP_UNITS_PER_MINUTE`, `RPC_RELAY_ORIGIN_UNITS_PER_MINUTE` (alert threshold only), `RPC_RELAY_SERVER_UNITS_PER_MINUTE`, `RPC_RELAY_ANONYMOUS_UNITS_PER_MINUTE` (alert threshold only), `RPC_RELAY_SENDS_PER_MINUTE`, `RPC_RELAY_SERVER_SENDS_PER_MINUTE`. Positive numbers; anything else is a startup error. Leave unset at first boot; size them against the Helius plan behind `RPC_RELAY_UPSTREAM_URL`. `RPC_RELAY_ANONYMOUS_IP_UNITS_PER_MINUTE` is no longer read.
+
+### 2.7 Support contact (public, optional, `src/ui/workspace/support.tsx`)
+
+| Variable | Req. | Mainnet value / how to obtain | Default | If wrong | Secret |
+|---|---|---|---|---|---|
+| `NEXT_PUBLIC_SUPPORT_TELEGRAM_URL` | no (recommended: this one or the email) | the support Telegram link, `https://t.me/<handle>` (https on `t.me` or `telegram.me` only); rebuild after a change | unset | invalid: ignored, as if unset. With no channel set, support links lead to the FAQ, which tells clients to use the channel of their beta invite | |
+| `NEXT_PUBLIC_SUPPORT_EMAIL` | no (recommended: this one or the Telegram link) | the support address, e.g. `support@<FORGE domain>`; the mail opens with the job reference in the subject | unset | same | |
 
 ## 3. apps/builder (VPS 1)
 

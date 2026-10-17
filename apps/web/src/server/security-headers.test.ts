@@ -61,11 +61,8 @@ describe('securityHeaders', () => {
       'wss://abcd.supabase.co',
     ]);
     expect(directives['img-src']).toEqual(["'self'", 'data:', 'blob:', 'https://pub-123.r2.dev']);
-    expect(directives['frame-src']).toEqual([
-      "'self'",
-      'https://*.vercel.app',
-      'https://*.forge-sites.app',
-    ]);
+    // Previews and client sites open in their own tab: nothing else is framed.
+    expect(directives['frame-src']).toEqual(["'self'"]);
     expect(directives['frame-ancestors']).toEqual(["'none'"]);
     expect(directives['object-src']).toEqual(["'none'"]);
   });
@@ -97,7 +94,7 @@ describe('securityHeaders', () => {
       'wss://fallback.supabase.co',
     ]);
     expect(directives['img-src']).toEqual(["'self'", 'data:', 'blob:']);
-    expect(directives['frame-src']).toEqual(["'self'", 'https://*.vercel.app']);
+    expect(directives['frame-src']).toEqual(["'self'"]);
   });
 });
 

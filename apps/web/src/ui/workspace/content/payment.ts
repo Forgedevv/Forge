@@ -1,5 +1,5 @@
 export const paymentCopy = {
-  eyebrow: 'A5 / PAYMENT',
+  eyebrow: 'PAYMENT',
   title: 'One step closer to launch.',
   changeTitle: 'Your next iteration starts here.',
   body: 'Review the quote before opening your wallet. The SOL amount is fixed until this quote expires.',
@@ -28,8 +28,7 @@ export const paymentCopy = {
   checking: 'Checking…',
   needsSupport: 'This payment needs our help.',
   needsSupportBody:
-    'Contact support with the transaction signature below. Do not pay again for this launchpad.',
+    'Contact us with the reference and the transaction signature below. Do not pay again for this launchpad.',
   signature: 'Transaction signature',
   explorer: 'View on the explorer',
-  support: 'Contact support',
 } as const;

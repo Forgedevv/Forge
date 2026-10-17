@@ -299,7 +299,7 @@ export function createMockController(scenario = 'journey') {
       onPhase('error');
       return {
         phase: 'error',
-        error: 'The simulated transaction check failed. Try again or open help.',
+        error: 'The simulated transaction check failed. Try again or contact us.',
       };
     }
     onPhase('confirmed');

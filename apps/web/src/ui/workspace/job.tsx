@@ -8,16 +8,22 @@ import {
   Amount,
   Button,
   Card,
+  ErrorDetails,
   ErrorNotice,
   Heading,
   JobStepTracker,
   Loading,
   StatusBadge,
-  readableError,
+  describeError,
+  type FriendlyError,
 } from './components';
+import { jobErrorDetail } from './errors';
 import { safeUrl } from './safe-url';
 import { jobCopy as copy } from './content/job';
 import { common } from './content/common';
+import { SupportBlock } from './support';
+import { PreviewCard } from './preview-card';
+import { useStickToBottom } from './scroll';
 import { Muse, museMoodForJob } from '../muse';
 import { StartAgainButton, StartAgainHold, draftNext, useStartAgain } from './start-again';
 
@@ -37,16 +43,14 @@ export function JobScreen({
   const restart = useStartAgain(job?.launchpadId ?? '', refreshLaunchpad);
   const next = launchpad ? draftNext(launchpad) : null;
   const [busy, setBusy] = useState(false),
-    [error, setError] = useState('');
+    [error, setError] = useState<FriendlyError | null>(null);
   const lock = useRef(false);
-  const end = useRef<HTMLLIElement>(null);
+  // The activity log follows new events inside its own box, never scrolling the page.
+  const log = useStickToBottom<HTMLOListElement>(`${loading}:${events.length}`);
   useEffect(() => {
     if (autoRedirect && job?.status === 'awaiting_owner_signature')
       router.replace(`/jobs/${encodeURIComponent(jobId)}/launch`);
   }, [autoRedirect, job?.status, router, jobId]);
-  useEffect(() => {
-    end.current?.scrollIntoView?.({ block: 'nearest' });
-  }, [events.length]);
   if (loading) return <Loading />;
   if (!job) return <ErrorNotice message={common.missing} />;
   const preview = safeUrl(job.previewUrl),
@@ -55,11 +59,11 @@ export function JobScreen({
     if (lock.current) return;
     lock.current = true;
     setBusy(true);
-    setError('');
+    setError(null);
     try {
       await api.approvePreview(jobId);
     } catch (e) {
-      setError(readableError(e));
+      setError(describeError(e));
     } finally {
       lock.current = false;
       setBusy(false);
@@ -104,26 +108,10 @@ export function JobScreen({
             <>
               <h2>{copy.preview}</h2>
               <p>{copy.previewBody}</p>
-              {preview ? (
-                <>
-                  <iframe
-                    className="fw-preview-frame"
-                    src={preview}
-                    title={copy.frame}
-                    sandbox="allow-scripts allow-forms"
-                    referrerPolicy="no-referrer"
-                    loading="lazy"
-                  />
-                  <Link href={preview} target="_blank" rel="noreferrer">
-                    {common.newTab} ↗
-                  </Link>
-                </>
-              ) : (
-                <p>{common.pending}</p>
-              )}
+              {preview ? <PreviewCard url={preview} /> : <p>{common.pending}</p>}
               <div className="fw-actions">
                 <Button disabled={!preview || busy} onClick={approve}>
-                  {busy ? copy.approving : copy.approve} ↗
+                  {busy ? copy.approving : copy.approve}
                 </Button>
                 {/* A creation preview belongs to a draft: changes come once it is live. */}
                 {job.type === 'modify_launchpad' && (
@@ -160,7 +148,7 @@ export function JobScreen({
                         );
                         toast(common.copied);
                       } catch {
-                        setError(common.copyFailed);
+                        setError({ message: common.copyFailed, detail: null });
                       }
                     }}
                   >
@@ -189,8 +177,15 @@ export function JobScreen({
                   {copy.attempt} {job.attempts}/2
                 </p>
               )}
-              {job.error && <p>{job.error}</p>}
-              <Link href="/faq">{common.support} ↗</Link>
+              <p>
+                {job.failedStage === 'build'
+                  ? job.attempts < 2
+                    ? copy.retryingBody
+                    : copy.refundBody
+                  : copy.teamBody}
+              </p>
+              <ErrorDetails detail={jobErrorDetail(job.error)} reference={jobId} />
+              <SupportBlock reference={jobId} />
             </div>
           )}
           {job.status === 'refunded' && (
@@ -204,7 +199,7 @@ export function JobScreen({
                     target="_blank"
                     rel="noreferrer"
                   >
-                    {common.receipt} ↗
+                    {common.receipt} <span aria-hidden="true">↗</span>
                   </Link>
                 </>
               )}
@@ -215,14 +210,14 @@ export function JobScreen({
                 </>
               )}
               {job.type === 'create_launchpad' && next?.kind === 'on_hold' && (
-                <StartAgainHold reason={next.reason} />
+                <StartAgainHold reason={next.reason} reference={job.launchpadId} />
               )}
               <ActionLink href="/dashboard" secondary>
                 {common.dashboard}
               </ActionLink>
             </>
           )}
-          {error && <ErrorNotice message={error} />}
+          {error && <ErrorNotice message={error.message} detail={error.detail} reference={jobId} />}
           {restart.error && <ErrorNotice message={restart.error} />}
         </Card>
         <Card className="fw-event-card">
@@ -233,10 +228,12 @@ export function JobScreen({
             aria-live="polite"
             aria-relevant="additions"
             aria-label={copy.log}
+            ref={log.ref}
+            onScroll={log.onScroll}
           >
             {events.length ? (
-              events.map((event, i) => (
-                <li key={event.id} ref={i === events.length - 1 ? end : undefined}>
+              events.map((event) => (
+                <li key={event.id}>
                   <time dateTime={event.createdAt}>
                     {new Date(event.createdAt).toLocaleTimeString('en-GB', {
                       hour: '2-digit',

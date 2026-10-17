@@ -1,5 +1,5 @@
 export const gatingCopy = {
-  eyebrow: 'A3 / ACCESS',
+  eyebrow: 'ACCESS',
   title: 'A little FORGE opens the door.',
   body: 'Hold the required amount of $FORGE in your wallet to use the builder. Nothing is spent or locked.',
   checking: 'Checking your $FORGE balance…',
@@ -9,7 +9,8 @@ export const gatingCopy = {
   required: 'Required balance',
   balance: 'Your balance',
   recheck: 'Recheck balance',
-  acquire: 'How to get $FORGE',
+  acquireSoon:
+    'How to get $FORGE: coming soon. The official way will be announced by FORGE; never use an unverified token address.',
   continue: 'Continue to the chat',
   unit: '$FORGE',
 } as const;

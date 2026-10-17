@@ -1,5 +1,5 @@
 export const launchCopy = {
-  eyebrow: 'A7 / LAUNCH YOUR COIN',
+  eyebrow: 'LAUNCH YOUR COIN',
   title: 'The first spark is yours.',
   preparing: 'Preparing your launch transaction…',
   explanation:

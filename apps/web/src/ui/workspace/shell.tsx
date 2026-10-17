@@ -1,7 +1,7 @@
 'use client';
 import Link from 'next/link';
 
-import { useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { useWebClient, useWorkspace } from './provider';
 import { common } from './content/common';
 import { ActionLink, Button, ScreenBoundary } from './components';
@@ -87,6 +87,72 @@ function BrandLogo({
   );
 }
 
+/**
+ * The wallet menu. Closes on a choice, a click or tap outside, Escape (focus back on the toggle)
+ * and history navigation, so it never stays open over the next page.
+ */
+export function AccountMenu({
+  label,
+  onDisconnect,
+}: {
+  label: string;
+  onDisconnect(): Promise<void> | void;
+}) {
+  const menu = useRef<HTMLDetailsElement>(null);
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (!open) return;
+    const close = () => setOpen(false);
+    const onPointer = (event: PointerEvent) => {
+      if (!menu.current?.contains(event.target as Node)) close();
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      close();
+      menu.current?.querySelector('summary')?.focus();
+    };
+    document.addEventListener('pointerdown', onPointer);
+    document.addEventListener('keydown', onKey);
+    window.addEventListener('popstate', close);
+    return () => {
+      document.removeEventListener('pointerdown', onPointer);
+      document.removeEventListener('keydown', onKey);
+      window.removeEventListener('popstate', close);
+    };
+  }, [open]);
+  return (
+    <details className="fw-account" ref={menu} open={open}>
+      <summary
+        aria-expanded={open}
+        onClick={(event) => {
+          // Driven by state, so that closing from outside keeps React and the element in step.
+          event.preventDefault();
+          setOpen((value) => !value);
+        }}
+      >
+        <span className="fw-avatar" aria-hidden="true">
+          ◒
+        </span>
+        <span>{label}</span>
+      </summary>
+      <div>
+        <Link href="/dashboard" onClick={() => setOpen(false)}>
+          {common.dashboard}
+        </Link>
+        <Button
+          variant="quiet"
+          onClick={() => {
+            setOpen(false);
+            void Promise.resolve(onDisconnect()).catch(() => undefined);
+          }}
+        >
+          {common.disconnect}
+        </Button>
+      </div>
+    </details>
+  );
+}
+
 export function WorkspaceHeader() {
   const api = useWebClient();
   const { session, disconnect } = api.useSession();
@@ -103,7 +169,7 @@ export function WorkspaceHeader() {
         {!signupsPaused && (
           <Link href="/new" className="fw-create-link">
             {common.create}
-            <span aria-hidden="true">↗</span>
+            <span aria-hidden="true">→</span>
           </Link>
         )}
       </nav>
@@ -116,20 +182,7 @@ export function WorkspaceHeader() {
           {theme === 'dark' ? '☼' : '◐'}
         </button>
         {session ? (
-          <details className="fw-account">
-            <summary>
-              <span className="fw-avatar" aria-hidden="true">
-                ◒
-              </span>
-              <span>{api.shortAddress(session.wallet)}</span>
-            </summary>
-            <div>
-              <Link href="/dashboard">{common.dashboard}</Link>
-              <Button variant="quiet" onClick={() => void disconnect()}>
-                {common.disconnect}
-              </Button>
-            </div>
-          </details>
+          <AccountMenu label={api.shortAddress(session.wallet)} onDisconnect={disconnect} />
         ) : (
           <Button variant="secondary" onClick={openLogin}>
             {common.connect}

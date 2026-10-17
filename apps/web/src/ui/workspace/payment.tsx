@@ -16,10 +16,12 @@ import {
   Loading,
   QuoteCountdown,
   TransactionState,
-  readableError,
+  describeError,
+  type FriendlyError,
 } from './components';
 import { paymentCopy as copy } from './content/payment';
 import { common } from './content/common';
+import { SupportBlock, SupportLinks } from './support';
 
 /** Statuses reached once the payment is confirmed (the job left `spec_ready`). */
 const AWAITING_PAYMENT: ReadonlySet<JobStatus> = new Set(['spec_ready']);
@@ -29,16 +31,19 @@ export const QUOTE_TX_FRESH_MS = 20_000;
 
 /** A sent payment that is not settled: confirmation is retried, a new quote is never offered. */
 function SentPaymentNotice({
+  jobId,
   result,
   busy,
   onCheck,
 }: {
+  jobId: string;
   result: PaymentResult;
   busy: boolean;
   onCheck(): void;
 }) {
   const api = useWebClient();
   const confirming = result.outcome === 'confirming';
+  const context = result.signature ? [`${copy.signature}: ${result.signature}`] : [];
   return (
     <div className={`fw-notice ${confirming ? '' : 'fw-notice-error'}`} role="status">
       <h2>{confirming ? copy.stillConfirming : copy.needsSupport}</h2>
@@ -47,18 +52,20 @@ function SentPaymentNotice({
         <>
           <Address value={result.signature} label={copy.signature} />
           <Link href={api.explorerTxUrl(result.signature)} target="_blank" rel="noreferrer">
-            {copy.explorer} ↗
+            {copy.explorer} <span aria-hidden="true">↗</span>
           </Link>
         </>
       )}
-      <div className="fw-actions">
-        {confirming && (
+      {confirming ? (
+        <div className="fw-actions">
           <Button disabled={busy} onClick={onCheck}>
             {busy ? copy.checking : copy.checkAgain}
           </Button>
-        )}
-        <Link href="/faq">{copy.support} ↗</Link>
-      </div>
+          <SupportLinks reference={jobId} context={context} />
+        </div>
+      ) : (
+        <SupportBlock reference={jobId} context={context} />
+      )}
     </div>
   );
 }
@@ -92,7 +99,7 @@ export function PaymentScreen({
     return pending ? pendingResult(pending) : null;
   });
   const [quote, setQuote] = useState<Quote | null>(null),
-    [error, setError] = useState(''),
+    [error, setError] = useState<FriendlyError | null>(null),
     [phase, setPhase] = useState<TxPhase>(initialPhase),
     [result, setResult] = useState<PaymentResult | null>(null),
     [expired, setExpired] = useState(false),
@@ -120,11 +127,11 @@ export function PaymentScreen({
   const recheck = useCallback(async () => {
     if (lock.current) return;
     lock.current = true;
-    setError('');
+    setError(null);
     try {
       finish(await api.resumePayment(jobId, setPhase));
     } catch (e) {
-      setError(readableError(e));
+      setError(describeError(e));
     } finally {
       lock.current = false;
     }
@@ -142,7 +149,7 @@ export function PaymentScreen({
     if (!hasJob || holdLoading || paid || sent) return;
     let cancelled = false;
     setQuote(null);
-    setError('');
+    setError(null);
     setExpired(false);
     void api
       .getQuote(jobId, kind)
@@ -157,7 +164,7 @@ export function PaymentScreen({
         if (!cancelled) {
           const pending = api.getPendingPayment(jobId);
           if (pending) setSent(pendingResult(pending));
-          else setError(readableError(e));
+          else setError(describeError(e));
         }
       });
     return () => {
@@ -174,7 +181,7 @@ export function PaymentScreen({
       return;
     }
     lock.current = true;
-    setError('');
+    setError(null);
     try {
       let current = quote;
       // The quoted transaction carries a blockhash that lives about 60 s: past QUOTE_TX_FRESH_MS,
@@ -193,7 +200,7 @@ export function PaymentScreen({
       }
       finish(await api.payQuote(current, setPhase));
     } catch (e) {
-      setError(readableError(e));
+      setError(describeError(e));
       setPhase('error');
       if (Date.parse(quote.expiresAt) <= Date.now()) setExpired(true);
     } finally {
@@ -228,7 +235,12 @@ export function PaymentScreen({
                 {copy.confirming}
               </p>
             ) : (
-              <SentPaymentNotice result={sent} busy={busy} onCheck={() => void recheck()} />
+              <SentPaymentNotice
+                jobId={jobId}
+                result={sent}
+                busy={busy}
+                onCheck={() => void recheck()}
+              />
             )}
             {busy && <TransactionState phase={phase} result={result} />}
           </>
@@ -258,7 +270,7 @@ export function PaymentScreen({
                     {copy.included} {copy.includedBody}
                   </p>
                   <Button disabled={busy} onClick={pay}>
-                    {copy.continue} ↗
+                    {copy.continue}
                   </Button>
                 </>
               ) : (
@@ -284,7 +296,7 @@ export function PaymentScreen({
                     <>
                       <p className="fw-caption">{copy.signing}</p>
                       <Button disabled={busy || expired} onClick={pay}>
-                        {busy ? (phase === 'sending' ? common.sending : common.sign) : copy.pay} ↗
+                        {busy ? (phase === 'sending' ? common.sending : common.sign) : copy.pay}
                       </Button>
                     </>
                   )}
@@ -294,7 +306,14 @@ export function PaymentScreen({
             </>
           )
         )}
-        {error && <ErrorNotice message={error} onRetry={() => setGeneration((n) => n + 1)} />}
+        {error && (
+          <ErrorNotice
+            message={error.message}
+            detail={error.detail}
+            reference={jobId}
+            onRetry={() => setGeneration((n) => n + 1)}
+          />
+        )}
       </Card>
     </div>
   );

@@ -1,6 +1,6 @@
 export const jobCopy = {
   progress: 'Build progress',
-  eyebrow: 'A6 / IN THE MAKING',
+  eyebrow: 'IN THE MAKING',
   title: 'From blueprint to live.',
   log: 'Workshop activity',
   noEvents: 'Waiting for the first update…',
@@ -23,6 +23,12 @@ export const jobCopy = {
   payment: 'Continue to payment',
   sign: 'Review and sign the launch',
   retrying: 'Retrying automatically',
+  retryingBody:
+    'The first build attempt did not finish. A second one starts on its own: nothing to do.',
+  refundBody:
+    'The payment is refunded automatically to the wallet that paid. You do not need to do anything.',
+  teamBody:
+    'You do not need to pay again. The team follows up on this launchpad; contact us with the reference below if you have a question.',
   attempt: 'Build attempt',
   team: 'Something went wrong. Our team has been notified and is on it.',
   refundPending: 'Both build attempts failed. Waiting for the refund confirmation.',
@@ -38,5 +44,12 @@ export const jobCopy = {
   deploying: 'Taking your launchpad live…',
   building: 'Your launchpad is taking shape.',
   waiting: 'Your next step is ready.',
-  frame: 'Launchpad preview',
+  previewCard: {
+    body: 'Your preview opens in a new tab, exactly as your visitors will see it.',
+    open: 'Open the preview',
+    devices: 'Open the preview at a device size',
+    desktop: 'Desktop size',
+    mobile: 'Mobile size',
+    check: 'Check the pages, texts and colors at both sizes before you approve it.',
+  },
 } as const;
