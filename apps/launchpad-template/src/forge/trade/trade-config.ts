@@ -7,6 +7,7 @@
  * `process.env.NEXT_PUBLIC_*` must be written as literal member expressions so Next.js can inline
  * them in the browser bundle: do not pass `process.env` around.
  */
+import { assertJupiterReferralFeeBps } from '@forge/core';
 import { onchainConfig } from '../config';
 import { canonicalAddress } from '../tx/programs';
 
@@ -32,6 +33,19 @@ export function readTradeEnv(): TradeEnv {
 /** Jupiter referral account: a valid, canonical, non-default public key, or null. */
 export function resolveJupiterReferral(raw: string | undefined): string | null {
   return canonicalAddress(raw);
+}
+
+/**
+ * Jupiter referral fee of the plugin, in bps, or null when Jupiter would refuse it: Ultra `/order`
+ * only accepts a whole number between 50 and 255 bps (`assertJupiterReferralFeeBps` of
+ * @forge/core), so any other fee would make every swap fail.
+ */
+export function resolveJupiterReferralFee(bps: number): number | null {
+  try {
+    return assertJupiterReferralFeeBps(bps);
+  } catch {
+    return null;
+  }
 }
 
 /** Any FORGE address read from the public environment: canonical and non-default, or null. */

@@ -12,8 +12,10 @@ import {
   explorerTxUrl,
   resolveCluster,
   resolveJupiterReferral,
+  resolveJupiterReferralFee,
   resolveRelayUrl,
 } from '../../src/forge/trade/trade-config';
+import { JUPITER_REFERRAL_FEE_BPS, PLATFORM_FEE_BPS } from '../../src/forge/trade/constants';
 
 afterEach(() => {
   state.onchain = undefined;
@@ -68,5 +70,21 @@ describe('explorerTxUrl', () => {
       'https://explorer.solana.com/tx/abc?cluster=devnet',
     );
     expect(explorerTxUrl('abc', 'mainnet-beta')).toBe('https://explorer.solana.com/tx/abc');
+  });
+});
+
+describe('resolveJupiterReferralFee', () => {
+  it('passes the shared 50 bps fee, separate from the 30 bps curve platform fee', () => {
+    expect(JUPITER_REFERRAL_FEE_BPS).toBe(50);
+    expect(resolveJupiterReferralFee(JUPITER_REFERRAL_FEE_BPS)).toBe(50);
+    expect(PLATFORM_FEE_BPS).toBe(30);
+  });
+
+  it('accepts only what Jupiter Ultra accepts: a whole number from 50 to 255 bps', () => {
+    expect(resolveJupiterReferralFee(50)).toBe(50);
+    expect(resolveJupiterReferralFee(255)).toBe(255);
+    for (const bps of [30, 49, 256, 0, -1, 50.5, Number.NaN]) {
+      expect(resolveJupiterReferralFee(bps)).toBeNull();
+    }
   });
 });

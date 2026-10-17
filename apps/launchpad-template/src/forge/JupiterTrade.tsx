@@ -5,7 +5,11 @@ import { siteConfig } from './config';
 import { JUPITER_REFERRAL_FEE_BPS } from './trade/constants';
 import { TradeError } from './trade/errors';
 import { isLaunchpadPool, type LaunchpadPool } from './trade/launchpad-pool';
-import { readTradeEnv, resolveJupiterReferral } from './trade/trade-config';
+import {
+  readTradeEnv,
+  resolveJupiterReferral,
+  resolveJupiterReferralFee,
+} from './trade/trade-config';
 
 const SOL_MINT = 'So11111111111111111111111111111111111111112';
 const PLUGIN_CONTAINER_ID = 'jupiter-plugin';
@@ -36,7 +40,7 @@ export interface JupiterTradeProps {
 
 /**
  * Trading for a graduated coin: the Jupiter Plugin (successor of Jupiter Terminal) in integrated
- * display mode, with the FORGE integrator fee (`referralAccount` + `referralFee`, 30 bps).
+ * display mode, with the FORGE integrator fee (`referralAccount` + `referralFee`, 50 bps).
  *
  * - Not part of the free-zone API: `TradePanel` (through `CoinTradePanel`) renders it once the
  *   coin's pool on this launchpad graduated, with the pool handle it looked up.
@@ -44,6 +48,8 @@ export interface JupiterTradeProps {
  * - Refuses (notice, no script) anything but a pool handle issued by `findLaunchpadPool`.
  * - The referral account comes from the environment (never hardcoded). Without a valid one the
  *   plugin is NOT loaded: the platform fee would be lost silently, so the widget fails closed.
+ * - The referral fee must be one Jupiter accepts (50 to 255 bps, `resolveJupiterReferralFee`):
+ *   Jupiter refuses every swap with any other fee, so the widget fails closed the same way.
  * - Jupiter does not index devnet: this can only be exercised on mainnet.
  *
  * @see https://dev.jup.ag/docs/tool-kits/plugin
@@ -64,7 +70,8 @@ export function JupiterTrade({ launchpadPool }: JupiterTradeProps) {
   }
   const mint = launchpadPool.mint;
   const referralAccount = resolveJupiterReferral(readTradeEnv().jupiterReferral);
-  if (!referralAccount) {
+  const referralFee = resolveJupiterReferralFee(JUPITER_REFERRAL_FEE_BPS);
+  if (!referralAccount || referralFee === null) {
     return (
       <div
         role="alert"
@@ -75,10 +82,18 @@ export function JupiterTrade({ launchpadPool }: JupiterTradeProps) {
       </div>
     );
   }
-  return <JupiterPlugin mint={mint} referralAccount={referralAccount} />;
+  return <JupiterPlugin mint={mint} referralAccount={referralAccount} referralFee={referralFee} />;
 }
 
-function JupiterPlugin({ mint, referralAccount }: { mint: string; referralAccount: string }) {
+function JupiterPlugin({
+  mint,
+  referralAccount,
+  referralFee,
+}: {
+  mint: string;
+  referralAccount: string;
+  referralFee: number;
+}) {
   const walletContext = useWallet();
   const { setShowModal } = useUnifiedWalletContext();
 
@@ -120,7 +135,7 @@ function JupiterPlugin({ mint, referralAccount }: { mint: string; referralAccoun
         initialInputMint: SOL_MINT,
         initialOutputMint: mint,
         referralAccount,
-        referralFee: JUPITER_REFERRAL_FEE_BPS,
+        referralFee,
       },
       // Reuse the app's wallet connection instead of the plugin's own adapter
       enableWalletPassthrough: true,
@@ -132,7 +147,7 @@ function JupiterPlugin({ mint, referralAccount }: { mint: string; referralAccoun
       window.Jupiter?.close?.();
     };
     // walletContext is synced separately below to avoid re-initializing
-  }, [isReady, mint, referralAccount, setShowModal]);
+  }, [isReady, mint, referralAccount, referralFee, setShowModal]);
 
   // Keep the plugin's wallet state in sync with the app's wallet
   useEffect(() => {
