@@ -53,6 +53,7 @@ import {
   checkPaused,
   checkSettlement,
   createAnnouncer,
+  createFileJournal,
   describeError,
   formatSol,
   parseAddress,
@@ -143,6 +144,49 @@ export const ClaimJournalEntry = z.object({
 });
 export type ClaimJournalEntry = z.infer<typeof ClaimJournalEntry>;
 
+export const CLAIM_RECEIPT_NAMESPACE = 'claim-receipt';
+
+/**
+ * One claim the vault received: `claim-receipt.<signature>.json`, append-only (the pool entry
+ * above only keeps the last claim of each kind). This is the creator-fee side of the trading
+ * revenue the buyback budget reads (jobs/buyback-budget.ts, docs/INTERFACES.md "Claim
+ * receipts"). Written when the claim is seen settled, before the pool entry moves on, so a crash
+ * in between settles the claim again and finds the receipt already there (kept as it is: the
+ * buyback budget may have promoted it to `finalized` meanwhile). This job never rewrites one.
+ */
+export const ClaimReceiptEntry = z.object({
+  v: z.literal(1),
+  /** Signature of the claim transaction (also the file key). */
+  signature: z.string(),
+  kind: ClaimKind,
+  pool: z.string(),
+  launchpadId: z.string(),
+  /** Where the quote lamports went: FORGE_MULTISIG_VAULT (the claim policy pins it). */
+  receiver: z.string(),
+  /**
+   * Quote lamports the claim collected (DBC: exact; position: the lower bound it was built on).
+   * The rent of the temporary WSOL account reaches the vault too, but it is the payer's money,
+   * not revenue: not booked.
+   */
+  lamports: z.string().regex(/^[0-9]+$/),
+  /** ISO 8601, when the signer saw the claim settled at `commitment`. */
+  settledAt: z.string(),
+  /**
+   * The commitment the claim was seen at. Claims settle at `confirmed`; the buyback budget only
+   * counts `finalized` receipts and promotes a `confirmed` one once the ledger shows it final.
+   */
+  commitment: z.enum(['confirmed', 'finalized']),
+  /** ISO 8601, when it was seen finalized (absent until then). */
+  finalizedAt: z.string().optional(),
+  /** Positions of a position claim (addresses), empty for a DBC claim. */
+  positions: z.array(z.string()),
+});
+export type ClaimReceiptEntry = z.infer<typeof ClaimReceiptEntry>;
+
+export function createClaimReceiptJournal(dir: string): Journal<ClaimReceiptEntry> {
+  return createFileJournal({ dir, namespace: CLAIM_RECEIPT_NAMESPACE, schema: ClaimReceiptEntry });
+}
+
 /**
  * Accounts the payer may have to fund in one claim: the temporary WSOL ATA and the vault's ATA.
  * A position claim funds the same two (its WSOL rent then reaches the vault with the fees).
@@ -190,6 +234,8 @@ export interface ClaimsDeps {
   rpc: SolanaRpc;
   keystore: KeystoreLike;
   journal: Journal<ClaimJournalEntry>;
+  /** Append-only receipts of the claims the vault received (`ClaimReceiptEntry`). */
+  receipts: Journal<ClaimReceiptEntry>;
   flags: FlagsReader;
   alerter: JobAlerter;
   logger: JobLogger;
@@ -264,7 +310,7 @@ interface BuiltClaim {
 }
 
 export function createClaimsJob(deps: ClaimsDeps): ClaimsJob {
-  const { store, core, rpc, keystore, journal, alerter, logger: log, config } = deps;
+  const { store, core, rpc, keystore, journal, receipts, alerter, logger: log, config } = deps;
   const retry = deps.retry ?? DEFAULT_RETRY;
   const sleep = deps.sleep ?? realSleep;
   const now = deps.now ?? Date.now;
@@ -339,6 +385,33 @@ export function createClaimsJob(deps: ClaimsDeps): ClaimsJob {
   const alertCode = (kind: ClaimKind, suffix: string) =>
     kind === 'dbc' ? `creator_claim_${suffix}` : `position_claim_${suffix}`;
 
+  /**
+   * Books a settled claim for the buyback budget, once: a receipt already there (written before
+   * a crash, maybe promoted to `finalized` since) is never touched.
+   */
+  async function recordReceipt(
+    lp: CreatorLaunchpad,
+    poolKey: string,
+    inFlight: NonNullable<ClaimJournalEntry['inFlight']>,
+    commitment: 'confirmed' | 'finalized',
+  ): Promise<void> {
+    if (await receipts.get(inFlight.signature)) return;
+    const at = iso();
+    await receipts.put(inFlight.signature, {
+      v: 1,
+      signature: inFlight.signature,
+      kind: inFlight.kind,
+      pool: poolKey,
+      launchpadId: lp.id,
+      receiver: config.vault.toBase58(),
+      lamports: inFlight.claimableQuote,
+      settledAt: at,
+      commitment,
+      ...(commitment === 'finalized' ? { finalizedAt: at } : {}),
+      positions: inFlight.positions,
+    });
+  }
+
   /** Applies a settlement to the journal entry; returns the outcome when the claim is decided. */
   async function applySettlement(
     lp: CreatorLaunchpad,
@@ -351,6 +424,8 @@ export function createClaimsJob(deps: ClaimsDeps): ClaimsJob {
     const kind = inFlight.kind;
     const base = { launchpadId: lp.id, pool: poolKey, kind };
     if (s.kind === 'confirmed' || s.kind === 'finalized') {
+      // The receipt first: the pool entry forgets this claim once the next one lands.
+      await recordReceipt(lp, poolKey, inFlight, s.kind);
       const lamports = BigInt(inFlight.claimableQuote);
       const last = { signature: inFlight.signature, quote: inFlight.claimableQuote, at: iso() };
       const next: ClaimJournalEntry = {

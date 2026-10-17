@@ -26,6 +26,7 @@ import {
 import {
   ClaimJournalEntry,
   claimsConfigFromEnv,
+  createClaimReceiptJournal,
   createClaimsJob,
   createPostgrestClaimsStore,
 } from '../jobs/claims.js';
@@ -170,6 +171,8 @@ export const claimsModule: SignerJobModule = {
         namespace: 'claims',
         schema: ClaimJournalEntry,
       }),
+      // Append-only, one file per claim the vault received: the buyback budget reads them.
+      receipts: createClaimReceiptJournal(ctx.journalDir),
       flags: ctx.flags,
       alerter: ctx.alerter,
       logger: ctx.jobLogger('claims'),

@@ -13,6 +13,7 @@ import { ClaimError } from '@forge/core';
 import { creatorRole, openKeystore, type Keystore } from '../keystore.js';
 import {
   ClaimJournalEntry,
+  ClaimReceiptEntry,
   claimsConfigFromEnv,
   createClaimsJob,
   createPostgrestClaimsStore,
@@ -66,6 +67,7 @@ async function setup(
   const core = dbc.core();
   const store = new MemoryClaimsStore();
   const journal = createMemoryJournal(ClaimJournalEntry);
+  const receipts = createMemoryJournal(ClaimReceiptEntry);
   const alerter = new RecordingAlerter();
   const flags = memoryFlags();
   const clock = new FakeClock();
@@ -104,6 +106,7 @@ async function setup(
       rpc: chain,
       keystore,
       journal,
+      receipts,
       flags,
       alerter,
       logger: silentJobLogger,
@@ -128,6 +131,7 @@ async function setup(
     core,
     store,
     journal,
+    receipts,
     alerter,
     flags,
     clock,
@@ -171,6 +175,63 @@ describe('claims: creator share to the multisig vault', () => {
     const next = await t.job().runOnce();
     expect(next.outcomes[0]).toMatchObject({ result: 'below_threshold', claimable: 0n });
     expect(t.chain.sendAttempts.length).toBe(sends);
+  });
+
+  it('books every claim the vault receives in an append-only receipt, written once', async () => {
+    const t = await setup();
+    const first = await t.job().runOnce();
+    const sig1 = (first.outcomes[0] as { signature: string }).signature;
+    expect((await t.receipts.list()).map((r) => r.key)).toEqual([sig1]);
+    expect((await t.receipts.get(sig1))).toEqual({
+      v: 1,
+      signature: sig1,
+      kind: 'dbc',
+      pool: t.pool.toBase58(),
+      launchpadId: t.launchpadId,
+      receiver: t.vault.toBase58(),
+      lamports: '50000000',
+      settledAt: new Date(t.clock.now()).toISOString(),
+      commitment: 'confirmed',
+      positions: [],
+    });
+
+    // New fees: the pool entry only keeps the last claim, the receipts keep both.
+    t.poolState().claimableQuote = 20_000_000n;
+    const second = await t.job().runOnce();
+    const sig2 = (second.outcomes[0] as { signature: string }).signature;
+    expect(sig2).not.toBe(sig1);
+    expect((await t.receipts.list()).map((r) => r.key).sort()).toEqual([sig1, sig2].sort());
+    expect((await t.receipts.get(sig2))?.lamports).toBe('20000000');
+    expect((await t.journal.get(t.pool.toBase58()))?.lastClaim?.signature).toBe(sig2);
+    expect(t.chain.balanceOf(t.vault)).toBe(SOL + 70_000_000n);
+  });
+
+  it('keeps a receipt written before a crash as it is, promotion included', async () => {
+    const t = await setup({ config: { settle: { timeoutMs: 2_000 } } });
+    t.chain.behaviors.push('drop');
+    expect((await t.job().runOnce()).outcomes[0]).toMatchObject({ result: 'in_flight' });
+    const entry = await t.journal.get(t.pool.toBase58());
+    const signature = entry!.inFlight!.signature;
+    expect(await t.receipts.list()).toEqual([]);
+    // The transaction lands while the signer is down; the buyback budget already saw the
+    // receipt (written by an earlier settlement whose pool entry update was lost) and promoted it.
+    await t.chain.sendRawTransaction(Buffer.from(entry!.inFlight!.rawTx, 'base64'));
+    const promoted = {
+      v: 1 as const,
+      signature,
+      kind: 'dbc' as const,
+      pool: t.pool.toBase58(),
+      launchpadId: t.launchpadId,
+      receiver: t.vault.toBase58(),
+      lamports: '50000000',
+      settledAt: '2026-10-09T00:00:00.000Z',
+      commitment: 'finalized' as const,
+      finalizedAt: '2026-10-09T00:01:00.000Z',
+      positions: [],
+    };
+    await t.receipts.put(signature, promoted);
+    expect((await t.job().runOnce()).outcomes[0]).toMatchObject({ result: 'claimed', signature });
+    expect(await t.receipts.list()).toEqual([{ key: signature, value: promoted }]);
   });
 
   it('respects the threshold exactly', async () => {
@@ -617,6 +678,16 @@ describe('position fee claims: migrated pools', () => {
     });
     expect(entry?.positionPendingSince).toBeNull();
     expect(t.alerter.codes()).toEqual(['pool_graduated']);
+    // Booked for the buyback budget with its kind and positions.
+    const receipts = await t.receipts.list();
+    expect(receipts).toHaveLength(1);
+    expect(receipts[0]!.value).toMatchObject({
+      kind: 'position',
+      receiver: t.vault.toBase58(),
+      lamports: '50000000',
+      commitment: 'confirmed',
+      positions: [t.position!.position.toBase58()],
+    });
 
     // Nothing left: the next run reads and sends nothing.
     const sends = t.chain.sendAttempts.length;
