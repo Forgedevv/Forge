@@ -813,7 +813,7 @@ export type PaymentMinimums = Readonly<Record<PaymentKind, bigint>>;
  * The most dollars per SOL the web accepts when it quotes a payment (its SOL_USD_PRICE_MAX
  * default, `DEFAULT_SOL_USD_PRICE_GUARD.max` in apps/web): no real quote is made above it.
  */
-export const MAX_QUOTED_SOL_USD_PRICE = 2_000;
+export const MAX_QUOTED_SOL_USD_PRICE = 5_000;
 
 /** Margin under the smallest possible quote kept by the default floors, in basis points. */
 export const PAYMENT_FLOOR_MARGIN_BPS = 9_000;
@@ -836,8 +836,8 @@ export function paymentFloorLamports(
 
 /**
  * Defaults of SIGNER_MIN_CREATION_PAYMENT_LAMPORTS / SIGNER_MIN_MODIFICATION_PAYMENT_LAMPORTS,
- * derived from the price of each kind at the web's highest quotable SOL price ($2 000) with a
- * 10% margin: about 0.01485 SOL for a creation ($33), 0.002475 SOL for a modification ($5.5).
+ * derived from the price of each kind at the web's highest quotable SOL price ($5 000) with a
+ * 10% margin: 0.00594 SOL for a creation ($33), 0.00099 SOL for a modification ($5.5).
  * A row below the floor cannot come from a real quote: the routes refuse it before any payer
  * spend and the refunds job leaves it to manual handling. A fixed floor would start refusing
  * legitimate payments once SOL rose past the price it was computed at.

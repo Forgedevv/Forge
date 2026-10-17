@@ -264,10 +264,10 @@ describe('runtime environment', () => {
 
   it('reads the payment floors with safe defaults, as integers only', () => {
     const env = baseEnv();
-    // $33 and $5.5 at the web's highest quotable SOL price ($2 000), with a 10% margin.
+    // $33 and $5.5 at the web's highest quotable SOL price ($5 000), with a 10% margin.
     expect(parseRuntimeEnv(env).minPaymentLamports).toEqual({
-      creation: 14_850_000n,
-      modification: 2_475_000n,
+      creation: 5_940_000n,
+      modification: 990_000n,
     });
     expect(
       parseRuntimeEnv({

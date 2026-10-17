@@ -104,21 +104,21 @@ describe('JupiterPriceSource', () => {
   it('accepts a rate above the guard defaults when it is within the hard limits', async () => {
     // The guard (GuardedPriceSource) applies the configured bounds, not the price source.
     const source = new JupiterPriceSource({
-      fetchImpl: async () => response({ [WSOL_MINT]: { usdPrice: 2_500 } }),
+      fetchImpl: async () => response({ [WSOL_MINT]: { usdPrice: 6_000 } }),
       sleep: noSleep,
     });
-    await expect(source.getSolUsdPrice()).resolves.toBe(2_500);
+    await expect(source.getSolUsdPrice()).resolves.toBe(6_000);
   });
 });
 
 describe('GuardedPriceSource', () => {
-  it('has defaults of 10 to 2000 $/SOL and a 25% move', () => {
-    expect(DEFAULT_SOL_USD_PRICE_GUARD).toEqual({ min: 10, max: 2_000, maxDeviationPct: 25 });
+  it('has defaults of 10 to 5000 $/SOL and a 25% move', () => {
+    expect(DEFAULT_SOL_USD_PRICE_GUARD).toEqual({ min: 10, max: 5_000, maxDeviationPct: 25 });
   });
 
   it('refuses a rate outside the configured bounds (fail closed, retryable)', async () => {
     const refused: { reason: string; price: number; reference: number | null }[] = [];
-    for (const price of [5, 9.99, 2_000.01, 50_000, Number.NaN]) {
+    for (const price of [5, 9.99, 5_000.01, 50_000, Number.NaN]) {
       const guarded = new GuardedPriceSource(scripted([price]), DEFAULT_SOL_USD_PRICE_GUARD, {
         onRefused: (event) => refused.push(event),
       });

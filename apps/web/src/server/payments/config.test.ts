@@ -62,10 +62,10 @@ describe('payments config', () => {
     expect(message).toBe('SUPABASE_SERVICE_ROLE_KEY is not set');
   });
 
-  it('reads the SOL/USD price guard, with defaults of 10 to 2000 $/SOL and a 25% move', () => {
+  it('reads the SOL/USD price guard, with defaults of 10 to 5000 $/SOL and a 25% move', () => {
     expect(readPaymentsConfig(BASE).priceGuard).toEqual({
       min: 10,
-      max: 2_000,
+      max: 5_000,
       maxDeviationPct: 25,
     });
     expect(
@@ -82,7 +82,7 @@ describe('payments config', () => {
     [{ SOL_USD_PRICE_MIN: '0.5' }, 'SOL_USD_PRICE_MIN must be between 1 and 100000'],
     [{ SOL_USD_PRICE_MAX: '200000' }, 'SOL_USD_PRICE_MAX must be between 1 and 100000'],
     [{ SOL_USD_PRICE_MIN: '500', SOL_USD_PRICE_MAX: '500' }, 'must be below SOL_USD_PRICE_MAX'],
-    [{ SOL_USD_PRICE_MIN: '3000' }, 'SOL_USD_PRICE_MIN must be below SOL_USD_PRICE_MAX'],
+    [{ SOL_USD_PRICE_MIN: '6000' }, 'SOL_USD_PRICE_MIN must be below SOL_USD_PRICE_MAX'],
     [{ SOL_USD_PRICE_MAX_DEVIATION_PCT: '0' }, 'SOL_USD_PRICE_MAX_DEVIATION_PCT must be above 0'],
     [{ SOL_USD_PRICE_MAX_DEVIATION_PCT: '150' }, 'SOL_USD_PRICE_MAX_DEVIATION_PCT must be above 0'],
   ])('refuses an invalid price guard %o', (env, expected) => {

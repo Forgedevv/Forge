@@ -1001,15 +1001,15 @@ describe('refundsConfigFromEnv', () => {
     expect(c.config.maxRefundLamports).toBe(2n * SOL);
     expect(c.config.paused).toBe(false);
     expect(c.intervalMs).toBe(5 * 60_000);
-    // $33 and $5.5 at the web's highest quotable SOL price ($2 000), with a 10% margin.
+    // $33 and $5.5 at the web's highest quotable SOL price ($5 000), with a 10% margin.
     expect(c.config.minPaymentLamports).toEqual({
-      creation: 14_850_000n,
-      modification: 2_475_000n,
+      creation: 5_940_000n,
+      modification: 990_000n,
     });
     expect(
       refundsConfigFromEnv({ SIGNER_MIN_MODIFICATION_PAYMENT_LAMPORTS: '7' }, cashbox).config
         .minPaymentLamports,
-    ).toEqual({ creation: 14_850_000n, modification: 7n });
+    ).toEqual({ creation: 5_940_000n, modification: 7n });
     expect(() =>
       refundsConfigFromEnv({ SIGNER_MIN_CREATION_PAYMENT_LAMPORTS: '0.5' }, cashbox),
     ).toThrow(/SIGNER_MIN_CREATION_PAYMENT_LAMPORTS/);

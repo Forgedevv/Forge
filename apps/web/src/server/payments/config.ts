@@ -98,7 +98,7 @@ function readNumber(env: Env, name: string, fallback: number): number {
 }
 
 /**
- * SOL_USD_PRICE_MIN / SOL_USD_PRICE_MAX (dollars per SOL, defaults 10 and 2000) and
+ * SOL_USD_PRICE_MIN / SOL_USD_PRICE_MAX (dollars per SOL, defaults 10 and 5000) and
  * SOL_USD_PRICE_MAX_DEVIATION_PCT (largest move from the last accepted price, default 25). The
  * bounds must lie within the hard limits (1 to 100000) with min below max, the deviation in
  * (0, 100].

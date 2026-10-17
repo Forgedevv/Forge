@@ -971,18 +971,24 @@ describe('PostgREST client', () => {
 
 describe('payment floors', () => {
   it('derives the defaults from the price of each kind at the highest quotable SOL price', () => {
-    // $33 / $2 000 = 0.0165 SOL, times 0.9; $5.5 / $2 000 = 0.00275 SOL, times 0.9.
-    expect(MAX_QUOTED_SOL_USD_PRICE).toBe(2_000);
+    // $33 / $5 000 = 0.0066 SOL, times 0.9; $5.5 / $5 000 = 0.0011 SOL, times 0.9.
+    expect(MAX_QUOTED_SOL_USD_PRICE).toBe(5_000);
     expect(PAYMENT_FLOOR_MARGIN_BPS).toBe(9_000);
-    expect(DEFAULT_MIN_PAYMENT_LAMPORTS).toEqual({ creation: 14_850_000n, modification: 2_475_000n });
+    expect(DEFAULT_MIN_PAYMENT_LAMPORTS).toEqual({ creation: 5_940_000n, modification: 990_000n });
+    expect(paymentFloorLamports(33, 5_000)).toBe(5_940_000n);
+    expect(paymentFloorLamports(5.5, 5_000)).toBe(990_000n);
+    expect(paymentFloorLamports(33, 5_000, 10_000)).toBe(6_600_000n);
+    // The former bound ($2 000) gave 0.01485 and 0.002475 SOL.
     expect(paymentFloorLamports(33, 2_000)).toBe(14_850_000n);
     expect(paymentFloorLamports(5.5, 2_000)).toBe(2_475_000n);
-    expect(paymentFloorLamports(33, 2_000, 10_000)).toBe(16_500_000n);
-    // A legitimate quote at the highest accepted price is above the floor (the old fixed
-    // 0.02 SOL floor refused it once SOL went past $1 650).
-    const quotedAtMax = (33n * 1_000_000_000n) / 2_000n;
+    // A legitimate quote at the highest accepted price, of either kind, is above the floor (the
+    // floors of the $2 000 bound refused them once SOL went past $2 222).
+    const quotedAtMax = (33n * 1_000_000_000n) / 5_000n;
     expect(quotedAtMax).toBeGreaterThan(DEFAULT_MIN_PAYMENT_LAMPORTS.creation);
-    expect(quotedAtMax).toBeLessThan(20_000_000n);
+    expect(quotedAtMax).toBeLessThan(14_850_000n);
+    expect((55n * 100_000_000n) / 5_000n).toBeGreaterThan(
+      DEFAULT_MIN_PAYMENT_LAMPORTS.modification,
+    );
   });
 
   it('keeps the environment override and refuses bad inputs', () => {

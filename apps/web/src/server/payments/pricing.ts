@@ -29,7 +29,7 @@ export interface SolUsdPriceGuard {
 /** Defaults of SOL_USD_PRICE_MIN, SOL_USD_PRICE_MAX and SOL_USD_PRICE_MAX_DEVIATION_PCT. */
 export const DEFAULT_SOL_USD_PRICE_GUARD: Readonly<SolUsdPriceGuard> = {
   min: 10,
-  max: 2_000,
+  max: 5_000,
   maxDeviationPct: 25,
 };
 

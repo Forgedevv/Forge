@@ -45,14 +45,14 @@ describe('pricing', () => {
   it('checks a rate against the given bounds, the hard limits by default', () => {
     expect(SOL_USD_PRICE_HARD_LIMITS).toEqual({ min: 1, max: 100_000 });
     expect(() => assertSaneSolUsdPrice(5_000)).not.toThrow();
-    expect(() => assertSaneSolUsdPrice(5_000, DEFAULT_SOL_USD_PRICE_GUARD)).toThrow(
+    expect(() => assertSaneSolUsdPrice(5_000.01, DEFAULT_SOL_USD_PRICE_GUARD)).toThrow(
       PriceUnavailableError,
     );
     expect(() => assertSaneSolUsdPrice(9, DEFAULT_SOL_USD_PRICE_GUARD)).toThrow(
       PriceUnavailableError,
     );
     expect(() => assertSaneSolUsdPrice(10, DEFAULT_SOL_USD_PRICE_GUARD)).not.toThrow();
-    expect(() => assertSaneSolUsdPrice(2_000, DEFAULT_SOL_USD_PRICE_GUARD)).not.toThrow();
+    expect(() => assertSaneSolUsdPrice(5_000, DEFAULT_SOL_USD_PRICE_GUARD)).not.toThrow();
   });
 
   it('refuses a non-positive dollar amount', () => {
