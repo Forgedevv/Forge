@@ -52,7 +52,7 @@ Every protection below is **mandatory** in the MVP. Agents that touch one of the
 
 ## 7. Treasury drained
 
-**Protections**: Squads multisig, at least 2 signatures out of 3 (to be confirmed with the team). The buyback bot only has a daily spending limit to its own wallet.
+**Protections**: Squads multisig. Current decision (owner, 2026-10-17, `docs/DECISIONS.md` D36): at launch the vault has two keys of the owner (main wallet and backup wallet) with a threshold of 1, plus the buyback bot as a member without permission; more members come later. The original proposal was 2 signatures out of 3. Residual risk: with a threshold of 1, one compromised owner key can move everything the vault holds, so keep the two keys on separate devices and raise the threshold when members are added (2 as soon as a second person or an independent key joins). The buyback bot only has a daily spending limit to its own wallet.
 
 ## 7b. Revenue wallet hot key (D34)
 

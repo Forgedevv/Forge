@@ -5,9 +5,10 @@
  * by the Jupiter referral program into token accounts of FORGE's referral account
  * (`FORGE_JUPITER_REFERRAL_ACCOUNT`), one per currency Jupiter collects in. Claiming is
  * permissionless: it moves a token account's balance to the referral account's `partner` (the
- * owner of the referral account: the FORGE multisig vault), minus the project's share, so the
- * fees reach the treasury and feed the buyback (D8). The fee payer only pays the network fee and,
- * the first time, the rent of the partner's token account.
+ * owner of the referral account: the FORGE revenue wallet since D34), minus the project's share.
+ * The revenue job of the signer then converts the balances to SOL and forwards them to the vault,
+ * which feeds the buyback (D8). The fee payer only pays the network fee and, the first time, the
+ * rent of the partner's token account.
  *
  * Built from the referral program's IDL (program `REFER4ZgmyYx9c6He5XfaTMiGfdLwRnkV4RPp9t9iF3`,
  * `@jup-ag/referral-sdk` 0.3.0) with raw instructions: the SDK pulls Anchor, too heavy for the
@@ -28,8 +29,8 @@
  * builder checks the connection's genesis hash and refuses any other cluster (`wrong_cluster`)
  * before it reads any account, so the project and name checks never run on devnet (where neither
  * the Ultra project nor Jupiter's fee collection exist): the devnet behaviour is unchanged.
- * The partner can be asserted (`expectedPartner` = the vault): a referral account owned by
- * anyone else is refused (`partner_mismatch`), fees would not reach the treasury.
+ * The partner can be asserted (`expectedPartner` = the revenue wallet): a referral account owned by
+ * anyone else is refused (`partner_mismatch`), fees would not reach the revenue wallet.
  */
 import { createHash } from 'node:crypto';
 import {
@@ -131,7 +132,7 @@ export class JupiterReferralError extends Error {
 // ---------------------------------------------------------------------------------------------
 
 export interface JupiterReferralAccount {
-  /** Receives the claimed fees (FORGE: the multisig vault). */
+  /** Receives the claimed fees (FORGE: the revenue wallet, D34). */
   partner: PublicKey;
   project: PublicKey;
   shareBps: number;
@@ -359,7 +360,7 @@ export interface BuildJupiterReferralClaimTxParams {
   mint: PublicKey;
   /** Fee payer and only signer. */
   payer: PublicKey;
-  /** When given, the referral account's partner must be this key (the FORGE multisig vault). */
+  /** When given, the referral account's partner must be this key (the revenue wallet, D34). */
   expectedPartner?: PublicKey;
   /**
    * The referral account's project must be this key. Default: `JUPITER_ULTRA_REFERRAL_PROJECT`,
