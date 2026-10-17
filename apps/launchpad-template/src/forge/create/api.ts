@@ -49,6 +49,15 @@ export const PrepareLaunchResponse = z.object({
   poolTx: z.string().min(1),
   mint: SolanaAddress,
   summary: LaunchSummaryWire,
+  /**
+   * Single-use-per-coin capability to rebuild this exact launch (same mint, image and metadata)
+   * with a fresh blockhash or another first buy, without a new upload (`LaunchApi.rebuild`).
+   * Absent when the server cannot keep the prepared launch.
+   */
+  rebuildToken: z
+    .string()
+    .regex(/^[A-Za-z0-9_-]{43}$/)
+    .optional(),
 });
 export type PrepareLaunchResponse = z.infer<typeof PrepareLaunchResponse>;
 
@@ -73,19 +82,52 @@ export interface PrepareLaunchRequest {
   auth: PrepareLaunchAuth;
 }
 
+/**
+ * Rebuild of a prepared launch (`POST /api/upload` with a `rebuild` body): the server reuses the
+ * mint, the stored image and the metadata of the launch it prepared, and builds a new transaction
+ * (fresh blockhash, possibly another first buy). No new upload, no new message signature: the
+ * `rebuildToken` handed out with the first answer authorizes it, for the same wallet only.
+ */
+export interface RebuildLaunchRequest {
+  mint: string;
+  rebuildToken: string;
+  userWallet: string;
+  /** Decimal string of lamports. "0" means no first buy. */
+  firstBuyLamports: string;
+}
+
 export interface LaunchApi {
   prepare(request: PrepareLaunchRequest): Promise<PrepareLaunchResponse>;
+  /** Optional: without it, every change goes through a full `prepare`. */
+  rebuild?(request: RebuildLaunchRequest): Promise<PrepareLaunchResponse>;
 }
+
+/** Stable codes the route may attach to an error answer (`{ error, code }`). */
+export type LaunchApiErrorCode =
+  /** The prepared launch is unknown or expired on the server: prepare again. */
+  | 'prepare_again'
+  /** The coin of this mint already exists on-chain. */
+  | 'already_launched'
+  | 'invalid_input'
+  | 'rate_limited';
 
 export class LaunchApiError extends Error {
   constructor(
     message: string,
     readonly status?: number,
+    readonly code?: LaunchApiErrorCode,
   ) {
     super(message);
     this.name = 'LaunchApiError';
   }
 }
+
+const KNOWN_CODES: readonly string[] = [
+  'prepare_again',
+  'already_launched',
+  'invalid_input',
+  'rate_limited',
+];
 
 type FetchLike = (
   input: string,
@@ -97,37 +139,60 @@ export const PREPARE_ENDPOINT = '/api/upload';
 /** Default implementation: same-origin HTTP call to the template's own API route. */
 export function createHttpLaunchApi(doFetch?: FetchLike): LaunchApi {
   const run: FetchLike = doFetch ?? ((input, init) => fetch(input, init));
+
+  async function post(body: unknown): Promise<PrepareLaunchResponse> {
+    let res;
+    try {
+      res = await run(PREPARE_ENDPOINT, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    } catch {
+      throw new LaunchApiError('Could not reach the server. Check your connection and retry.');
+    }
+    let payload: unknown;
+    try {
+      payload = await res.json();
+    } catch {
+      throw new LaunchApiError(
+        `The server sent an unreadable answer (error ${res.status}). Try again in a moment.`,
+        res.status,
+      );
+    }
+    if (!res.ok) {
+      const answer = payload as { error?: unknown; code?: unknown } | null;
+      const message =
+        typeof answer?.error === 'string' && answer.error.length > 0 && answer.error.length <= 300
+          ? answer.error
+          : `Could not prepare the coin (error ${res.status}). Try again in a moment.`;
+      const code =
+        typeof answer?.code === 'string' && KNOWN_CODES.includes(answer.code)
+          ? (answer.code as LaunchApiErrorCode)
+          : undefined;
+      throw new LaunchApiError(message, res.status, code);
+    }
+    const parsed = PrepareLaunchResponse.safeParse(payload);
+    if (!parsed.success) {
+      throw new LaunchApiError(
+        'The server answer is not in the expected format. Nothing was signed.',
+        res.status,
+      );
+    }
+    return parsed.data;
+  }
+
   return {
-    async prepare(request) {
-      let res;
-      try {
-        res = await run(PREPARE_ENDPOINT, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(request),
-        });
-      } catch {
-        throw new LaunchApiError('Could not reach the server. Check your connection and retry.');
-      }
-      let payload: unknown;
-      try {
-        payload = await res.json();
-      } catch {
-        throw new LaunchApiError('The server sent an unreadable answer.', res.status);
-      }
-      if (!res.ok) {
-        const message =
-          typeof (payload as { error?: unknown })?.error === 'string'
-            ? (payload as { error: string }).error
-            : `The server refused the request (${res.status}).`;
-        throw new LaunchApiError(message, res.status);
-      }
-      const parsed = PrepareLaunchResponse.safeParse(payload);
-      if (!parsed.success) {
-        throw new LaunchApiError('The server answer is not in the expected format.', res.status);
-      }
-      return parsed.data;
-    },
+    prepare: (request) => post(request),
+    rebuild: (request) =>
+      post({
+        rebuild: {
+          mint: request.mint,
+          token: request.rebuildToken,
+          firstBuyLamports: request.firstBuyLamports,
+        },
+        userWallet: request.userWallet,
+      }),
   };
 }
 

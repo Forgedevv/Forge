@@ -93,7 +93,9 @@ describe('ClaimCreatorFees', () => {
       .spyOn(s.core, 'listCreatorCoins')
       .mockRejectedValueOnce(new Error('relay down'));
     renderClaims(s);
-    expect(await screen.findByRole('alert')).toHaveTextContent('relay down');
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(/Could not load your coins/);
+    expect(alert).not.toHaveTextContent('relay down');
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
     expect(await screen.findByText('Moon Coin (MOON)')).toBeInTheDocument();
     expect(list).toHaveBeenCalledTimes(2);

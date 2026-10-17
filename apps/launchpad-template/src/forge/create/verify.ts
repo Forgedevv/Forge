@@ -483,7 +483,7 @@ export interface LaunchSimulationInput {
 export function verifyLaunchSimulation(launch: VerifiedLaunch, input: LaunchSimulationInput): void {
   const { simulation } = input;
   if (simulation.err) {
-    fail(`The launch would fail on-chain: ${describeChainError(simulation.err)}`);
+    fail(`The launch would fail on-chain: ${describeChainError(simulation.err, simulation.logs)}`);
   }
   const s = launch.summary;
   const postWallet = simulation.accounts[0]?.lamports ?? BigInt(0);

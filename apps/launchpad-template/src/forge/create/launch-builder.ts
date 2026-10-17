@@ -3,7 +3,9 @@ import {
   ForgeAddressError,
   LAUNCH_COIN_COMPUTE_UNITS,
   LaunchCoinError,
+  MAX_FIRST_BUY_SOL,
   METADATA_ACCOUNT_SIZE,
+  METADATA_LIMITS,
   METAPLEX_CREATE_METADATA_FEE_LAMPORTS,
   assertUserCoinConfig,
   buildUserCoinLaunchTx,
@@ -57,7 +59,11 @@ export type LaunchBuildErrorCode =
   | 'too_large'
   | 'unexpected_signers'
   /** FORGE_PLATFORM_FEE_WALLET is missing, invalid or not rent-exempt: no first buy possible. */
-  | 'platform_fee_unavailable';
+  | 'platform_fee_unavailable'
+  /** Core refused the coin values (`INVALID_INPUT`: name, symbol or first buy): a 400. */
+  | 'invalid_input'
+  /** Core refused the metadata URI the upload returned (not the visitor's input). */
+  | 'metadata_invalid';
 
 export class LaunchBuildError extends Error {
   constructor(
@@ -159,10 +165,42 @@ function mapCoreError(error: unknown): unknown {
         'Coins with a first buy cannot be created on this site right now.',
       );
     case 'INVALID_INPUT':
-      return new RangeError(error.message);
+      return invalidInput(error.message);
     default:
       return error;
   }
+}
+
+/**
+ * Human message for core's `INVALID_INPUT` (its messages name the field: `name must be at most
+ * 32 bytes`, `symbol must be...`, `firstBuyLamports must be...`, `metadataUri must be...`).
+ */
+export function invalidInput(coreMessage: string): LaunchBuildError {
+  if (/^metadataUri\b/.test(coreMessage)) {
+    return new LaunchBuildError('metadata_invalid', 'The stored coin metadata link was refused.');
+  }
+  if (/^name\b/.test(coreMessage)) {
+    return new LaunchBuildError(
+      'invalid_input',
+      `The coin name is too long: it holds at most ${METADATA_LIMITS.name} bytes, and accents or emoji take 2 to 4 each. Shorten it.`,
+    );
+  }
+  if (/^symbol\b/.test(coreMessage)) {
+    return new LaunchBuildError(
+      'invalid_input',
+      `The symbol must be 2 to ${METADATA_LIMITS.symbol} letters A to Z or digits.`,
+    );
+  }
+  if (/^firstBuyLamports\b/.test(coreMessage)) {
+    return new LaunchBuildError(
+      'invalid_input',
+      `The first buy cannot exceed ${MAX_FIRST_BUY_SOL} SOL.`,
+    );
+  }
+  return new LaunchBuildError(
+    'invalid_input',
+    'The coin details were refused. Check the name, the symbol and the first buy.',
+  );
 }
 
 export function createLaunchBuilder(options: LaunchBuilderOptions): LaunchBuilder {

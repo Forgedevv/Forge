@@ -182,7 +182,7 @@ export interface ClaimSimulationInput {
 export function verifyClaimSimulation(input: ClaimSimulationInput): void {
   const { simulation } = input;
   if (simulation.err) {
-    fail(`The claim would fail on-chain: ${describeChainError(simulation.err)}`);
+    fail(`The claim would fail on-chain: ${describeChainError(simulation.err, simulation.logs)}`);
   }
   const postWallet = simulation.accounts[0]?.lamports ?? BigInt(0);
   const postCoin = simulation.accounts[1]?.lamports ?? BigInt(0);

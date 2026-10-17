@@ -1,4 +1,5 @@
 import { base64ToBytes } from './base64';
+import { describeChainFailure } from './errors';
 
 /**
  * LOCKED ZONE. Minimal chain access for the browser: read balances and accounts, simulate, send a
@@ -43,7 +44,17 @@ export interface ChainClient {
   sendRawTransaction(base64: string): Promise<string>;
   /** Null when the cluster does not know the signature (yet). */
   getSignatureStatus(signature: string): Promise<SignatureStatus | null>;
+  /**
+   * Current block height (`confirmed`). Optional: used to tell an expired transaction from a slow
+   * one (see `BLOCKHASH_LIFETIME_BLOCKS`).
+   */
+  getBlockHeight?(): Promise<number>;
 }
+
+/** Blocks a recent blockhash stays valid (Solana `MAX_PROCESSING_AGE`). */
+export const BLOCKHASH_LIFETIME_BLOCKS = 150;
+/** Extra blocks before a transaction is declared expired (never too early). */
+export const EXPIRY_MARGIN_BLOCKS = 10;
 
 export class RpcError extends Error {
   constructor(
@@ -188,6 +199,13 @@ export function createRpcChainClient(options: RpcClientOptions): ChainClient {
       if (!status) return null;
       return { confirmationStatus: status.confirmationStatus ?? null, err: status.err ?? null };
     },
+    async getBlockHeight() {
+      const height = await call<number>('getBlockHeight', [{ commitment: 'confirmed' }]);
+      if (typeof height !== 'number' || !Number.isSafeInteger(height) || height < 0) {
+        throw new RpcError('Unexpected getBlockHeight answer');
+      }
+      return height;
+    },
   };
 }
 
@@ -270,12 +288,10 @@ export async function confirmSignature(
   }
 }
 
-/** Human-readable form of an on-chain error for the UI. */
-export function describeChainError(err: unknown): string {
-  if (typeof err === 'string') return err;
-  try {
-    return JSON.stringify(err, (_k, v) => (typeof v === 'bigint' ? v.toString() : v));
-  } catch {
-    return 'Unknown on-chain error';
-  }
+/**
+ * Human-readable form of an on-chain error for the UI: one sentence from its stable reason
+ * (`errors.ts`), never the raw JSON of the program error.
+ */
+export function describeChainError(err: unknown, logs?: readonly string[] | null): string {
+  return describeChainFailure(err, logs);
 }

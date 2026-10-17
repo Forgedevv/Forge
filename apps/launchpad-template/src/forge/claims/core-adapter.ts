@@ -7,6 +7,7 @@ import {
   listCoinsOfCreator,
 } from '@forge/core';
 import { forgeConfig } from '../config';
+import { TxError } from '../create/flow';
 import { SITE_PRIORITY_FEE } from '../priority-fee';
 import { getRelayConnection } from '../trade/connection';
 
@@ -84,7 +85,10 @@ export interface CoreClaimsOptions {
 
 function requireConnection(options: CoreClaimsOptions): Connection {
   const connection = options.getConnection();
-  if (!connection) throw new Error('Fee claims are not configured on this site.');
+  if (!connection) {
+    // A calm, final message: the UI shows it as is.
+    throw new TxError('prepare_failed', 'prepare', 'Fee claims are not configured on this site.');
+  }
   return connection;
 }
 
