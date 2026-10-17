@@ -33,8 +33,10 @@ function Row({
       className={`flex items-baseline justify-between gap-3 ${emphasis ? 'font-semibold' : ''}`}
       data-testid={`quote-row-${id}`}
     >
-      <dt className="text-[var(--color-text-muted)]">{label}</dt>
-      <dd className={warn ? 'text-[var(--color-danger)]' : ''}>{value}</dd>
+      <dt className="min-w-0 text-[var(--color-text-muted)]">{label}</dt>
+      <dd className={`text-right tabular-nums ${warn ? 'text-[var(--color-danger)]' : ''}`}>
+        {value}
+      </dd>
     </div>
   );
 }

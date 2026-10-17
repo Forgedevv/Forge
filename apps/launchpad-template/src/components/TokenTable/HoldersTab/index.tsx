@@ -49,7 +49,7 @@ HoldersTab.displayName = 'HoldersTab';
 
 const HoldersSummary: React.FC = () => {
   return (
-    <div className="flex items-center gap-2 pl-1">
+    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 pl-1">
       <div>
         <span className="text-neutral-500">Holders:</span> <HolderCount />
       </div>
