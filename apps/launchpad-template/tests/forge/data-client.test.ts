@@ -4,7 +4,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 const http = vi.hoisted(() => ({
   post: vi.fn(() => ({ json: async () => ({ recent: { pools: [] } }) })),
 }));
-vi.mock('ky', () => ({ default: { post: http.post, get: vi.fn() } }));
+vi.mock('ky', () => ({
+  default: { post: http.post, get: vi.fn() },
+  HTTPError: class HTTPError extends Error {},
+}));
 
 const state = vi.hoisted(() => ({
   onchain: undefined as
@@ -15,6 +18,8 @@ vi.mock('../../src/forge/config', () => ({
   get onchainConfig() {
     return state.onchain;
   },
+  // Mainnet: the data API is the primary source (data-fallback.test.ts covers the fallback).
+  cluster: 'mainnet-beta',
 }));
 
 import {
