@@ -4,6 +4,10 @@ All notable changes to `@forge/shared`, published on npm as `@forgedevv/shared` 
 `@forgedevv/core` (same version). Versions follow semantic versioning. Changes before 0.3.0 are
 listed in the `@forge/core` changelog.
 
+## 0.3.1 — 2026-10-17
+
+No change; released with `@forgedevv/core` 0.3.1.
+
 ## 0.3.0 — 2026-10-17
 
 ### Changed (Jupiter fixes)

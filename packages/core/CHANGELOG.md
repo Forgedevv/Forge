@@ -3,6 +3,16 @@
 All notable changes to `@forge/core`. Versions follow semantic versioning. Consumers (the
 launchpad template, the signer, the web app) pin an exact version, never a range.
 
+## 0.3.1 — 2026-10-17
+
+### Fixed
+
+- Client sites failed to build with 0.3.0 (`node:crypto` in `jupiter-referral.js` and
+  `meteora-referral.js`, refused by the Next.js browser bundle). Both now hash with
+  `@noble/hashes` (new exact dependency 1.8.0, already used by `@solana/web3.js`); the
+  discriminators and derived addresses are unchanged. A test refuses any Node built-in
+  import in the package sources.
+
 ## 0.3.0 — 2026-10-17
 
 Changes after 0.2.0. Publish `@forgedevv/shared` 0.3.0 with it (new kill switch `revenue_paused` in `FlagKey`).
