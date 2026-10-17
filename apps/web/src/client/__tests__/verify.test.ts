@@ -7,7 +7,9 @@ import {
   TransactionInstruction,
   TransactionMessage,
   VersionedTransaction,
+  type Connection,
 } from '@solana/web3.js';
+import { buildPaymentTx } from '@forge/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   TransactionCheckError,
@@ -206,6 +208,44 @@ describe('verifyPaymentTransaction', () => {
       () => verifyPaymentTransaction(expensive, expected()),
       /priority fee is too high/,
     );
+  });
+
+  it('accepts the priced payment the server builds with @forge/core, and nothing more', async () => {
+    const connection = {
+      getMinimumBalanceForRentExemption: async () => 890_880,
+      getBalance: async () => 5_000_000,
+      getLatestBlockhash: async () => ({ blockhash: blockhash(), lastValidBlockHeight: 10 }),
+      getRecentPrioritizationFees: async () => [{ slot: 1, prioritizationFee: 9_000_000 }],
+    } as unknown as Connection;
+    const built = await buildPaymentTx(
+      connection,
+      { payer: owner, lamports: 250_000_000n, jobId },
+      // The server's PAYMENT_PRIORITY_FEE: the core defaults.
+      { env: { FORGE_CASHBOX_WALLET: cashbox.toBase58() }, priority: {} },
+    );
+    // Capped by the default policy: 1,000,000 micro-lamports per CU, 0.0005 SOL in all.
+    expect(built.priorityFee).toMatchObject({ microLamports: 1_000_000 });
+    const message = built.transaction.compileMessage();
+    const tx = new VersionedTransaction(
+      new TransactionMessage({
+        payerKey: owner,
+        recentBlockhash: message.recentBlockhash,
+        instructions: built.transaction.instructions,
+      }).compileToV0Message(),
+    );
+    expect(() => verifyPaymentTransaction(tx, expected())).not.toThrow();
+
+    // The same payment with a second price, or a second limit, is refused.
+    for (const duplicate of [
+      ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 1 }),
+      ComputeBudgetProgram.setComputeUnitLimit({ units: 1_000 }),
+    ]) {
+      const doubled = compile(owner, [duplicate, ...built.transaction.instructions]);
+      expectRefused(
+        () => verifyPaymentTransaction(doubled, expected()),
+        /Unexpected compute budget/,
+      );
+    }
   });
 
   it('refuses address lookup tables', () => {

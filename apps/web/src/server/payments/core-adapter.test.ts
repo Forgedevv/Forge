@@ -17,6 +17,7 @@ import {
   CLUSTER_GENESIS_HASH,
   ForgeAddressError,
   MAX_PAYMENT_LAMPORTS,
+  MEMO_PROGRAM_ID,
   MEMO_V1_PROGRAM_ID,
   PaymentError,
   paymentMemo,
@@ -28,6 +29,7 @@ import {
   cashboxBalanceGrowth,
   createCorePaymentGateway,
   PAYMENT_COMMITMENT,
+  PAYMENT_PRIORITY_FEE,
   translateCoreError,
 } from './gateway';
 import { landedPayment, landedTx, randomSignature, TEST_BLOCKHASH } from './test-helpers';
@@ -105,6 +107,14 @@ function fakeConnection(options: FakeRpcOptions = {}) {
     getMinimumBalanceForRentExemption: vi.fn(() => fail(options.rent ?? 890_880)),
     getLatestBlockhash: vi.fn(() =>
       fail({ blockhash: TEST_BLOCKHASH, lastValidBlockHeight: 4242 }),
+    ),
+    getRecentPrioritizationFees: vi.fn(() =>
+      fail([
+        { slot: 1, prioritizationFee: 0 },
+        { slot: 2, prioritizationFee: 60_000 },
+        { slot: 3, prioritizationFee: 60_000 },
+        { slot: 4, prioritizationFee: 5_000_000 },
+      ]),
     ),
   };
   return { rpc, connection: rpc as unknown as Connection };
@@ -371,6 +381,36 @@ describe('gateway', () => {
     expect(tx.message.staticAccountKeys[0]!.equals(PAYER)).toBe(true);
   });
 
+  it('prices the payment from the recent fees, compute budget first, bounded', async () => {
+    const { connection, rpc } = fakeConnection();
+    const gateway = createCorePaymentGateway({
+      connection,
+      cluster: 'devnet',
+      cashbox: CASHBOX,
+      retry: NO_RETRY,
+    });
+    const built = await gateway.buildPayment({ payer: PAYER, lamports: LAMPORTS, jobId: JOB });
+    expect(PAYMENT_PRIORITY_FEE).toEqual({});
+    expect(rpc.getRecentPrioritizationFees).toHaveBeenCalledWith({
+      lockedWritableAccounts: [PAYER, CASHBOX],
+    });
+    const tx = VersionedTransaction.deserialize(Buffer.from(built.transaction, 'base64'));
+    const keys = tx.message.staticAccountKeys;
+    const programs = tx.message.compiledInstructions.map((ix) => keys[ix.programIdIndex]!);
+    expect(programs.map(String)).toEqual(
+      [
+        ComputeBudgetProgram.programId,
+        ComputeBudgetProgram.programId,
+        SystemProgram.programId,
+        MEMO_PROGRAM_ID,
+      ].map(String),
+    );
+    const price = Buffer.from(tx.message.compiledInstructions[1]!.data);
+    expect(price[0]).toBe(3);
+    // 75th percentile of the recent fees (60,000), under the 1,000,000 cap.
+    expect(price.readBigUInt64LE(1)).toBe(60_000n);
+  });
+
   it('builds and verifies with the configured cashbox, never another value of process.env', async () => {
     const previous = process.env.FORGE_CASHBOX_WALLET;
     process.env.FORGE_CASHBOX_WALLET = OTHER.toBase58();
@@ -384,8 +424,11 @@ describe('gateway', () => {
       });
       const built = await gateway.buildPayment({ payer: PAYER, lamports: LAMPORTS, jobId: JOB });
       const tx = VersionedTransaction.deserialize(Buffer.from(built.transaction, 'base64'));
-      const [transfer] = tx.message.compiledInstructions;
-      const to = tx.message.staticAccountKeys[transfer!.accountKeyIndexes[1]!]!;
+      const keys = tx.message.staticAccountKeys;
+      const transfer = tx.message.compiledInstructions.find((ix) =>
+        keys[ix.programIdIndex]!.equals(SystemProgram.programId),
+      );
+      const to = keys[transfer!.accountKeyIndexes[1]!]!;
       expect(to.equals(CASHBOX)).toBe(true);
       expect(rpc.getBalance).toHaveBeenCalledWith(CASHBOX, 'confirmed');
       // The landed transaction pays CASHBOX: verification must check that same address.

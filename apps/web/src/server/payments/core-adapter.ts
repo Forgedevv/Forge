@@ -33,6 +33,7 @@ export type {
   PaymentTxOptions,
   PaymentTxResult,
   PaymentVerification,
+  PriorityFeeSetting,
   RetryOptions,
   VerifyPaymentOptions,
 } from '@forge/core';

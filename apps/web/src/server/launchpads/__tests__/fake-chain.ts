@@ -1,8 +1,10 @@
 import {
   ClaimError,
+  priorityFeeInstructions,
   type ClaimTxResult,
   type CoinOfConfig,
   type PoolCreationFeeClaimTxResult,
+  type PriorityFeeQuote,
 } from '@forge/core';
 import { Keypair, PublicKey, SystemProgram, Transaction } from '@solana/web3.js';
 import { RpcUnavailableError } from '../../jobs/chain';
@@ -44,12 +46,17 @@ export function coin(
   };
 }
 
-function claimTx(owner: PublicKey, instructions: number): Transaction {
+function claimTx(
+  owner: PublicKey,
+  instructions: number,
+  priorityFee: PriorityFeeQuote | null = null,
+): Transaction {
   const tx = new Transaction({
     feePayer: owner,
     blockhash: Keypair.generate().publicKey.toBase58(),
     lastValidBlockHeight: 100,
   });
+  if (priorityFee) tx.add(...priorityFeeInstructions(priorityFee));
   for (let i = 0; i < instructions; i++) {
     tx.add(
       SystemProgram.transfer({
@@ -70,6 +77,11 @@ export class FakeClaimsChain implements ClaimsChain {
   poolCreationFees = new Map<string, bigint>();
   /** Instructions of a pool creation fee claim (to exceed the size limit in tests). */
   pcfInstructions = 1;
+  /** Priority fees the core would have put on the trading and pool creation fee claims. */
+  priorityFees: { trading: PriorityFeeQuote | null; pcf: PriorityFeeQuote | null } = {
+    trading: null,
+    pcf: null,
+  };
   calls: string[] = [];
   failList: Error | null = null;
   claimError: ClaimError | null = null;
@@ -97,12 +109,14 @@ export class FakeClaimsChain implements ClaimsChain {
     if (this.claimError) throw this.claimError;
     const found = this.find(pool);
     const claimable = found?.fees.claimable.partner ?? { base: 0n, quote: 0n };
+    // Like core: the priority fee is part of the network fee the payer pays.
+    const networkFee = 5000n + (this.priorityFees.trading?.priorityFeeLamports ?? 0n);
     const costs = {
-      networkFeeLamports: 5000n,
+      networkFeeLamports: networkFee,
       receiverTokenAccountRentLamports: 0n,
       temporaryLamports: 2_039_280n,
-      payerTotalLamports: 5000n,
-      payerRequiredBalanceLamports: 2_044_280n,
+      payerTotalLamports: networkFee,
+      payerRequiredBalanceLamports: networkFee + 2_039_280n,
     };
     const summary = {
       kind: 'partner' as const,
@@ -115,8 +129,9 @@ export class FakeClaimsChain implements ClaimsChain {
       receiverQuoteLamports: claimable.quote,
       quoteIsExact: false,
       costs,
-      netLamports: claimable.quote - 5000n,
+      netLamports: claimable.quote - networkFee,
       existingWsolLamports: 0n,
+      priorityFee: this.priorityFees.trading,
     };
     const skip = this.belowCost.has(pool.toBase58())
       ? 'not_worthwhile'
@@ -125,7 +140,7 @@ export class FakeClaimsChain implements ClaimsChain {
         : null;
     if (skip) return { transaction: null, lastValidBlockHeight: null, skipReason: skip, summary };
     return {
-      transaction: claimTx(owner, 4),
+      transaction: claimTx(owner, 4, this.priorityFees.trading),
       lastValidBlockHeight: 100,
       skipReason: null,
       summary,
@@ -151,6 +166,7 @@ export class FakeClaimsChain implements ClaimsChain {
       claimableLamports: fee,
       networkFeeLamports: fee > 0n ? 5000n : 0n,
       netLamports: fee > 0n ? fee - 5000n : 0n,
+      priorityFee: fee > 0n ? this.priorityFees.pcf : null,
     };
     if (fee === 0n) {
       return {
@@ -161,7 +177,7 @@ export class FakeClaimsChain implements ClaimsChain {
       };
     }
     return {
-      transaction: claimTx(owner, this.pcfInstructions),
+      transaction: claimTx(owner, this.pcfInstructions, this.priorityFees.pcf),
       lastValidBlockHeight: 100,
       skipReason: null,
       summary,
