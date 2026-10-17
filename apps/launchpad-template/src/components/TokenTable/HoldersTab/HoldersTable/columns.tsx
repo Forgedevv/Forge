@@ -1,6 +1,5 @@
 import { ColumnDef } from '@tanstack/react-table';
 import { useSetAtom } from 'jotai';
-import Link from 'next/link';
 import { useCallback } from 'react';
 
 import { BottomPanelTab, bottomPanelTabAtom, traderAddressAtom } from '../../config';
@@ -10,6 +9,11 @@ import { formatReadablePercentChange } from '@/lib/format/number';
 import { ReadableNumber } from '@/components/ui/ReadableNumber';
 import { TraderAddress } from '../../TraderAddress';
 import { TraderIndicators } from '../../TraderIndicators';
+import { ExternalLink } from '@/components/ui/ExternalLink';
+import { cluster } from '@/forge/config';
+
+const accountUrl = (address: string) =>
+  `https://solscan.io/account/${address}${cluster === 'devnet' ? '?cluster=devnet' : ''}`;
 
 export const columns: ColumnDef<HolderInfo>[] = [
   {
@@ -40,10 +44,8 @@ export const columns: ColumnDef<HolderInfo>[] = [
             >
               <span className="iconify ph--funnel-bold" />
             </button>
-            <Link
-              href={`/portfolio/${row.original.address}`}
-              target="_blank"
-              prefetch={false}
+            <ExternalLink
+              href={accountUrl(row.original.address)}
               className="group-hover/row:underline"
             >
               <TraderAddress
@@ -52,7 +54,7 @@ export const columns: ColumnDef<HolderInfo>[] = [
                 address={row.original.address}
                 className="flex-row-reverse text-left"
               />
-            </Link>
+            </ExternalLink>
             <HolderAddressTag address={row.original.address} tags={row.original.tags} />
             <TraderIndicators address={row.original.address} className="pl-1" />
           </div>
