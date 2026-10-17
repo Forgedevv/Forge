@@ -126,16 +126,17 @@ const flagsRows = [
   'cashbox_sweep_paused',
   'refunds_paused',
   'jupiter_claims_paused',
+  'convert_paused',
 ].map((key) => ({ key, value: false }));
 
-function mockFetch(calls: string[] = []): typeof fetch {
+function mockFetch(calls: string[] = [], flags = flagsRows): typeof fetch {
   return (async (input: string | URL | Request) => {
     const url = new URL(typeof input === 'string' ? input : input.toString());
     calls.push(url.hostname + url.pathname);
     if (url.hostname !== 'supabase.test') {
       return new Response('{}', { status: 503 });
     }
-    const body = url.pathname.endsWith('/flags') ? flagsRows : [];
+    const body = url.pathname.endsWith('/flags') ? flags : [];
     return new Response(JSON.stringify(body), {
       status: 200,
       headers: { 'content-type': 'application/json' },
@@ -150,12 +151,12 @@ afterEach(async () => {
 
 async function create(
   overrides: Record<string, string | undefined> = {},
-  options: { extraJobs?: SignerJobModule[]; connection?: Connection } = {},
+  options: { extraJobs?: SignerJobModule[]; connection?: Connection; fetch?: typeof fetch } = {},
 ): Promise<SignerRuntime> {
   const runtime = await createSignerRuntime({
     env: baseEnv(overrides),
     connection: options.connection ?? mockConnection(),
-    fetch: mockFetch(),
+    fetch: options.fetch ?? mockFetch(),
     logger: pino({ level: 'silent' }),
     serverLogger: pino({ level: 'silent' }),
     port: 0,
@@ -435,6 +436,22 @@ describe('signer runtime wiring', () => {
     await expect(create({ SIGNER_REFUNDS_MAX_LAMPORTS: '0.5' })).rejects.toThrow(
       /SIGNER_REFUNDS_MAX_LAMPORTS/,
     );
+  });
+
+  it('reports the conversion as paused while its kill switch is on or its row is missing', async () => {
+    const running = await create();
+    expect(await running.scheduler.runNow('convert')).toEqual({ status: 'ran' });
+    await running.stop();
+    const on = flagsRows.map((row) =>
+      row.key === 'convert_paused' ? { ...row, value: true } : row,
+    );
+    const paused = await create({}, { fetch: mockFetch([], on) });
+    expect(await paused.scheduler.runNow('convert')).toEqual({ status: 'paused' });
+    expect(paused.scheduler.states().convert).toMatchObject({ lastStatus: 'paused', runs: 1 });
+    await paused.stop();
+    const missing = flagsRows.filter((row) => row.key !== 'convert_paused');
+    const unseeded = await create({}, { fetch: mockFetch([], missing) });
+    expect(await unseeded.scheduler.runNow('convert')).toEqual({ status: 'paused' });
   });
 
   it('refuses a live conversion on mainnet-beta without the Jupiter API key', async () => {

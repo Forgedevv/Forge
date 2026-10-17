@@ -43,6 +43,7 @@ import {
   type SwapSender,
   type TokenBalance,
 } from './convert.js';
+import { memoryFlags } from './testing.js';
 
 const OWNER = Keypair.generate().publicKey.toBase58();
 const MINT_A = Keypair.generate().publicKey.toBase58();
@@ -399,11 +400,13 @@ function makeHarness(
   );
   const sender: SwapSender = { send };
   const balanceSource: BalanceSource = { list: async () => balances };
+  const flags = memoryFlags();
   const deps: ConvertDeps = {
     jupiter: { quote, swap } as JupiterClient,
     balances: balanceSource,
     sender,
     ledger: createMemoryLedger(),
+    flags,
     alerter,
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
     config,
@@ -412,7 +415,7 @@ function makeHarness(
     now: () => NOW,
     ...overrides,
   };
-  return { deps, quote, swap, send, alerts };
+  return { deps, flags, quote, swap, send, alerts };
 }
 
 describe('runConvertOnce: dry-run', () => {
@@ -670,6 +673,92 @@ describe('runConvertOnce: live', () => {
     expect(
       JSON.stringify(h.alerts.mock.calls, (_k, v) => (typeof v === 'bigint' ? String(v) : v)),
     ).not.toMatch(/apikey|secret|passphrase|private/i);
+  });
+});
+
+describe('runConvertOnce: kill switch (convert_paused)', () => {
+  const balances: TokenBalance[] = [
+    { owner: OWNER, mint: MINT_A, amount: 1000n },
+    { owner: OWNER, mint: MINT_B, amount: 1000n },
+  ];
+
+  it('runs while the flag is off', async () => {
+    const h = makeHarness(balances);
+    const r = await runConvertOnce(h.deps);
+    expect(r.status).toBe('ran');
+    expect(r.pauseReason).toBeUndefined();
+    expect(h.send).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    ['live', 'mainnet-beta'],
+    ['dry-run', 'devnet'],
+  ])('does nothing while the flag is on (%s), with no alert', async (_mode, cluster) => {
+    const h = makeHarness(balances, { cluster });
+    const list = vi.spyOn(h.deps.balances, 'list');
+    h.flags.values.convert_paused = true;
+    const r = await runConvertOnce(h.deps);
+    expect(r).toMatchObject({ status: 'paused', pauseReason: 'flag', items: [] });
+    expect(list).not.toHaveBeenCalled();
+    expect(h.quote).not.toHaveBeenCalled();
+    expect(h.send).not.toHaveBeenCalled();
+    expect(h.alerts).not.toHaveBeenCalled();
+    expect(h.deps.logger.info).toHaveBeenCalledWith({ reason: 'flag' }, 'fee conversion paused');
+
+    // Switched off again: the next run converts.
+    h.flags.values.convert_paused = false;
+    const again = await runConvertOnce(h.deps);
+    expect(again.status).toBe('ran');
+    expect(h.quote).toHaveBeenCalledTimes(2);
+  });
+
+  it('fails closed with a high alert when the row is missing or the flags are unreadable', async () => {
+    const missing = makeHarness(balances);
+    delete missing.flags.values.convert_paused;
+    expect(await runConvertOnce(missing.deps)).toMatchObject({
+      status: 'paused',
+      pauseReason: 'flag_missing',
+    });
+    const unreadable = makeHarness(balances);
+    unreadable.flags.fail = true;
+    expect(await runConvertOnce(unreadable.deps)).toMatchObject({
+      status: 'paused',
+      pauseReason: 'flags_unavailable',
+    });
+    for (const h of [missing, unreadable]) {
+      expect(h.quote).not.toHaveBeenCalled();
+      expect(h.send).not.toHaveBeenCalled();
+    }
+    expect(missing.alerts.mock.calls.map((c) => [c[0], c[1]])).toEqual([
+      ['high', 'convert_paused_flag_missing'],
+    ]);
+    expect(unreadable.alerts.mock.calls.map((c) => [c[0], c[1]])).toEqual([
+      ['high', 'convert_paused_flags_unavailable'],
+    ]);
+  });
+
+  it('re-reads the flag before signing: a swap is never sent once it is on', async () => {
+    const h = makeHarness(balances);
+    // Off when the run starts, on by the time the first swap would be signed.
+    let reads = 0;
+    h.deps.flags = {
+      read: async () => new Map([['convert_paused', ++reads > 1]]),
+    };
+    const r = await runConvertOnce(h.deps);
+    expect(r.status).toBe('paused');
+    expect(r.items.map((i) => i.outcome)).toEqual([
+      { status: 'skipped', reason: 'paused' },
+      { status: 'skipped', reason: 'paused' },
+    ]);
+    expect(h.send).not.toHaveBeenCalled();
+    // The second balance is not even quoted once the switch is seen on.
+    expect(h.quote).toHaveBeenCalledTimes(1);
+    expect(h.alerts).not.toHaveBeenCalled();
+    // Nothing was recorded: the balance is converted in the same window once switched off.
+    expect(await ledgerOf(h.deps).get(ledgerKey(OWNER, MINT_A, runWindowKey(NOW)))).toBeUndefined();
+    h.deps.flags = memoryFlags();
+    const again = await runConvertOnce(h.deps);
+    expect(again.items.map((i) => i.outcome.status)).toEqual(['confirmed', 'confirmed']);
   });
 });
 

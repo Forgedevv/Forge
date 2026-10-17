@@ -1449,25 +1449,25 @@ export interface FlagsReader {
   read(): Promise<ReadonlyMap<string, boolean>>;
 }
 
-/**
- * Kill switch of the Jupiter referral claims (jobs/jupiter-claims.ts). Not in the shared
- * `FlagKey` contract yet: adding it there, with the migration that seeds the row, is the lead's
- * change. Until the row exists the job is paused, fail closed, with a high alert.
- */
-export const JUPITER_CLAIMS_FLAG = 'jupiter_claims_paused' as const;
+/** Kill switch of the Jupiter referral claims (jobs/jupiter-claims.ts, migration 0013). */
+export const JUPITER_CLAIMS_FLAG = 'jupiter_claims_paused' as const satisfies FlagKey;
 
-/** A kill switch key: the shared contract's flags plus the signer's pending ones. */
-export type KillSwitchKey = FlagKey | typeof JUPITER_CLAIMS_FLAG;
+/** Kill switch of the fee conversion to SOL (jobs/convert.ts, migration 0015). */
+export const CONVERT_FLAG = 'convert_paused' as const satisfies FlagKey;
+
+/** A kill switch key of the shared contract (`FlagKey`). */
+export type KillSwitchKey = FlagKey;
 
 /**
- * Kill switches of these jobs (`flags` table, seeded by migration 0005 with `false`). A missing
- * row pauses the job: the switch must exist for an operator to be able to use it.
+ * Kill switches of these jobs (`flags` table, seeded with `false` by migrations 0005, 0013 and
+ * 0015). A missing row pauses the job: the switch must exist for an operator to be able to use it.
  */
 export const JOB_FLAGS = {
   claims: 'claims_paused',
   cashbox: 'cashbox_sweep_paused',
   refunds: 'refunds_paused',
   jupiterClaims: JUPITER_CLAIMS_FLAG,
+  convert: CONVERT_FLAG,
 } as const satisfies Record<string, KillSwitchKey>;
 
 export type PauseReason = 'config' | 'flag' | 'flag_missing' | 'flags_unavailable';

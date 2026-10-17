@@ -365,6 +365,7 @@ export const convertModule: SignerJobModule = {
       sender: lockedSender,
       ledger: createFileLedger(ctx.journalDir),
       journalDir: ctx.journalDir,
+      flags: ctx.flags,
       alerter: ctx.alerter,
       logger: ctx.jobLogger('convert'),
       config,
@@ -373,8 +374,8 @@ export const convertModule: SignerJobModule = {
     };
     return {
       runOnce: async () => {
-        await runConvertOnce(deps);
-        return { status: 'ran' };
+        const summary = await runConvertOnce(deps);
+        return { status: summary.status };
       },
       delayMs: () => ctx.convertIntervalMs,
     };

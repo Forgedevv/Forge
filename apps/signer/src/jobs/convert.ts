@@ -35,6 +35,9 @@
  *     window.
  *   - Settlement. Same rule as the other jobs (`checkSettlement`): finalized height read before
  *     the status, expiry only past the last valid block height plus a margin.
+ *   - Kill switch. The `convert_paused` flag (migration 0015), fail closed (missing row or
+ *     unreadable flags = paused, with a high alert): read at the start of every run, dry-run
+ *     included, and again right before each swap is handed to the sender (signing).
  *   - Errors are reported, never swallowed: each balance gets its own outcome and failures raise
  *     an alert. HTTP calls are rate limited (the free Jupiter tier allows 1 request per second).
  *
@@ -64,12 +67,18 @@ import {
 import type { Alerter } from '../alerts.js';
 import {
   FALLBACK_EXPIRY_BLOCKS,
+  JOB_FLAGS,
   MAX_COMPUTE_UNIT_LIMIT,
+  alertAbnormalPause,
   base58Encode,
+  checkPaused,
   checkSettlement,
   createFileJournal,
   journalDirFromEnv,
   settlementRpcFromConnection,
+  type FlagsReader,
+  type JobLogger,
+  type PauseReason,
   type RetryOptions,
 } from './shared.js';
 
@@ -533,6 +542,9 @@ export interface ConvertItemResult {
 }
 
 export interface ConvertRunSummary {
+  /** `paused`: the kill switch stopped the run (at its start, or before a swap was signed). */
+  status: 'ran' | 'paused';
+  pauseReason?: PauseReason;
   mode: ConvertMode;
   modeReason: string;
   window: string;
@@ -554,6 +566,8 @@ export interface ConvertDeps {
   ledger?: ConvertLedger;
   /** Directory of the default file ledger. Default: SIGNER_JOURNAL_DIR, then `./journal`. */
   journalDir?: string;
+  /** Kill switch `convert_paused`, read fresh on every run and before every swap. */
+  flags: FlagsReader;
   alerter: Alerter;
   logger: ConvertLogger;
   config: ConvertConfig;
@@ -564,6 +578,29 @@ export interface ConvertDeps {
 
 function errName(err: unknown): string {
   return err instanceof Error ? err.name : 'unknown';
+}
+
+/** The logger shape of the shared kill-switch helpers. */
+function jobLoggerOf(logger: ConvertLogger): JobLogger {
+  return {
+    debug: () => undefined,
+    info: (fields, msg) => logger.info(fields, msg),
+    warn: (fields, msg) => logger.warn(fields, msg),
+    error: (fields, msg) => logger.error(fields, msg),
+  };
+}
+
+/**
+ * Kill switch (`convert_paused`, fail closed). Null when the job may go on; otherwise the reason,
+ * logged, and alerted when it is not an operator decision (missing row, unreadable flags).
+ */
+async function pauseReasonOf(deps: ConvertDeps): Promise<PauseReason | null> {
+  const log = jobLoggerOf(deps.logger);
+  const pause = await checkPaused(deps.flags, JOB_FLAGS.convert, undefined, log);
+  if (!pause.paused) return null;
+  deps.logger.info({ reason: pause.reason }, 'fee conversion paused');
+  await alertAbnormalPause(deps.alerter, log, 'convert', JOB_FLAGS.convert, pause.reason);
+  return pause.reason;
 }
 
 const defaultLedgers = new WeakMap<ConvertDeps, ConvertLedger>();
@@ -636,6 +673,10 @@ async function convertOne(
     return { status: 'failed', error: `swap: ${errName(err)}` };
   }
 
+  // The kill switch may have been turned on since the run started: re-read it before signing.
+  // Nothing is written to the ledger, so the balance is converted once the switch is off again.
+  if (await pauseReasonOf(deps)) return { status: 'skipped', reason: 'paused' };
+
   // What the transaction may do comes from the VALIDATED quote, never from the swap answer.
   const expected: SwapExpectation = {
     inputMint: balance.mint,
@@ -678,11 +719,18 @@ async function convertOne(
   return { status: 'unknown', signature: sent.signature };
 }
 
-/** One conversion pass over every balance. Never throws for a single balance. */
+/**
+ * One conversion pass over every balance. Never throws for a single balance. Does nothing while
+ * the kill switch is on; once it turns on mid-run, the remaining balances are skipped.
+ */
 export async function runConvertOnce(deps: ConvertDeps): Promise<ConvertRunSummary> {
   const now = (deps.now ?? Date.now)();
   const window = runWindowKey(now);
   const decision = resolveConvertMode({ cluster: deps.cluster, liveFlag: deps.liveFlag });
+  const summary = { mode: decision.mode, modeReason: decision.reason, window };
+
+  const paused = await pauseReasonOf(deps);
+  if (paused) return { status: 'paused', pauseReason: paused, ...summary, items: [] };
   deps.logger.info({ mode: decision.mode, reason: decision.reason, window }, 'convert run start');
 
   let balances: TokenBalance[];
@@ -697,16 +745,22 @@ export async function runConvertOnce(deps: ConvertDeps): Promise<ConvertRunSumma
         errorName: errName(err),
       },
     );
-    return { mode: decision.mode, modeReason: decision.reason, window, items: [] };
+    return { status: 'ran', ...summary, items: [] };
   }
 
   const items: ConvertItemResult[] = [];
+  let pausedMidRun = false;
   for (const balance of balances) {
     let outcome: ConvertOutcome;
-    try {
-      outcome = await convertOne(deps, decision, window, balance);
-    } catch (err) {
-      outcome = { status: 'failed', error: errName(err) };
+    if (pausedMidRun) {
+      outcome = { status: 'skipped', reason: 'paused' };
+    } else {
+      try {
+        outcome = await convertOne(deps, decision, window, balance);
+      } catch (err) {
+        outcome = { status: 'failed', error: errName(err) };
+      }
+      pausedMidRun = outcome.status === 'skipped' && outcome.reason === 'paused';
     }
     items.push({ owner: balance.owner, mint: balance.mint, amount: balance.amount, outcome });
     deps.logger.info(
@@ -720,7 +774,7 @@ export async function runConvertOnce(deps: ConvertDeps): Promise<ConvertRunSumma
     );
     await alertForOutcome(deps, balance, outcome);
   }
-  return { mode: decision.mode, modeReason: decision.reason, window, items };
+  return { status: pausedMidRun ? 'paused' : 'ran', ...summary, items };
 }
 
 async function alertForOutcome(

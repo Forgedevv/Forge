@@ -231,8 +231,11 @@ create table job_events (
   created_at timestamptz not null default now()
 );
 
-create table flags (                        -- kill switches
+create table flags (                        -- kill switches (FlagKey in packages/shared)
   key text primary key,                     -- deploys_paused | buyback_paused | signups_paused
+                                            -- | claims_paused | cashbox_sweep_paused
+                                            -- | refunds_paused | jupiter_claims_paused
+                                            -- | convert_paused
   value boolean not null default false
 );
 ```

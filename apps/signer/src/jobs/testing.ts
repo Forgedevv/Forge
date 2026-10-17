@@ -981,12 +981,13 @@ export class MemoryClaimsStore implements ClaimsStore {
 // ---------------------------------------------------------------------------------------
 // Flags, alerts, logs
 
-/** The kill switches seeded by migration 0005 (all off), plus the Jupiter claims one. */
+/** The kill switches of the signer jobs, seeded by migrations 0005, 0013 and 0015 (all off). */
 export const DEFAULT_FLAGS: Readonly<Record<string, boolean>> = {
   claims_paused: false,
   cashbox_sweep_paused: false,
   refunds_paused: false,
   jupiter_claims_paused: false,
+  convert_paused: false,
 };
 
 export function memoryFlags(values: Record<string, boolean> = {}): FlagsReader & {

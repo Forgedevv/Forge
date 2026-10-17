@@ -204,7 +204,7 @@ describeDb('RLS isolation', () => {
 
   it('anon sees only flags', async () => {
     await as('anon', null, async (c) => {
-      expect((await c.query('select key from flags')).rowCount).toBe(6);
+      expect((await c.query('select key from flags')).rowCount).toBe(8);
       for (const t of [
         'users',
         'launchpads',
@@ -228,7 +228,9 @@ describeDb('RLS isolation', () => {
         { key: 'buyback_paused', value: false },
         { key: 'cashbox_sweep_paused', value: false },
         { key: 'claims_paused', value: false },
+        { key: 'convert_paused', value: false },
         { key: 'deploys_paused', value: false },
+        { key: 'jupiter_claims_paused', value: false },
         { key: 'refunds_paused', value: false },
         { key: 'signups_paused', value: false },
       ]);

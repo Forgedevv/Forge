@@ -28,9 +28,10 @@ Sent by `apps/signer` and `apps/builder` via `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CH
 | `cashbox_sweep_paused` | the signer stops moving the cashbox surplus to the multisig |
 | `refunds_paused` | the signer stops automatic refunds (they wait, nothing is lost) |
 | `jupiter_claims_paused` | the signer stops claiming the Jupiter referral fees to the multisig (mainnet only) |
+| `convert_paused` | the signer stops converting the fees received in other currencies to SOL (dry runs included); the balances wait for the next run |
 | `launchpads.status = 'disabled'` | the builder deploys the maintenance page **and pauses the Vercel project**, so the site and its old previews stop serving |
 
-Each service rereads the flags at least every minute, and the money jobs reread their flag again right before signing.
+Each service rereads the flags at least every minute, and the money jobs reread their flag again right before signing. The signer's job switches (`claims_paused`, `cashbox_sweep_paused`, `refunds_paused`, `jupiter_claims_paused`, `convert_paused`) fail closed: a missing row or an unreadable `flags` table pauses the job with a high alert (`<job>_paused_flag_missing`, `<job>_paused_flags_unavailable`), so each row must exist (migrations 0005, 0013 and 0015 seed them).
 
 ## Builder feature flags (environment, read at startup)
 
