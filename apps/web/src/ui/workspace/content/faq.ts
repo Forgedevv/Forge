@@ -40,7 +40,7 @@ export const faqCopy = {
     [
       'forge-access',
       'How does the $FORGE balance check work?',
-      'You hold the required amount; nothing is spent or locked. Before the token launches, access checking is disabled. An official acquisition link and token display metadata will be added when the service provides them. Do not use an unverified token address.',
+      'You hold the required amount; nothing is spent or locked. Before the token launches, access checking is disabled and you go straight to the design chat. The official way to get $FORGE is coming soon and will be announced by FORGE. Never use an unverified token address.',
     ],
   ],
 } as const;
