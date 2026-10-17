@@ -38,6 +38,16 @@
  *
  * Both builders compare the on-chain config with what core builds for it, field by field
  * (`onchainConfigMismatches` in config.ts), before building anything.
+ *
+ * Priority fee (`priority` setting, priority-fee.ts): the price is read from the recent fees of
+ * the launch's writable accounts and bounded by the setting. The compute budget instructions come
+ * right after the nonce advance: `setComputeUnitLimit` then `setComputeUnitPrice`. The launchpad
+ * coin launch is tight (`LAUNCH_METADATA_BUDGET_BYTES`): when both do not fit in 1,232 bytes, the
+ * price goes alone (4 bytes more than the limit it replaces; the fee is then bounded for
+ * `MAX_TRANSACTION_COMPUTE_UNITS`, the most the runtime can apply without a limit), and when even
+ * that does not fit, the launch keeps its shape without a price (`priorityFeePlacement`
+ * `omitted_for_size`): the metadata budget accepted at `/v1/configs` never shrinks. That launch
+ * uses a durable nonce, so it stays valid until it lands. The user coin launch always fits both.
  */
 import {
   DYNAMIC_BONDING_CURVE_PROGRAM_ID,
@@ -81,6 +91,18 @@ import {
   assertLaunchMetadata,
   type LaunchCoinErrorCode,
 } from './launch-metadata.js';
+import {
+  MAX_TRANSACTION_COMPUTE_UNITS,
+  computePriorityFee,
+  fixedPriorityFee,
+  priorityFeeInstructions,
+  readRecentPriorityFees,
+  resolvePriorityFeePolicy,
+  writableAccountsOf,
+  type PriorityFeeQuote,
+  type PriorityFeeSetting,
+  type RecentPrioritizationFee,
+} from './priority-fee.js';
 import {
   MAX_TRANSACTION_BYTES,
   computeBudgetInstructions,
@@ -200,7 +222,20 @@ export interface BuildLaunchCoinTxParams {
   computeUnitLimit?: number;
   /** Priority fee, micro-lamports per compute unit (default 0). */
   computeUnitPriceMicroLamports?: number;
+  /**
+   * Priority fee read from the cluster and bounded by this setting (`{}` = the defaults, at most
+   * 0.0005 SOL), see the top of this file for its placement. Not with
+   * `computeUnitPriceMicroLamports`.
+   */
+  priority?: PriorityFeeSetting;
 }
+
+/**
+ * Where the priority fee went: with the unit limit (`limit_and_price`, also the shape without a
+ * priority fee), alone because both did not fit (`price_only`), or left out because even the
+ * price alone did not fit (`omitted_for_size`).
+ */
+export type PriorityFeePlacement = 'limit_and_price' | 'price_only' | 'omitted_for_size';
 
 /** Lamport amounts, as bigint. */
 export interface LaunchCoinCosts {
@@ -267,8 +302,15 @@ export interface LaunchCoinSummary {
   recentBlockhash: string;
   /** Null with a durable nonce (it does not expire with block height). */
   lastValidBlockHeight: number | null;
+  /**
+   * Compute unit limit requested; the transaction sets it unless `priorityFeePlacement` is
+   * `price_only` (the runtime default then applies, bounded by `MAX_TRANSACTION_COMPUTE_UNITS`).
+   */
   computeUnitLimit: number;
   computeUnitPriceMicroLamports: number;
+  /** The priority fee (price, fee, cap; `fixed` without a `priority` setting). */
+  priorityFee: PriorityFeeQuote;
+  priorityFeePlacement: PriorityFeePlacement;
   /** Signers on the signer side (creator, mint, nonce authority if distinct), then the owner. */
   signerSideSigners: PublicKey[];
   ownerSigner: PublicKey;
@@ -532,7 +574,6 @@ interface AssembleLaunchInput {
   metadataUri: string;
   firstBuyLamports: bigint;
   slippageBps: number;
-  budget: { units: number; microLamports: number };
   nonce: NonceInfo | null;
   recentBlockhash: string;
   lastValidBlockHeight: number | null;
@@ -540,17 +581,22 @@ interface AssembleLaunchInput {
   trailingInstructions?: readonly TransactionInstruction[];
 }
 
+/** A composed launch transaction and its size. */
+interface ComposedLaunch {
+  transaction: Transaction;
+  txBytes: number;
+}
+
 /**
  * Quotes the first buy on the fresh pool at the minimum fee (exact: nothing else can trade before
- * it, the pool is created in the same transaction) and assembles the transaction: nonce advance,
- * compute budget, the buyer's WSOL account (idempotent), then the SDK instructions of
- * `createPoolWithFirstBuy` (proven call pattern of devnet test 3), without referral, then the
- * trailing instructions.
+ * it, the pool is created in the same transaction) and returns how to compose the transaction for
+ * given compute budget instructions: nonce advance, compute budget, the buyer's WSOL account
+ * (idempotent), then the SDK instructions of `createPoolWithFirstBuy` (proven call pattern of
+ * devnet test 3), without referral, then the trailing instructions.
  */
 async function assembleLaunch(input: AssembleLaunchInput): Promise<{
-  transaction: Transaction;
   quote: FirstBuyQuote | null;
-  txBytes: number;
+  compose(budget: readonly TransactionInstruction[]): ComposedLaunch;
 }> {
   const { buyer, nonce } = input;
   const quote =
@@ -580,20 +626,20 @@ async function assembleLaunch(input: AssembleLaunchInput): Promise<{
       : {}),
   });
 
-  const instructions: TransactionInstruction[] = [];
+  const head: TransactionInstruction[] = [];
   if (nonce) {
-    instructions.push(
+    head.push(
       SystemProgram.nonceAdvance({
         noncePubkey: nonce.nonceAccount,
         authorizedPubkey: nonce.authority,
       }),
     );
   }
-  instructions.push(...computeBudgetInstructions(input.budget));
+  const body: TransactionInstruction[] = [];
   // The SDK adds the buyer's WSOL account creation only when it is missing at build time.
   const buyerWsol = getAssociatedTokenAddressSync(NATIVE_MINT, buyer, true, TOKEN_PROGRAM_ID);
   if (quote && !createsAssociatedAccount(sdkTx.instructions, buyerWsol)) {
-    instructions.push(
+    body.push(
       createAssociatedTokenAccountIdempotentInstruction(
         buyer,
         buyerWsol,
@@ -603,13 +649,103 @@ async function assembleLaunch(input: AssembleLaunchInput): Promise<{
       ),
     );
   }
-  instructions.push(...sdkTx.instructions, ...(input.trailingInstructions ?? []));
-  const transaction = new Transaction({ feePayer: buyer, recentBlockhash: input.recentBlockhash });
-  if (input.lastValidBlockHeight !== null) {
-    transaction.lastValidBlockHeight = input.lastValidBlockHeight;
+  body.push(...sdkTx.instructions, ...(input.trailingInstructions ?? []));
+  const compose = (budget: readonly TransactionInstruction[]): ComposedLaunch => {
+    const transaction = new Transaction({
+      feePayer: buyer,
+      recentBlockhash: input.recentBlockhash,
+    });
+    if (input.lastValidBlockHeight !== null) {
+      transaction.lastValidBlockHeight = input.lastValidBlockHeight;
+    }
+    transaction.add(...head, ...budget, ...body);
+    return { transaction, txBytes: transactionSize(transaction) };
+  };
+  return { quote, compose };
+}
+
+/**
+ * The compute budget of a launch: the legacy shape (limit, fixed price if any) without a
+ * `priority` setting; otherwise the priced shape that fits (see the top of this file).
+ * `allowPriceOnly`: the price may go without the limit (launchpad coin launch only).
+ */
+async function priceLaunch(input: {
+  connection: Connection;
+  compose(budget: readonly TransactionInstruction[]): ComposedLaunch;
+  budget: { units: number; microLamports: number };
+  priority: PriorityFeeSetting | undefined;
+  allowPriceOnly: boolean;
+}): Promise<
+  ComposedLaunch & {
+    priorityFee: PriorityFeeQuote;
+    placement: PriorityFeePlacement;
+    /** Units and price the network fee estimate uses. */
+    feeBudget: { units: number; microLamports: number };
   }
-  transaction.add(...instructions);
-  return { transaction, quote, txBytes: transactionSize(transaction) };
+> {
+  const { compose, budget } = input;
+  const legacy = compose(computeBudgetInstructions(budget));
+  const fixed = fixedPriorityFee(budget.units, budget.microLamports);
+  if (input.priority === undefined) {
+    return { ...legacy, priorityFee: fixed, placement: 'limit_and_price', feeBudget: budget };
+  }
+  let recentFees: RecentPrioritizationFee[] | null;
+  try {
+    recentFees = await readRecentPriorityFees(
+      input.connection,
+      writableAccountsOf(legacy.transaction.instructions),
+    );
+  } catch {
+    // Degraded, reported in the quote (`rpc_unavailable`): the floor still prices the launch.
+    recentFees = null;
+  }
+  const full = computePriorityFee({
+    recentFees,
+    computeUnitLimit: budget.units,
+    policy: input.priority,
+  });
+  const withLimit = compose(priorityFeeInstructions(full));
+  if (withLimit.txBytes <= MAX_TRANSACTION_BYTES) {
+    return {
+      ...withLimit,
+      priorityFee: full,
+      placement: 'limit_and_price',
+      feeBudget: { units: full.computeUnitLimit, microLamports: full.microLamports },
+    };
+  }
+  if (input.allowPriceOnly) {
+    const alone = computePriorityFee({
+      recentFees,
+      computeUnitLimit: MAX_TRANSACTION_COMPUTE_UNITS,
+      policy: input.priority,
+    });
+    const priceOnly = compose(priorityFeeInstructions(alone, { priceOnly: true }));
+    if (priceOnly.txBytes <= MAX_TRANSACTION_BYTES) {
+      return {
+        ...priceOnly,
+        priorityFee: alone,
+        placement: 'price_only',
+        feeBudget: { units: alone.computeUnitLimit, microLamports: alone.microLamports },
+      };
+    }
+  }
+  return { ...legacy, priorityFee: fixed, placement: 'omitted_for_size', feeBudget: budget };
+}
+
+/** @throws LaunchCoinError `INVALID_INPUT` on a bad setting or one given with a fixed price. */
+function assertPrioritySetting(
+  priority: PriorityFeeSetting | undefined,
+  computeUnitPriceMicroLamports: number | undefined,
+): void {
+  if (priority === undefined) return;
+  if (computeUnitPriceMicroLamports !== undefined) {
+    fail('INVALID_INPUT', 'pass either priority or computeUnitPriceMicroLamports, not both');
+  }
+  try {
+    resolvePriorityFeePolicy(priority);
+  } catch (error) {
+    fail('INVALID_INPUT', `priority: ${error instanceof Error ? error.message : String(error)}`);
+  }
 }
 
 /** The required signers, and whether they are exactly `expected` with `feePayer` first. */
@@ -753,6 +889,7 @@ export async function buildLaunchCoinTx(params: BuildLaunchCoinTxParams): Promis
     fail('INVALID_INPUT', "rentPayer must be 'owner' or 'creator'");
   }
   assertNoFirstBuyReferral(params.referralTokenAccount);
+  assertPrioritySetting(params.priority, params.computeUnitPriceMicroLamports);
 
   const keys: (readonly [string, PublicKey])[] = [
     ['config', config],
@@ -801,8 +938,8 @@ export async function buildLaunchCoinTx(params: BuildLaunchCoinTxParams): Promis
     lastValidBlockHeight = latest.lastValidBlockHeight;
   }
 
-  // 4. Quote and instructions.
-  const { transaction, quote, txBytes } = await assembleLaunch({
+  // 4. Quote and instructions, then the compute budget that fits.
+  const { quote, compose } = await assembleLaunch({
     client,
     poolConfig,
     config,
@@ -815,11 +952,18 @@ export async function buildLaunchCoinTx(params: BuildLaunchCoinTxParams): Promis
     metadataUri: params.metadataUri,
     firstBuyLamports: params.firstBuyLamports,
     slippageBps,
-    budget,
     nonce,
     recentBlockhash,
     lastValidBlockHeight,
   });
+  const priced = await priceLaunch({
+    connection,
+    compose,
+    budget,
+    priority: params.priority,
+    allowPriceOnly: true,
+  });
+  const { transaction, txBytes } = priced;
 
   // 5. Signers: exactly owner, creator, mint (+ the nonce authority). With the owner paying
   //    the rent, the creator wallet must not be debitable at all (read-only signer).
@@ -849,7 +993,7 @@ export async function buildLaunchCoinTx(params: BuildLaunchCoinTxParams): Promis
     transaction,
     signatureCount: signers.actual.length,
     nonce,
-    budget,
+    budget: priced.feeBudget,
     quote,
     firstBuyLamports: params.firstBuyLamports,
     poolCreationFeeLamports,
@@ -888,7 +1032,9 @@ export async function buildLaunchCoinTx(params: BuildLaunchCoinTxParams): Promis
       recentBlockhash,
       lastValidBlockHeight,
       computeUnitLimit,
-      computeUnitPriceMicroLamports,
+      computeUnitPriceMicroLamports: priced.priorityFee.microLamports,
+      priorityFee: priced.priorityFee,
+      priorityFeePlacement: priced.placement,
       signerSideSigners,
       ownerSigner: owner,
       txBytes,
@@ -939,6 +1085,12 @@ export interface BuildUserCoinLaunchTxParams {
   computeUnitLimit?: number;
   /** Priority fee, micro-lamports per compute unit (default 0). */
   computeUnitPriceMicroLamports?: number;
+  /**
+   * Priority fee read from the cluster and bounded by this setting (`{}` = the defaults, at most
+   * 0.0005 SOL): `setComputeUnitLimit` then `setComputeUnitPrice`, first. Not with
+   * `computeUnitPriceMicroLamports`.
+   */
+  priority?: PriorityFeeSetting;
 }
 
 export interface UserCoinLaunchSummary {
@@ -970,6 +1122,10 @@ export interface UserCoinLaunchSummary {
   lastValidBlockHeight: number;
   computeUnitLimit: number;
   computeUnitPriceMicroLamports: number;
+  /** The priority fee (price, fee, cap; `fixed` without a `priority` setting). */
+  priorityFee: PriorityFeeQuote;
+  /** `limit_and_price`, or `omitted_for_size` if a priced launch would not fit (it always does). */
+  priorityFeePlacement: PriorityFeePlacement;
   /** Required signers in message order: the wallet (fee payer) then the mint. */
   signers: PublicKey[];
   txBytes: number;
@@ -1068,6 +1224,7 @@ export async function buildUserCoinLaunchTx(
     ['wallet', wallet],
     ['mint', mint],
   ]);
+  assertPrioritySetting(params.priority, params.computeUnitPriceMicroLamports);
   const baseMint = mint;
   const pool = deriveDbcPoolAddress(SOL_QUOTE_MINT, baseMint, config);
 
@@ -1098,8 +1255,8 @@ export async function buildUserCoinLaunchTx(
   // 3. Recent blockhash: the user signs right away, no durable nonce.
   const latest = await connection.getLatestBlockhash('confirmed');
 
-  // 4. Quote and instructions.
-  const { transaction, quote, txBytes } = await assembleLaunch({
+  // 4. Quote and instructions, then the compute budget.
+  const { quote, compose } = await assembleLaunch({
     client,
     poolConfig,
     config,
@@ -1112,7 +1269,6 @@ export async function buildUserCoinLaunchTx(
     metadataUri: params.metadataUri,
     firstBuyLamports: params.firstBuyLamports,
     slippageBps,
-    budget,
     nonce: null,
     recentBlockhash: latest.blockhash,
     lastValidBlockHeight: latest.lastValidBlockHeight,
@@ -1127,6 +1283,15 @@ export async function buildUserCoinLaunchTx(
         ]
       : [],
   });
+  // The browser verifier wants a limit with any price: never the price alone here.
+  const priced = await priceLaunch({
+    connection,
+    compose,
+    budget,
+    priority: params.priority,
+    allowPriceOnly: false,
+  });
+  const { transaction, txBytes } = priced;
 
   // 5. Signers: exactly the wallet (fee payer, first) and the mint.
   const signers = checkSigners(transaction, [wallet, baseMint], wallet);
@@ -1147,7 +1312,7 @@ export async function buildUserCoinLaunchTx(
     transaction,
     signatureCount: signers.actual.length,
     nonce: null,
-    budget,
+    budget: priced.feeBudget,
     quote,
     firstBuyLamports: params.firstBuyLamports,
     poolCreationFeeLamports,
@@ -1175,7 +1340,9 @@ export async function buildUserCoinLaunchTx(
       recentBlockhash: latest.blockhash,
       lastValidBlockHeight: latest.lastValidBlockHeight,
       computeUnitLimit,
-      computeUnitPriceMicroLamports,
+      computeUnitPriceMicroLamports: priced.priorityFee.microLamports,
+      priorityFee: priced.priorityFee,
+      priorityFeePlacement: priced.placement,
       signers: signers.actual,
       txBytes,
     },
