@@ -58,6 +58,7 @@ import {
 } from './buyback.js';
 import {
   JUPITER_PROGRAM_ID,
+  JupiterRefusal,
   WSOL_MINT,
   type AccountDelta,
   type JupiterQuote,
@@ -1074,10 +1075,12 @@ describe('buyback job, simulation', () => {
     h.clock.t = first.at;
     const r = await job.runOnce();
     expect(r.outcome).toMatchObject({ result: 'simulated', slot: 0, quotedOut: 1_000_000n });
+    // Simulation never reads the keystore: the quote is asked for the vault.
     expect(h.quote).toHaveBeenCalledWith({
       outputMint: FORGE.toBase58(),
       lamports: BigInt(first.lamports),
       slippageBps: 50,
+      taker: VAULT.toBase58(),
     });
     expect(h.swap).not.toHaveBeenCalled();
     expect((await plan(h.journal)).slots[0]!.status).toBe('simulated');
@@ -1837,6 +1840,26 @@ describe('buyback job, live flow', () => {
     expect(h.alerter.codes()).toContain('buyback_order_skipped');
   });
 
+  it('asks the quote for the bot and alerts on a swap refused while assembling (v2)', async () => {
+    const h = liveHarness();
+    vi.mocked(h.quotes.swap).mockRejectedValueOnce(
+      new JupiterRefusal('lookup_table_mismatch', 'refused'),
+    );
+    await h.make().runOnce();
+    h.clock.t = (await plan(h.journal)).slots[0]!.at;
+    const r = await h.make().runOnce();
+    expect(h.quotes.quote).toHaveBeenCalledWith(
+      expect.objectContaining({ outputMint: FORGE.toBase58(), taker: bot.toBase58() }),
+    );
+    expect(r.outcome).toMatchObject({
+      result: 'skipped',
+      reason: 'tx_refused:lookup_table_mismatch',
+    });
+    expect(h.swapPreparer.prepare).not.toHaveBeenCalled();
+    expect(h.rpc.sent).toHaveLength(0);
+    expect(h.alerter.codes()).toContain('buyback_order_skipped');
+  });
+
   it('refuses a quote for the wrong output mint before asking for a transaction', async () => {
     const h = liveHarness();
     vi.mocked(h.quotes.quote).mockImplementation(async ({ lamports }) =>
@@ -1892,7 +1915,12 @@ describe('createJupiterBuybackClient', () => {
       timeoutMs: 1_000,
       maxPriorityFeeLamports: 100_000n,
     });
-    await client.quote({ outputMint: FORGE.toBase58(), lamports: 5n, slippageBps: 50 });
+    await client.quote({
+      outputMint: FORGE.toBase58(),
+      lamports: 5n,
+      slippageBps: 50,
+      taker: VAULT.toBase58(),
+    });
     const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
     const u = new URL(url);
     expect(u.searchParams.get('inputMint')).toBe(NATIVE_MINT.toBase58());

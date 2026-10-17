@@ -42,6 +42,7 @@ import type { KeystoreLike } from './shared.js';
 import { randomAddress } from './testing.js';
 
 const BOT = Keypair.generate();
+const TAKER = BOT.publicKey.toBase58();
 const POOL = randomAddress();
 const FORGE = randomAddress();
 const PLATFORM = randomAddress();
@@ -341,7 +342,12 @@ describe('createDbcDevnetBuybackRoute', () => {
       maxPriorityFeeLamports: 100_000n,
       core,
     });
-    const quote = await route.quotes.quote({ outputMint: FORGE.toBase58(), lamports: IN, slippageBps: 50 });
+    const quote = await route.quotes.quote({
+      outputMint: FORGE.toBase58(),
+      lamports: IN,
+      slippageBps: 50,
+      taker: TAKER,
+    });
     expect(quote).toMatchObject({
       inputMint: NATIVE_MINT.toBase58(),
       outputMint: FORGE.toBase58(),
@@ -365,7 +371,12 @@ describe('createDbcDevnetBuybackRoute', () => {
       expect.not.objectContaining({ priority: expect.anything() }),
     );
     await expect(
-      route.quotes.quote({ outputMint: randomAddress().toBase58(), lamports: IN, slippageBps: 50 }),
+      route.quotes.quote({
+        outputMint: randomAddress().toBase58(),
+        lamports: IN,
+        slippageBps: 50,
+        taker: TAKER,
+      }),
     ).rejects.toThrow(/another mint/);
   });
 
@@ -386,6 +397,7 @@ describe('createDbcDevnetBuybackRoute', () => {
       outputMint: FORGE.toBase58(),
       lamports: IN,
       slippageBps: 50,
+      taker: TAKER,
     });
     await route.quotes.swap({ quote, userPublicKey: BOT.publicKey.toBase58() });
     expect(core.buildBuyTx).toHaveBeenCalledWith(
@@ -484,7 +496,12 @@ describe('createDbcDevnetBuybackRoute', () => {
       maxPriorityFeeLamports: 100_000n,
       core,
     });
-    const quote = await route.quotes.quote({ outputMint: FORGE.toBase58(), lamports: IN, slippageBps: 50 });
+    const quote = await route.quotes.quote({
+      outputMint: FORGE.toBase58(),
+      lamports: IN,
+      slippageBps: 50,
+      taker: TAKER,
+    });
     const swap = await route.quotes.swap({ quote, userPublicKey: BOT.publicKey.toBase58() });
     const prepared = await route.swapPreparer.prepare({
       owner: BOT.publicKey,

@@ -16,6 +16,8 @@ import {
   JUPITER_PROGRAM_ID,
   JUPITER_ROUTE_INSTRUCTIONS,
   JUPITER_SWAP_VARIANTS,
+  JupiterError,
+  JupiterRefusal,
   WSOL_MINT,
   checkJupiterRoute,
   createJupiterClient,
@@ -290,6 +292,7 @@ describe('Jupiter client', () => {
       inputMint: MINT_A,
       amount: 1000n,
       slippageBps: 50,
+      taker: OWNER,
     });
     expect(q.outAmount).toBe('500000000');
     const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
@@ -307,7 +310,12 @@ describe('Jupiter client', () => {
     const fetchMock = vi.fn(
       async () => new Response(JSON.stringify(quoteFor(MINT_A, 1000n)), { status: 200 }),
     );
-    await client(fetchMock).quote({ inputMint: MINT_A, amount: 1000n, slippageBps: 50 });
+    await client(fetchMock).quote({
+      inputMint: MINT_A,
+      amount: 1000n,
+      slippageBps: 50,
+      taker: OWNER,
+    });
     const init = (fetchMock.mock.calls[0] as unknown as [string, RequestInit])[1];
     expect((init.headers as Record<string, string>)['x-api-key']).toBeUndefined();
   });
@@ -333,7 +341,7 @@ describe('Jupiter client', () => {
   });
 
   it('turns HTTP errors, bad shapes and network failures into JupiterError without leaking the key', async () => {
-    const q = { inputMint: MINT_A, amount: 1n, slippageBps: 50 };
+    const q = { inputMint: MINT_A, amount: 1n, slippageBps: 50, taker: OWNER };
     await expect(
       client(
         vi.fn(async () => new Response('x', { status: 429 })),
@@ -372,9 +380,9 @@ describe('Jupiter client', () => {
         t += ms;
       },
     });
-    await c.quote({ inputMint: MINT_A, amount: 1n, slippageBps: 50 });
+    await c.quote({ inputMint: MINT_A, amount: 1n, slippageBps: 50, taker: OWNER });
     t += 200;
-    await c.quote({ inputMint: MINT_A, amount: 1n, slippageBps: 50 });
+    await c.quote({ inputMint: MINT_A, amount: 1n, slippageBps: 50, taker: OWNER });
     expect(sleeps).toEqual([800]);
   });
 });
@@ -482,7 +490,12 @@ describe('runConvertOnce: live', () => {
       signature: 'SIG1',
       outAmount: 500_000_000n,
     });
-    expect(quote).toHaveBeenCalledWith({ inputMint: MINT_A, amount: 1000n, slippageBps: 50 });
+    expect(quote).toHaveBeenCalledWith({
+      inputMint: MINT_A,
+      amount: 1000n,
+      slippageBps: 50,
+      taker: OWNER,
+    });
     expect(swap).toHaveBeenCalledTimes(1);
     expect(send).toHaveBeenCalledWith({
       owner: OWNER,
@@ -603,7 +616,12 @@ describe('runConvertOnce: live', () => {
       config: { ...config, maxInputAmount: 1000n },
     });
     await runConvertOnce(h.deps);
-    expect(h.quote).toHaveBeenCalledWith({ inputMint: MINT_A, amount: 1000n, slippageBps: 50 });
+    expect(h.quote).toHaveBeenCalledWith({
+      inputMint: MINT_A,
+      amount: 1000n,
+      slippageBps: 50,
+      taker: OWNER,
+    });
   });
 
   it('caps the input amount by default', async () => {
@@ -613,6 +631,7 @@ describe('runConvertOnce: live', () => {
       inputMint: MINT_A,
       amount: DEFAULT_CONVERT_MAX_INPUT_AMOUNT,
       slippageBps: 50,
+      taker: OWNER,
     });
   });
 
@@ -643,6 +662,28 @@ describe('runConvertOnce: live', () => {
     const r = await runConvertOnce(h.deps);
     expect(r.items[0]?.outcome).toMatchObject({ status: 'failed' });
     expect(h.send).not.toHaveBeenCalled();
+  });
+
+  it('records a swap refused while assembling (v2) as refused, alerted, nothing sent', async () => {
+    const h = makeHarness(balances);
+    h.swap.mockRejectedValueOnce(new JupiterRefusal('lookup_table_mismatch', 'refused'));
+    const r = await runConvertOnce(h.deps);
+    expect(r.items[0]?.outcome).toEqual({ status: 'refused', reason: 'lookup_table_mismatch' });
+    expect(h.send).not.toHaveBeenCalled();
+    expect((await ledgerOf(h.deps).get(ledgerKey(OWNER, MINT_A, runWindowKey(NOW))))?.status).toBe(
+      'refused',
+    );
+    expect(h.alerts.mock.calls.map((c) => c[1])).toEqual(['CONVERT_TX_REFUSED']);
+    // Any other swap error stays a failure, retried within the window.
+    const other = makeHarness(balances);
+    other.swap.mockRejectedValueOnce(new JupiterError('Jupiter answered with status 500', 500));
+    expect((await runConvertOnce(other.deps)).items[0]?.outcome).toEqual({
+      status: 'failed',
+      error: 'swap: JupiterError',
+    });
+    expect(
+      await ledgerOf(other.deps).get(ledgerKey(OWNER, MINT_A, runWindowKey(NOW))),
+    ).toBeUndefined();
   });
 
   it('refuses a live swap without a sender', async () => {

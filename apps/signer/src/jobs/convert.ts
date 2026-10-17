@@ -267,8 +267,32 @@ export class JupiterError extends Error {
   }
 }
 
+/**
+ * Jupiter's answer was refused while the signer assembled the swap from it (Swap API V2,
+ * jobs/jupiter-v2.ts: a lookup table that disagrees with the chain, a foreign signer, a compute
+ * budget or tip instruction...): nothing was signed. `reason` is a stable code, safe to log.
+ */
+export class JupiterRefusal extends JupiterError {
+  readonly reason: string;
+  constructor(reason: string, message: string) {
+    super(message);
+    this.name = 'JupiterRefusal';
+    this.reason = reason;
+  }
+}
+
 export interface JupiterClient {
-  quote(input: { inputMint: string; amount: bigint; slippageBps: number }): Promise<JupiterQuote>;
+  /**
+   * ExactIn quote of `amount` of `inputMint` to wrapped SOL. `taker`: the wallet that will sign
+   * the swap (Swap API V2 builds the instructions for it; the Metis client ignores it).
+   */
+  quote(input: {
+    inputMint: string;
+    amount: bigint;
+    slippageBps: number;
+    taker: string;
+  }): Promise<JupiterQuote>;
+  /** The swap transaction of a quote this client returned, for `userPublicKey` (= the taker). */
   swap(input: { quote: JupiterQuote; userPublicKey: string }): Promise<JupiterSwap>;
 }
 
@@ -645,6 +669,7 @@ async function convertOne(
       inputMint: balance.mint,
       amount,
       slippageBps: config.slippageBps,
+      taker: balance.owner,
     });
   } catch (err) {
     return { status: 'failed', error: `quote: ${errName(err)}` };
@@ -670,6 +695,12 @@ async function convertOne(
   try {
     swap = await deps.jupiter.swap({ quote, userPublicKey: balance.owner });
   } catch (err) {
+    if (err instanceof JupiterRefusal) {
+      // Refused while assembling (v2): nothing signed. Like a refusal of the sender, the next
+      // window may try again with a fresh quote.
+      await ledger.set(key, { status: 'refused', at: (deps.now ?? Date.now)() });
+      return { status: 'refused', reason: err.reason };
+    }
     return { status: 'failed', error: `swap: ${errName(err)}` };
   }
 

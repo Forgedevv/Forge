@@ -93,6 +93,7 @@ import type { RevenueBreakdown } from './revenue.js';
 import {
   DEFAULT_JUPITER_URL,
   JupiterError,
+  JupiterRefusal,
   WSOL_MINT,
   loadLookupTables,
   quoteSchema,
@@ -921,12 +922,17 @@ export interface SpendingLimitWithdrawer {
   }): Promise<WithdrawResult>;
 }
 
-/** Quote + swap for SOL -> $FORGE (Jupiter Swap API). */
+/** Quote + swap for SOL -> $FORGE (Jupiter Swap API, or the devnet DBC pool). */
 export interface BuybackQuoteSource {
+  /**
+   * `taker`: the wallet the swap is built for (Swap API V2 builds its instructions at quote
+   * time): the bot when live, the vault in simulation. The Metis and DBC sources ignore it.
+   */
   quote(input: {
     outputMint: string;
     lamports: bigint;
     slippageBps: number;
+    taker: string;
   }): Promise<JupiterQuote>;
   swap(input: { quote: JupiterQuote; userPublicKey: string }): Promise<JupiterSwap>;
 }
@@ -2290,10 +2296,13 @@ export function createBuybackJob(deps: BuybackDeps): BuybackJob {
       note = 'no_quote_source';
     } else {
       try {
+        // Simulation never reads the keystore: the quote is asked for the vault (any wallet gets
+        // a quote; the instructions of a build are discarded).
         const quote = await deps.quotes.quote({
           outputMint: config.forgeMint.toBase58(),
           lamports,
           slippageBps: config.slippageBps,
+          taker: config.vault.toBase58(),
         });
         const rejection = validateBuyQuote(
           quote,
@@ -2363,6 +2372,7 @@ export function createBuybackJob(deps: BuybackDeps): BuybackJob {
         outputMint: forgeMint,
         lamports,
         slippageBps: config.slippageBps,
+        taker: bot.toBase58(),
       });
     } catch (err) {
       return skip(`quote_unavailable:${describeError(err).name}`);
@@ -2384,6 +2394,8 @@ export function createBuybackJob(deps: BuybackDeps): BuybackJob {
     try {
       swap = await l.quotes.swap({ quote, userPublicKey: bot.toBase58() });
     } catch (err) {
+      // Refused while assembling (Swap API V2): nothing signed, alerted like a refused transaction.
+      if (err instanceof JupiterRefusal) return skip(`tx_refused:${err.reason}`, true);
       return skip(`swap_unavailable:${describeError(err).name}`);
     }
     // Kill switch re-read right before the key is used.
