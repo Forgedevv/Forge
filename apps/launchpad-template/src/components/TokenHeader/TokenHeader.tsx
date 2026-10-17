@@ -7,14 +7,17 @@ import { Copyable } from '../ui/Copyable';
 import { TruncatedAddress } from '../TruncatedAddress/TruncatedAddress';
 import CopyIconSVG from '@/icons/CopyIconSVG';
 import { TrenchesTokenIcon, TrenchesTokenIconImage } from '@/forge/token-icon';
+import { Skeleton } from '../ui/Skeleton';
 
 type TokenHeaderProps = {
   className?: string;
 };
 
 export const TokenHeader: React.FC<TokenHeaderProps> = memo(({ className }) => {
-  const { data: pool } = useTokenInfo();
+  const { data: pool, isLoading } = useTokenInfo();
   const { data: minimalTokenInfo } = useMinimalTokenInfo();
+  const name = pool?.baseAsset.name;
+  const symbol = pool?.baseAsset.symbol;
 
   const pctChange =
     pool?.baseAsset.stats24h?.priceChange === undefined
@@ -30,10 +33,17 @@ export const TokenHeader: React.FC<TokenHeaderProps> = memo(({ className }) => {
       </div>
 
       <div className="flex flex-1 justify-between gap-2.5 overflow-hidden">
-        <div className="flex flex-col justify-center gap-0.5">
-          <h1 className="cursor-pointer truncate font-medium leading-none tracking-tight">
-            {minimalTokenInfo?.symbol}
-          </h1>
+        <div className="flex min-w-0 flex-col justify-center gap-0.5">
+          {name || symbol ? (
+            <h1 className="flex min-w-0 items-baseline gap-1.5 leading-none tracking-tight">
+              <span className="truncate font-medium">{name || symbol}</span>
+              {name && symbol && symbol !== name ? (
+                <span className="shrink-0 text-sm text-neutral-500">{symbol}</span>
+              ) : null}
+            </h1>
+          ) : isLoading ? (
+            <Skeleton className="h-4 w-28" data-testid="token-header-name-loading" />
+          ) : null}
 
           {minimalTokenInfo && (
             <Copyable

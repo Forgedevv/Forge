@@ -38,6 +38,8 @@ export const content = {
     auditEnabled: 'Enabled',
     auditDisabled: 'Disabled',
     auditUnknown: 'Unknown',
+    readMore: 'Read more',
+    showLess: 'Show less',
     tokenAddress: 'Token address',
     backToMarket: 'Back to market',
     lightMode: 'Switch to light mode',
