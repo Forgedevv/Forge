@@ -2,6 +2,7 @@ import { useState, type MouseEvent } from 'react';
 import { Dialog, DialogContent, DialogTitle, DialogTrigger } from '@/components/ui/Dialog';
 import { siteConfig } from './config';
 import { TradePanel, type TradePanelProps } from './TradePanel';
+import { TRADE_TEXT } from './trade/copy';
 
 export interface BuyButtonProps extends Omit<TradePanelProps, 'className'> {
   /** Button text. */
@@ -16,7 +17,11 @@ export interface BuyButtonProps extends Omit<TradePanelProps, 'className'> {
  *
  * On `sleeping` / `disabled` sites it renders as a disabled button and opens nothing.
  */
-export function BuyButton({ label = 'Buy', className, ...panelProps }: BuyButtonProps) {
+export function BuyButton({
+  label = TRADE_TEXT.buyButton.label,
+  className,
+  ...panelProps
+}: BuyButtonProps) {
   const [open, setOpen] = useState(false);
   const live = siteConfig.mode === 'live';
   const stop = (event: MouseEvent) => {
@@ -30,7 +35,7 @@ export function BuyButton({ label = 'Buy', className, ...panelProps }: BuyButton
         type="button"
         disabled
         className={buttonClass}
-        title="Trading is not available"
+        title={TRADE_TEXT.buyButton.notAvailable}
         data-forge="buy-button"
         data-testid="buy-button"
       >
@@ -53,7 +58,9 @@ export function BuyButton({ label = 'Buy', className, ...panelProps }: BuyButton
         </button>
       </DialogTrigger>
       <DialogContent className="max-w-md p-0" onClick={stop}>
-        <DialogTitle className="sr-only">Trade {panelProps.symbol ?? 'coin'}</DialogTitle>
+        <DialogTitle className="sr-only">
+          {TRADE_TEXT.buyButton.dialogTitle(panelProps.symbol)}
+        </DialogTitle>
         <TradePanel {...panelProps} />
       </DialogContent>
     </Dialog>

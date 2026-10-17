@@ -366,7 +366,7 @@ describe('buy and sell execution', () => {
     const build = vi.spyOn(core, 'buildSellTx');
     renderPanel();
     await screen.findByTestId('trade-form');
-    fireEvent.click(screen.getByRole('tab', { name: 'sell' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Sell' }));
     await screen.findByTestId('balance');
     fireEvent.change(amountInput(), { target: { value: '1' } });
     await screen.findByTestId('quote-summary');
@@ -391,7 +391,7 @@ describe('buy and sell execution', () => {
     const build = vi.spyOn(core, 'buildSellTx');
     renderPanel({ displayDecimals: 6 });
     await screen.findByTestId('trade-form');
-    fireEvent.click(screen.getByRole('tab', { name: 'sell' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Sell' }));
     await waitFor(() => expect(screen.getByTestId('balance').textContent).toContain('5 MOON'));
     fireEvent.change(amountInput(), { target: { value: '1' } });
     await screen.findByTestId('quote-summary');
@@ -411,7 +411,7 @@ describe('buy and sell execution', () => {
     const quote = vi.spyOn(core, 'quoteSwap');
     renderPanel({ displayDecimals: 6 });
     await screen.findByTestId('trade-form');
-    fireEvent.click(screen.getByRole('tab', { name: 'sell' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Sell' }));
     const alert = await screen.findByTestId('mint-error');
     expect(alert.textContent).toContain('does not exist');
     fireEvent.change(amountInput(), { target: { value: '1' } });
@@ -429,7 +429,7 @@ describe('buy and sell execution', () => {
   it('blocks a sell above the token balance', async () => {
     renderPanel();
     await screen.findByTestId('trade-form');
-    fireEvent.click(screen.getByRole('tab', { name: 'sell' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Sell' }));
     fireEvent.change(amountInput(), { target: { value: '1' } });
     await screen.findByTestId('quote-summary');
     await waitFor(() => expect(submit().textContent).toBe('Insufficient balance'));

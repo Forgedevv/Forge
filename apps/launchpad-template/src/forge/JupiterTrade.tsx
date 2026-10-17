@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { siteConfig } from './config';
 import { JUPITER_REFERRAL_FEE_BPS } from './trade/constants';
+import { TRADE_TEXT } from './trade/copy';
 import { TradeError } from './trade/errors';
 import { isLaunchpadPool, type LaunchpadPool } from './trade/launchpad-pool';
 import {
@@ -78,7 +79,7 @@ export function JupiterTrade({ launchpadPool }: JupiterTradeProps) {
         className="rounded-[var(--radius)] border border-[var(--color-border)] p-4 text-sm text-[var(--color-text-muted)]"
         data-testid="jupiter-not-configured"
       >
-        Trading is not configured on this site.
+        {TRADE_TEXT.jupiter.notConfigured}
       </div>
     );
   }
@@ -165,7 +166,7 @@ function JupiterPlugin({
         <div className="flex w-full flex-col items-center justify-start gap-y-2">
           <Skeleton className="h-20 w-full" />
           <Skeleton className="h-20 w-full" />
-          <span className="mt-4 text-sm text-neutral-500">Loading Jupiter Plugin...</span>
+          <span className="mt-4 text-sm text-neutral-500">{TRADE_TEXT.jupiter.loading}</span>
         </div>
       ) : (
         <div

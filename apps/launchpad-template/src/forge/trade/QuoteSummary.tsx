@@ -1,5 +1,6 @@
 import { formatBps, formatUnits } from './amounts';
 import { PLATFORM_FEE_BPS, PRICE_IMPACT_WARN_BPS, SOL_DECIMALS } from './constants';
+import { TRADE_TEXT } from './copy';
 import type { SwapQuote } from './core-adapter';
 import type { NetworkFeeEstimate } from './useWalletBalances';
 
@@ -9,6 +10,8 @@ export interface QuoteSummaryProps {
   tokenDecimals: number;
   networkFee: NetworkFeeEstimate;
 }
+
+const TEXT = TRADE_TEXT.quote;
 
 const sol = (raw: bigint, digits = 9) => `${formatUnits(raw, SOL_DECIMALS, digits)} SOL`;
 
@@ -48,51 +51,47 @@ export function QuoteSummary({ quote, symbol, tokenDecimals, networkFee }: Quote
   const isBuy = quote.side === 'buy';
 
   return (
-    <dl className="flex flex-col gap-1.5 text-sm" data-testid="quote-summary" aria-label="Quote">
+    <dl
+      className="flex flex-col gap-1.5 text-sm"
+      data-testid="quote-summary"
+      aria-label={TEXT.label}
+    >
       {isBuy ? (
         <>
-          <Row id="pay" label="You pay" value={sol(quote.amountIn, 6)} />
-          <Row id="out" label="You receive (estimated)" value={token(quote.amountOut)} emphasis />
-          <Row id="min" label="Minimum received" value={token(quote.minAmountOut)} />
+          <Row id="pay" label={TEXT.youPay} value={sol(quote.amountIn, 6)} />
+          <Row id="out" label={TEXT.youReceive} value={token(quote.amountOut)} emphasis />
+          <Row id="min" label={TEXT.minimumReceived} value={token(quote.minAmountOut)} />
         </>
       ) : (
         <>
-          <Row id="pay" label="You sell" value={token(quote.amountIn)} />
-          <Row id="out" label="Proceeds (estimated)" value={sol(quote.amountOut, 6)} emphasis />
-          <Row id="min" label="Minimum proceeds" value={sol(quote.minAmountOut, 6)} />
+          <Row id="pay" label={TEXT.youSell} value={token(quote.amountIn)} />
+          <Row id="out" label={TEXT.proceeds} value={sol(quote.amountOut, 6)} emphasis />
+          <Row id="min" label={TEXT.minimumProceeds} value={sol(quote.minAmountOut, 6)} />
         </>
       )}
-      <Row id="impact" label="Price impact" value={impact} warn={impactWarn} />
-      <Row id="trading-fee" label="Trading fee (pool)" value={sol(quote.tradingFee)} />
+      <Row id="impact" label={TEXT.priceImpact} value={impact} warn={impactWarn} />
+      <Row id="trading-fee" label={TEXT.tradingFee} value={sol(quote.tradingFee)} />
       <Row
         id="platform-fee"
-        label={`FORGE platform fee (${formatBps(PLATFORM_FEE_BPS)})`}
+        label={TEXT.platformFee(formatBps(PLATFORM_FEE_BPS))}
         value={sol(quote.platformFee)}
       />
-      <Row id="network-fee" label="Network fee (estimate)" value={sol(networkFee.base)} />
-      <Row
-        id="priority-fee"
-        label="Priority fee (at most)"
-        value={sol(networkFee.maxPriorityFee)}
-      />
+      <Row id="network-fee" label={TEXT.networkFee} value={sol(networkFee.base)} />
+      <Row id="priority-fee" label={TEXT.priorityFee} value={sol(networkFee.maxPriorityFee)} />
       {networkFee.accountRent > BigInt(0) ? (
-        <Row
-          id="account-rent"
-          label="Token account deposit (one time)"
-          value={sol(networkFee.accountRent)}
-        />
+        <Row id="account-rent" label={TEXT.accountRent} value={sol(networkFee.accountRent)} />
       ) : null}
       {isBuy ? (
         <Row
           id="total"
-          label="Total from your wallet (at most)"
+          label={TEXT.totalBuy}
           value={sol(quote.amountIn + quote.platformFee + networkFee.total, 9)}
           emphasis
         />
       ) : (
         <Row
           id="total"
-          label="Estimated SOL you keep"
+          label={TEXT.totalSell}
           value={sol(
             quote.amountOut > quote.platformFee + networkFee.base + networkFee.maxPriorityFee
               ? quote.amountOut - quote.platformFee - networkFee.base - networkFee.maxPriorityFee
