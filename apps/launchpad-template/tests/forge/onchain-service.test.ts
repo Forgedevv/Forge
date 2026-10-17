@@ -28,6 +28,7 @@ import {
   READ_BUDGET,
   STALE_MS,
   createOnchainCoinService,
+  forgeAppOrigin,
 } from '../../src/forge/data/onchain/service';
 import { dbcPoolAddress } from '../../src/forge/tx/programs';
 import {
@@ -362,5 +363,116 @@ describe('one coin on-chain', () => {
     t.advance(COIN_TTL_MS);
     await service.coin(USER_COIN);
     expect(chain.getAccountInfoAndContext.mock.calls.length).toBeGreaterThan(reads);
+  });
+});
+
+describe('launchpad coin metadata on the FORGE coin-meta route', () => {
+  const FORGE = 'https://app.forge.example';
+
+  /** The launched chain, with the on-chain metadata URI of `coinMint` set to `uri`. */
+  function chainWithCoinUri(uri: string, coinMint: string) {
+    const name = coinMint === LAUNCHPAD_COIN ? 'Pad Coin' : 'Moon Coin';
+    return launchedChain([
+      [metadataAddress(coinMint), metadataAccount(coinMint, { name, symbol: 'X', uri })],
+    ]);
+  }
+
+  function metaFetch(image = `${STORAGE}/coin-images/pad.png`) {
+    return vi.fn(
+      async (_url: string, _init?: RequestInit) =>
+        new Response(
+          JSON.stringify({ name: 'Pad Coin', symbol: 'PAD', description: 'The pad', image }),
+          {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          },
+        ),
+    );
+  }
+
+  async function readCoin(uri: string, fetch: ReturnType<typeof metaFetch>, mint = LAUNCHPAD_COIN) {
+    launch();
+    const chain = chainWithCoinUri(uri, mint);
+    const service = createOnchainCoinService({
+      connection: chain.connection,
+      storageOrigin: STORAGE,
+      forgeOrigin: FORGE,
+      fetch: fetch as unknown as typeof globalThis.fetch,
+      now: clock().now,
+    });
+    return service.coin(mint);
+  }
+
+  it('reads the launchpad coin metadata from the FORGE origin, without redirects', async () => {
+    const fetch = metaFetch();
+    const coin = await readCoin(`${FORGE}/api/coin-meta/moon`, fetch);
+    expect(coin?.pool?.baseAsset.icon).toBe(`${STORAGE}/coin-images/pad.png`);
+    expect(coin?.description).toBe('The pad');
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(String(fetch.mock.calls[0]?.[0])).toBe(`${FORGE}/api/coin-meta/moon`);
+    expect(fetch.mock.calls[0]?.[1]).toMatchObject({ redirect: 'error' });
+  });
+
+  it('keeps the description but drops an image that is not on the storage origin', async () => {
+    const coin = await readCoin(
+      `${FORGE}/api/coin-meta/moon`,
+      metaFetch('https://images.elsewhere.example/pad.png'),
+    );
+    expect(coin?.pool?.baseAsset.icon).toBeUndefined();
+    expect(coin?.description).toBe('The pad');
+  });
+
+  it('refuses look-alike origins, http, other paths and credentials', async () => {
+    for (const uri of [
+      'https://app.forge.example.evil.example/api/coin-meta/moon',
+      'https://evil.example/api/coin-meta/moon?u=https://app.forge.example',
+      'https://app.forge.example:8443/api/coin-meta/moon',
+      'http://app.forge.example/api/coin-meta/moon',
+      'https://user:pass@app.forge.example/api/coin-meta/moon',
+      'https://app.forge.example/api/rpc',
+      'https://app.forge.example/api/coin-meta/',
+    ]) {
+      const fetch = metaFetch();
+      const coin = await readCoin(uri, fetch);
+      expect(fetch, uri).not.toHaveBeenCalled();
+      expect(coin?.pool?.baseAsset.icon, uri).toBeUndefined();
+    }
+  });
+
+  it('never reads the FORGE origin for a coin other than the launchpad coin', async () => {
+    const fetch = metaFetch();
+    const coin = await readCoin(`${FORGE}/api/coin-meta/moon`, fetch, USER_COIN);
+    expect(coin?.pool?.id).toBe(fixture('test1Pool').address);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('treats a redirect as a failure', async () => {
+    const fetch = vi.fn(async (_url: string, init?: RequestInit) => {
+      // What `fetch` does with `redirect: 'error'` when the server answers 3xx.
+      if (init?.redirect === 'error') throw new TypeError('fetch failed: redirect mode is error');
+      return new Response('{}', { status: 200 });
+    });
+    const coin = await readCoin(`${FORGE}/api/coin-meta/moon`, fetch as never);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(coin?.pool?.baseAsset.icon).toBeUndefined();
+    expect(coin?.description).toBeNull();
+  });
+});
+
+describe('forgeAppOrigin', () => {
+  it('takes the API URL first, else the relay origin, https only', () => {
+    expect(forgeAppOrigin('https://api.forge.example/base/', 'https://relay.example/api/rpc')).toBe(
+      'https://api.forge.example',
+    );
+    expect(forgeAppOrigin(undefined, 'https://app.forge.example/api/rpc')).toBe(
+      'https://app.forge.example',
+    );
+    expect(forgeAppOrigin('', 'https://app.forge.example/api/rpc')).toBe(
+      'https://app.forge.example',
+    );
+    expect(forgeAppOrigin(undefined, 'http://app.forge.example/api/rpc')).toBeNull();
+    expect(forgeAppOrigin('https://u:p@app.forge.example', undefined)).toBeNull();
+    expect(forgeAppOrigin('not a url', 'https://app.forge.example')).toBeNull();
+    expect(forgeAppOrigin(undefined, undefined)).toBeNull();
   });
 });

@@ -1,6 +1,10 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
 import { createCoinsHandler } from '@/forge/data/onchain/handler';
-import { createOnchainCoinService, type OnchainCoinService } from '@/forge/data/onchain/service';
+import {
+  createOnchainCoinService,
+  forgeAppOrigin,
+  type OnchainCoinService,
+} from '@/forge/data/onchain/service';
 import { resolveRelayUrl } from '@/forge/relay';
 import { createServerRelayConnection } from '@/forge/server-relay';
 
@@ -33,6 +37,11 @@ function getService(): OnchainCoinService | null {
     ? createOnchainCoinService({
         connection: createServerRelayConnection(relay),
         storageOrigin: readStorageOrigin(),
+        // The launchpad coin's metadata JSON is served by FORGE (`/api/coin-meta/<slug>`).
+        forgeOrigin: forgeAppOrigin(
+          process.env.NEXT_PUBLIC_FORGE_API_URL,
+          process.env.NEXT_PUBLIC_FORGE_RPC_RELAY_URL,
+        ),
       })
     : null;
   return service;
