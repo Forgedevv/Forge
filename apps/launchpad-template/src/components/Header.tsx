@@ -4,9 +4,10 @@ import { Button } from './ui/button';
 import { CreatePoolButton } from './CreatePoolButton';
 import { ThemeToggle } from './ThemeToggle';
 import { useMemo } from 'react';
-import { shortenAddress } from '@/lib/utils';
 import { content } from '@/content';
 import { Logo } from './Logo';
+import { MobileNav } from './MobileNav';
+import { WalletMenu } from './WalletMenu';
 
 export const Header = () => {
   const { setShowModal } = useUnifiedWalletContext();
@@ -20,7 +21,7 @@ export const Header = () => {
 
   return (
     <header className="launchpad-header sticky top-0 z-40 w-full border-b backdrop-blur-md">
-      <div className="launchpad-header-inner flex min-h-14 items-center justify-between gap-3 py-2 md:min-h-16">
+      <div className="launchpad-header-inner relative flex min-h-14 items-center justify-between gap-3 py-2 md:min-h-16">
         {/* Logo Section */}
         <Link
           href="/"
@@ -64,11 +65,9 @@ export const Header = () => {
             {content.strings.creatorFees}
           </Link>
           <CreatePoolButton />
+          {/* The wallet button opens a menu (copy, explorer, creator fees, disconnect). */}
           {address ? (
-            <Button variant="secondary" onClick={() => disconnect()}>
-              <span className="iconify h-4 w-4 ph--wallet-bold" />
-              {shortenAddress(address)}
-            </Button>
+            <WalletMenu address={address} onDisconnect={() => disconnect()} />
           ) : (
             <Button
               onClick={() => {
@@ -79,7 +78,9 @@ export const Header = () => {
               <span className="block md:hidden">{content.strings.connectShort}</span>
             </Button>
           )}
-          <ThemeToggle />
+          {/* Phones carry the theme toggle in the menu. */}
+          <ThemeToggle className="max-md:hidden" />
+          <MobileNav />
         </nav>
       </div>
     </header>

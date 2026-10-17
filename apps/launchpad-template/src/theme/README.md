@@ -56,7 +56,11 @@ The homepage is composed of optional sections (`src/components/home/`): the iden
 value strip, the market, how it works, the launchpad coin, questions and a closing call to action.
 While no coin exists, the market shows one compact panel (`Explore/MarketEmpty`) instead of three
 empty columns. On mobile the market tabs stay in the card flow (not sticky). Shared buttons use
-`launchpad-button`, `launchpad-button-primary` and `launchpad-button-ghost`. The header and footer
+`launchpad-button`, `launchpad-button-primary` and `launchpad-button-ghost`. On phones the header links
+and the theme toggle move into a menu (`MobileNav`, `launchpad-menu-button`,
+`launchpad-mobile-menu*`); the connected wallet button opens a small menu (`WalletMenu`,
+`launchpad-wallet-menu*`: copy the address, view it on the explorer, creator fees, disconnect).
+The header and footer
 draw the mark of `src/components/Logo.tsx`; the app shell frames the locked creator fee page
 (`[data-forge-page="creator-fees"]`) with the same header and footer. `MintSculpture` is local
 SVG artwork with two engraved medallions; its finish follows the variables above, and it holds a
