@@ -346,7 +346,7 @@ The signer never takes an address or an amount from the request: it re-reads eve
 | `FORGE_SQUADS_MULTISIG`, `FORGE_SQUADS_SPENDING_LIMIT`, `FORGE_SQUADS_VAULT_INDEX` (optional, read in `packages/core/src/addresses.ts`) | | | | ✓ (buyback funding) |
 | `FORGE_METEORA_REFERRAL_ACCOUNT`, `FORGE_PLATFORM_FEE_WALLET`, `FORGE_JUPITER_REFERRAL_ACCOUNT` | | ✓ as `NEXT_PUBLIC_*` twins | ✓ (injects the public twins) | ✓ |
 | `NEXT_PUBLIC_POOL_CONFIG_KEY`, `NEXT_PUBLIC_R2_PUBLIC_URL`, `NEXT_PUBLIC_SITE_NAME` | | ✓ | ✓ (injected) | |
-| `JUPITER_API_KEY` | ✓ | | | ✓ |
+| `JUPITER_API_KEY` | ✓ | | | ✓ (required when the fee conversion or the buyback runs live) |
 | `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET`, `R2_PUBLIC_URL` | ✓ (presigned uploads) | | | |
 | `CLIENTS_DOMAIN` | ✓ (coin metadata, previews) | | ✓ | |
 | `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY(_PATH)`, `GITHUB_ORG` | | | ✓ | |

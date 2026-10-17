@@ -48,9 +48,9 @@ The builder logs `visual review discarded, first pass kept` with the reason (`ca
 | Claim the creator share of each pool to the multisig: the DBC creator fees before graduation, the fees of the permanently locked DAMM v2 position after | every hour (`SIGNER_CLAIMS_INTERVAL_HOURS`) | signer |
 | Transfer the cashbox surplus to the multisig | every 24 h | signer |
 | Automatic refunds (2 failed builds) | continuous | signer |
-| $FORGE buyback | the bot withdraws the day's budget from the vault through its Squads spending limit (once per UTC day), then makes several small buys at random times and returns every $FORGE to the vault. Live only on mainnet-beta with `FORGE_BUYBACK_LIVE=true`, `FORGE_MINT`, `FORGE_SQUADS_MULTISIG` and `FORGE_SQUADS_SPENDING_LIMIT`; simulation otherwise | signer |
+| $FORGE buyback | the bot withdraws the day's budget from the vault through its Squads spending limit (once per UTC day), then makes several small buys at random times and returns every $FORGE to the vault. Live only on mainnet-beta with `FORGE_BUYBACK_LIVE=true`, `FORGE_MINT`, `FORGE_SQUADS_MULTISIG`, `FORGE_SQUADS_SPENDING_LIMIT` and `JUPITER_API_KEY`; simulation otherwise | signer |
 | Claim the Jupiter referral fees (SOL and USDC by default, `SIGNER_JUPITER_CLAIMS_MINTS`) to the multisig | every 24 h (mainnet-beta only; off on devnet) | signer |
-| Convert to SOL the Jupiter fees received in other currencies | every 24 h (mainnet, `FORGE_CONVERT_LIVE=true`) | signer |
+| Convert to SOL the Jupiter fees received in other currencies | every 24 h (mainnet, `FORGE_CONVERT_LIVE=true`, `JUPITER_API_KEY` required then; dry run otherwise) | signer |
 | Check that disabled launchpads are cut (paused on Vercel) | every 15 min | builder |
 | Put launchpads with no trade for 30 days into sleep mode | every 24 h | builder |
 | Sweep abandoned uploads in R2 `pending/` | every 15 min: an external scheduler sends `POST /api/internal/uploads/sweep` with `Authorization: Bearer $FORGE_INTERNAL_CRON_SECRET` (Vercel Cron sends GET, so it cannot call this route directly) | web |

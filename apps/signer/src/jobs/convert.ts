@@ -108,7 +108,7 @@ export function resolveConvertMode(input: ConvertModeInput): ConvertModeDecision
 
 export interface ConvertConfig {
   jupiterUrl: string;
-  /** JUPITER_API_KEY, sent as x-api-key when present. */
+  /** JUPITER_API_KEY, sent as x-api-key when present. Required when the job runs live. */
   apiKey?: string | undefined;
   /** Slippage asked from Jupiter, in bps. */
   slippageBps: number;
@@ -177,8 +177,14 @@ const envSchema = z.object({
   CONVERT_EXCLUDED_MINTS: z.string().default(''),
 });
 
+/**
+ * Reads the CONVERT_* settings and the Jupiter API settings. The live mode (FORGE_CONVERT_LIVE on
+ * `options.cluster`, the cluster the runtime resolved; without it SOLANA_CLUSTER with the devnet
+ * default) needs JUPITER_API_KEY: without it, a startup error. Dry-run works without a key.
+ */
 export function parseConvertConfig(
   env: Readonly<Record<string, string | undefined>>,
+  options: { cluster?: string } = {},
 ): ConvertConfig {
   const p = envSchema.parse(env);
   const excluded = new Set(
@@ -200,9 +206,20 @@ export function parseConvertConfig(
     requestTimeoutMs: p.CONVERT_REQUEST_TIMEOUT_MS,
     excludedMints: [...excluded],
   };
-  if (p.JUPITER_API_KEY) config.apiKey = p.JUPITER_API_KEY;
+  if (p.JUPITER_API_KEY?.trim()) config.apiKey = p.JUPITER_API_KEY;
   if (config.slippageBps > config.maxSlippageBps) {
     throw new Error('CONVERT_SLIPPAGE_BPS must not exceed CONVERT_MAX_SLIPPAGE_BPS');
+  }
+  // The Jupiter API needs a key (docs/METEORA.md "Jupiter"): a live job without one would fail
+  // every swap at run time instead of refusing to start.
+  const mode = resolveConvertMode({
+    cluster: options.cluster ?? (env.SOLANA_CLUSTER || 'devnet'),
+    liveFlag: env.FORGE_CONVERT_LIVE,
+  });
+  if (mode.mode === 'live' && !config.apiKey) {
+    throw new Error(
+      'JUPITER_API_KEY is required when the conversion runs live (mainnet-beta with FORGE_CONVERT_LIVE=true)',
+    );
   }
   return config;
 }

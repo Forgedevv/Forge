@@ -71,6 +71,19 @@ function baseEnv(
   };
 }
 
+/** A mainnet-beta environment: mainnet RPC host and the alerting it requires. */
+function mainnetOverrides(
+  overrides: Record<string, string | undefined> = {},
+): Record<string, string | undefined> {
+  return {
+    SOLANA_CLUSTER: 'mainnet-beta',
+    RPC_URL: 'https://mainnet.rpc.test',
+    TELEGRAM_BOT_TOKEN: 'bot-token-test',
+    TELEGRAM_CHAT_ID: '-100123',
+    ...overrides,
+  };
+}
+
 /** Offline Connection: the reads the startup checks and the jobs make, with empty answers. */
 function mockConnection(genesis: string = CLUSTER_GENESIS_HASH.devnet): Connection {
   const handlers: Record<string, (...args: unknown[]) => unknown> = {
@@ -422,6 +435,22 @@ describe('signer runtime wiring', () => {
     await expect(create({ SIGNER_REFUNDS_MAX_LAMPORTS: '0.5' })).rejects.toThrow(
       /SIGNER_REFUNDS_MAX_LAMPORTS/,
     );
+  });
+
+  it('refuses a live conversion on mainnet-beta without the Jupiter API key', async () => {
+    const onMainnet = { connection: mockConnection(CLUSTER_GENESIS_HASH['mainnet-beta']) };
+    await expect(
+      create(mainnetOverrides({ FORGE_CONVERT_LIVE: 'true' }), onMainnet),
+    ).rejects.toThrow(/JUPITER_API_KEY is required/);
+    // With the key it starts; without the live flag (dry run) no key is needed.
+    const live = await create(
+      mainnetOverrides({ FORGE_CONVERT_LIVE: 'true', JUPITER_API_KEY: 'jupiter-key-test' }),
+      onMainnet,
+    );
+    expect(live.scheduler.names()).toContain('convert');
+    await live.stop();
+    const dryRun = await create(mainnetOverrides(), onMainnet);
+    expect(dryRun.scheduler.names()).toContain('convert');
   });
 
   it('removes the keystore passphrase and the service role key from the process environment once parsed', async () => {

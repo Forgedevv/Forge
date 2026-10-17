@@ -310,7 +310,7 @@ export const watchModule: SignerJobModule = {
 export const convertModule: SignerJobModule = {
   name: 'convert',
   async create(ctx) {
-    const config = parseConvertConfig(ctx.env);
+    const config = parseConvertConfig(ctx.env, { cluster: ctx.cluster });
     // Wallets whose non-SOL fee balances are swapped to SOL: never the buyback bot (its $FORGE
     // goes to the vault, and FORGE_MINT is excluded anyway).
     const owners = new Map<string, string>();

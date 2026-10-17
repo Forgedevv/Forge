@@ -356,8 +356,8 @@ const LIVE_RE = /^(true|false)?$/;
  * BUYBACK_TICK_SECONDS (60), BUYBACK_PAUSED (false), BUYBACK_ROUTE (jupiter | dbc-devnet),
  * FORGE_BUYBACK_DEVNET_TEST (exactly "true" or "false", default false, refused on mainnet-beta),
  * BUYBACK_DEVNET_DBC_POOL (required by the dbc-devnet route), JUPITER_API_URL / JUPITER_API_KEY
- * (shared with the conversion job), BUYBACK_REQUEST_INTERVAL_MS (1100),
- * BUYBACK_REQUEST_TIMEOUT_MS (15 000).
+ * (shared with the conversion job; the key is required by FORGE_BUYBACK_LIVE=true on
+ * mainnet-beta), BUYBACK_REQUEST_INTERVAL_MS (1100), BUYBACK_REQUEST_TIMEOUT_MS (15 000).
  *
  * The mode decision (live, devnet test or simulation) uses `options.cluster`, the cluster the
  * runtime resolved (devnet unless SOLANA_CLUSTER is mainnet-beta), not the raw variable; without
@@ -462,6 +462,15 @@ export function buybackConfigFromEnv(
     );
   }
   validateBuybackConfig(config);
+  // A live buyback on mainnet-beta buys through the Jupiter API, which needs a key
+  // (docs/METEORA.md "Jupiter"): refused at startup rather than failing every order.
+  const apiKey = env.JUPITER_API_KEY?.trim() ? env.JUPITER_API_KEY : undefined;
+  if (config.cluster === 'mainnet-beta' && config.live && !apiKey) {
+    throw new JobError(
+      'CONFIG',
+      'JUPITER_API_KEY is required when FORGE_BUYBACK_LIVE=true on mainnet-beta',
+    );
+  }
   const tickSeconds = intEnv('BUYBACK_TICK_SECONDS', 60, 3_600);
   if (tickSeconds < 5) throw new JobError('CONFIG', 'BUYBACK_TICK_SECONDS must be at least 5');
   return {
@@ -469,7 +478,7 @@ export function buybackConfigFromEnv(
     tickMs: tickSeconds * 1_000,
     jupiter: {
       baseUrl: jupiterUrl.replace(/\/+$/, ''),
-      apiKey: env.JUPITER_API_KEY || undefined,
+      apiKey,
       minRequestIntervalMs: intEnv('BUYBACK_REQUEST_INTERVAL_MS', 1_100, 60_000),
       timeoutMs: intEnv('BUYBACK_REQUEST_TIMEOUT_MS', 15_000, 120_000),
     },

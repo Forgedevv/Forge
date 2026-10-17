@@ -213,6 +213,32 @@ describe('parseConvertConfig', () => {
     ).toThrow(/SLIPPAGE/);
     expect(() => parseConvertConfig({ CONVERT_SLIPPAGE_BPS: '9999' })).toThrow();
   });
+
+  it('requires the API key when the conversion runs live, never in dry-run', () => {
+    const live = { FORGE_CONVERT_LIVE: 'true' };
+    for (const key of [undefined, '', '  ']) {
+      expect(() =>
+        parseConvertConfig({ ...live, JUPITER_API_KEY: key }, { cluster: 'mainnet-beta' }),
+      ).toThrow(/JUPITER_API_KEY is required/);
+    }
+    // Without the runtime's cluster, SOLANA_CLUSTER decides (devnet by default).
+    expect(() => parseConvertConfig({ ...live, SOLANA_CLUSTER: 'mainnet-beta' })).toThrow(
+      /JUPITER_API_KEY/,
+    );
+    expect(
+      parseConvertConfig({ ...live, JUPITER_API_KEY: 'k' }, { cluster: 'mainnet-beta' }).apiKey,
+    ).toBe('k');
+    // Dry-run: devnet (whatever the flag), or mainnet-beta without the flag.
+    expect(parseConvertConfig(live).apiKey).toBeUndefined();
+    expect(parseConvertConfig(live, { cluster: 'devnet' }).apiKey).toBeUndefined();
+    expect(
+      parseConvertConfig({ SOLANA_CLUSTER: 'mainnet-beta' }, { cluster: 'mainnet-beta' }).apiKey,
+    ).toBeUndefined();
+    // The runtime's cluster wins over the raw variable.
+    expect(() =>
+      parseConvertConfig({ ...live, SOLANA_CLUSTER: 'mainnet-beta' }, { cluster: 'devnet' }),
+    ).not.toThrow();
+  });
 });
 
 describe('validateQuote', () => {

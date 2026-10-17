@@ -225,6 +225,41 @@ describe('buybackConfigFromEnv', () => {
       false,
     );
   });
+  it('requires the Jupiter API key for a live buyback on mainnet-beta only', () => {
+    const mainnet = { cluster: 'mainnet-beta' };
+    for (const key of [undefined, '', ' ']) {
+      expect(() =>
+        buybackConfigFromEnv(
+          { FORGE_BUYBACK_LIVE: 'true', JUPITER_API_KEY: key },
+          addresses,
+          mainnet,
+        ),
+      ).toThrow(/JUPITER_API_KEY is required/);
+    }
+    const withKey = buybackConfigFromEnv(
+      { FORGE_BUYBACK_LIVE: 'true', JUPITER_API_KEY: 'jup-key' },
+      addresses,
+      mainnet,
+    );
+    expect(withKey.jupiter.apiKey).toBe('jup-key');
+    // Simulation on mainnet-beta, and the devnet live test (dbc-devnet route), need no key.
+    expect(buybackConfigFromEnv({}, addresses, mainnet).jupiter.apiKey).toBeUndefined();
+    expect(
+      buybackConfigFromEnv({ FORGE_BUYBACK_LIVE: 'false' }, addresses, mainnet).config.live,
+    ).toBe(false);
+    expect(
+      buybackConfigFromEnv(
+        {
+          FORGE_BUYBACK_LIVE: 'true',
+          FORGE_BUYBACK_DEVNET_TEST: 'true',
+          BUYBACK_ROUTE: 'dbc-devnet',
+          BUYBACK_DEVNET_DBC_POOL: randomAddress().toBase58(),
+        },
+        addresses,
+        { cluster: 'devnet' },
+      ).config.live,
+    ).toBe(true);
+  });
   it('reads the route, the devnet gate and the fee allowance, refusing them on mainnet-beta', () => {
     const pool = randomAddress().toBase58();
     const { config } = buybackConfigFromEnv(
