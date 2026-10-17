@@ -78,7 +78,7 @@ export type LaunchpadSpec = z.infer<typeof LaunchpadSpec>;
 
 This block is a summary; `packages/shared/src/spec.ts` is the reference. Extra rules enforced there:
 - `firstBuySol` and `poolCreationFeeSol` have at most 9 decimals (1 lamport).
-- The launchpad coin's name, symbol and metadata URI share a budget of **148 UTF-8 bytes** (`LAUNCH_METADATA_BUDGET_BYTES` in core): beyond that the launch transaction no longer fits in 1,232 bytes. The signer checks `SIGNER_COIN_METADATA_URL` against it at startup (with the longest slug) and checks the real values before creating any config.
+- The launchpad coin's name, symbol and metadata URI share a budget of **148 UTF-8 bytes** (`LAUNCH_METADATA_BUDGET_BYTES` in core): beyond that the launch transaction no longer fits in 1,232 bytes. The priority fee never shrinks it: up to 136 bytes the launch carries a unit limit and a price, up to 144 the price alone, beyond that no price (`priorityFeePlacement` of the launch summary). The signer checks `SIGNER_COIN_METADATA_URL` against it at startup (with the longest slug) and checks the real values before creating any config.
 
 ## 3. `forge.config.json` — read by each client site
 
@@ -359,11 +359,14 @@ The signer never takes an address or an amount from the request: it re-reads eve
 | `SIGNER_URL`, `SIGNER_HMAC_SECRET` | | | ✓ | ✓ |
 | `SIGNER_KEYSTORE_PASSPHRASE`, `SIGNER_KEYSTORE_DIR`, `SIGNER_JOURNAL_DIR`, `SIGNER_ALLOWED_IPS`, `SIGNER_MAX_LAUNCHPADS_PER_DAY` | | | | ✓ |
 | `SIGNER_COIN_METADATA_URL` = `https://<web host>/api/coin-meta/{slug}` (at most 106 bytes once filled) | | | | ✓ |
+| `SIGNER_PRIORITY_FEE_MICRO_LAMPORTS` (floor, default 0), `SIGNER_PRIORITY_FEE_MAX_MICRO_LAMPORTS` (cap per CU, default 1,000,000; 0 = off), `SIGNER_PRIORITY_FEE_PERCENTILE` (default 75), `SIGNER_PRIORITY_FEE_MAX_LAMPORTS` (cap per transaction, default 500,000, at most 1,000,000) | | | | ✓ |
 | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | | | ✓ (required on mainnet-beta) | ✓ (required on mainnet-beta and in production) |
 | `BUILDER_VISUAL_REVIEW` (`off` default / `on`: second agent pass on screenshots of new sites) | | | ✓ | |
 | `FORGE_SANDBOX_REVIEW_IMAGE` (pinned visual review image, needed when the review is on) | | | ✓ | |
 
 "Injected": the builder does not use the value itself, it writes it into the env variables of each client's Vercel project. Client projects only ever receive public values plus their own relay token (D21). Tuning knobs (rate limits, intervals, caps, budgets) are listed with their defaults in each app's `.env.example`.
+
+**Priority fees**: every transaction built by `@forge/core` can carry a priority fee (`priority` setting of the builders, `packages/core/src/priority-fee.ts`): the price is a percentile of `getRecentPrioritizationFees` for the transaction's writable accounts (through the RPC relay on client sites), bounded per compute unit and per transaction, and the compute unit limit is a per-kind constant with a margin (swap 150,000, launch 300,000, payment 50,000, claim 200,000...). The web payments and partner claims, the template's trades, coin creations and creator claims use the core defaults (75th percentile, floor 10,000 micro-lamports per CU, at most 1,000,000 per CU and 0.0005 SOL per transaction); the signer uses `SIGNER_PRIORITY_FEE_*`. The Jupiter swaps of the conversion and the buyback keep Jupiter's `priorityLevelWithMaxLamports` and their own caps (`CONVERT_MAX_PRIORITY_FEE_LAMPORTS`, `BUYBACK_MAX_PRIORITY_FEE_LAMPORTS`).
 
 **Cashbox**: `FORGE_CASHBOX_WALLET` is a wallet held by the signer (its key is in the keystore, the public address in the env). It receives payments, keeps a small buffer for refunds and transaction fees, and the rest is transferred to the multisig every day. `apps/web` holds no key: refunds are made by the signer, which watches `failed` jobs with `failed_stage = 'build'` and `attempts = 2`.
 

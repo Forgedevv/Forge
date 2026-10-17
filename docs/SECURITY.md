@@ -79,9 +79,19 @@ Every protection below is **mandatory** in the MVP. Agents that touch one of the
 ## 11. RPC relay abused
 
 **Protections** (agent 3): JSON-RPC method allowlist with strict params, per-IP rate limit weighted per method, bounded request and response size.
+- `getRecentPrioritizationFees` (the priority fee of every transaction core builds) is served to every tier, sleeping sites included (their creator fee claim is priced): no params, or one list of at most 32 writable accounts, nothing else; it weighs 2 units.
 - `getProgramAccounts` is refused in every shape but two: the creator pools query of the creator fee claim (Meteora SDK `getPoolsByCreator`): the DBC program, a pool account discriminator at offset 0 and exactly one 32-byte creator key at offset 104, base64 data, no dataSlice, dataSize, withContext or extra filter; and the config pools query of the on-chain coin list fallback (SDK `getPoolsByConfig`): the same shape with the key at offset 72, served to the server-token tier only (a client site's `/api/coins` route, which caches it for all its visitors; a browser, sleeping or anonymous caller gets "method not allowed"). They weigh 20 and 30 units (an account read weighs 1) and keep the response size cap. Any other shape answers "method not allowed".
 - Callers: the FORGE site, draft and live client sites, previews awaiting approval, and sleeping client sites. A sleeping site's origin gets only the methods of the creator fee claim (D29); the server-token tier (client server routes, uploads) serves draft and live launchpads only.
 - Client site origins are exact: `https://<slug>.<CLIENTS_DOMAIN>`, or `https://<site_host>` where `launchpads.site_host` is the production host the builder read from the Vercel API for the launchpad's own project and promoted deployment (D30). A `*.vercel.app` origin is never matched by pattern (anyone can create a project with a look-alike name), and a recorded host only ever speaks for its own launchpad, with its status rules. On read, a recorded host is trusted only in the two forms the builder writes: `<one label>.vercel.app`, or exactly `<own slug>.<CLIENTS_DOMAIN>`; any other value is ignored. When the database cannot be read, the relay keeps trusting recorded hosts from its last snapshot for 2 minutes at most (slugs: 15 minutes). The upload route accepts the same two hosts as the signed `auth.host`.
+
+## 11b. Priority fees used to drain a wallet
+
+**Threat**: a compromised server or a bug sets a huge compute unit price (or a second price, a heap frame request...) on a transaction a user or a FORGE wallet signs: the priority fee is burnt from the fee payer, nothing in the instructions shows it.
+
+**Protections** (core, with agents 2, 3 and 5):
+- One builder of the price, in `@forge/core` (`priority-fee.ts`): a percentile of the recent fees of the transaction's writable accounts, floor, cap per compute unit and cap per transaction (user transactions: at most 1,000,000 micro-lamports per CU and 0.0005 SOL; hard ceilings 10 lamports per CU and 0.01 SOL). A failed read prices at the floor, it never removes the cap.
+- Every check that reads instruction lists accepts Compute Budget instructions in their exact form only: no account, `SetComputeUnitLimit` or `SetComputeUnitPrice`, at most one of each, bounded: core `checkComputeBudgetInstructions` and `verifyLaunchCoinTransaction` (0.01 SOL), the FORGE site's browser checks (0.01 SOL), the template's browser checks (its own cap, 0.0005 SOL; a price without a limit is refused), the signer policies (1 lamport per CU, 0.001 SOL; a price without a limit is counted for 1.4M CU).
+- Shown before signing: the template's trade quote shows the most the priority fee can be (0.00015 SOL per swap) and counts it in the total; its coin creation and claim summaries show the fee computed from the transaction itself.
 
 ## 12. Scam launchpads
 
