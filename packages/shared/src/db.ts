@@ -73,6 +73,7 @@ export const FlagKey = z.enum([
   'refunds_paused',
   'jupiter_claims_paused',
   'convert_paused',
+  'revenue_paused',
 ]);
 export type FlagKey = z.infer<typeof FlagKey>;
 
