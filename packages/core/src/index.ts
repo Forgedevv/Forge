@@ -6,6 +6,8 @@ export * from './validate.js';
 export * from './config.js';
 export * from './pool.js';
 export * from './tx.js';
+// Priority fees: price from the recent fees, bounded, and the matching policy check.
+export * from './priority-fee.js';
 // Launch transaction check before the owner signs (browser-safe: only @solana/web3.js).
 export * from './launch-check.js';
 // Swap: buy / sell with the FORGE Meteora referral and the platform fee (swap.ts).
