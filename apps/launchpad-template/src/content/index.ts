@@ -50,6 +50,7 @@ export const content = {
     backToMarket: 'Back to market',
     lightMode: 'Switch to light mode',
     darkMode: 'Switch to dark mode',
+    colorMode: 'Switch colour mode',
     aboutEyebrow: 'THE PEOPLE BEHIND IT',
     createEyebrow: 'NEW COIN',
     createIntro: 'Name it. Add its image. Set it in motion.',

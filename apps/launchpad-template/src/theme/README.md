@@ -41,6 +41,10 @@ default template imports none and uses system font stacks.
 
 The Tailwind `primary` scale (`--primary`, `--primary-300`, ...) is also derived from
 `theme.primaryColor`, so existing classes such as `bg-primary` follow the theme.
+`primary-600` to `primary-900` are soft tints: toward white in light mode, toward the dark surface
+in dark mode. `primary-950` is the readable text colour on the primary colour (dark or white from
+its luminance): always pair `bg-primary` with `text-primary-950`, never a fixed white or black.
+Small controls use the `touch:` variant (coarse pointer or phone width) for 40px tap targets.
 
 The shared shell uses the theme variables for page background, text, borders, brand mark, focus
 indicators, and navigation states. Reduced-motion preferences disable smooth scrolling and minimize

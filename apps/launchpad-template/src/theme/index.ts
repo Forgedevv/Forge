@@ -29,15 +29,29 @@ export function contrastRgb(rgb: Rgb): Rgb {
   return luminance > 0.6 ? [15, 23, 42] : [255, 255, 255];
 }
 
+/** Darkest surface of the dark mode (`--neutral-950` in styles/globals.css). */
+const DARK_SURFACE: Rgb = [11, 14, 19];
+
 /**
  * CSS overriding the primary/accent colours. The selector is `:root:root` so it wins over both the
  * light (`:root`) and dark (`.dark`) defaults, whatever the load order.
+ *
+ * The upper shades (`primary-600` to `primary-900`) are tints for chips and soft backgrounds: they
+ * lean toward white in light mode and toward the dark surface in dark mode (`:root:root.dark`), so
+ * `bg-primary-800` is a soft tint in both modes, never a near-white chip on a dark page.
+ * `primary-950` is the readable text colour on the primary colour (see `contrastRgb`).
  */
 export function buildThemeCss(theme: { primaryColor: string; accentColor: string }): string {
   const primary = hexToRgb(theme.primaryColor);
   const accent = hexToRgb(theme.accentColor);
   const white: Rgb = [255, 255, 255];
   const black: Rgb = [0, 0, 0];
+  const tints = (base: Rgb) => [
+    `--primary-600: ${triplet(mix(primary, base, 0.2))};`,
+    `--primary-700: ${triplet(mix(primary, base, 0.4))};`,
+    `--primary-800: ${triplet(mix(primary, base, 0.85))};`,
+    `--primary-900: ${triplet(mix(primary, base, 0.9))};`,
+  ];
   const lines = [
     `--color-primary: ${theme.primaryColor};`,
     `--color-accent: ${theme.accentColor};`,
@@ -47,15 +61,12 @@ export function buildThemeCss(theme: { primaryColor: string; accentColor: string
     `--primary-300: ${triplet(mix(primary, black, 0.15))};`,
     `--primary-400: ${triplet(mix(primary, white, 0.1))};`,
     `--primary-500: ${triplet(primary)};`,
-    `--primary-600: ${triplet(mix(primary, white, 0.2))};`,
-    `--primary-700: ${triplet(mix(primary, white, 0.4))};`,
-    `--primary-800: ${triplet(mix(primary, white, 0.85))};`,
-    `--primary-900: ${triplet(mix(primary, white, 0.9))};`,
+    ...tints(white),
     `--primary-950: ${triplet(contrastRgb(primary))};`,
     `--accent: ${triplet(accent)};`,
     `--jupiter-plugin-primary: ${triplet(primary).replace(/ /g, ', ')};`,
   ];
-  return `:root:root { ${lines.join(' ')} }`;
+  return `:root:root { ${lines.join(' ')} } :root:root.dark { ${tints(DARK_SURFACE).join(' ')} }`;
 }
 
 export const themeCss = buildThemeCss(siteConfig.theme);
