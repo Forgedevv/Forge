@@ -55,7 +55,7 @@ const ADDR = (n: number): string => `${'1'.repeat(31)}${'ABCDEFGHJKLMNPQRSTUVWXY
 /** What the builder host provides (no explicit NEXT_PUBLIC twins: they must be derived). */
 const HOST_ENV: Record<string, string> = {
   SOLANA_CLUSTER: 'devnet',
-  FORGE_MULTISIG_VAULT: ADDR(1),
+  FORGE_REVENUE_WALLET: ADDR(1),
   FORGE_METEORA_REFERRAL_ACCOUNT: ADDR(2),
   FORGE_PLATFORM_FEE_WALLET: ADDR(3),
   FORGE_JUPITER_REFERRAL_ACCOUNT: ADDR(4),

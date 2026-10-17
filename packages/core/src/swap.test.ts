@@ -58,6 +58,7 @@ import {
   poolSwapStatus,
   quoteSwap,
   requiredSwapLamports,
+  swapFeeAddresses,
   swapPriceImpactBps,
   type SwapAccountSnapshot,
   type SwapContext,
@@ -1622,7 +1623,7 @@ describe('fee account ownership', () => {
       () => assertReferralAccountReady(a, referralSnapshot({ holder: key() }), multisig),
       'REFERRAL_ACCOUNT_INVALID',
     );
-    // Without an expected owner (no FORGE_MULTISIG_VAULT), any holder is accepted.
+    // Without an expected owner (no FORGE_REVENUE_WALLET), any holder is accepted.
     expect(() => assertReferralAccountReady(a, referralSnapshot(), null)).not.toThrow();
     const ctx = makeContext({ referralTokenAccountInfo: referralSnapshot({ holder: key() }) });
     expectSwapError(
@@ -1636,11 +1637,12 @@ describe('fee account ownership', () => {
     );
   });
 
-  it('checks the referral holder against FORGE_MULTISIG_VAULT when the env has it', async () => {
+  it('checks the referral holder against FORGE_REVENUE_WALLET when the env has it', async () => {
     const f = feeEnv();
     const user = key();
-    const multisig = key();
-    const env = { ...f.env, FORGE_MULTISIG_VAULT: multisig.toBase58() };
+    // The revenue wallet is the platform fee wallet (D34): it must hold the referral account.
+    const revenue = f.platform;
+    const env = { ...f.env, FORGE_REVENUE_WALLET: revenue.toBase58() };
     const params = {
       pool: ACTIVE_POOL,
       user,
@@ -1648,9 +1650,11 @@ describe('fee account ownership', () => {
       slippageBps: 100,
       env,
     };
-    const held = mockConnection(chainWithFeeAccounts(f, user, multisig));
+    const held = mockConnection(chainWithFeeAccounts(f, user, revenue));
     await expect(buildBuyTx({ ...params, connection: held })).resolves.toBeDefined();
     await expect(assertSwapFeeAccountsReady({ connection: held, env })).resolves.toBeUndefined();
+    expect(swapFeeAddresses(env).revenueWallet?.equals(revenue)).toBe(true);
+    expect(swapFeeAddresses(f.env).revenueWallet).toBeNull();
 
     const foreign = mockConnection(chainWithFeeAccounts(f, user, key()));
     await expectSwapErrorAsync(
@@ -1661,12 +1665,32 @@ describe('fee account ownership', () => {
       assertSwapFeeAccountsReady({ connection: foreign, env }),
       'REFERRAL_ACCOUNT_INVALID',
     );
-    // Without FORGE_MULTISIG_VAULT the holder is not checked (a browser that was not given it).
+    // Without FORGE_REVENUE_WALLET the holder is not checked (a browser that was not given it).
     await expect(buildBuyTx({ ...params, env: f.env, connection: foreign })).resolves.toBeDefined();
     // A value that is set must be a valid key.
     await expect(
-      buildBuyTx({ ...params, env: { ...f.env, FORGE_MULTISIG_VAULT: 'nope' }, connection: held }),
+      buildBuyTx({ ...params, env: { ...f.env, FORGE_REVENUE_WALLET: 'nope' }, connection: held }),
     ).rejects.toBeInstanceOf(ForgeAddressError);
+  });
+
+  it('refuses a platform fee wallet that is not the revenue wallet when the env has it', async () => {
+    const f = feeEnv();
+    const user = key();
+    const other = key();
+    const env = { ...f.env, FORGE_REVENUE_WALLET: other.toBase58() };
+    const error = expectSwapError(() => swapFeeAddresses(env), 'PLATFORM_FEE_WALLET_MISMATCH');
+    expect(error.message).toContain('FORGE_REVENUE_WALLET');
+    expect(error.message).not.toContain(other.toBase58());
+    // Even with every account in order on-chain: the configuration itself is refused.
+    const held = mockConnection(chainWithFeeAccounts(f, user, other));
+    await expectSwapErrorAsync(
+      buildBuyTx({ pool: ACTIVE_POOL, user, amountInLamports: SOL / 100n, slippageBps: 100, env, connection: held }),
+      'PLATFORM_FEE_WALLET_MISMATCH',
+    );
+    await expectSwapErrorAsync(
+      assertSwapFeeAccountsReady({ connection: held, env }),
+      'PLATFORM_FEE_WALLET_MISMATCH',
+    );
   });
 
   it('refuses a platform fee wallet owned by a program', async () => {

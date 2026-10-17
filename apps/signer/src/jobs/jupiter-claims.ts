@@ -2,14 +2,15 @@
  * Jupiter referral fee claim job (docs/DECISIONS.md D7 and D8, docs/METEORA.md "The platform
  * fee" after graduation, docs/OPERATIONS.md "Kill switches", @forge/core jupiter-referral.ts).
  *
- * After a coin graduates, trades go through Jupiter and FORGE's 30 bps integrator fee (D7) is
- * collected by the Jupiter referral program into token accounts of FORGE_JUPITER_REFERRAL_ACCOUNT,
- * one per currency. Claiming is permissionless: it moves a collection account's balance to the
- * referral account's partner, the FORGE multisig vault (FORGE_MULTISIG_VAULT), where it feeds the
- * buyback (D8). Once a day this job claims, for every configured mint (SIGNER_JUPITER_CLAIMS_MINTS,
- * default wrapped SOL and USDC), the collection accounts whose total reaches the mint's threshold.
- * The payer wallet signs: it only pays the network fee and, the first time, the rent of the
- * vault's token account.
+ * After a coin graduates, trades go through Jupiter and FORGE's Jupiter plugin fee (D7: 50 bps,
+ * Jupiter's minimum, FORGE keeps 80%) is collected by the Jupiter referral program into token
+ * accounts of FORGE_JUPITER_REFERRAL_ACCOUNT, one per currency. Claiming is permissionless: it
+ * moves a collection account's balance to the referral account's partner, the FORGE revenue
+ * wallet (FORGE_REVENUE_WALLET, D34), which the revenue job converts to SOL and forwards to the
+ * vault for the buyback (D8). Once a day this job claims, for every configured mint
+ * (SIGNER_JUPITER_CLAIMS_MINTS, default wrapped SOL and USDC), the collection accounts whose total
+ * reaches the mint's threshold. The payer wallet signs: it only pays the network fee and, the
+ * first time, the rent of the partner's token account.
  *
  * Mainnet-beta only: the referral program and Jupiter's fee collection live on mainnet-beta. On
  * any other cluster the module is wired off (runtime/modules.ts logs it and registers a job that
@@ -20,7 +21,7 @@
  * may have reached the network is never replaced before it is confirmed, failed or proven
  * expired). Then, under the payer lock (shared with the signing routes and the other payer
  * spenders): kill switch, build with core `buildJupiterReferralClaimTx` (partner asserted = the
- * vault), threshold, payer balance (minus the lamports reserved by creations in flight), policy
+ * revenue wallet), threshold, payer balance (minus the lamports reserved by creations in flight), policy
  * (`assertJupiterReferralClaimTx`), kill switch again, signature with the keystore payer, journal
  * (signature + bytes) BEFORE the send, `onBeforeSend`, send. Settlement by polling runs outside
  * the lock.
@@ -29,10 +30,10 @@
  * - fee payer and only required signer = the payer wallet, blockhash set;
  * - the referral program's `claim` / `claim_v2` instructions, at most one of each and every one
  *   core announced, re-built from the pinned inputs (payer, FORGE_JUPITER_REFERRAL_ACCOUNT, the
- *   mint, partner = FORGE_MULTISIG_VAULT, the project / admin / authority core read from the
+ *   mint, partner = FORGE_REVENUE_WALLET, the project / admin / authority core read from the
  *   program-owned accounts, the token program) and compared account by account, flag by flag and
  *   byte by byte, the collection accounts re-derived from the IDL seeds;
- * - associated token account idempotent creations funded by the payer, for the vault's or the
+ * - associated token account idempotent creations funded by the payer, for the partner's or the
  *   project admin's associated account of the mint only, each at most once;
  * - the referral program's `create_admin_token_account` (rent paid by the project authority PDA,
  *   never by the payer), re-built and compared the same way, at most once;
@@ -132,6 +133,18 @@ export const DEFAULT_JUPITER_CLAIMS_INTERVAL_HOURS = 24;
 export const MAX_JUPITER_CLAIM_MINTS = 20;
 
 /**
+ * Core refusals meaning FORGE_JUPITER_REFERRAL_ACCOUNT is not FORGE's referral account at all
+ * (its fees go to someone else): alerted at `immediate`. By code name, so the list also covers
+ * the codes a newer core adds (project, name and PDA checks of the named Ultra referral account).
+ */
+export const NOT_OUR_REFERRAL_ACCOUNT_CODES: ReadonlySet<string> = new Set([
+  'partner_mismatch',
+  'project_mismatch',
+  'referral_account_unnamed',
+  'referral_account_not_pda',
+]);
+
+/**
  * SIGNER_JUPITER_CLAIMS_MINTS: comma-separated `<mint>` or `<mint>:<minimum raw units>`. Wrapped
  * SOL and USDC may omit the threshold (their defaults apply); any other mint needs one. Empty or
  * unset: the default list. Every mint is a canonical address, listed once. Errors never echo a
@@ -176,8 +189,8 @@ export function parseJupiterClaimMints(
 export interface JupiterClaimsConfig {
   /** FORGE_JUPITER_REFERRAL_ACCOUNT (from `requireAddresses` of @forge/core at startup). */
   referralAccount: PublicKey;
-  /** FORGE_MULTISIG_VAULT: the referral account's partner, receives every claim. */
-  vault: PublicKey;
+  /** FORGE_REVENUE_WALLET: the referral account's partner, receives every claim. */
+  partner: PublicKey;
   mints: readonly JupiterClaimMint[];
   paused?: boolean;
   settle?: Partial<SettleTiming>;
@@ -192,11 +205,11 @@ export interface JupiterClaimsConfig {
  */
 export function jupiterClaimsConfigFromEnv(
   env: Readonly<Record<string, string | undefined>>,
-  addresses: { vault: PublicKey; jupiterReferral: PublicKey },
+  addresses: { partner: PublicKey; jupiterReferral: PublicKey },
 ): { config: JupiterClaimsConfig; intervalMs: number } {
   const config: JupiterClaimsConfig = {
     referralAccount: addresses.jupiterReferral,
-    vault: addresses.vault,
+    partner: addresses.partner,
     mints: parseJupiterClaimMints(env.SIGNER_JUPITER_CLAIMS_MINTS),
     paused: parseBoolEnv(env.SIGNER_JUPITER_CLAIMS_PAUSED, 'SIGNER_JUPITER_CLAIMS_PAUSED', false),
   };
@@ -214,15 +227,15 @@ export function jupiterClaimsConfigFromEnv(
   };
 }
 
-/** The referral account, the vault and the mints are distinct accounts; at least one mint. */
+/** The referral account, the partner and the mints are distinct accounts; at least one mint. */
 export function assertJupiterClaimsConfig(config: JupiterClaimsConfig): void {
-  if (config.referralAccount.equals(config.vault)) {
-    throw new JobError('CONFIG', 'the Jupiter referral account and the vault must differ');
+  if (config.referralAccount.equals(config.partner)) {
+    throw new JobError('CONFIG', 'the Jupiter referral account and the partner must differ');
   }
   if (config.mints.length === 0) throw new JobError('CONFIG', 'no mint to claim');
   for (const { mint, minAmount } of config.mints) {
-    if (mint.equals(config.referralAccount) || mint.equals(config.vault)) {
-      throw new JobError('CONFIG', 'a claimed mint is the referral account or the vault');
+    if (mint.equals(config.referralAccount) || mint.equals(config.partner)) {
+      throw new JobError('CONFIG', 'a claimed mint is the referral account or the partner');
     }
     if (minAmount <= 0n) throw new JobError('CONFIG', 'a claim threshold must be positive');
   }
@@ -238,7 +251,7 @@ export interface JupiterClaimExpectation {
   payer: PublicKey;
   /** FORGE_JUPITER_REFERRAL_ACCOUNT. */
   referralAccount: PublicKey;
-  /** FORGE_MULTISIG_VAULT, the referral account's partner. */
+  /** FORGE_REVENUE_WALLET, the referral account's partner. */
   partner: PublicKey;
   /** From the program-owned referral and project accounts core read. */
   project: PublicKey;
@@ -427,7 +440,7 @@ export type JupiterClaimBuilder = (
 ) => Promise<JupiterReferralClaimTx>;
 
 export const TOKEN_ACCOUNT_SIZE = 165;
-/** Kept on the payer on top of the vault token account rent, for the claim's own fees. */
+/** Kept on the payer on top of the partner token account rent, for the claim's own fees. */
 export const JUPITER_CLAIM_FEE_BUFFER_LAMPORTS = 20_000n;
 
 export interface JupiterClaimsDeps {
@@ -544,7 +557,7 @@ export function createJupiterClaimsJob(deps: JupiterClaimsDeps): JupiterClaimsJo
       await journal.put(mint, next);
       log.info(
         { mint, signature: inFlight.signature, amount: inFlight.amount, versions: inFlight.versions },
-        'jupiter referral fees claimed to the vault',
+        'jupiter referral fees claimed to the partner (revenue wallet)',
       );
       return {
         entry: next,
@@ -621,19 +634,20 @@ export function createJupiterClaimsJob(deps: JupiterClaimsDeps): JupiterClaimsJo
             referralAccount: config.referralAccount,
             mint: target.mint,
             payer: payer.publicKey,
-            expectedPartner: config.vault,
+            expectedPartner: config.partner,
             commitment: 'confirmed',
             retry: { attempts: retry.attempts, baseDelayMs: retry.baseDelayMs },
             programId,
           });
         } catch (err) {
           if (!(err instanceof JupiterReferralError)) throw err;
-          // The referral account is not ours, not on mainnet, or its partner is not the vault.
+          // The referral account is not ours (partner, project, name, address), or not on mainnet.
+          const notOurs = NOT_OUR_REFERRAL_ACCOUNT_CODES.has(err.code);
           await alert(
-            err.code === 'partner_mismatch' ? 'immediate' : 'high',
+            notOurs ? 'immediate' : 'high',
             'jupiter_claim_build_refused',
-            err.code === 'partner_mismatch'
-              ? 'The Jupiter referral account partner is NOT the FORGE vault: its fees go elsewhere, check FORGE_JUPITER_REFERRAL_ACCOUNT'
+            notOurs
+              ? 'The Jupiter referral account is NOT the FORGE one (partner, project or name): its fees go elsewhere, check FORGE_JUPITER_REFERRAL_ACCOUNT'
               : 'Core refused to build the Jupiter referral claim',
             { mint, code: err.code, error: describeError(err).message },
             `jupiter_claim_build_refused:${mint}:${err.code}`,
@@ -650,13 +664,13 @@ export function createJupiterClaimsJob(deps: JupiterClaimsDeps): JupiterClaimsJo
         }
         if (
           !summary.referralAccount.equals(config.referralAccount) ||
-          !summary.partner.equals(config.vault) ||
+          !summary.partner.equals(config.partner) ||
           !summary.mint.equals(target.mint)
         ) {
           throw new JobError('TX_POLICY', 'claim summary does not match the request');
         }
 
-        // The payer pays the fee and, the first time, the vault token account rent.
+        // The payer pays the fee and, the first time, the partner token account rent.
         const tokenRent = summary.createsPartnerTokenAccount
           ? await withRetry(() => rpc.getMinimumBalanceForRentExemption(TOKEN_ACCOUNT_SIZE), retry)
           : 0n;
@@ -686,7 +700,7 @@ export function createJupiterClaimsJob(deps: JupiterClaimsDeps): JupiterClaimsJo
           programId,
           payer: payer.publicKey,
           referralAccount: config.referralAccount,
-          partner: config.vault,
+          partner: config.partner,
           project: summary.project,
           admin: summary.admin,
           projectAuthority: summary.projectAuthority,
@@ -757,8 +771,8 @@ export function createJupiterClaimsJob(deps: JupiterClaimsDeps): JupiterClaimsJo
         let payer: { ref: string; publicKey: PublicKey };
         try {
           payer = await requireRoleRef(keystore, 'payer');
-          if (payer.publicKey.equals(config.vault) || payer.publicKey.equals(config.referralAccount)) {
-            throw new JobError('CONFIG', 'the payer wallet must differ from the vault and the referral account');
+          if (payer.publicKey.equals(config.partner) || payer.publicKey.equals(config.referralAccount)) {
+            throw new JobError('CONFIG', 'the payer wallet must differ from the partner and the referral account');
           }
         } catch (err) {
           await alert(

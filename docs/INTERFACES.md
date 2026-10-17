@@ -235,7 +235,7 @@ create table flags (                        -- kill switches (FlagKey in package
   key text primary key,                     -- deploys_paused | buyback_paused | signups_paused
                                             -- | claims_paused | cashbox_sweep_paused
                                             -- | refunds_paused | jupiter_claims_paused
-                                            -- | convert_paused
+                                            -- | convert_paused | revenue_paused
   value boolean not null default false
 );
 ```
@@ -346,7 +346,8 @@ The signer never takes an address or an amount from the request: it re-reads eve
 | `ANTHROPIC_API_KEY` | ✓ (design chat) | | ✓ (model gateway only) | |
 | `FORGE_MINT` (optional), `FORGE_GATING_AMOUNT` | ✓ | | | ✓ (buyback) |
 | `FORGE_CASHBOX_WALLET` / `NEXT_PUBLIC_FORGE_CASHBOX_WALLET` | ✓ / ✓ (required in production) | | | ✓ |
-| `FORGE_MULTISIG_VAULT` | | ✓ as `NEXT_PUBLIC_FORGE_MULTISIG_VAULT` (referral holder check) | ✓ (injects the public twin) | ✓ |
+| `FORGE_MULTISIG_VAULT` | | | | ✓ |
+| `FORGE_REVENUE_WALLET` (D34: the signer's `revenue` keystore wallet; `FORGE_PLATFORM_FEE_WALLET` must be it) | | ✓ as `NEXT_PUBLIC_FORGE_REVENUE_WALLET` (referral holder and platform fee wallet check) | ✓ (injects the public twin) | ✓ |
 | `FORGE_SQUADS_MULTISIG`, `FORGE_SQUADS_SPENDING_LIMIT`, `FORGE_SQUADS_VAULT_INDEX` (optional, read in `packages/core/src/addresses.ts`) | | | | ✓ (buyback funding) |
 | `FORGE_METEORA_REFERRAL_ACCOUNT`, `FORGE_PLATFORM_FEE_WALLET`, `FORGE_JUPITER_REFERRAL_ACCOUNT` | | ✓ as `NEXT_PUBLIC_*` twins | ✓ (injects the public twins) | ✓ |
 | `NEXT_PUBLIC_POOL_CONFIG_KEY`, `NEXT_PUBLIC_R2_PUBLIC_URL`, `NEXT_PUBLIC_SITE_NAME` | | ✓ | ✓ (injected) | |
@@ -365,3 +366,30 @@ The signer never takes an address or an amount from the request: it re-reads eve
 "Injected": the builder does not use the value itself, it writes it into the env variables of each client's Vercel project. Client projects only ever receive public values plus their own relay token (D21). Tuning knobs (rate limits, intervals, caps, budgets) are listed with their defaults in each app's `.env.example`.
 
 **Cashbox**: `FORGE_CASHBOX_WALLET` is a wallet held by the signer (its key is in the keystore, the public address in the env). It receives payments, keeps a small buffer for refunds and transaction fees, and the rest is transferred to the multisig every day. `apps/web` holds no key: refunds are made by the signer, which watches `failed` jobs with `failed_stage = 'build'` and `attempts = 2`.
+
+**Revenue wallet** (D34): `FORGE_REVENUE_WALLET` is the signer's `revenue` keystore wallet. It receives the platform fee (it is `FORGE_PLATFORM_FEE_WALLET`), holds the Meteora referral WSOL account (`FORGE_METEORA_REFERRAL_ACCOUNT`) and is the partner of the Jupiter referral account (`FORGE_JUPITER_REFERRAL_ACCOUNT`), so the Jupiter claims land in its token accounts. The signer's `revenue` job (variables `SIGNER_REVENUE_*`, `apps/signer/.env.example`) unwraps, converts and forwards it to the multisig every day. Client payments never go through it.
+
+## 9. Revenue forwards (signer journal, read by the buyback budget)
+
+Every forward of the revenue wallet to the multisig is one file `SIGNER_JOURNAL_DIR/revenue-forward.<signature>.json`, written when the signer sees the transfer finalized, never rewritten or deleted (`RevenueForwardEntry` in `apps/signer/src/jobs/revenue.ts`):
+
+```json
+{
+  "v": 1,
+  "signature": "<base58 signature of the transfer>",
+  "lamports": "123456789",
+  "sentAt": "2026-10-17T08:00:00.000Z",
+  "finalizedAt": "2026-10-17T08:00:31.000Z",
+  "breakdown": {
+    "meteora_referral": "100000000",
+    "jupiter_referral": "20000000",
+    "platform_fee": "3456789",
+    "other": "0"
+  },
+  "relatedSignatures": ["<unwrap and conversion signatures since the previous forward>"]
+}
+```
+
+Amounts are decimal strings of lamports; the four `breakdown` values sum to `lamports`: `meteora_referral` (WSOL unwrapped from the Meteora referral account), `jupiter_referral` (WSOL unwrapped from the wallet's other accounts and the conversions of the Jupiter claim mints, `SIGNER_JUPITER_CLAIMS_MINTS`), `platform_fee` (native SOL received directly) and `other` (conversions of any other mint and what the journal cannot explain, e.g. the first run's balance). Fees and the reserve are not booked: the breakdown is the gross receipts since the previous forward, scaled down to the forwarded amount when they exceed it.
+
+Reader (`createRevenueForwardReader(journalDir)`, same file): `list({ since? })` returns the entries finalized at or after an ISO 8601 date, oldest first; `totalForwardedSince(since)` returns `{ lamports, count, breakdown }` as `bigint`s. The buyback budget (slice S2) reads the lamports forwarded over its period from it.

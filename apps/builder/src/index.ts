@@ -113,7 +113,7 @@ export const BUILDER_ENV_NAMES: readonly string[] = Object.keys(BuilderEnvSchema
 
 /** FORGE addresses the builder needs: the ones it copies into client Vercel projects. */
 export const BUILDER_ADDRESSES = [
-  'FORGE_MULTISIG_VAULT',
+  'FORGE_REVENUE_WALLET',
   'FORGE_METEORA_REFERRAL_ACCOUNT',
   'FORGE_PLATFORM_FEE_WALLET',
   'FORGE_JUPITER_REFERRAL_ACCOUNT',

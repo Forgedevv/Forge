@@ -24,6 +24,7 @@ import {
   exportWatchState,
   formatSol,
   importWatchState,
+  mergeSameAddress,
   nextDelayMs,
   outflowOf,
   parseWatchConfig,
@@ -197,6 +198,82 @@ describe('payer and buyback bot wallets', () => {
         (a) => a.role,
       ),
     ).toEqual(['vault', 'platformFee', 'cashbox']);
+  });
+});
+
+describe('revenue wallet', () => {
+  const REVENUE = Keypair.generate().publicKey.toBase58();
+
+  it('is watched for outflows with the vault as its only destination, rent and a minimum', () => {
+    const accounts = buildStaticAccounts(
+      { vault: VAULT, platformFee: FEE, cashbox: CASHBOX, revenue: REVENUE, referrals: [REFERRAL] },
+      config,
+    );
+    expect(accounts.map((a) => a.role)).toEqual(['vault', 'platformFee', 'cashbox', 'revenue', 'referral']);
+    expect(accounts.find((a) => a.role === 'revenue')).toEqual({
+      address: REVENUE,
+      label: 'revenue wallet',
+      role: 'revenue',
+      minLamports: 5_000_000n,
+      requireRentExempt: true,
+      watchOutflows: true,
+      watchTokenAccounts: true,
+      allowedDestinations: [VAULT],
+    });
+    expect(parseWatchConfig({ WATCH_MIN_REVENUE_LAMPORTS: '7' }).minLamports.revenue).toBe(7n);
+  });
+
+  it('is one entry when it is also the platform fee wallet: no double alert, no double scan', () => {
+    const accounts = buildStaticAccounts(
+      {
+        vault: VAULT,
+        platformFee: REVENUE,
+        cashbox: CASHBOX,
+        payer: PAYER,
+        revenue: REVENUE,
+        referrals: [REFERRAL],
+      },
+      parseWatchConfig({ WATCH_MIN_PLATFORM_FEE_LAMPORTS: '9000000' }),
+    );
+    expect(accounts.map((a) => a.role)).toEqual(['vault', 'revenue', 'cashbox', 'payer', 'referral']);
+    expect(accounts.filter((a) => a.address === REVENUE)).toHaveLength(1);
+    expect(accounts.find((a) => a.address === REVENUE)).toEqual({
+      address: REVENUE,
+      label: 'revenue wallet (platform fee wallet)',
+      role: 'revenue',
+      // The highest minimum of the two.
+      minLamports: 9_000_000n,
+      requireRentExempt: true,
+      watchOutflows: true,
+      watchTokenAccounts: true,
+      allowedDestinations: [VAULT],
+    });
+  });
+
+  it('merges two watching entries on the stricter destinations', () => {
+    const merged = mergeSameAddress([
+      {
+        address: REVENUE,
+        label: 'a',
+        role: 'cashbox',
+        watchOutflows: true,
+        allowedDestinations: [VAULT, OTHER],
+        minLamports: 1n,
+      },
+      { address: REVENUE, label: 'b', role: 'payer', watchOutflows: true, allowedDestinations: [VAULT] },
+      { address: OTHER, label: 'c', role: 'referral', requireRentExempt: true },
+    ]);
+    expect(merged).toEqual([
+      {
+        address: REVENUE,
+        label: 'a (b)',
+        role: 'cashbox',
+        minLamports: 1n,
+        watchOutflows: true,
+        allowedDestinations: [VAULT],
+      },
+      { address: OTHER, label: 'c', role: 'referral', requireRentExempt: true },
+    ]);
   });
 });
 

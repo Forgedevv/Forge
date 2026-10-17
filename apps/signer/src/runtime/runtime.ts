@@ -10,7 +10,11 @@
  *   (instance.ts: the journals, the replay cache and the locks are per process);
  * - the keystore passphrase does not open the existing keys, or the `payer` / `cashbox` keys are
  *   missing, or the cashbox key is not FORGE_CASHBOX_WALLET;
- * - the RPC endpoint is not on SOLANA_CLUSTER (genesis hash check).
+ * - the RPC endpoint is not on SOLANA_CLUSTER (genesis hash check);
+ * - on mainnet-beta only: the revenue wallet wiring is wrong (`revenueWiringProblems`: no
+ *   `revenue` key or one that is not FORGE_REVENUE_WALLET, FORGE_PLATFORM_FEE_WALLET not that
+ *   wallet, the Meteora referral account held by someone else). On devnet the same problems raise
+ *   a high alert (`revenue_wiring`) and the revenue job stays off until they are fixed.
  * Fee recipients that are not rent-exempt are alerted (devnet finding), not fatal: core refuses
  * to build a transaction that would fail on them. An OPTIONAL job module (`extraJobs`, the
  * buyback) whose configuration is refused is disabled with a high alert: the built-in jobs and
@@ -24,7 +28,8 @@
  * progress, flush the queued alerts, close the keystore (zeroes the passphrase), release the lock.
  */
 import type { Server } from 'node:http';
-import { Connection } from '@solana/web3.js';
+import { TOKEN_PROGRAM_ID, unpackAccount } from '@solana/spl-token';
+import { Connection, type PublicKey } from '@solana/web3.js';
 import { pino } from 'pino';
 import {
   CLUSTER_GENESIS_HASH,
@@ -46,6 +51,7 @@ import {
   sendAlert,
 } from '../jobs/shared.js';
 import { PayerReservations } from '../jobs/reservations.js';
+import { revenueWiringProblems } from '../jobs/revenue.js';
 import { createExpectedSignatureLog, createExpectedSignatures } from '../jobs/watch.js';
 import {
   createFileRouteJournals,
@@ -111,10 +117,28 @@ export const SIGNER_ADDRESS_NAMES = [
   'FORGE_MULTISIG_VAULT',
   'FORGE_CASHBOX_WALLET',
   'FORGE_PLATFORM_FEE_WALLET',
+  'FORGE_REVENUE_WALLET',
   'FORGE_METEORA_REFERRAL_ACCOUNT',
   'FORGE_JUPITER_REFERRAL_ACCOUNT',
   'FORGE_MINT',
 ] as const;
+
+/**
+ * Owner of a classic SPL token account read on-chain; null when the account is missing, not
+ * owned by the token program or not decodable (the rent check reports those separately).
+ */
+async function readTokenAccountOwner(
+  connection: Connection,
+  address: PublicKey,
+): Promise<PublicKey | null> {
+  const info = await connection.getAccountInfo(address, 'confirmed');
+  if (!info || !info.owner.equals(TOKEN_PROGRAM_ID)) return null;
+  try {
+    return unpackAccount(address, info, TOKEN_PROGRAM_ID).owner;
+  } catch {
+    return null;
+  }
+}
 
 const ROOT_REDACT = [
   'secret',
@@ -142,6 +166,7 @@ export async function createSignerRuntime(options: SignerRuntimeOptions): Promis
     platformFee: a.FORGE_PLATFORM_FEE_WALLET,
     meteoraReferral: a.FORGE_METEORA_REFERRAL_ACCOUNT,
     jupiterReferral: a.FORGE_JUPITER_REFERRAL_ACCOUNT,
+    revenue: a.FORGE_REVENUE_WALLET,
     forgeMint: a.FORGE_MINT,
   };
   const now = options.now ?? Date.now;
@@ -175,6 +200,8 @@ export async function createSignerRuntime(options: SignerRuntimeOptions): Promis
   try {
     const payer = await requireRoleRef(keystore, 'payer');
     const cashbox = await requireRoleRef(keystore, 'cashbox', addresses.cashbox);
+    const revenueRef = await keystore.findRef('revenue');
+    const revenueKey = revenueRef ? await keystore.getPublicKey(revenueRef) : null;
 
     const connection =
       options.connection ?? new Connection(config.rpcUrl, { commitment: 'confirmed' });
@@ -203,6 +230,35 @@ export async function createSignerRuntime(options: SignerRuntimeOptions): Promis
         'fee_recipient_not_rent_exempt',
       );
     }
+    // The revenue wallet must be the keystore key, the platform fee wallet and the holder of the
+    // Meteora referral account (D34): fatal on mainnet-beta, a high alert on devnet.
+    const wiringProblems = revenueWiringProblems({
+      revenue: addresses.revenue,
+      platformFee: addresses.platformFee,
+      vault: addresses.vault,
+      cashbox: addresses.cashbox,
+      revenueKey,
+      referralOwner: await readTokenAccountOwner(connection, addresses.meteoraReferral),
+    });
+    if (wiringProblems.length > 0) {
+      if (config.cluster === 'mainnet-beta') {
+        throw new Error(`revenue wallet wiring refused: ${wiringProblems.join('; ')}`);
+      }
+      startupLog.warn({ problems: wiringProblems }, 'revenue wallet wiring refused');
+      await sendAlert(
+        alerter,
+        startupLog,
+        'high',
+        'revenue_wiring',
+        'The revenue wallet is not wired: the trading revenue cannot be forwarded to the vault (on mainnet-beta the signer would refuse to start)',
+        { problems: wiringProblems.join('; ') },
+        'revenue_wiring',
+      );
+    }
+    const revenue =
+      revenueRef && revenueKey && revenueKey.equals(addresses.revenue)
+        ? { ref: revenueRef, publicKey: revenueKey }
+        : null;
 
     const rpc = rpcFromConnection(connection);
     const db = createPostgrestClient({
@@ -230,6 +286,8 @@ export async function createSignerRuntime(options: SignerRuntimeOptions): Promis
       keystore,
       payer,
       cashbox,
+      revenue,
+      priorityFeeMicroLamports: config.priorityFeeMicroLamports,
       db,
       supabase: { url: config.supabaseUrl, serviceRoleKey: config.supabaseServiceRoleKey },
       flags,

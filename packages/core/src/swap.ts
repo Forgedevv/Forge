@@ -31,10 +31,11 @@
  *     site only trades its own coins;
  *   - the platform fee wallet does not exist or is not rent-exempt
  *     (`PLATFORM_FEE_WALLET_NOT_RENT_EXEMPT`): the whole swap would fail on-chain (devnet finding);
- *   - the platform fee wallet is not exactly `FORGE_PLATFORM_FEE_WALLET`, or not a system account
- *     (`PLATFORM_FEE_WALLET_MISMATCH`);
+ *   - the platform fee wallet is not exactly `FORGE_PLATFORM_FEE_WALLET`, or not a system account,
+ *     or `FORGE_PLATFORM_FEE_WALLET` is not the revenue wallet when the environment has
+ *     `FORGE_REVENUE_WALLET` (`PLATFORM_FEE_WALLET_MISMATCH`);
  *   - the referral account is not an initialized wrapped SOL token account, or is not held by
- *     `FORGE_MULTISIG_VAULT` when the environment has it (`REFERRAL_ACCOUNT_INVALID`);
+ *     `FORGE_REVENUE_WALLET` when the environment has it (`REFERRAL_ACCOUNT_INVALID`);
  *   - the pool is not a plain SOL-quoted DBC pool (`UNSUPPORTED_POOL`; transfer-hook pools excluded);
  *   - the serialized transaction exceeds 1,232 bytes (`TRANSACTION_TOO_LARGE`).
  *
@@ -740,7 +741,7 @@ export function assertPlatformFeeWalletReady(
 
 /**
  * Throws unless the referral account is an initialized wrapped SOL token account (SPL Token).
- * With `expectedOwner` (FORGE_MULTISIG_VAULT, when the environment has it), the token account must
+ * With `expectedOwner` (FORGE_REVENUE_WALLET, when the environment has it), the token account must
  * be held by that key: otherwise the referral share would be paid to someone else.
  */
 export function assertReferralAccountReady(
@@ -768,7 +769,7 @@ export function assertReferralAccountReady(
   if (!token.mint.equals(NATIVE_MINT)) throw fail('is not a wrapped SOL account');
   if (!token.isInitialized || token.isFrozen) throw fail('is not usable (uninitialized or frozen)');
   if (expectedOwner && !token.owner.equals(expectedOwner)) {
-    throw fail('is not held by FORGE_MULTISIG_VAULT');
+    throw fail('is not held by FORGE_REVENUE_WALLET');
   }
 }
 
@@ -776,7 +777,7 @@ export function assertReferralAccountReady(
 export interface SwapFeeAccountExpectations {
   /** The platform fee transfer must go to exactly this key (FORGE_PLATFORM_FEE_WALLET). */
   platformFeeWallet?: PublicKey | null;
-  /** The Meteora referral token account must be held by this key (FORGE_MULTISIG_VAULT). */
+  /** The Meteora referral token account must be held by this key (FORGE_REVENUE_WALLET). */
   referralOwner?: PublicKey | null;
 }
 
@@ -1341,19 +1342,29 @@ export async function fetchSwapContext(p: FetchSwapContextParams): Promise<SwapC
 
 /**
  * FORGE fee accounts used by the swap, resolved through addresses.ts (never hard-coded), and the
- * multisig vault that must hold the referral account (`null` when the environment does not have
- * `FORGE_MULTISIG_VAULT`: the owner check is then skipped).
+ * revenue wallet that must hold the referral account (`null` when the environment does not have
+ * `FORGE_REVENUE_WALLET`: the owner check is then skipped). When the environment has it, the
+ * platform fee wallet must be that same wallet (D34: the platform fee is revenue too), otherwise
+ * `PLATFORM_FEE_WALLET_MISMATCH`.
  */
 export function swapFeeAddresses(env?: AddressEnv): {
   platformFeeWallet: PublicKey;
   referralTokenAccount: PublicKey;
-  multisigVault: PublicKey | null;
+  revenueWallet: PublicKey | null;
 } {
   const a = requireAddresses(['FORGE_PLATFORM_FEE_WALLET', 'FORGE_METEORA_REFERRAL_ACCOUNT'], env);
+  const revenueWallet = readOptionalAddress('FORGE_REVENUE_WALLET', env);
+  if (revenueWallet && !a.FORGE_PLATFORM_FEE_WALLET.equals(revenueWallet)) {
+    throw new SwapError(
+      'PLATFORM_FEE_WALLET_MISMATCH',
+      'FORGE_PLATFORM_FEE_WALLET must be the revenue wallet (FORGE_REVENUE_WALLET)',
+      { details: { platformFeeWallet: a.FORGE_PLATFORM_FEE_WALLET.toBase58() } },
+    );
+  }
   return {
     platformFeeWallet: a.FORGE_PLATFORM_FEE_WALLET,
     referralTokenAccount: a.FORGE_METEORA_REFERRAL_ACCOUNT,
-    multisigVault: readOptionalAddress('FORGE_MULTISIG_VAULT', env),
+    revenueWallet,
   };
 }
 
@@ -1369,7 +1380,8 @@ interface SwapCommonParams extends SwapBuildOptions {
   /**
    * Environment to read the FORGE addresses from (defaults to `process.env`):
    * `FORGE_PLATFORM_FEE_WALLET` and `FORGE_METEORA_REFERRAL_ACCOUNT` (required), and
-   * `FORGE_MULTISIG_VAULT` (optional: when set, the referral account must be held by it).
+   * `FORGE_REVENUE_WALLET` (optional: when set, the referral account must be held by it and the
+   * platform fee wallet must be it).
    */
   env?: AddressEnv;
   commitment?: Commitment;
@@ -1404,7 +1416,7 @@ async function buildSide(
   assertU64(side === 'buy' ? 'amountInLamports' : 'amountInTokens', amountIn, 1n);
   const slippage = readSlippage(slippageOf(p));
   const options = readBuildOptions(p);
-  const { platformFeeWallet, referralTokenAccount, multisigVault } = swapFeeAddresses(p.env);
+  const { platformFeeWallet, referralTokenAccount, revenueWallet } = swapFeeAddresses(p.env);
   if (p.allowedConfigs !== undefined) toConfigKeys(p.allowedConfigs);
   const ctx = await fetchSwapContext({
     connection: p.connection,
@@ -1418,7 +1430,7 @@ async function buildSide(
   return buildSwapTransaction(
     ctx,
     { side, amountIn, slippage, ...options },
-    { platformFeeWallet, referralOwner: multisigVault },
+    { platformFeeWallet, referralOwner: revenueWallet },
   );
 }
 
@@ -1465,7 +1477,7 @@ export async function quoteSwap(params: QuoteSwapParams): Promise<SwapQuote> {
 /**
  * Startup / pre-build check of the FORGE fee accounts: the platform fee wallet must be a
  * rent-exempt system account and the referral account must be a wrapped SOL token account, held by
- * `FORGE_MULTISIG_VAULT` when the environment has it. Throws `SwapError`.
+ * `FORGE_REVENUE_WALLET` when the environment has it. Throws `SwapError`.
  */
 export async function assertSwapFeeAccountsReady(params: {
   connection: Connection;
@@ -1473,7 +1485,7 @@ export async function assertSwapFeeAccountsReady(params: {
   commitment?: Commitment;
 }): Promise<void> {
   const commitment = params.commitment ?? DEFAULT_COMMITMENT;
-  const { platformFeeWallet, referralTokenAccount, multisigVault } = swapFeeAddresses(params.env);
+  const { platformFeeWallet, referralTokenAccount, revenueWallet } = swapFeeAddresses(params.env);
   const [platformInfo, referralInfo] = (
     await rpc('getMultipleAccountsInfo', () =>
       params.connection.getMultipleAccountsInfo(
@@ -1496,5 +1508,5 @@ export async function assertSwapFeeAccountsReady(params: {
     rentMinimum,
     platformFeeWallet,
   );
-  assertReferralAccountReady(referralTokenAccount, referralInfo ?? null, multisigVault);
+  assertReferralAccountReady(referralTokenAccount, referralInfo ?? null, revenueWallet);
 }

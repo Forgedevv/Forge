@@ -3,7 +3,8 @@ import { promises as fs } from 'node:fs';
 import { request } from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import { Keypair, type Connection } from '@solana/web3.js';
+import { AccountLayout, NATIVE_MINT, TOKEN_PROGRAM_ID } from '@solana/spl-token';
+import { Keypair, PublicKey, type Connection } from '@solana/web3.js';
 import { pino } from 'pino';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CLUSTER_GENESIS_HASH } from '@forge/core';
@@ -27,6 +28,7 @@ const FAST = { N: 1 << 14, r: 8, p: 1 };
 
 let dir: string;
 let cashbox: string;
+let revenue: string;
 
 beforeEach(async () => {
   dir = await fs.mkdtemp(path.join(os.tmpdir(), 'forge-runtime-'));
@@ -37,6 +39,7 @@ beforeEach(async () => {
   });
   await keystore.createKey('payer');
   cashbox = (await keystore.createKey('cashbox')).publicKey.toBase58();
+  revenue = (await keystore.createKey('revenue')).publicKey.toBase58();
   await keystore.close();
 });
 
@@ -63,7 +66,9 @@ function baseEnv(
     SIGNER_COIN_METADATA_URL: 'https://meta.forge.test/coins/{slug}.json',
     FORGE_MULTISIG_VAULT: address(),
     FORGE_CASHBOX_WALLET: cashbox,
-    FORGE_PLATFORM_FEE_WALLET: address(),
+    // The platform fee wallet is the revenue wallet (D34).
+    FORGE_PLATFORM_FEE_WALLET: revenue,
+    FORGE_REVENUE_WALLET: revenue,
     FORGE_METEORA_REFERRAL_ACCOUNT: address(),
     FORGE_JUPITER_REFERRAL_ACCOUNT: address(),
     LOG_LEVEL: 'silent',
@@ -127,6 +132,7 @@ const flagsRows = [
   'refunds_paused',
   'jupiter_claims_paused',
   'convert_paused',
+  'revenue_paused',
 ].map((key) => ({ key, value: false }));
 
 function mockFetch(calls: string[] = [], flags = flagsRows): typeof fetch {
@@ -308,6 +314,7 @@ describe('signer runtime wiring', () => {
       'refunds',
       'watch',
       'convert',
+      'revenue',
       'spy',
     ]);
     const ctx = seen[0]!;
@@ -371,6 +378,7 @@ describe('signer runtime wiring', () => {
       'refunds',
       'watch',
       'convert',
+      'revenue',
     ]);
     for (const secret of [PASSPHRASE, HMAC, SERVICE_KEY]) expect(reply.text).not.toContain(secret);
 
@@ -421,6 +429,7 @@ describe('signer runtime wiring', () => {
       'refunds',
       'watch',
       'convert',
+      'revenue',
       'spy',
     ]);
     const alertLine = lines.find((l) => l.includes('"code":"job_module_disabled"'));
@@ -817,7 +826,119 @@ describe('runtime environment file', () => {
       Object.entries(fromExample).map(([k, v]) => [k, baseEnv()[k] ?? v]),
     );
     const runtime = await create({ ...filled, NODE_ENV: 'test' });
-    expect(runtime.scheduler.names()).toHaveLength(6);
+    expect(runtime.scheduler.names()).toHaveLength(7);
     expect(runtime.config.convertRoles).toEqual(['cashbox']);
+  });
+});
+
+describe('revenue wallet wiring', () => {
+  /** A classic SPL token account (wrapped SOL) held by `owner`, as `getAccountInfo` returns it. */
+  function wsolAccountOwnedBy(owner: string) {
+    const data = Buffer.alloc(AccountLayout.span);
+    AccountLayout.encode(
+      {
+        mint: NATIVE_MINT,
+        owner: new PublicKey(owner),
+        amount: 0n,
+        delegateOption: 0,
+        delegate: PublicKey.default,
+        state: 1,
+        isNativeOption: 1,
+        isNative: 2_039_280n,
+        delegatedAmount: 0n,
+        closeAuthorityOption: 0,
+        closeAuthority: PublicKey.default,
+      },
+      data,
+    );
+    return { data, owner: TOKEN_PROGRAM_ID, executable: false, lamports: 2_039_280 };
+  }
+
+  /** The offline connection, with the Meteora referral account held by `holder`. */
+  function connectionWithReferral(genesis: string, holder: string): Connection {
+    const base = mockConnection(genesis);
+    return new Proxy(base, {
+      get(target, name: string) {
+        if (name === 'getAccountInfo') return async () => wsolAccountOwnedBy(holder);
+        return (target as unknown as Record<string, unknown>)[name];
+      },
+    });
+  }
+
+  it('refuses to start on mainnet-beta when the addresses disagree with the revenue key', async () => {
+    const onMainnet = { connection: mockConnection(CLUSTER_GENESIS_HASH['mainnet-beta']) };
+    const other = address();
+    await expect(
+      create(
+        mainnetOverrides({ FORGE_REVENUE_WALLET: other, FORGE_PLATFORM_FEE_WALLET: other }),
+        onMainnet,
+      ),
+    ).rejects.toThrow(/revenue wallet wiring refused.*keystore revenue key/);
+    await expect(
+      create(mainnetOverrides({ FORGE_PLATFORM_FEE_WALLET: address() }), onMainnet),
+    ).rejects.toThrow(/FORGE_PLATFORM_FEE_WALLET is not FORGE_REVENUE_WALLET/);
+    await expect(
+      create(mainnetOverrides(), {
+        connection: connectionWithReferral(CLUSTER_GENESIS_HASH['mainnet-beta'], address()),
+      }),
+    ).rejects.toThrow(/FORGE_METEORA_REFERRAL_ACCOUNT is not held by FORGE_REVENUE_WALLET/);
+    // Wired: it starts, the revenue job is scheduled.
+    const ok = await create(mainnetOverrides(), {
+      connection: connectionWithReferral(CLUSTER_GENESIS_HASH['mainnet-beta'], revenue),
+    });
+    expect(ok.scheduler.names()).toContain('revenue');
+    expect(ok.context.revenue?.publicKey.toBase58()).toBe(revenue);
+    await ok.stop();
+  });
+
+  it('on devnet alerts and runs the revenue job off until the wiring is fixed', async () => {
+    const lines: string[] = [];
+    const logger = pino({ level: 'info' }, { write: (s: string) => void lines.push(s) });
+    const other = address();
+    const runtime = await createSignerRuntime({
+      env: baseEnv({ FORGE_REVENUE_WALLET: other, FORGE_PLATFORM_FEE_WALLET: other }),
+      connection: mockConnection(),
+      fetch: mockFetch(),
+      logger,
+      serverLogger: pino({ level: 'silent' }),
+      port: 0,
+    });
+    runtimes.push(runtime);
+    expect(runtime.context.revenue).toBeNull();
+    const alertLine = lines.find((l) => l.includes('"code":"revenue_wiring"'));
+    expect(alertLine).toBeDefined();
+    expect(alertLine).toContain('"level":"high"');
+    expect(alertLine).toContain('keystore revenue key');
+    expect(alertLine).not.toContain(other);
+    expect(await runtime.scheduler.runNow('revenue')).toEqual({ status: 'off' });
+  });
+
+  it('runs the revenue job on devnet (dry run by default) and fails closed on its flag', async () => {
+    const running = await create();
+    expect(running.context.revenue?.publicKey.toBase58()).toBe(revenue);
+    expect(await running.scheduler.runNow('revenue')).toMatchObject({
+      status: 'ran',
+      outcome: { result: 'dry_run' },
+    });
+    await running.stop();
+    const on = flagsRows.map((row) =>
+      row.key === 'revenue_paused' ? { ...row, value: true } : row,
+    );
+    const paused = await create({}, { fetch: mockFetch([], on) });
+    expect(await paused.scheduler.runNow('revenue')).toMatchObject({
+      status: 'paused',
+      reason: 'flag',
+    });
+    await paused.stop();
+    const missing = flagsRows.filter((row) => row.key !== 'revenue_paused');
+    const unseeded = await create({}, { fetch: mockFetch([], missing) });
+    expect(await unseeded.scheduler.runNow('revenue')).toMatchObject({
+      status: 'paused',
+      reason: 'flag_missing',
+    });
+    await unseeded.stop();
+    await expect(create({ SIGNER_REVENUE_RESERVE_LAMPORTS: '0.5' })).rejects.toThrow(
+      /SIGNER_REVENUE_RESERVE_LAMPORTS/,
+    );
   });
 });

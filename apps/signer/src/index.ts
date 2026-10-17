@@ -4,9 +4,10 @@
  * `pnpm --filter @forge/signer dev` (tsx watch) is for local development only.
  *
  *   (no argument)  starts the HMAC server and the scheduled jobs (runtime/runtime.ts);
- *   --init-keys    creates the fixed keystore wallets (payer, cashbox, buyback) when absent and
- *                  prints their PUBLIC addresses (set FORGE_CASHBOX_WALLET from it, fund the
- *                  payer), then exits. Needs only SIGNER_KEYSTORE_PASSPHRASE / SIGNER_KEYSTORE_DIR.
+ *   --init-keys    creates the fixed keystore wallets (payer, cashbox, buyback, revenue) when
+ *                  absent and prints their PUBLIC addresses (set FORGE_CASHBOX_WALLET,
+ *                  FORGE_REVENUE_WALLET and FORGE_PLATFORM_FEE_WALLET from it, fund the payer),
+ *                  then exits. Needs only SIGNER_KEYSTORE_PASSPHRASE / SIGNER_KEYSTORE_DIR.
  *   --revoke-launch <jobId>
  *                  advances the launchpad's durable nonce with its creator wallet, so the launch
  *                  transaction handed out for that job can no longer land; journaled, then the
@@ -40,7 +41,7 @@ const log = pino({ name: 'signer-main' });
 async function initKeys(): Promise<void> {
   const keystore = await openKeystore({ ...keystoreOptionsFromEnv(process.env), logger: log });
   try {
-    for (const role of ['payer', 'cashbox', 'buyback'] as const) {
+    for (const role of ['payer', 'cashbox', 'buyback', 'revenue'] as const) {
       const key = await keystore.createKey(role);
       log.info(
         { role, address: key.publicKey.toBase58(), created: key.created },

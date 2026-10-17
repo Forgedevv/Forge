@@ -232,6 +232,7 @@ describeDb('RLS isolation', () => {
         { key: 'deploys_paused', value: false },
         { key: 'jupiter_claims_paused', value: false },
         { key: 'refunds_paused', value: false },
+        { key: 'revenue_paused', value: false },
         { key: 'signups_paused', value: false },
       ]);
     });
