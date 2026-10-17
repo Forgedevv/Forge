@@ -110,6 +110,22 @@ describe('unavailable states', () => {
     expect(h.getTokenTxs).toHaveBeenCalledTimes(1);
   });
 
+  it('on devnet, the holders and transactions tabs say why, with no retry and no data call', async () => {
+    h.cluster = 'devnet';
+    h.holders = { data: undefined, isError: true, refetch: vi.fn() };
+    const { unmount } = render(<HoldersTab />);
+    expect(screen.getByRole('status')).toHaveTextContent(content.strings.devnetHolders);
+    expect(screen.queryByRole('button')).toBeNull();
+    unmount();
+
+    h.getTokenTxs.mockRejectedValue(new DataUnavailableError());
+    withQueries(<TxnsTab />);
+    expect(screen.getByRole('status')).toHaveTextContent(content.strings.devnetTxns);
+    expect(screen.queryByRole('button')).toBeNull();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(h.getTokenTxs).not.toHaveBeenCalled();
+  });
+
   it('the chart panel has a retry on mainnet and none on devnet', () => {
     const onRetry = vi.fn();
     const { unmount } = render(<ChartUnavailable onRetry={onRetry} />);

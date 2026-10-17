@@ -7,14 +7,17 @@ import { columns } from './columns';
 import { Tx } from '../../Explore/types';
 import { DataUnavailable } from '../../ui/DataUnavailable';
 import { content } from '@/content';
+import { cluster } from '@/forge/config';
 
 export const TxnsTab: React.FC = memo(() => {
   const tokenId = useTokenAddress();
+  // Jupiter does not index devnet: there is never a transaction history to load there.
+  const devnet = cluster === 'devnet';
   const { data: symbol } = useTokenInfo((data) => data?.baseAsset.symbol);
 
   const { data, isFetching, isError, fetchNextPage, hasNextPage, refetch } = useInfiniteQuery({
     ...ApeQueries.tokenTxs({ id: tokenId || '' }),
-    enabled: !!tokenId,
+    enabled: !!tokenId && !devnet,
   });
 
   const allRows = useMemo(
@@ -44,7 +47,14 @@ export const TxnsTab: React.FC = memo(() => {
     return null;
   }
 
-  // The market data service is down (or the site runs on devnet): no transactions to show.
+  // Devnet: nothing to retry, the history never exists there.
+  if (devnet) {
+    return (
+      <DataUnavailable title={content.strings.devnetTxns} body={content.strings.devnetTxnsBody} />
+    );
+  }
+
+  // The market data service is down: no transactions to show.
   if (isError && allRows.length === 0) {
     return (
       <DataUnavailable

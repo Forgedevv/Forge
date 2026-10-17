@@ -6,11 +6,24 @@ import { HolderContentTable } from './HolderContent';
 import { DataUnavailable } from '../../ui/DataUnavailable';
 import { useHolders } from '@/hooks/queries';
 import { content } from '@/content';
+import { cluster } from '@/forge/config';
 
 export const HoldersTab: React.FC = memo(() => {
   const { data, isError, refetch } = useHolders();
+  // Jupiter does not index devnet: there is never a holder list to load there.
+  const devnet = cluster === 'devnet';
 
-  // The market data service is down (or the site runs on devnet): no holder list to show.
+  // Devnet: nothing to retry, the holder list never exists there.
+  if (devnet) {
+    return (
+      <DataUnavailable
+        title={content.strings.devnetHolders}
+        body={content.strings.devnetHoldersBody}
+      />
+    );
+  }
+
+  // The market data service is down: no holder list to show.
   if (isError && !data) {
     return (
       <DataUnavailable
