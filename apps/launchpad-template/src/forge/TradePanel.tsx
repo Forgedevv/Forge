@@ -2,7 +2,7 @@ import { useMemo } from 'react';
 import { siteConfig } from './config';
 import JupiterTrade from './JupiterTrade';
 import { formatBps } from './trade/amounts';
-import { PLATFORM_FEE_BPS } from './trade/constants';
+import { JUPITER_REFERRAL_FEE_BPS } from './trade/constants';
 import { getRelayConnection } from './trade/connection';
 import { TradeForm } from './trade/TradeForm';
 import { useGraduated } from './trade/useGraduated';
@@ -130,8 +130,8 @@ function LiveTradePanel(props: TradePanelProps) {
     body = (
       <div className="flex flex-col gap-3" data-testid="trade-jupiter">
         <p className="text-sm text-[var(--color-text-muted)]">
-          This coin graduated. Swaps run through Jupiter and include a {formatBps(PLATFORM_FEE_BPS)}{' '}
-          FORGE platform fee.
+          This coin graduated. Swaps run through Jupiter and include a{' '}
+          {formatBps(JUPITER_REFERRAL_FEE_BPS)} FORGE platform fee.
         </p>
         <JupiterTrade launchpadPool={launchpadPool} />
       </div>

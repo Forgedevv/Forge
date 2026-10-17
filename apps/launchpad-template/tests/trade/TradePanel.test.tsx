@@ -206,7 +206,8 @@ describe('routing', () => {
     expect(jupiter.getAttribute('data-issued')).toBe('true');
     expect(screen.queryByTestId('trade-form')).toBeNull();
     expect(core.calls.quote).toBe(0);
-    expect(screen.getByTestId('trade-jupiter').textContent).toContain('0.3%');
+    // After graduation the fee is the Jupiter referral fee (0.5%), not the 0.3% of the curve.
+    expect(screen.getByTestId('trade-jupiter').textContent).toContain('0.5% FORGE platform fee');
   });
 
   it('does not guess a route when the graduation check fails, and can retry', async () => {
