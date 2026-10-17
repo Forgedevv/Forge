@@ -367,7 +367,7 @@ The signer never takes an address or an amount from the request: it re-reads eve
 
 "Injected": the builder does not use the value itself, it writes it into the env variables of each client's Vercel project. Client projects only ever receive public values plus their own relay token (D21). Tuning knobs (rate limits, intervals, caps, budgets) are listed with their defaults in each app's `.env.example`.
 
-**Priority fees**: every transaction built by `@forge/core` can carry a priority fee (`priority` setting of the builders, `packages/core/src/priority-fee.ts`): the price is a percentile of `getRecentPrioritizationFees` for the transaction's writable accounts (through the RPC relay on client sites), bounded per compute unit and per transaction, and the compute unit limit is a per-kind constant with a margin (swap 150,000, launch 300,000, payment 50,000, claim 200,000...). The web payments and partner claims, the template's trades, coin creations and creator claims use the core defaults (75th percentile, floor 10,000 micro-lamports per CU, at most 1,000,000 per CU and 0.0005 SOL per transaction); the signer uses `SIGNER_PRIORITY_FEE_*`. The Jupiter swaps of the conversion and the buyback keep Jupiter's `priorityLevelWithMaxLamports` and their own caps (`CONVERT_MAX_PRIORITY_FEE_LAMPORTS`, `BUYBACK_MAX_PRIORITY_FEE_LAMPORTS`).
+**Priority fees**: every transaction built by `@forge/core` can carry a priority fee (`priority` setting of the builders, `packages/core/src/priority-fee.ts`): the price is a percentile of `getRecentPrioritizationFees` for the transaction's writable accounts (through the RPC relay on client sites), bounded per compute unit and per transaction, and the compute unit limit is a per-kind constant with a margin (swap 150,000, launch 300,000, payment 50,000, claim 200,000...). The web payments and partner claims, the template's trades, coin creations and creator claims use the core defaults (75th percentile, floor 10,000 micro-lamports per CU, at most 1,000,000 per CU and 0.0005 SOL per transaction); the signer uses `SIGNER_PRIORITY_FEE_*`. The Jupiter swaps of the conversion and the buyback keep Jupiter's `priorityLevelWithMaxLamports` and their own caps (`CONVERT_MAX_PRIORITY_FEE_LAMPORTS`, `BUYBACK_MAX_PRIORITY_FEE_LAMPORTS`); the buyback's $FORGE return and Squads spending-limit withdrawal use `SIGNER_PRIORITY_FEE_*` (the compute budget pair first, then their one allowed layout), and the devnet DBC buybacks the same setting with its cap per transaction lowered to `BUYBACK_MAX_PRIORITY_FEE_LAMPORTS`.
 
 **Cashbox**: `FORGE_CASHBOX_WALLET` is a wallet held by the signer (its key is in the keystore, the public address in the env). It receives payments, keeps a small buffer for refunds and transaction fees, and the rest is transferred to the multisig every day. `apps/web` holds no key: refunds are made by the signer, which watches `failed` jobs with `failed_stage = 'build'` and `attempts = 2`.
 
@@ -429,7 +429,12 @@ spent    = `funding.lamports` of the buyback day entries (`buyback.day-<day>.jso
            `funding.at` at or after BUYBACK_REVENUE_SINCE and status requested, confirmed or unknown
 backlog  = max(0, revenue - spent)
 budget   = min(backlog + SOL on the bot above its reserve, BUYBACK_DAILY_CAP_LAMPORTS,
-               SOL on the bot above its reserve + remaining spending limit - orders x fee allowance)
+               SOL on the bot above its reserve + remaining spending limit - orders x fee allowance
+               - withdrawal fee)
+fee allowance  = BUYBACK_ORDER_FEE_ALLOWANCE_LAMPORTS, by default BUYBACK_MAX_PRIORITY_FEE_LAMPORTS
+                 (the buy) + the signer priority fee cap of the return (100,000 CU) + 10,000
+                 (+ 30 bps of the largest order on the dbc-devnet route)
+withdrawal fee = 5,000 + the signer priority fee cap of the spending-limit use (200,000 CU)
 ```
 
 Everything comes from the journals, nothing from a balance (a balance mixes revenue with client payments and the team's own funds). Cashbox sweeps (client payments) are never read. The figures are recorded in the day entry (`revenue`, `botAvailableLamports`, `unplannedLamports`), in the run report (`budget`) and in the `buyback day planned` log line. When the budget cannot be established (`BUYBACK_REVENUE_SINCE` unset, journal directory unreadable, a corrupt entry) the day is not planned for that run and a high alert is sent (docs/OPERATIONS.md "Buyback budget").
