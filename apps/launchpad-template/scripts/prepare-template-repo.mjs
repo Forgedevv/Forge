@@ -24,6 +24,8 @@
  * - `tsconfig.json` no longer extends the monorepo base (its options are inlined);
  * - tests, test tooling, the monorepo lint config, mocks, caches and this `scripts/` folder are left out;
  * - `typescript` is added (the monorepo root provides it, a standalone repository does not);
+ * - the monorepo root's `pnpm.overrides` are copied (a standalone repository is its own root, so the
+ *   site installs the same patched transitive versions the template was tested with);
  * - `vercel.json` disables Git deployments, so a push to the template repository never deploys it;
  * - no `.npmrc` at all: no registry setting, no scope line and no token reach the template
  *   repository (a tracked `.npmrc` is always left out).
@@ -389,8 +391,8 @@ export function pinWorkspaceDependencies(pkg, pins) {
   return { pkg: next, unused };
 }
 
-/** Standalone `package.json`: pinned deps, no test tooling, TypeScript added. */
-export function buildPackageJson(pkg, { pins, typescriptVersion }) {
+/** Standalone `package.json`: pinned deps, no test tooling, TypeScript and root overrides added. */
+export function buildPackageJson(pkg, { pins, typescriptVersion, overrides }) {
   if (!typescriptVersion || !EXACT_VERSION.test(typescriptVersion)) {
     throw new PrepareError('The TypeScript version must be exact (--typescript x.y.z).');
   }
@@ -404,6 +406,14 @@ export function buildPackageJson(pkg, { pins, typescriptVersion }) {
     Object.entries(devDependencies).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
   );
   const out = { ...pinned, scripts, devDependencies: sorted };
+  if (overrides && Object.keys(overrides).length > 0) {
+    for (const [name, version] of Object.entries(overrides)) {
+      if (typeof version !== 'string' || !EXACT_VERSION.test(version)) {
+        throw new PrepareError(`The root override of ${name} must be an exact version.`);
+      }
+    }
+    out.pnpm = { ...(out.pnpm ?? {}), overrides: { ...overrides } };
+  }
   return { pkg: assertPublicDependencies(out), unused };
 }
 
@@ -477,12 +487,15 @@ export function prepareTemplateRepo(options) {
   if (!own.has('package.json')) throw new PrepareError('package.json is not tracked by git.');
   const sourcePackage = JSON.parse(own.get('package.json').toString('utf8'));
   const rootPackagePath = resolve(sourceDir, '../../package.json');
-  const version =
-    typescriptVersion ??
-    (existsSync(rootPackagePath)
-      ? JSON.parse(readFileSync(rootPackagePath, 'utf8')).devDependencies?.typescript
-      : undefined);
-  const { pkg, unused } = buildPackageJson(sourcePackage, { pins, typescriptVersion: version });
+  const rootPackage = existsSync(rootPackagePath)
+    ? JSON.parse(readFileSync(rootPackagePath, 'utf8'))
+    : undefined;
+  const version = typescriptVersion ?? rootPackage?.devDependencies?.typescript;
+  const { pkg, unused } = buildPackageJson(sourcePackage, {
+    pins,
+    typescriptVersion: version,
+    overrides: rootPackage?.pnpm?.overrides,
+  });
 
   const generated = new Map();
   generated.set('package.json', stringify(pkg));

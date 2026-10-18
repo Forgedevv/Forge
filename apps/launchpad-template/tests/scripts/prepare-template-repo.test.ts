@@ -100,6 +100,14 @@ describe('prepare-template-repo: written output', () => {
     expect(pkg.scripts.lint).toBeUndefined();
   });
 
+  it('copies the root pnpm overrides: the standalone repository is its own pnpm root', () => {
+    const out = freshOut();
+    prepareTemplateRepo({ out, pins: PINS });
+    const root = readJson(join(appDir, '..', '..', 'package.json'));
+    expect(root.pnpm?.overrides?.['rpc-websockets']).toMatch(/^\d+\.\d+\.\d+$/);
+    expect(readJson(join(out, 'package.json')).pnpm.overrides).toEqual(root.pnpm.overrides);
+  });
+
   it('writes vercel.json with Git deployments disabled', () => {
     const out = freshOut();
     prepareTemplateRepo({ out, pins: PINS });
