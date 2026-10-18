@@ -49,6 +49,13 @@ export interface LaunchpadDirectory {
    * enough could be loaded: client origins are then refused (fail closed).
    */
   snapshot(): Promise<DirectorySnapshot>;
+  /**
+   * A fresh snapshot for an origin the current one does not allow: a site that went live or a
+   * preview published since the last load would otherwise be refused until the TTL runs out. It
+   * reloads only when the current snapshot is older than the recheck interval (unknown origins
+   * cost at most one load per interval) and resolves to null when it did not reload or failed.
+   */
+  recheck?(): Promise<DirectorySnapshot | null>;
 }
 
 export class DirectoryUnavailableError extends Error {
@@ -75,6 +82,8 @@ export interface CachedDirectoryOptions {
   siteOriginsMaxStaleMs?: number;
   /** After a failed load, no new attempt before this delay (protects a struggling database). */
   failureBackoffMs?: number;
+  /** `recheck` reloads only a snapshot at least this old (default 10 s, at most the TTL). */
+  recheckMinAgeMs?: number;
   now?: () => number;
   onError?: (error: unknown) => void;
 }
@@ -90,6 +99,7 @@ export class CachedLaunchpadDirectory implements LaunchpadDirectory {
   private readonly maxStaleMs: number;
   private readonly siteOriginsMaxStaleMs: number;
   private readonly failureBackoffMs: number;
+  private readonly recheckMinAgeMs: number;
   private readonly now: () => number;
 
   constructor(
@@ -103,6 +113,7 @@ export class CachedLaunchpadDirectory implements LaunchpadDirectory {
       this.maxStaleMs,
     );
     this.failureBackoffMs = options.failureBackoffMs ?? 5_000;
+    this.recheckMinAgeMs = Math.min(options.recheckMinAgeMs ?? 10_000, this.ttlMs);
     this.now = options.now ?? Date.now;
   }
 
@@ -127,6 +138,18 @@ export class CachedLaunchpadDirectory implements LaunchpadDirectory {
     } catch {
       if (usableStale) return this.servable(usableStale, this.now());
       throw new DirectoryUnavailableError();
+    }
+  }
+
+  async recheck(): Promise<DirectorySnapshot | null> {
+    const now = this.now();
+    const current = this.current;
+    if (!current || now - current.loadedAt < this.recheckMinAgeMs) return null;
+    if (now - this.lastFailureAt < this.failureBackoffMs) return null;
+    try {
+      return await this.refresh();
+    } catch {
+      return null;
     }
   }
 
@@ -226,8 +249,17 @@ export async function decideOrigin(
   } catch {
     return { allowed: false, reason: 'directory_unavailable' };
   }
-  if (slug !== null) return bySlugStatus(snapshot, origin, slug);
-  // A recorded site host (exact origin, https, default port): the status rules of its own slug.
+  const decide = (current: DirectorySnapshot): OriginDecision =>
+    slug !== null ? bySlugStatus(current, origin, slug) : byRecordedOrigin(current, url, origin);
+  const decision = decide(snapshot);
+  if (decision.allowed || !directory.recheck) return decision;
+  // Not in this snapshot: maybe a site that just went live, or a preview just published.
+  const fresh = await directory.recheck();
+  return fresh ? decide(fresh) : decision;
+}
+
+/** A recorded site host (exact origin, https, default port) or a preview waiting for approval. */
+function byRecordedOrigin(snapshot: DirectorySnapshot, url: URL, origin: string): OriginDecision {
   const siteSlug = url.port === '' ? snapshot.siteOrigins.get(origin) : undefined;
   if (siteSlug !== undefined) return bySlugStatus(snapshot, origin, siteSlug);
   const previewSlug = snapshot.previewOrigins.get(origin);

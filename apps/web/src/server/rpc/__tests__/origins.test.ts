@@ -242,6 +242,49 @@ describe('decideOrigin', () => {
     });
   });
 
+  it('rechecks the directory once for an origin it does not list yet (a site just gone live)', async () => {
+    const site = 'https://lp-moonpad.vercel.app';
+    const before: DirectorySnapshot = {
+      activeSlugs: new Set(['moonpad']),
+      sleepingSlugs: new Set(),
+      siteOrigins: new Map(),
+      previewOrigins: new Map(),
+      loadedAt: 0,
+    };
+    const after: DirectorySnapshot = { ...before, siteOrigins: new Map([[site, 'moonpad']]) };
+    const recheck = vi.fn(async () => after);
+    const directory: LaunchpadDirectory = { snapshot: async () => before, recheck };
+    await expect(decideOrigin(site, POLICY, directory)).resolves.toMatchObject({
+      allowed: true,
+      kind: 'client',
+      slug: 'moonpad',
+    });
+    expect(recheck).toHaveBeenCalledTimes(1);
+
+    // Still unknown after the recheck, or no reload: refused; a listed origin never rechecks.
+    const stillUnknown: LaunchpadDirectory = {
+      snapshot: async () => before,
+      recheck: async () => before,
+    };
+    await expect(decideOrigin('https://evil.vercel.app', POLICY, stillUnknown)).resolves.toEqual({
+      allowed: false,
+      reason: 'unknown',
+    });
+    const noReload: LaunchpadDirectory = {
+      snapshot: async () => before,
+      recheck: async () => null,
+    };
+    await expect(decideOrigin(site, POLICY, noReload)).resolves.toEqual({
+      allowed: false,
+      reason: 'unknown',
+    });
+    const listed = vi.fn(async () => after);
+    await expect(
+      decideOrigin(site, POLICY, { snapshot: async () => after, recheck: listed }),
+    ).resolves.toMatchObject({ allowed: true });
+    expect(listed).not.toHaveBeenCalled();
+  });
+
   it('allows localhost only outside production', async () => {
     const dev = { ...POLICY, allowLocalhost: true };
     for (const origin of ['http://localhost:3000', 'http://127.0.0.1:3001', 'http://[::1]:3000']) {
@@ -444,6 +487,43 @@ describe('CachedLaunchpadDirectory', () => {
       t = 1600;
       await expect(capped.snapshot()).rejects.toBeInstanceOf(DirectoryUnavailableError);
     });
+  });
+
+  it('recheck reloads at most once per interval, never during the failure backoff', async () => {
+    let t = 0;
+    let fail = false;
+    const loader = vi.fn(async () => {
+      if (fail) throw new Error('db down');
+      return snapshot([`s-${t}`]);
+    });
+    const dir = new CachedLaunchpadDirectory(loader, {
+      ttlMs: 60_000,
+      recheckMinAgeMs: 10_000,
+      failureBackoffMs: 5_000,
+      now: () => t,
+    });
+    await expect(dir.recheck()).resolves.toBeNull(); // nothing loaded yet: snapshot() loads
+    await dir.snapshot();
+    expect(loader).toHaveBeenCalledTimes(1);
+    t = 9_999;
+    await expect(dir.recheck()).resolves.toBeNull();
+    expect(loader).toHaveBeenCalledTimes(1);
+    t = 10_000;
+    const results = await Promise.all([dir.recheck(), dir.recheck(), dir.recheck()]);
+    expect(loader).toHaveBeenCalledTimes(2); // single flight
+    expect(results.every((r) => r?.activeSlugs.has('s-10000'))).toBe(true);
+    t = 15_000;
+    await expect(dir.recheck()).resolves.toBeNull(); // the reload reset the interval
+    expect(loader).toHaveBeenCalledTimes(2);
+    t = 20_000;
+    fail = true;
+    await expect(dir.recheck()).resolves.toBeNull();
+    expect(loader).toHaveBeenCalledTimes(3);
+    t = 24_999;
+    await expect(dir.recheck()).resolves.toBeNull(); // backoff: no new load
+    expect(loader).toHaveBeenCalledTimes(3);
+    // The last good snapshot is still served.
+    await expect(dir.snapshot()).resolves.toMatchObject({ loadedAt: 10_000 });
   });
 
   it('throws when nothing was ever loaded', async () => {
