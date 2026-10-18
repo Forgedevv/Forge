@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { canonicalXUrl, parseXLink, xHandle } from '@/forge/socials';
+import { canonicalXUrl, parseXLink, safeExternalUrl, xHandle } from '@/forge/socials';
 
 describe('parseXLink', () => {
   it('treats an empty field as no link', () => {
@@ -47,6 +47,11 @@ describe('parseXLink', () => {
       'javascript:alert(1)',
       'https://t.me/moon_coin',
       `https://x.com/${'a'.repeat(300)}`,
+      'https://x.com/home',
+      'x.com/search',
+      'https://twitter.com/Explore/',
+      '@settings',
+      'i',
     ]) {
       expect(parseXLink(raw)).toEqual({ ok: false });
     }
@@ -77,5 +82,26 @@ describe('canonicalXUrl', () => {
   it('gives the handle of a canonical link only', () => {
     expect(xHandle('https://x.com/moon_coin')).toBe('moon_coin');
     expect(xHandle('https://twitter.com/moon_coin')).toBeNull();
+  });
+});
+
+describe('safeExternalUrl', () => {
+  it('keeps https links only', () => {
+    expect(safeExternalUrl('https://t.me/moon_coin')).toBe('https://t.me/moon_coin');
+    expect(safeExternalUrl('https://moon.example/')).toBe('https://moon.example/');
+    for (const value of [
+      'javascript:alert(1)',
+      'JavaScript:alert(1)',
+      'data:text/html,<b>x</b>',
+      'http://moon.example',
+      'https://user:pass@moon.example',
+      'moon.example',
+      '',
+      null,
+      undefined,
+      42,
+    ]) {
+      expect(safeExternalUrl(value)).toBeNull();
+    }
   });
 });

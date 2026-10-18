@@ -477,6 +477,8 @@ fp()  { printf %s "${!1}" | sha256sum | cut -c1-12; }      # fingerprint to comp
 - [ ] The three services run the same commit as the one tested: `git rev-parse HEAD` on each host; CI green (`pnpm install --frozen-lockfile && pnpm typecheck && pnpm test`).
 - [ ] No env file is tracked: `git ls-files | grep -E '(^|/)\.env' | grep -v '\.example$'` prints nothing.
 - [ ] Migrations 0001 to 0017 are applied: `select key from flags order by key;` returns the 9 keys of section 8.
+- [ ] Migration 0017 is applied: `select 1 from information_schema.columns where table_name = 'upload_tickets' and column_name = 'coin_twitter';` returns one row.
+- [ ] Deploy order for the coin X link: migration 0017, then apps/web, then client sites built from the new template. A ticket with a link fails before 0017 (unknown column); an older apps/web refuses `coin.twitter` (strict body). Coins without a link work in any order.
 - [ ] Each env file has no unknown name and no missing name: `comm -13 <(grep -oE '^[A-Z][A-Z0-9_]*' .env.example | sort -u) <(grep -oE '^[A-Z][A-Z0-9_]*' .env | sort -u)` lists names; compare with sections 2 to 4.
 
 **B. Cluster and RPC** (run on each host with its own URL; the output carries no key)

@@ -25,6 +25,23 @@ const X_HOSTS = new Set([
   'mobile.twitter.com',
 ]);
 
+/** X paths that look like a handle but are pages of X itself. */
+const X_RESERVED_PATHS = new Set([
+  'home',
+  'explore',
+  'search',
+  'notifications',
+  'messages',
+  'settings',
+  'i',
+  'intent',
+  'share',
+  'login',
+  'signup',
+  'tos',
+  'privacy',
+]);
+
 /** The value when it is exactly a canonical X link, else null. Never normalises. */
 export function canonicalXUrl(value: unknown): string | null {
   return typeof value === 'string' && X_URL_PATTERN.test(value) ? value : null;
@@ -50,7 +67,11 @@ export function parseXLink(raw: string): XLinkInput {
   if (value.length > X_INPUT_MAX) return { ok: false };
 
   const bare = value.startsWith('@') ? value.slice(1) : value;
-  if (X_HANDLE_PATTERN.test(bare)) return { ok: true, url: `https://x.com/${bare}` };
+  if (X_HANDLE_PATTERN.test(bare)) {
+    return X_RESERVED_PATHS.has(bare.toLowerCase())
+      ? { ok: false }
+      : { ok: true, url: `https://x.com/${bare}` };
+  }
 
   const withScheme = /^[a-z][a-z0-9+.-]*:/i.test(value) ? value : `https://${value}`;
   let url: URL;
@@ -62,6 +83,25 @@ export function parseXLink(raw: string): XLinkInput {
   if (url.protocol !== 'https:' && url.protocol !== 'http:') return { ok: false };
   if (url.username || url.password || url.port || !X_HOSTS.has(url.hostname)) return { ok: false };
   const handle = url.pathname.replace(/^\/|\/$/g, '');
-  if (!X_HANDLE_PATTERN.test(handle)) return { ok: false };
+  if (!X_HANDLE_PATTERN.test(handle) || X_RESERVED_PATHS.has(handle.toLowerCase())) {
+    return { ok: false };
+  }
   return { ok: true, url: `https://x.com/${handle}` };
+}
+
+/**
+ * Another social link of a coin (website, Telegram) from the data API, which this site does not
+ * control: the URL when it is https without credentials, else null. Never a `javascript:` or
+ * `data:` link in an `href`.
+ */
+export function safeExternalUrl(value: unknown): string | null {
+  if (typeof value !== 'string' || value.length > X_INPUT_MAX * 10) return null;
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== 'https:' || url.username || url.password) return null;
+  return url.href;
 }
