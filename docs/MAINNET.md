@@ -103,8 +103,9 @@ Coin uploads are not part of readiness: with a bad R2 block they answer 503 `NOT
 
 | Variable | Req. | Mainnet value / how to obtain | Default | If wrong | Secret |
 |---|---|---|---|---|---|
-| `NEXT_PUBLIC_SUPPORT_TELEGRAM_URL` | no (recommended: this one or the email) | the support Telegram link, `https://t.me/<handle>` (https on `t.me` or `telegram.me` only); rebuild after a change | unset | invalid: ignored, as if unset. With no channel set, support links lead to the FAQ, which tells clients to use the channel of their beta invite | |
-| `NEXT_PUBLIC_SUPPORT_EMAIL` | no (recommended: this one or the Telegram link) | the support address, e.g. `support@<FORGE domain>`; the mail opens with the job reference in the subject | unset | same | |
+| `NEXT_PUBLIC_SUPPORT_X_URL` | no (recommended: the primary channel, listed first) | the FORGE X profile, `https://x.com/<handle>` (https on `x.com` or `twitter.com`, a single handle of 1-15 letters, digits or `_`; normalised to `x.com`); rebuild after a change | unset | invalid: ignored, as if unset. With no channel set, support links lead to the FAQ, which tells clients to use the channel of their beta invite | |
+| `NEXT_PUBLIC_SUPPORT_TELEGRAM_URL` | no | the support Telegram link, `https://t.me/<handle>` (https on `t.me` or `telegram.me` only); rebuild after a change | unset | same | |
+| `NEXT_PUBLIC_SUPPORT_EMAIL` | no | the support address, e.g. `support@<FORGE domain>`; the mail opens with the job reference in the subject | unset | same | |
 
 ## 3. apps/builder (VPS 1)
 
