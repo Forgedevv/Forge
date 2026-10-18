@@ -4,6 +4,9 @@ import { cn } from '@/lib/utils';
 import { HoverPopover } from '../ui/HoverPopover';
 import { ExternalLink } from '../ui/ExternalLink';
 import TelegramIcon from '@/icons/TelegramIcon';
+import XIcon from '@/icons/XIcon';
+import { CoinXLink } from '@/forge/CoinXLink';
+import { content } from '@/content';
 import { WebsiteIcon } from '@/icons/WebsiteIcon';
 import SearchIcon from '@/icons/SearchIcon';
 
@@ -44,6 +47,14 @@ export const TokenSocials: React.FC<TokenSocialsProps> = memo(({ token, classNam
           />
         </ExternalLink>
       </HoverPopover>
+      <CoinXLink
+        url={token.twitter}
+        title={content.strings.coinOnX}
+        onClick={handleClick}
+        className="text-[--icon-color] opacity-60 hover:opacity-100"
+      >
+        <XIcon aria-hidden="true" />
+      </CoinXLink>
       {token.telegram && (
         <ExternalLink
           className="text-[--icon-color] opacity-60 hover:opacity-100"

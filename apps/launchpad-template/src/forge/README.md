@@ -29,6 +29,7 @@ This zone contains all the logic that touches money, the network or the chain:
 - `chart/`: TradingView chart (loads an external script and queries the data API). Without price history (data API down, or devnet) it shows `ChartUnavailable` instead, and never loads the script on devnet.
 - `token-icon/`: token images (dynamic image URLs).
 - `CoinLink.tsx`: link to the launchpad coin on Jupiter (sleeping page).
+- `CoinXLink.tsx`: link to a coin's X profile for the free zones (coin page about block, market cards): renders only a canonical `https://x.com/<handle>` (`socials.ts`), in a new tab with `rel="noopener noreferrer"`; any other value renders nothing. The on-chain fallback (`data/onchain/`) keeps the metadata JSON `twitter` only in that form and maps it to `baseAsset.twitter`.
 - `mode-guard.ts`: what each mode allows (`capabilitiesFor`: a sleeping site allows the creator fee claim only); API routes answer 503 when the site is sleeping or disabled (the claim needs no API route: it goes from the browser to the FORGE RPC relay).
 
 Rules for the free zones (`src/theme`, `src/content`, `src/components`, `src/pages`): no `fetch`, no

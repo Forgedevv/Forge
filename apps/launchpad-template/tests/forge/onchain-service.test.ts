@@ -66,7 +66,7 @@ function launchedChain(extra: [string, RawFixture][] = []) {
   return { accounts, ...mockChain(accounts) };
 }
 
-function storageFetch() {
+function storageFetch(extra: Record<string, unknown> = {}) {
   return vi.fn(async (url: string) => {
     const mint = /metadata\/([^/]+)\.json$/.exec(url)?.[1];
     return new Response(
@@ -75,6 +75,7 @@ function storageFetch() {
         symbol: 'x',
         description: `About ${mint}`,
         image: `${STORAGE}/launchpads/moon/images/${mint}.png`,
+        ...extra,
       }),
       { status: 200, headers: { 'content-type': 'application/json' } },
     );
@@ -388,6 +389,32 @@ describe('one coin on-chain', () => {
     });
     const pad = await service.coin(LAUNCHPAD_COIN);
     expect(pad?.pool?.id).toBe(fixture('test2Pool').address);
+    expect(user?.pool?.baseAsset.twitter).toBeUndefined();
+  });
+
+  it('carries the X link of the metadata JSON, canonical only', async () => {
+    launch();
+    const read = async (twitter: unknown) => {
+      const service = createOnchainCoinService({
+        connection: launchedChain().connection,
+        storageOrigin: STORAGE,
+        fetch: storageFetch({ twitter }) as unknown as typeof fetch,
+        now: clock().now,
+      });
+      return (await service.coin(USER_COIN))?.pool?.baseAsset.twitter;
+    };
+    expect(await read('https://x.com/moon_coin')).toBe('https://x.com/moon_coin');
+    for (const bad of [
+      'https://twitter.com/moon_coin',
+      'http://x.com/moon_coin',
+      'https://x.com/moon_coin/status/1',
+      'https://evil.example/moon_coin',
+      'javascript:alert(1)',
+      42,
+      null,
+    ]) {
+      expect(await read(bad)).toBeUndefined();
+    }
   });
 
   it('finds nothing for another mint, refuses an invalid address, and caches', async () => {
