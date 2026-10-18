@@ -563,7 +563,7 @@ async function sendPlanned(
   if (balance < cost) {
     throw new JobError(
       'CONFIG',
-      `the payer wallet holds ${formatSol(balance)} SOL, the ${p} setup needs ${formatSol(cost)} SOL: fund it`,
+      `the payer wallet holds ${formatSol(balance)}, the ${p} setup needs ${formatSol(cost)}: fund it`,
     );
   }
   if ((await attemptsOf(deps, p)) >= MAX_REFERRAL_SETUP_ATTEMPTS) {
@@ -717,7 +717,7 @@ async function meteoraPart(ctx: Ctx, seed: string): Promise<ReferralSetupPartRes
     computeUnits: METEORA_REFERRAL_SETUP_COMPUTE_UNITS,
     describe: [
       `create the Meteora referral account ${derived.toBase58()} (standalone wrapped-SOL token account, owner ${deps.revenue.toBase58()}, seed "${seed}")`,
-      `rent ${formatSol(rentLamports)} SOL paid by the payer ${deps.payer.publicKey.toBase58()}, priority fee up to ${formatSol(quote.priorityFeeLamports)} SOL`,
+      `rent ${formatSol(rentLamports)} paid by the payer ${deps.payer.publicKey.toBase58()}, priority fee up to ${formatSol(quote.priorityFeeLamports)}`,
     ],
   };
   for (const line of planned.describe) ctx.print(`[meteora] ${line}`);
@@ -888,7 +888,7 @@ async function jupiterPart(ctx: Ctx, name: string): Promise<ReferralSetupPartRes
         (t) =>
           `create its collection account ${t.tokenAccount.toBase58()} for mint ${t.mint.toBase58()}`,
       ),
-      `rent ${formatSol(rentLamports)} SOL paid by the payer ${deps.payer.publicKey.toBase58()}, priority fee up to ${formatSol(quote.priorityFeeLamports)} SOL`,
+      `rent ${formatSol(rentLamports)} paid by the payer ${deps.payer.publicKey.toBase58()}, priority fee up to ${formatSol(quote.priorityFeeLamports)}`,
     ],
   };
   for (const line of planned.describe) ctx.print(`[jupiter] ${line}`);

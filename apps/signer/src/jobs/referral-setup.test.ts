@@ -379,6 +379,8 @@ describe('--setup-revenue-referrals: dry run and plan', () => {
       ),
     ).toBe(true);
     expect(h.lines[0]).toContain('dry run');
+    expect(h.lines.some((l) => /rent \d[\d.]* SOL paid by the payer/.test(l))).toBe(true);
+    expect(h.lines.join('\n')).not.toContain('SOL SOL');
     // Costs: the rents plus the signature fee (no priority fee here).
     expect(r.meteora.costLamports).toBe(h.chain.rentExempt(ACCOUNT_SIZE) + 5_000n);
     expect(r.jupiter.costLamports).toBe(
