@@ -63,6 +63,8 @@ export interface RequestOptions {
   name?: string;
   symbol?: string;
   description?: string;
+  /** Sent as `coin.twitter` and signed. */
+  twitter?: string;
   firstBuyLamports?: string;
   nonce?: string;
   issuedAt?: string;
@@ -90,6 +92,7 @@ export function signedRequest(options: RequestOptions = {}): UploadRequest {
     firstBuyLamports: options.firstBuyLamports ?? '100000000',
     imageSha256: sha256Hex(image),
     descriptionSha256: sha256Hex(Buffer.from(description, 'utf8')),
+    twitter: options.twitter ?? null,
     nonce: options.nonce ?? freshNonce(),
     issuedAt: options.issuedAt ?? new Date(T0).toISOString(),
   };
@@ -99,7 +102,12 @@ export function signedRequest(options: RequestOptions = {}): UploadRequest {
     version: 1,
     mint: options.mint ?? newWallet().address,
     wallet: wallet.address,
-    coin: { name: fields.name, symbol: fields.symbol, description },
+    coin: {
+      name: fields.name,
+      symbol: fields.symbol,
+      description,
+      ...(options.twitter !== undefined ? { twitter: options.twitter } : {}),
+    },
     firstBuyLamports: fields.firstBuyLamports,
     image: {
       contentType: options.contentType ?? 'image/png',

@@ -393,7 +393,7 @@ Forbidden in a client project and refused by the builder: `RPC_URL`, `JUPITER_AP
 | 6 | Vault | `FORGE_MULTISIG_VAULT` = Squads vault PDA of `FORGE_SQUADS_MULTISIG` + `FORGE_SQUADS_VAULT_INDEX` | signer start-up (`squadsConfigFromEnv`) | buyback refused; the signer stops when it is live on mainnet |
 | 7 | HMAC builder -> signer | `SIGNER_HMAC_SECRET` identical on both, 32 bytes or more; clocks within 60 s (NTP on both VPS) | signer HMAC check; builder start-up health call | every request 401 `bad_signature` or `bad_timestamp` |
 | 8 | Relay token builder -> web | `RPC_RELAY_TOKEN_SECRET` identical on web and builder (not on the signer) | web relay and upload routes recompute the token | site server routes refused |
-| 9 | One Supabase project | `SUPABASE_URL` and service role key on web, builder, signer; anon key and JWT secret of the same project on web; migrations 0001 to 0016 applied | none at start-up | flags, jobs and payments invisible to each other |
+| 9 | One Supabase project | `SUPABASE_URL` and service role key on web, builder, signer; anon key and JWT secret of the same project on web; migrations 0001 to 0017 applied | none at start-up | flags, jobs and payments invisible to each other |
 | 10 | Domains | web `CLIENTS_DOMAIN` = builder `CLIENTS_DOMAIN`; builder `NEXT_PUBLIC_FORGE_RPC_RELAY_URL` = the origin of web `NEXT_PUBLIC_APP_URL`; `SIGNER_COIN_METADATA_URL` = `https://<web host>/api/coin-meta/{slug}`; web `R2_PUBLIC_URL` = builder `R2_PUBLIC_URL` | origin checks in the relay; CSP; core metadata check | relay refuses sites; coin metadata unreachable (immutable on-chain) |
 | 11 | $FORGE | `FORGE_MINT` identical on web and signer; `FORGE_GATING_AMOUNT` on web only | none | gate and buyback point at different mints |
 | 12 | Squads limit covers a full day | spending limit amount >= `BUYBACK_DAILY_CAP_LAMPORTS` + `BUYBACK_ORDERS_PER_DAY` x `BUYBACK_ORDER_FEE_ALLOWANCE_LAMPORTS`; and `BUYBACK_DAILY_CAP_LAMPORTS` <= `BUYBACK_ORDERS_PER_DAY` x `BUYBACK_MAX_ORDER_LAMPORTS` | the day budget is cut to `fundable = bot balance above reserve + remaining allowance - orders x allowance` (`jobs/buyback.ts` `computeBudget`); the second inequality is a start-up check | the day buys less than the cap; the rest waits |
@@ -476,7 +476,7 @@ fp()  { printf %s "${!1}" | sha256sum | cut -c1-12; }      # fingerprint to comp
 **A. Code and database**
 - [ ] The three services run the same commit as the one tested: `git rev-parse HEAD` on each host; CI green (`pnpm install --frozen-lockfile && pnpm typecheck && pnpm test`).
 - [ ] No env file is tracked: `git ls-files | grep -E '(^|/)\.env' | grep -v '\.example$'` prints nothing.
-- [ ] Migrations 0001 to 0016 are applied: `select key from flags order by key;` returns the 9 keys of section 8.
+- [ ] Migrations 0001 to 0017 are applied: `select key from flags order by key;` returns the 9 keys of section 8.
 - [ ] Each env file has no unknown name and no missing name: `comm -13 <(grep -oE '^[A-Z][A-Z0-9_]*' .env.example | sort -u) <(grep -oE '^[A-Z][A-Z0-9_]*' .env | sort -u)` lists names; compare with sections 2 to 4.
 
 **B. Cluster and RPC** (run on each host with its own URL; the output carries no key)

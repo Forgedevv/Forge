@@ -42,6 +42,11 @@ export interface TicketRecord {
   coinName: string;
   coinSymbol: string;
   coinDescription: string;
+  /**
+   * Canonical X link (`https://x.com/<handle>`) written to the metadata JSON as `twitter`, or null
+   * (column `coin_twitter`, migration 0017).
+   */
+  coinTwitter: string | null;
   firstBuyLamports: string;
   status: TicketStatus;
   /** Why the stored image was refused (status `rejected`). */

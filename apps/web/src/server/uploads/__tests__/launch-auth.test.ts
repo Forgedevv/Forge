@@ -41,6 +41,18 @@ describe('buildLaunchAuthMessage (v1, same text as the client sites)', () => {
         'Issued at: 2026-10-11T12:00:00.000Z',
     );
   });
+
+  it('signs the X link on its own line, only when there is one', () => {
+    expect(buildLaunchAuthMessage({ ...FIELDS, twitter: null })).toBe(
+      buildLaunchAuthMessage(FIELDS),
+    );
+    expect(buildLaunchAuthMessage({ ...FIELDS, twitter: 'https://x.com/moon_coin' })).toBe(
+      buildLaunchAuthMessage(FIELDS).replace(
+        '\nNonce: ',
+        '\nX: https://x.com/moon_coin\nNonce: ',
+      ),
+    );
+  });
 });
 
 describe('isFreshIssuedAt', () => {

@@ -12,6 +12,7 @@ import {
   UPLOAD_RATE_LIMITS,
   UploadHttpError,
   UploadRequest,
+  X_URL_PATTERN,
   type UploadReceipt,
   type UploadTicket,
 } from './contract';
@@ -38,7 +39,8 @@ import { UploadStoreError, type LaunchpadRef, type TicketRecord, type UploadStor
  * The route handlers (handlers.ts) have already checked the per-IP and per-token limits and the
  * calling site's server token; `caller.serverSlug` is the launchpad that token names.
  *
- * Issue:    strict body -> fresh `issuedAt` -> ed25519 signature over the exact v1 message ->
+ * Issue:    strict body (optional `coin.twitter`, canonical X link only) -> fresh `issuedAt` ->
+ *           ed25519 signature over the exact v1 message (X link line included when present) ->
  *           per-instance wallet limit -> launchpad (slug or uuid) is the token's and live ->
  *           `auth.host` is the launchpad's domain (`<slug>.<CLIENTS_DOMAIN>`) or its recorded
  *           `site_host`, exactly -> `(wallet, nonce)` already seen? identical
@@ -97,7 +99,10 @@ function hexToBase64(hex: string): string {
   return Buffer.from(hex, 'hex').toString('base64');
 }
 
-/** Canonical form of a request, hashed to recognise an identical retry. */
+/**
+ * Canonical form of a request, hashed to recognise an identical retry. The X link is appended
+ * only when present, so a request without one hashes exactly as before it existed.
+ */
 export function requestFingerprint(body: UploadRequest): string {
   return sha256Hex(
     JSON.stringify([
@@ -115,18 +120,28 @@ export function requestFingerprint(body: UploadRequest): string {
       body.auth.nonce,
       body.auth.issuedAt,
       body.auth.signature,
+      ...(body.coin.twitter ? [body.coin.twitter] : []),
     ]),
   );
 }
 
-/** Exact bytes of the metadata JSON (fixed key order, so a retry writes the same bytes). */
+/**
+ * Exact bytes of the metadata JSON (fixed key order, so a retry writes the same bytes). `twitter`
+ * (the key Jupiter and pump-style indexers read) is written only for a coin with an X link, and
+ * only in its canonical form: a coin without one gets the same bytes as before the link existed.
+ */
 export function metadataBytes(ticket: TicketRecord, imagePublicUrl: string): Uint8Array {
+  const twitter =
+    ticket.coinTwitter !== null && X_URL_PATTERN.test(ticket.coinTwitter)
+      ? ticket.coinTwitter
+      : null;
   return Buffer.from(
     JSON.stringify({
       name: ticket.coinName,
       symbol: ticket.coinSymbol,
       description: ticket.coinDescription,
       image: imagePublicUrl,
+      ...(twitter ? { twitter } : {}),
     }),
     'utf8',
   );
@@ -298,6 +313,7 @@ export function createUploadService(deps: UploadServiceDeps): UploadService {
       firstBuyLamports: body.firstBuyLamports,
       imageSha256: body.image.sha256,
       descriptionSha256: sha256Hex(Buffer.from(body.coin.description, 'utf8')),
+      twitter: body.coin.twitter ?? null,
       nonce: body.auth.nonce,
       issuedAt: body.auth.issuedAt,
     });
@@ -360,6 +376,7 @@ export function createUploadService(deps: UploadServiceDeps): UploadService {
       coinName: body.coin.name,
       coinSymbol: body.coin.symbol,
       coinDescription: body.coin.description,
+      coinTwitter: body.coin.twitter ?? null,
       firstBuyLamports: body.firstBuyLamports,
       status: 'issued',
       rejection: null,

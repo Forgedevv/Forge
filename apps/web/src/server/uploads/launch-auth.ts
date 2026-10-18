@@ -23,6 +23,8 @@ export interface LaunchAuthFields {
   firstBuyLamports: string;
   imageSha256: string;
   descriptionSha256: string;
+  /** Canonical X link, or null/absent: then no `X:` line is signed (same text as before). */
+  twitter?: string | null;
   nonce: string;
   issuedAt: string;
 }
@@ -43,6 +45,7 @@ export function buildLaunchAuthMessage(f: LaunchAuthFields): string {
     `First buy (lamports): ${f.firstBuyLamports}`,
     `Image SHA-256: ${f.imageSha256}`,
     `Description SHA-256: ${f.descriptionSha256}`,
+    ...(f.twitter ? [`X: ${f.twitter}`] : []),
     `Nonce: ${f.nonce}`,
     `Issued at: ${f.issuedAt}`,
   ].join('\n');
