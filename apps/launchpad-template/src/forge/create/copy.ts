@@ -23,6 +23,9 @@ export const CREATE_COIN_TEXT = {
     symbolHint: 'Letters and digits only. Traders search for it.',
     descriptionLabel: 'Description',
     descriptionPlaceholder: 'What is this coin about?',
+    twitterLabel: 'X (Twitter)',
+    twitterPlaceholder: '@yourcoin or https://x.com/yourcoin',
+    twitterHint: 'Shown on the coin page and saved in the coin metadata.',
     optional: 'optional',
     required: 'required',
     /** Screen reader text of a counter (`12 of 32`). */
@@ -48,6 +51,8 @@ export const CREATE_COIN_TEXT = {
     namePlaceholder: 'Coin name',
     symbolPlaceholder: 'TICKER',
     descriptionPlaceholder: 'Your description appears here.',
+    /** The X handle under the description (`@yourcoin`). */
+    twitter: (handle: string) => `@${handle} on X`,
     age: 'just now',
     creator: 'by you',
   },

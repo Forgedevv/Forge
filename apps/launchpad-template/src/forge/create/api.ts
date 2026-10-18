@@ -74,6 +74,8 @@ export interface PrepareLaunchRequest {
   tokenName: string;
   tokenSymbol: string;
   description: string;
+  /** Canonical X link (`https://x.com/<handle>`), signed in the message; absent for none. */
+  twitter?: string;
   /** `data:<mime>;base64,<payload>` of the coin image. */
   tokenLogo: string;
   userWallet: string;

@@ -122,6 +122,20 @@ describe('prepareLaunch', () => {
     );
     expect(review.summary.platformFeeLamports).toBe(PLATFORM_FEE);
     expect(review.insufficientBalance).toBe(false);
+    expect(request).not.toHaveProperty('twitter');
+  });
+
+  it('signs and sends the X link when the coin has one', async () => {
+    const { deps, api } = setup();
+    const signMessage = vi.fn(async (_message: Uint8Array) => new Uint8Array(64));
+    await prepareLaunch({ ...coin, twitter: 'https://x.com/moon_coin' }, image, {
+      ...deps,
+      signMessage,
+    });
+    const request = (api.prepare as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(request.twitter).toBe('https://x.com/moon_coin');
+    const signed = new TextDecoder().decode(signMessage.mock.calls[0]?.[0]);
+    expect(signed).toContain('\nX: https://x.com/moon_coin\nNonce: ');
   });
 
   it('refuses a first buy before any signature when the site has no platform fee wallet', async () => {

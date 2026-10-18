@@ -10,6 +10,7 @@ import {
   validateCreateCoin,
   validateImageFile,
   type CreateCoinInput,
+  VALIDATION_TEXT,
 } from '@/forge/create/validation';
 
 const valid: CreateCoinInput = {
@@ -29,9 +30,25 @@ describe('validateCreateCoin', () => {
         name: 'Moon Coin',
         symbol: 'MOON',
         description: 'A coin.',
+        twitter: null,
         firstBuyLamports: BigInt(500000000),
       },
     });
+  });
+
+  it('normalises the optional X link and refuses anything else inline', () => {
+    for (const twitter of ['', '   ', undefined]) {
+      const r = validateCreateCoin({ ...valid, twitter });
+      expect(r.ok && r.value.twitter).toBeNull();
+    }
+    for (const twitter of ['moon_coin', '@moon_coin', 'twitter.com/moon_coin', 'https://x.com/moon_coin/']) {
+      const r = validateCreateCoin({ ...valid, twitter });
+      expect(r.ok && r.value.twitter).toBe('https://x.com/moon_coin');
+    }
+    for (const twitter of ['https://evil.example/moon', 'https://x.com/moon/status/1', 'moon coin']) {
+      const r = validateCreateCoin({ ...valid, twitter });
+      expect(r.ok === false && r.errors.twitter).toBe(VALIDATION_TEXT.twitterInvalid);
+    }
   });
 
   it('treats an empty first buy as zero', () => {
@@ -154,7 +171,20 @@ describe('validateImageFile (checked as soon as a file is picked)', () => {
 
 describe('invalidFields', () => {
   it('lists the invalid fields in form order (image first, first buy last)', () => {
-    const r = validateCreateCoin({ name: '', symbol: '', description: '', image: null, firstBuySol: 'x' });
-    expect(r.ok === false && invalidFields(r.errors)).toEqual(['image', 'name', 'symbol', 'firstBuySol']);
+    const r = validateCreateCoin({
+      name: '',
+      symbol: '',
+      description: '',
+      twitter: 'not a link',
+      image: null,
+      firstBuySol: 'x',
+    });
+    expect(r.ok === false && invalidFields(r.errors)).toEqual([
+      'image',
+      'name',
+      'symbol',
+      'twitter',
+      'firstBuySol',
+    ]);
   });
 });

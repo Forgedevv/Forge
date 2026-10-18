@@ -1,3 +1,4 @@
+import { xHandle } from '../../socials';
 import { CREATE_COIN_TEXT } from '../copy';
 import { ui } from './styles';
 
@@ -7,6 +8,8 @@ export interface CoinPreviewProps {
   name: string;
   symbol: string;
   description?: string;
+  /** Normalised X link (`https://x.com/<handle>`), or null: shown as `@handle` (text only). */
+  twitter?: string | null;
   /** Object URL of the picked image, or null. */
   imageUrl: string | null;
   /** Hides the heading (when the preview sits inside another summary). */
@@ -49,6 +52,7 @@ export function CoinPreview(props: CoinPreviewProps) {
   const name = props.name.trim();
   const symbol = props.symbol.trim().toUpperCase();
   const description = (props.description ?? '').trim();
+  const handle = xHandle(props.twitter);
   return (
     <section
       aria-label={props.compact ? TEXT.title : undefined}
@@ -97,6 +101,14 @@ export function CoinPreview(props: CoinPreviewProps) {
             className={`line-clamp-3 border-t border-neutral-850 px-3 py-2.5 text-xs leading-relaxed [overflow-wrap:anywhere] ${description ? 'text-neutral-300' : 'text-neutral-600'}`}
           >
             {description || TEXT.descriptionPlaceholder}
+          </p>
+        )}
+        {!props.compact && handle && (
+          <p
+            data-forge="create-coin-preview-x"
+            className="truncate border-t border-neutral-850 px-3 py-2 text-xs text-neutral-400"
+          >
+            {TEXT.twitter(handle)}
           </p>
         )}
       </div>
