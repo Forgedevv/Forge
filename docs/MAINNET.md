@@ -524,7 +524,7 @@ fp()  { printf %s "${!1}" | sha256sum | cut -c1-12; }      # fingerprint to comp
     index: Number(process.env.FORGE_SQUADS_VAULT_INDEX || 0) });
   console.log(vault.toBase58());
   ```
-- [ ] The spending limit is the one of section 7: in the Squads app, SOL, period Day, amount at least 5002305000 lamports, members and destinations = the buyback wallet only; the buyback wallet is a member with no permission; the multisig has the two owner keys and threshold 1. The signer re-checks the on-chain account before every withdrawal (`checkSpendingLimit`).
+- [ ] The spending limit is the one of section 7: in the Squads app, SOL, period Day, amount at least 5002305000 lamports, members and destinations = the buyback wallet only; the buyback wallet is a member with no permission; the multisig has the two owner keys and threshold 1. The signer re-checks both on-chain accounts before every withdrawal and every allowance read (`checkSpendingLimit`, `checkBotMembership`): another member or destination on the limit, or any permission of the buyback wallet on the multisig, and nothing is withdrawn (alert `buyback_policy_violation`).
 
 **E. Network**
 - [ ] From the builder host: `curl -m 5 -s -o /dev/null -w '%{http_code}\n' http://<signer address>:<port>/v1/health` answers `401` (reachable, signature required). From any other host it must time out or answer `403`.

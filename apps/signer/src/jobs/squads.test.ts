@@ -24,8 +24,10 @@ import {
   SquadsWithdrawalEntry,
   assertSpendingLimitUseTx,
   buildSpendingLimitUseIx,
+  checkBotMembership,
   checkSpendingLimit,
   createSquadsSpendingLimitWithdrawer,
+  decodeMultisigMembers,
   decodeSpendingLimit,
   decodeSpendingLimitUse,
   deriveSquadsVault,
@@ -88,6 +90,25 @@ function limitAccount(bot: PublicKey, over: Partial<SpendingLimitState> = {}) {
     destinations: s.destinations.map((d) => new PublicKey(d)),
   }).serialize();
   return { owner: SQUADS_PROGRAM_ID, data, state: s };
+}
+
+/** A serialized `Multisig` account (SDK layout): an owner with every permission, then the bot. */
+function multisigAccount(bot: PublicKey, botMask = 0) {
+  const [data] = multisig.accounts.Multisig.fromArgs({
+    createKey: randomAddress(),
+    configAuthority: PublicKey.default,
+    threshold: 1,
+    timeLock: 0,
+    transactionIndex: 0,
+    staleTransactionIndex: 0,
+    rentCollector: null,
+    bump: 255,
+    members: [
+      { key: randomAddress(), permissions: { mask: 7 } },
+      { key: bot, permissions: { mask: botMask } },
+    ],
+  }).serialize();
+  return { owner: SQUADS_PROGRAM_ID, data };
 }
 
 function clock(unix: bigint): Buffer {
@@ -342,6 +363,8 @@ describe('spending limit policy', () => {
     [{ mint: randomAddress().toBase58() }, 'not_sol'],
     [{ period: 2 }, 'not_daily'],
     [{ members: [randomAddress().toBase58()] }, 'bot_not_member'],
+    [{ members: [bot.toBase58(), randomAddress().toBase58()] }, 'member_not_bot_only'],
+    [{ members: [randomAddress().toBase58(), bot.toBase58()] }, 'member_not_bot_only'],
     [{ destinations: [] }, 'destination_not_bot_only'],
     [{ destinations: [bot.toBase58(), randomAddress().toBase58()] }, 'destination_not_bot_only'],
     [{ amount: 0n }, 'zero_amount'],
@@ -354,6 +377,18 @@ describe('spending limit policy', () => {
     expect(effectiveRemainingLamports(s, 1_000n + 86_400n)).toBe(3n);
     expect(effectiveRemainingLamports(s, 1_000n + 86_401n)).toBe(1n * SOL);
     expect(effectiveRemainingLamports({ ...s, period: 0 }, 10_000_000n)).toBe(3n);
+  });
+
+  it('wants the bot in the multisig with no permission (D33)', () => {
+    const members = (mask: number, of = bot) => decodeMultisigMembers(multisigAccount(of, mask));
+    expect(members(0).at(-1)).toEqual({ key: bot.toBase58(), mask: 0 });
+    expect(checkBotMembership(members(0), bot)).toBeNull();
+    for (const mask of [1, 2, 4, 7]) {
+      expect(checkBotMembership(members(mask), bot)).toBe('bot_has_permissions');
+    }
+    expect(checkBotMembership(members(0, randomAddress()), bot)).toBe('bot_not_multisig_member');
+    const { data } = multisigAccount(bot);
+    expect(() => decodeMultisigMembers({ owner: randomAddress(), data })).toThrow(/not owned/);
   });
 });
 
@@ -434,6 +469,7 @@ describe('createSquadsSpendingLimitWithdrawer', () => {
     const journal = createMemoryJournal(SquadsWithdrawalEntry);
     const accounts = new Map<string, { owner: PublicKey; data: Buffer }>();
     accounts.set(LIMIT.toBase58(), limitAccount(bot, over));
+    accounts.set(MULTISIG.toBase58(), multisigAccount(bot));
     accounts.set(SYSVAR_CLOCK_PUBKEY.toBase58(), { owner: PublicKey.default, data: clock(unix) });
     const connection = {
       getAccountInfo: vi.fn(async (key: PublicKey) => {
@@ -579,6 +615,46 @@ describe('createSquadsSpendingLimitWithdrawer', () => {
       h.withdrawer.withdraw({ lamports: 1n, destination: bot, idempotencyKey: 'k', onBeforeSend: () => undefined }),
     ).rejects.toThrow(/TX_POLICY/);
     expect(h.rpc.sent).toHaveLength(0);
+  });
+
+  it('refuses a limit another member could use, before anything is signed', async () => {
+    const h = harness({ members: [bot.toBase58(), randomAddress().toBase58()] });
+    await expect(h.withdrawer.remainingLamports(bot)).rejects.toThrow(/member_not_bot_only/);
+    await expect(
+      h.withdrawer.withdraw({
+        lamports: 1n,
+        destination: bot,
+        idempotencyKey: 'k',
+        onBeforeSend: () => undefined,
+      }),
+    ).rejects.toThrow(/TX_POLICY/);
+    expect(h.rpc.sent).toHaveLength(0);
+  });
+
+  it('refuses a bot holding a permission on the multisig, or missing from it, before anything is signed', async () => {
+    for (const [account, refusal] of [
+      [multisigAccount(bot, 7), /bot_has_permissions/],
+      [multisigAccount(bot, 1), /bot_has_permissions/],
+      [multisigAccount(randomAddress()), /bot_not_multisig_member/],
+    ] as const) {
+      const h = harness();
+      h.accounts.set(MULTISIG.toBase58(), account);
+      await expect(h.withdrawer.remainingLamports(bot)).rejects.toThrow(refusal);
+      await expect(
+        h.withdrawer.withdraw({
+          lamports: 1n,
+          destination: bot,
+          idempotencyKey: 'k',
+          onBeforeSend: () => undefined,
+        }),
+      ).rejects.toThrow(/TX_POLICY/);
+      expect(h.rpc.sent).toHaveLength(0);
+    }
+    const missing = harness();
+    missing.accounts.delete(MULTISIG.toBase58());
+    await expect(missing.withdrawer.remainingLamports(bot)).rejects.toThrow(
+      /multisig account not found/,
+    );
   });
 
   it('refuses a destination that is not the buyback wallet', async () => {
