@@ -26,7 +26,10 @@ describe('parseXLink', () => {
       expect(parseXLink(raw)).toEqual({ ok: true, url: 'https://x.com/moon_coin' });
     }
     expect(parseXLink('A')).toEqual({ ok: true, url: 'https://x.com/A' });
-    expect(parseXLink('a'.repeat(15))).toEqual({ ok: true, url: `https://x.com/${'a'.repeat(15)}` });
+    expect(parseXLink('a'.repeat(15))).toEqual({
+      ok: true,
+      url: `https://x.com/${'a'.repeat(15)}`,
+    });
   });
 
   it('refuses anything that is not an X profile', () => {

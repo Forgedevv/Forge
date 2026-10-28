@@ -108,7 +108,11 @@ describe('TokenDescription', () => {
     expect(screen.getByRole('link', { name: content.strings.coinOnX })).toBeTruthy();
     unmount();
 
-    for (const twitter of ['javascript:alert(1)', 'https://evil.example/moon', 'https://x.com/a/b']) {
+    for (const twitter of [
+      'javascript:alert(1)',
+      'https://evil.example/moon',
+      'https://x.com/a/b',
+    ]) {
       h.pool = { baseAsset: { name: 'Moon Nap', twitter } };
       h.description = undefined;
       const view = render(<TokenDescription />);

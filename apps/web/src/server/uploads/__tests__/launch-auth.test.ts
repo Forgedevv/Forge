@@ -47,10 +47,7 @@ describe('buildLaunchAuthMessage (v1, same text as the client sites)', () => {
       buildLaunchAuthMessage(FIELDS),
     );
     expect(buildLaunchAuthMessage({ ...FIELDS, twitter: 'https://x.com/moon_coin' })).toBe(
-      buildLaunchAuthMessage(FIELDS).replace(
-        '\nNonce: ',
-        '\nX: https://x.com/moon_coin\nNonce: ',
-      ),
+      buildLaunchAuthMessage(FIELDS).replace('\nNonce: ', '\nX: https://x.com/moon_coin\nNonce: '),
     );
   });
 });

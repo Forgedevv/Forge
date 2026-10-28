@@ -265,7 +265,11 @@ describe('createUploadClient', () => {
     );
 
     const never = vi.fn<UploadFetch>();
-    for (const twitter of ['https://twitter.com/moon_coin', 'moon_coin', 'https://evil.example/x']) {
+    for (const twitter of [
+      'https://twitter.com/moon_coin',
+      'moon_coin',
+      'https://evil.example/x',
+    ]) {
       await expect(
         client(never).uploadCoin({ ...request, coin: { ...request.coin, twitter } }, PNG),
       ).rejects.toThrow();
