@@ -290,7 +290,7 @@ Parsed at start-up (`runtime/env.ts` and the jobs' `...FromEnv` parsers, `server
 | `CONVERT_SLIPPAGE_BPS` | no | keep | 50 (1 to 500) | above `CONVERT_MAX_SLIPPAGE_BPS`: start-up error | |
 | `CONVERT_MAX_SLIPPAGE_BPS` | no | keep | 100 | quotes above are refused | |
 | `CONVERT_MAX_PRICE_IMPACT_BPS` | no | keep | 100 (1 to 1000) | quotes above are refused | |
-| `CONVERT_MIN_OUTPUT_LAMPORTS` | no | keep | 10000000 | smaller swaps skipped as dust | |
+| `CONVERT_MIN_OUTPUT_LAMPORTS` | no | keep | 10000000 | smaller swaps skipped as dust; at or below `CONVERT_MAX_PRIORITY_FEE_LAMPORTS` + 5000 (what one swap can cost): start-up error | |
 | `CONVERT_MAX_INPUT_AMOUNT` | no | keep (1,000 USDC in raw units); 0 = no cap | 1000000000 | bounds the loss of one run | |
 | `CONVERT_MAX_PRIORITY_FEE_LAMPORTS` | no | keep | 1000000 | with V2, the cap per transaction of the signer's own price; the lower of it and `SIGNER_PRIORITY_FEE_MAX_LAMPORTS` applies | |
 | `CONVERT_REQUEST_INTERVAL_MS` | no | keep (free tier: 1 request per second) | 1100 | 429 from Jupiter | |

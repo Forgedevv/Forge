@@ -251,6 +251,28 @@ describe('parseConvertConfig', () => {
     expect(() => parseConvertConfig({ CONVERT_MAX_INPUT_AMOUNT: '-1' })).toThrow();
   });
 
+  it('refuses a dust threshold at or below what one swap can cost', () => {
+    // One signature and the priority fee cap: 5,000 + 1,000,000 lamports by default.
+    expect(config.minOutputLamports).toBe(10_000_000n);
+    for (const value of ['0', '1', '1005000']) {
+      expect(() => parseConvertConfig({ CONVERT_MIN_OUTPUT_LAMPORTS: value })).toThrow(
+        /CONVERT_MIN_OUTPUT_LAMPORTS must be above/,
+      );
+    }
+    expect(parseConvertConfig({ CONVERT_MIN_OUTPUT_LAMPORTS: '1005001' }).minOutputLamports).toBe(
+      1_005_001n,
+    );
+    expect(() => parseConvertConfig({ CONVERT_MAX_PRIORITY_FEE_LAMPORTS: '9995000' })).toThrow(
+      /CONVERT_MIN_OUTPUT_LAMPORTS must be above/,
+    );
+    expect(
+      parseConvertConfig({
+        CONVERT_MIN_OUTPUT_LAMPORTS: '20000',
+        CONVERT_MAX_PRIORITY_FEE_LAMPORTS: '10000',
+      }).minOutputLamports,
+    ).toBe(20_000n);
+  });
+
   it('reads the API key and excludes the FORGE mint', () => {
     const c = parseConvertConfig({
       JUPITER_API_KEY: 'k',
