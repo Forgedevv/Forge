@@ -119,8 +119,8 @@ Exact versions are the ones pinned in each `package.json` (all pinned exactly, n
 
 | Package | Version | Where | Why it matters |
 |---|---|---|---|
-| `next` | `16.3.8` | apps/web | The FORGE site and the RPC relay, internet-facing, on Vercel |
-| `next` | `15.5.27` | apps/launchpad-template | Client sites (Pages Router), each served publicly. **A different major from the web app: watch both lines** |
+| `next` | `16.4.1` | apps/web | The FORGE site and the RPC relay, internet-facing, on Vercel |
+| `next` | `15.5.28` | apps/launchpad-template | Client sites (Pages Router), each served publicly. A site keeps the version it was built with: a template bump reaches only the sites built after it. **A different major from the web app: watch both lines** |
 | `react`, `react-dom` | `19.3.0` | apps/web, template | Rendering, server components in the web app |
 | `@solana/web3.js` | `1.99.0` | web, signer, core, template, devnet-tests | Builds and parses every transaction; signer keys use it |
 | `@solana/spl-token` | `0.4.15` | signer, core, template, devnet-tests | Token instructions in money paths |
@@ -164,7 +164,7 @@ Transitive packages of the Solana tree worth tracking, with the versions in the 
 
 ### Template versions, separately
 
-Client sites are built from `apps/launchpad-template`, so the versions to watch for them are the "template" rows above: `next` 15.5.27, `react` and `react-dom` 19.3.0, `@solana/web3.js` 1.99.0, `@solana/spl-token` 0.4.15, `@meteora-ag/dynamic-bonding-curve-sdk` 1.5.13, `@coral-xyz/anchor` 0.31.1, `@jup-ag/wallet-adapter` 0.2.6, `@solana/wallet-adapter-phantom` 0.9.30, `@solana/wallet-adapter-solflare` 0.6.34, `bs58` 6.0.0, `bn.js` 5.2.5, `zod` 3.25.76, `@tanstack/react-query` 4.44.0, `ky` 1.14.3, `superstruct` 2.0.2. In a client repository `@forge/core` and `@forge/shared` are the published npm packages `@forgedevv/core` and `@forgedevv/shared`, pinned to an exact version (decision D26 in docs/DECISIONS.md; `apps/builder/src/sandbox/config.ts:70`). The workspace version of `@forge/core` is `0.3.1`. Builds of client sites install with `pnpm install --frozen-lockfile --ignore-scripts` or `npm ci --ignore-scripts` (`apps/builder/src/sandbox/build.ts:140-153`) and refuse to install without a lockfile (`build.ts:224`).
+Client sites are built from `apps/launchpad-template`, so the versions to watch for them are the "template" rows above: `next` 15.5.28, `react` and `react-dom` 19.3.0, `@solana/web3.js` 1.99.0, `@solana/spl-token` 0.4.15, `@meteora-ag/dynamic-bonding-curve-sdk` 1.5.13, `@coral-xyz/anchor` 0.31.1, `@jup-ag/wallet-adapter` 0.2.6, `@solana/wallet-adapter-phantom` 0.9.30, `@solana/wallet-adapter-solflare` 0.6.34, `bs58` 6.0.0, `bn.js` 5.2.5, `zod` 3.25.76, `@tanstack/react-query` 4.44.0, `ky` 1.14.3, `superstruct` 2.0.2. In a client repository `@forge/core` and `@forge/shared` are the published npm packages `@forgedevv/core` and `@forgedevv/shared`, pinned to an exact version (decision D26 in docs/DECISIONS.md; `apps/builder/src/sandbox/config.ts:70`). The workspace version of `@forge/core` is `0.3.1`. Builds of client sites install with `pnpm install --frozen-lockfile --ignore-scripts` or `npm ci --ignore-scripts` (`apps/builder/src/sandbox/build.ts:140-153`) and refuse to install without a lockfile (`build.ts:224`).
 
 An advisory on any template dependency affects every deployed client site, and a fix reaches a site only through a new build of that site.
 
