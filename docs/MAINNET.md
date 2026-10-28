@@ -299,7 +299,7 @@ Parsed at start-up (`runtime/env.ts` and the jobs' `...FromEnv` parsers, `server
 | `SIGNER_REVENUE_RESERVE_LAMPORTS` | no | keep | 10000000 | kept on the wallet above rent; low: unwrap cannot advance its rent | |
 | `SIGNER_REVENUE_MIN_FORWARD_LAMPORTS` | no | keep (must be positive) | 10000000 | | |
 | `SIGNER_REVENUE_MIN_UNWRAP_LAMPORTS` | no | keep | 1000000 | | |
-| `SIGNER_REVENUE_OUTFLOW_TOLERANCE_LAMPORTS` | no | raise with the priority fee | 100000 | false `revenue_unexpected_outflow` alerts | |
+| `SIGNER_REVENUE_OUTFLOW_TOLERANCE_LAMPORTS` | no | keep; the fees of the unwrap and of every conversion swap signed (one signature + `CONVERT_MAX_PRIORITY_FEE_LAMPORTS`, failed swaps included) are allowed on top, each at its cap | 100000 | false `revenue_unexpected_outflow` alerts | |
 | `SIGNER_REVENUE_DRY_RUN` | no | `true` at first boot (section 8) | `true` | `false` unwraps and forwards; also lets the revenue job call the conversion | |
 | `SIGNER_REVENUE_INTERVAL_HOURS` | no | keep | 24 | | |
 | `SIGNER_REVENUE_PAUSED` | no | `false`; section 8 | `false` | | |
