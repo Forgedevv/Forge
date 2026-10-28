@@ -903,8 +903,8 @@ export type WithdrawResult =
   | { status: 'unknown'; signature: string };
 
 /**
- * Squads v4 spending limit use (vault -> bot wallet). NOT implemented yet: live mode is refused
- * until one is wired. Contract for the implementation:
+ * Squads v4 spending limit use (vault -> bot wallet), implemented by jobs/squads.ts
+ * (`createSquadsSpendingLimitWithdrawer`); without one, live mode is refused. Contract:
  * - only the spending limit configured for the bot (SOL, destination = the bot wallet) is used;
  *   the bot key is the spending-limit member and the only signer;
  * - `remainingLamports` reads the on-chain spending limit (remaining amount of the period);
