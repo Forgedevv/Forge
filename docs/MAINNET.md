@@ -253,7 +253,7 @@ Parsed at start-up (`runtime/env.ts` and the jobs' `...FromEnv` parsers, `server
 
 | Variable | Req. | Mainnet value / how to obtain | Default | If wrong | Secret |
 |---|---|---|---|---|---|
-| `SIGNER_COIN_METADATA_URL` | yes | `https://<web host>/api/coin-meta/{slug}` (exactly one `{slug}` or `{launchpadId}`), at most 106 bytes with a 32-byte slug. Immutable on-chain once coins use it | none | start-up fails; a later change breaks every existing coin's metadata | |
+| `SIGNER_COIN_METADATA_URL` | yes | `https://<web host>/api/coin-meta/{slug}` (exactly one `{slug}` or `{launchpadId}`), at most 106 bytes with a 32-byte slug, on a stable host (a `*.trycloudflare.com` quick tunnel is refused). Immutable on-chain once coins use it | none | start-up fails; a later change breaks every existing coin's metadata | |
 | `SIGNER_PRIORITY_FEE_MICRO_LAMPORTS` | no | `10000` (floor for quiet accounts, OPERATIONS.md) | 0 | too low: transactions dropped under congestion; above the cap: start-up error | |
 | `SIGNER_PRIORITY_FEE_MAX_MICRO_LAMPORTS` | no | keep | 1000000 (max 1000000; 0 = off) | | |
 | `SIGNER_PRIORITY_FEE_PERCENTILE` | no | keep; raise to 90 if transactions land late | 75 | | |
