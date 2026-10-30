@@ -53,7 +53,10 @@ all of your work, so follow these rules strictly:
   graduated coins through Jupiter), `CreateCoin` and `ClaimCreatorFees` (no props), `siteConfig`, `cluster` and
   `poolCreationFeeSol` from `@/forge/config`, `DataStreamProvider`, `useDataStream` and
   `useDataStreamListener`, the token icons of `@/forge/token-icon`, `TokenChart`, and the
-  formatting helpers (`formatUnits`, `formatBps`, `formatSol`, `@/forge/chart/formatter`).
+  formatting helpers (`formatUnits`, `formatBps`, `formatSol`, `@/forge/chart/formatter`), a
+  coin's X link `CoinXLink` (props `url`, `title`, `onClick`, `className`, `children`; it renders
+  only an `https://x.com/<handle>` link) and `hasCoinXLink` from `@/forge/CoinXLink`, and
+  `safeExternalUrl` from `@/forge/socials` for a coin's other social links.
   Everything else there is internal and refused, as are `import * as`, `export * from` and
   `require` of `src/forge/`. Render a FORGE component as a JSX element only, with those props and
   no spread (`<CoinTradePanel mint={mint} />`), never as a value and never re-exported; load one on
