@@ -22,6 +22,7 @@ The client (example: Hugo) describes their launchpad and pays ~$33 in SOL; the a
 | [docs/OPERATIONS.md](./docs/OPERATIONS.md) | Alerts, kill switches, sleep mode, support |
 | [docs/MAINNET.md](./docs/MAINNET.md) | Mainnet configuration reference: every environment variable per service, consistency rules, go-live values, first-boot order, pre-boot checklist |
 | [docs/DECISIONS.md](./docs/DECISIONS.md) | All decisions made and the questions still open |
+| [docs/CI.md](./docs/CI.md) | What the GitHub Actions CI runs, how to reproduce it locally, branch protection settings |
 
 ## Tasks by agent
 

@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CI: true
+  NEXT_TELEMETRY_DISABLED: '1'
+  TURBO_TELEMETRY_DISABLED: '1'
+
+jobs:
+  verify:
+    name: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      # Actions are pinned to full commit SHAs; the comment names the release.
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      # No `version` input: the pnpm version comes from "packageManager" in the root package.json.
+      - name: Set up pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
+      # The Node version comes from .nvmrc.
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # The runner has 4 vCPUs and 7 GB of memory: keep turbo (Next builds, tsc) and vitest
+      # at two parallel jobs each.
+      - name: Lint
+        run: pnpm lint --concurrency=2
+
+      - name: Typecheck
+        run: pnpm typecheck --concurrency=2
+
+      # VITEST_MAX_WORKERS is read by vitest; turbo only forwards it in loose env mode.
+      # No secret or network is needed: the live and Docker suites skip themselves (docs/CI.md).
+      - name: Test
+        run: pnpm test --concurrency=2 --env-mode=loose
+        env:
+          VITEST_MAX_WORKERS: '2'
+
+      - name: Build
+        run: pnpm build --concurrency=2
