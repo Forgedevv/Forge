@@ -30,7 +30,7 @@ function utf8Bytes(value: string): number {
   return bytes;
 }
 
-const { tradingFeeBps, coinCreatorSharePct, poolCreationFeeSol } = CLIENT_BOUNDS;
+const { tradingFeeBps, coinCreatorSharePct, poolCreationFeeSol, firstBuySol } = CLIENT_BOUNDS;
 
 /** Pure check of the pool creation fee bound: 0 (when allowed) or within [min, max] SOL. */
 export function isValidPoolCreationFeeSol(value: number): boolean {
@@ -105,12 +105,11 @@ export const LaunchpadSpec = z.object({
     }),
     description: z.string().max(500),
     imageUrl: HttpUrl,
-    /** Paid by the client. */
-    // The 10 SOL migration threshold means a first buy above ~10 SOL cannot fit in the curve.
+    /** Paid by the client, within CLIENT_BOUNDS.firstBuySol. */
     firstBuySol: z
       .number()
-      .min(0)
-      .max(10)
+      .min(firstBuySol.min)
+      .max(firstBuySol.max)
       .refine(hasAtMostSolDecimals, { error: `firstBuySol ${SOL_DECIMALS_ERROR}` }),
   }),
 });

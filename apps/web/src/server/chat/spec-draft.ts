@@ -38,7 +38,7 @@ interface Leaf {
   kind?: 'text' | 'url' | 'slug' | 'symbol' | 'color';
 }
 
-const { tradingFeeBps, coinCreatorSharePct, poolCreationFeeSol } = CLIENT_BOUNDS;
+const { tradingFeeBps, coinCreatorSharePct, poolCreationFeeSol, firstBuySol } = CLIENT_BOUNDS;
 
 const LEAVES: readonly Leaf[] = [
   {
@@ -181,9 +181,9 @@ const LEAVES: readonly Leaf[] = [
     group: 'coin',
     label: 'First buy',
     schema: coinShape.firstBuySol.describe(
-      'SOL the client spends to buy the launchpad coin at launch, from 0 to 100.',
+      `SOL the client spends to buy the launchpad coin at launch, from ${firstBuySol.min} to ${firstBuySol.max}.`,
     ),
-    hint: 'must be a number of SOL between 0 and 100.',
+    hint: `must be a number of SOL between ${firstBuySol.min} and ${firstBuySol.max}.`,
   },
 ];
 

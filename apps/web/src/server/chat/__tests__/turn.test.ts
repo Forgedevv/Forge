@@ -451,6 +451,9 @@ describe('buildSystemPrompt', () => {
   it('states the bounds, embeds the draft as data without the wallet, and carries the marker', () => {
     const prompt = buildSystemPrompt('create', { ...initialDraft(WALLET), name: 'MoonPad' });
     expect(prompt).toContain('50 to 200');
+    // The first buy matches the spec schema's cap (CLIENT_BOUNDS.firstBuySol), not 0 to 100.
+    expect(prompt).toContain('on the first buy (0 to 10)');
+    expect(prompt).not.toContain('0 to 100');
     expect(prompt).toContain('"name":"MoonPad"');
     expect(prompt).not.toContain(WALLET);
     expect(prompt.split(PROMPT_CANARY).length).toBeGreaterThan(2);

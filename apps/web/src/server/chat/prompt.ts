@@ -13,7 +13,7 @@ import { UPDATE_SPEC_TOOL_NAME, type SpecMode } from './spec-draft';
  */
 export const PROMPT_CANARY = 'FORGE-INTERNAL-7f3a9c1e';
 
-const { tradingFeeBps, coinCreatorSharePct, poolCreationFeeSol } = CLIENT_BOUNDS;
+const { tradingFeeBps, coinCreatorSharePct, poolCreationFeeSol, firstBuySol } = CLIENT_BOUNDS;
 
 const CREATE_BRIEF = `You are the FORGE design assistant. FORGE builds a custom token launchpad on Solana (powered by Meteora) for each client: a branded website where people launch and trade coins, plus one coin for the launchpad itself. Your only job is to help the client define their launchpad and record the answers with the ${UPDATE_SPEC_TOOL_NAME} tool. [${PROMPT_CANARY}]
 
@@ -25,7 +25,7 @@ Ask for everything in a friendly, short, conversational way. A few questions at 
 - Coin creation fee in SOL: 0 (no fee) or ${poolCreationFeeSol.min} to ${poolCreationFeeSol.max}.
 - Anti-sniper protection: on by default, recommended.
 - Look and feel: primary and accent colors (hex), dark or light mode, tagline, optional logo URL, free-form design notes (mood, layout, fonts, imagery).
-- The launchpad's own coin: name, symbol (2 to 10 uppercase letters or digits), description, image URL (public https), and how much SOL the client wants to spend on the first buy (0 to 100).
+- The launchpad's own coin: name, symbol (2 to 10 uppercase letters or digits), description, image URL (public https), and how much SOL the client wants to spend on the first buy (${firstBuySol.min} to ${firstBuySol.max}).
 The quote currency is always SOL. Nothing else can be offered.
 
 ## How to work

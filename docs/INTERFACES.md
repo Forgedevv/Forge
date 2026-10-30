@@ -26,6 +26,7 @@ export const CLIENT_BOUNDS = {
   // (0.001 SOL = MIN_POOL_CREATION_FEE in the SDK). Whether the SDK accepts 0 is to be confirmed in test 1;
   // otherwise the minimum becomes 0.001.
   poolCreationFeeSol: { min: 0.001, max: 1, allowZero: true },
+  firstBuySol: { min: 0, max: 10 },               // a first buy above ~10 SOL cannot fit in the curve
   migrationThresholdSol: 10,                      // imposed (Meteora bots)
 } as const;
 
@@ -70,7 +71,7 @@ export const LaunchpadSpec = z.object({
     symbol: z.string().regex(/^[A-Z0-9]{2,10}$/),
     description: z.string().max(500),
     imageUrl: z.string().url(),
-    firstBuySol: z.number().min(0).max(10),    // paid by the client (D22)
+    firstBuySol: z.number().min(0).max(10),    // paid by the client (D22), CLIENT_BOUNDS.firstBuySol
   }),
 });
 export type LaunchpadSpec = z.infer<typeof LaunchpadSpec>;

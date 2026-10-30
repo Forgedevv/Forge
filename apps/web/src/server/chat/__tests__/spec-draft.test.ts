@@ -64,6 +64,11 @@ describe('applySpecPatch', () => {
     ['creation fee in the gap', { poolCreationFeeSol: 0.0001 }, 'poolCreationFeeSol'],
     ['creation fee above max', { poolCreationFeeSol: 50 }, 'poolCreationFeeSol'],
     ['first buy above max', { launchpadCoin: { firstBuySol: 1000 } }, 'launchpadCoin.firstBuySol'],
+    [
+      'first buy just above 10 SOL',
+      { launchpadCoin: { firstBuySol: 10.5 } },
+      'launchpadCoin.firstBuySol',
+    ],
     ['negative first buy', { launchpadCoin: { firstBuySol: -1 } }, 'launchpadCoin.firstBuySol'],
     ['bad color', { theme: { primaryColor: 'red' } }, 'theme.primaryColor'],
     ['short slug', { slug: 'ab' }, 'slug'],
