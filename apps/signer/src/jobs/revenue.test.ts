@@ -1555,6 +1555,49 @@ describe('revenue job', () => {
       expect((await t.state()).relatedSignatures).toEqual([swapSignature]);
       expect(t.alerter.codes()).toEqual([]);
     });
+
+    it('counts the fee of every swap it signed as its own: a failed swap or an output below the fee is no outflow', async () => {
+      // One signature and a 1,000,000 lamport priority fee cap per swap; the swap paid 400,000,
+      // four times the tolerance.
+      const convertMaxFeeLamports = 1_005_000n;
+      const swapFee = 400_000n;
+      const outcomes: Array<[ConvertRunSummary['items'][number]['outcome'], bigint]> = [
+        [{ status: 'failed', error: 'custom program error: 0x1771', signature: 'sigFAILED' }, 0n],
+        [{ status: 'confirmed', signature: 'sigDUST', outAmount: 1_000n }, 1_000n],
+      ];
+      for (const [outcome, output] of outcomes) {
+        const t = mainnet({ config: { minForwardLamports: 10n * SOL } });
+        const report = await t
+          .job({
+            convertMaxFeeLamports,
+            convert: async () => {
+              t.chain.setBalance(revenue, t.chain.balanceOf(revenue) - swapFee + output);
+              return conversionSummary([{ ...usdcConversion('x'), outcome }]);
+            },
+          })
+          .runOnce();
+        expect(report.status).toBe('ran');
+        expect(t.alerter.codes()).toEqual([]);
+        expect((await t.state()).expectedNativeLamports).toBe(
+          t.chain.balanceOf(revenue).toString(),
+        );
+      }
+      // Beyond what the signed swaps can cost and the tolerance: still alerted.
+      const t = mainnet({ config: { minForwardLamports: 10n * SOL } });
+      await t
+        .job({
+          convertMaxFeeLamports,
+          convert: async () => {
+            t.chain.setBalance(
+              revenue,
+              t.chain.balanceOf(revenue) - convertMaxFeeLamports - 100_001n,
+            );
+            return conversionSummary([{ ...usdcConversion('x'), outcome: outcomes[0]![0] }]);
+          },
+        })
+        .runOnce();
+      expect(t.alerter.codes()).toEqual(['revenue_unexpected_outflow']);
+    });
   });
 });
 

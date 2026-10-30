@@ -290,7 +290,7 @@ Parsed at start-up (`runtime/env.ts` and the jobs' `...FromEnv` parsers, `server
 | `CONVERT_SLIPPAGE_BPS` | no | keep | 50 (1 to 500) | above `CONVERT_MAX_SLIPPAGE_BPS`: start-up error | |
 | `CONVERT_MAX_SLIPPAGE_BPS` | no | keep | 100 | quotes above are refused | |
 | `CONVERT_MAX_PRICE_IMPACT_BPS` | no | keep | 100 (1 to 1000) | quotes above are refused | |
-| `CONVERT_MIN_OUTPUT_LAMPORTS` | no | keep | 10000000 | smaller swaps skipped as dust | |
+| `CONVERT_MIN_OUTPUT_LAMPORTS` | no | keep | 10000000 | smaller swaps skipped as dust; at or below `CONVERT_MAX_PRIORITY_FEE_LAMPORTS` + 5000 (what one swap can cost): start-up error | |
 | `CONVERT_MAX_INPUT_AMOUNT` | no | keep (1,000 USDC in raw units); 0 = no cap | 1000000000 | bounds the loss of one run | |
 | `CONVERT_MAX_PRIORITY_FEE_LAMPORTS` | no | keep | 1000000 | with V2, the cap per transaction of the signer's own price; the lower of it and `SIGNER_PRIORITY_FEE_MAX_LAMPORTS` applies | |
 | `CONVERT_REQUEST_INTERVAL_MS` | no | keep (free tier: 1 request per second) | 1100 | 429 from Jupiter | |
@@ -299,7 +299,7 @@ Parsed at start-up (`runtime/env.ts` and the jobs' `...FromEnv` parsers, `server
 | `SIGNER_REVENUE_RESERVE_LAMPORTS` | no | keep | 10000000 | kept on the wallet above rent; low: unwrap cannot advance its rent | |
 | `SIGNER_REVENUE_MIN_FORWARD_LAMPORTS` | no | keep (must be positive) | 10000000 | | |
 | `SIGNER_REVENUE_MIN_UNWRAP_LAMPORTS` | no | keep | 1000000 | | |
-| `SIGNER_REVENUE_OUTFLOW_TOLERANCE_LAMPORTS` | no | raise with the priority fee | 100000 | false `revenue_unexpected_outflow` alerts | |
+| `SIGNER_REVENUE_OUTFLOW_TOLERANCE_LAMPORTS` | no | keep; the fees of the unwrap and of every conversion swap signed (one signature + `CONVERT_MAX_PRIORITY_FEE_LAMPORTS`, failed swaps included) are allowed on top, each at its cap | 100000 | false `revenue_unexpected_outflow` alerts | |
 | `SIGNER_REVENUE_DRY_RUN` | no | `true` at first boot (section 8) | `true` | `false` unwraps and forwards; also lets the revenue job call the conversion | |
 | `SIGNER_REVENUE_INTERVAL_HOURS` | no | keep | 24 | | |
 | `SIGNER_REVENUE_PAUSED` | no | `false`; section 8 | `false` | | |
@@ -395,13 +395,13 @@ Forbidden in a client project and refused by the builder: `RPC_URL`, `JUPITER_AP
 | 9 | One Supabase project | `SUPABASE_URL` and service role key on web, builder, signer; anon key and JWT secret of the same project on web; migrations 0001 to 0016 applied | none at start-up | flags, jobs and payments invisible to each other |
 | 10 | Domains | web `CLIENTS_DOMAIN` = builder `CLIENTS_DOMAIN`; builder `NEXT_PUBLIC_FORGE_RPC_RELAY_URL` = the origin of web `NEXT_PUBLIC_APP_URL`; `SIGNER_COIN_METADATA_URL` = `https://<web host>/api/coin-meta/{slug}`; web `R2_PUBLIC_URL` = builder `R2_PUBLIC_URL` | origin checks in the relay; CSP; core metadata check | relay refuses sites; coin metadata unreachable (immutable on-chain) |
 | 11 | $FORGE | `FORGE_MINT` identical on web and signer; `FORGE_GATING_AMOUNT` on web only | none | gate and buyback point at different mints |
-| 12 | Squads limit covers a full day | spending limit amount >= `BUYBACK_DAILY_CAP_LAMPORTS` + `BUYBACK_ORDERS_PER_DAY` x `BUYBACK_ORDER_FEE_ALLOWANCE_LAMPORTS`; and `BUYBACK_DAILY_CAP_LAMPORTS` <= `BUYBACK_ORDERS_PER_DAY` x `BUYBACK_MAX_ORDER_LAMPORTS` | the day budget is cut to `fundable = bot balance above reserve + remaining allowance - orders x allowance` (`jobs/buyback.ts` `computeBudget`); the second inequality is a start-up check | the day buys less than the cap; the rest waits |
+| 12 | Squads limit covers a full day | spending limit amount >= `BUYBACK_DAILY_CAP_LAMPORTS` + `BUYBACK_ORDERS_PER_DAY` x `BUYBACK_ORDER_FEE_ALLOWANCE_LAMPORTS`; and `BUYBACK_DAILY_CAP_LAMPORTS` <= `BUYBACK_ORDERS_PER_DAY` x `BUYBACK_MAX_ORDER_LAMPORTS` | the day budget is cut to `fundable = bot balance above reserve + remaining allowance - orders x allowance - withdrawal fee - $FORGE account rents still to pay` (`jobs/buyback.ts` `computeBudget`); the second inequality is a start-up check | the day buys less than the cap; the rest waits |
 | 13 | Payment floors | web `SOL_USD_PRICE_MAX` vs signer `SIGNER_MIN_*_PAYMENT_LAMPORTS`: lower the floors before raising the bound, raise them only after lowering it | none | legitimate payments refused by the signer |
 | 14 | Signer reachable only from the builder host | `SIGNER_ALLOWED_IPS` = builder IP(s) exactly; firewall the port to the same address; the web and Vercel never call the signer | signer IP filter (peer address, no proxy headers) | open signer, or builder locked out |
 | 15 | Separate Helius keys | web `RPC_URL` and signer `RPC_URL` (payments, claims, buyback) differ from `RPC_RELAY_UPSTREAM_URL` (public relay) | startup warning when equal | relay traffic spends the payment quota |
 | 16 | Secrets stay out of client projects | no `RPC_URL`, `JUPITER_API_KEY`, `R2_*` write keys, `RPC_RELAY_TOKEN_SECRET` in the builder's project env | `vercel.ts` allowlist and forbidden list | refused |
 
-Arithmetic for rule 12 with the go-live values and the default allowance: per order, allowance = buy priority cap 100000 + return priority cap 100000 (100000 CU at the signer's 1000000 micro-lamports per CU) + network fees 10000 = 210000; 10 x 210000 = 2100000; plus the withdrawal fee withdrawn with the day's funding, 5000 + 200000 (200000 CU at the same price cap) = 205000. The spending limit must be at least 5000000000 + 2100000 + 205000 = 5002305000 lamports (5.002305 SOL). Round up a little, not much: the limit is the most the bot can ever pull per day.
+Arithmetic for rule 12 with the go-live values and the default allowance: per order, allowance = buy priority cap 100000 + return priority cap 100000 (100000 CU at the signer's 1000000 micro-lamports per CU) + network fees 10000 = 210000; 10 x 210000 = 2100000; plus the withdrawal fee withdrawn with the day's funding, 5000 + 200000 (200000 CU at the same price cap) = 205000. The spending limit must be at least 5000000000 + 2100000 + 205000 = 5002305000 lamports (5.002305 SOL). Round up a little, not much: the limit is the most the bot can ever pull per day. The first live day also withdraws the rent of the bot's and the vault's $FORGE accounts, which its first buy and first return create (2039280 lamports each for an SPL Token mint, 2074080 for a Token-2022 mint without account extensions): with a limit of exactly 5002305000 that day buys about 0.004 SOL less than the cap and the rest waits for the next day (5006383560 lamports would cover them for an SPL Token mint).
 
 ## 7. Go-live values decided by the owner
 
@@ -524,7 +524,7 @@ fp()  { printf %s "${!1}" | sha256sum | cut -c1-12; }      # fingerprint to comp
     index: Number(process.env.FORGE_SQUADS_VAULT_INDEX || 0) });
   console.log(vault.toBase58());
   ```
-- [ ] The spending limit is the one of section 7: in the Squads app, SOL, period Day, amount at least 5002305000 lamports, members and destinations = the buyback wallet only; the buyback wallet is a member with no permission; the multisig has the two owner keys and threshold 1. The signer re-checks the on-chain account before every withdrawal (`checkSpendingLimit`).
+- [ ] The spending limit is the one of section 7: in the Squads app, SOL, period Day, amount at least 5002305000 lamports, members and destinations = the buyback wallet only; the buyback wallet is a member with no permission; the multisig has the two owner keys and threshold 1. The signer re-checks both on-chain accounts before every withdrawal and every allowance read (`checkSpendingLimit`, `checkBotMembership`): another member or destination on the limit, or any permission of the buyback wallet on the multisig, and nothing is withdrawn (alert `buyback_policy_violation`).
 
 **E. Network**
 - [ ] From the builder host: `curl -m 5 -s -o /dev/null -w '%{http_code}\n' http://<signer address>:<port>/v1/health` answers `401` (reachable, signature required). From any other host it must time out or answer `403`.

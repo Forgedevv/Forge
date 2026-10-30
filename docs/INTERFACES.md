@@ -429,16 +429,21 @@ revenue  = revenue forwards finalized at or after BUYBACK_REVENUE_SINCE (section
 spent    = `funding.lamports` of the buyback day entries (`buyback.day-<day>.json`) with
            `funding.at` at or after BUYBACK_REVENUE_SINCE and status requested, confirmed or unknown
 backlog  = max(0, revenue - spent)
-fees     = orders x fee allowance + withdrawal fee
+fees     = orders x fee allowance + withdrawal fee + $FORGE account rents
 budget   = min(backlog + SOL on the bot above its reserve - fees, BUYBACK_DAILY_CAP_LAMPORTS,
                SOL on the bot above its reserve + remaining spending limit - fees)
-withdrawal = planned orders + planned orders x fee allowance - SOL on the bot above its reserve
-             + withdrawal fee, at most the remaining spending limit and at most the backlog
+withdrawal = planned orders + planned orders x fee allowance + $FORGE account rents
+             - SOL on the bot above its reserve + withdrawal fee, at most the remaining spending
+             limit and at most the backlog
              (a backlog of 0 withdraws nothing: the orders run on the bot's own SOL)
 fee allowance  = BUYBACK_ORDER_FEE_ALLOWANCE_LAMPORTS, by default BUYBACK_MAX_PRIORITY_FEE_LAMPORTS
                  (the buy) + the signer priority fee cap of the return (100,000 CU) + 10,000
                  (+ 30 bps of the largest order on the dbc-devnet route)
 withdrawal fee = 5,000 + the signer priority fee cap of the spending-limit use (200,000 CU)
+$FORGE account rents = the rent-exempt minimum of the bot's and of the vault's $FORGE associated
+                 token accounts, each only while it does not exist (the first live day: the
+                 first buy creates the bot's, the first return the vault's, the bot pays both;
+                 2,039,280 lamports each for an SPL Token mint)
 ```
 
 Everything comes from the journals, nothing from a balance (a balance mixes revenue with client payments and the team's own funds). Cashbox sweeps (client payments) are never read. The figures are recorded in the day entry (`revenue`, `botAvailableLamports`, `unplannedLamports`), in the run report (`budget`) and in the `buyback day planned` log line. When the budget cannot be established (`BUYBACK_REVENUE_SINCE` unset, journal directory unreadable, a corrupt entry) the day is not planned for that run and a high alert is sent (docs/OPERATIONS.md "Buyback budget").

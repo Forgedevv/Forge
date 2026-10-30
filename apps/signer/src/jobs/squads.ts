@@ -18,7 +18,8 @@
  * Policy, checked before anything is signed, on every withdrawal and on every allowance read:
  * - the spending limit account is owned by the Squads program, belongs to the configured
  *   multisig and vault index, is a SOL limit (`mint` = the all-zero key), has a `Day` period,
- *   lists the bot as a member and the bot as its ONLY destination, and has a positive amount;
+ *   lists the bot as its ONLY member and its ONLY destination, and has a positive amount;
+ * - the multisig account lists the bot as a member with no permission;
  * - the amount is positive and within what remains of the period, recomputed from the on-chain
  *   clock the way the program does it (a stale `remainingAmount` is never trusted upwards);
  * - the transaction is exactly one `spending_limit_use` instruction of the Squads program, fee
@@ -251,6 +252,7 @@ export type SpendingLimitRefusal =
   | 'not_sol'
   | 'not_daily'
   | 'bot_not_member'
+  | 'member_not_bot_only'
   | 'destination_not_bot_only'
   | 'zero_amount';
 
@@ -265,10 +267,51 @@ export function checkSpendingLimit(
   if (state.mint !== SOL_SPENDING_LIMIT_MINT.toBase58()) return 'not_sol';
   if (state.period !== PERIOD_DAY) return 'not_daily';
   if (!state.members.includes(bot)) return 'bot_not_member';
+  // Another member could move the vault's SOL to the bot outside the buyback journal (D35).
+  if (state.members.length !== 1) return 'member_not_bot_only';
   if (state.destinations.length !== 1 || state.destinations[0] !== bot) {
     return 'destination_not_bot_only';
   }
   if (state.amount <= 0n) return 'zero_amount';
+  return null;
+}
+
+/** Members of a `Multisig` account and their permission masks (SDK layout); refuses other owners. */
+export function decodeMultisigMembers(
+  info: Pick<AccountInfo<Buffer>, 'owner' | 'data'>,
+  programId: PublicKey = SQUADS_PROGRAM_ID,
+): Array<{ key: string; mask: number }> {
+  if (!info.owner.equals(programId)) {
+    throw new JobError('TX_POLICY', 'multisig account is not owned by the Squads program');
+  }
+  let decoded: multisig.accounts.Multisig;
+  try {
+    [decoded] = multisig.accounts.Multisig.fromAccountInfo({
+      executable: false,
+      lamports: 0,
+      owner: info.owner,
+      data: Buffer.from(info.data),
+    });
+  } catch {
+    throw new JobError('TX_POLICY', 'multisig account cannot be decoded');
+  }
+  return decoded.members.map((m) => ({ key: m.key.toBase58(), mask: m.permissions.mask }));
+}
+
+export type MultisigMemberRefusal = 'bot_not_multisig_member' | 'bot_has_permissions';
+
+/**
+ * Why the bot's place in the multisig is not the one D33 sets, or null: a member (the program
+ * refuses a spending limit use by a non-member) with no permission, so its key can never
+ * initiate, vote on or execute a vault transaction.
+ */
+export function checkBotMembership(
+  members: ReadonlyArray<{ key: string; mask: number }>,
+  bot: PublicKey,
+): MultisigMemberRefusal | null {
+  const member = members.find((m) => m.key === bot.toBase58());
+  if (!member) return 'bot_not_multisig_member';
+  if (member.mask !== 0) return 'bot_has_permissions';
   return null;
 }
 
@@ -471,7 +514,10 @@ export interface SquadsWithdrawerDeps {
 export interface SquadsWithdrawer extends SpendingLimitWithdrawer {
   /** The most a withdrawal costs the bot: one signature and the priority fee at its cap. */
   maxFeeLamports(): bigint;
-  /** Current policy-checked state of the spending limit (throws TX_POLICY when it is wrong). */
+  /**
+   * Current policy-checked state of the spending limit (throws TX_POLICY when it, or the bot's
+   * place in the multisig, is wrong).
+   */
   readLimit(bot: PublicKey): Promise<{ state: SpendingLimitState; remainingLamports: bigint }>;
   /** Settles a journaled withdrawal (null when the key is unknown). */
   settle(idempotencyKey: string): Promise<WithdrawResult | null>;
@@ -504,11 +550,13 @@ export function createSquadsSpendingLimitWithdrawer(deps: SquadsWithdrawerDeps):
   async function readLimit(
     botKey: PublicKey,
   ): Promise<{ state: SpendingLimitState; remainingLamports: bigint }> {
-    const [limitInfo, clockInfo] = await Promise.all([
+    const [limitInfo, multisigInfo, clockInfo] = await Promise.all([
       withRetry(() => connection.getAccountInfo(config.spendingLimit, 'confirmed'), retry),
+      withRetry(() => connection.getAccountInfo(config.multisig, 'confirmed'), retry),
       withRetry(() => connection.getAccountInfo(SYSVAR_CLOCK_PUBKEY, 'confirmed'), retry),
     ]);
     if (!limitInfo) throw new JobError('TX_POLICY', 'spending limit account not found');
+    if (!multisigInfo) throw new JobError('TX_POLICY', 'multisig account not found');
     if (!clockInfo) throw new JobError('RPC', 'clock sysvar not found');
     const state = decodeSpendingLimit(limitInfo, config.programId);
     const refusal = checkSpendingLimit(state, {
@@ -517,6 +565,11 @@ export function createSquadsSpendingLimitWithdrawer(deps: SquadsWithdrawerDeps):
       bot: botKey,
     });
     if (refusal) throw new JobError('TX_POLICY', `spending limit refused: ${refusal}`);
+    const membership = checkBotMembership(
+      decodeMultisigMembers(multisigInfo, config.programId),
+      botKey,
+    );
+    if (membership) throw new JobError('TX_POLICY', `multisig refused: ${membership}`);
     const unix = decodeClockUnixTimestamp(Buffer.from(clockInfo.data));
     return { state, remainingLamports: effectiveRemainingLamports(state, unix) };
   }
