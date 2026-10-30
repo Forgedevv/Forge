@@ -45,6 +45,8 @@ export const content = {
     auditDisabled: 'Disabled',
     auditUnknown: 'Unknown',
     readMore: 'Read more',
+    /** Accessible name of a coin's X (Twitter) link. */
+    coinOnX: 'Coin on X',
     showLess: 'Show less',
     tokenAddress: 'Token address',
     backToMarket: 'Back to market',

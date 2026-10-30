@@ -204,6 +204,7 @@ export async function prepareLaunch(
     firstBuyLamports: coin.firstBuyLamports.toString(),
     imageSha256: imageHash,
     descriptionSha256: descriptionHash,
+    twitter: coin.twitter ?? null,
     nonce,
     issuedAt,
   });
@@ -229,6 +230,7 @@ export async function prepareLaunch(
       tokenName: coin.name,
       tokenSymbol: coin.symbol,
       description: coin.description,
+      ...(coin.twitter ? { twitter: coin.twitter } : {}),
       tokenLogo,
       userWallet: deps.wallet,
       firstBuyLamports: coin.firstBuyLamports.toString(),

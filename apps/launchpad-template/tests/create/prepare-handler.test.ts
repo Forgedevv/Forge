@@ -28,6 +28,10 @@ interface BodyOptions {
   name?: string;
   symbol?: string;
   description?: string;
+  /** Sent as `twitter` and signed. */
+  twitter?: string;
+  /** Signed instead of `twitter` (default: the same value). */
+  signedTwitter?: string | null;
   firstBuy?: string;
   nonce?: string;
   issuedAt?: string;
@@ -52,6 +56,7 @@ function signedBody(o: BodyOptions = {}) {
     firstBuyLamports: firstBuy,
     imageSha256: sha256(image),
     descriptionSha256: sha256(new TextEncoder().encode(description)),
+    twitter: o.signedTwitter !== undefined ? o.signedTwitter : (o.twitter ?? null),
     nonce,
     issuedAt,
   });
@@ -60,6 +65,7 @@ function signedBody(o: BodyOptions = {}) {
     tokenName: name,
     tokenSymbol: symbol,
     description,
+    ...(o.twitter !== undefined ? { twitter: o.twitter } : {}),
     tokenLogo: dataUrl(o.type ?? 'image/png', image),
     userWallet: user.publicKey.toBase58(),
     firstBuyLamports: firstBuy,
@@ -185,6 +191,53 @@ describe('POST /api/upload handler', () => {
     );
     expect(build.firstBuyLamports).toBe(BigInt(500_000_000));
     expect(build.wallet).toBe(user.publicKey.toBase58());
+  });
+
+  it('sends no X link to the upload endpoint when the coin has none', async () => {
+    const { handle, uploadClient } = setup();
+    const res = await call(handle, signedBody());
+    expect(res.statusCode).toBe(200);
+    const upload = uploadClient.uploadCoin.mock.calls[0]?.[0] as any;
+    expect(upload.coin).not.toHaveProperty('twitter');
+  });
+
+  it('passes a signed canonical X link to the upload endpoint', async () => {
+    const { handle, uploadClient } = setup();
+    const res = await call(handle, signedBody({ twitter: 'https://x.com/moon_coin' }));
+    expect(res.statusCode).toBe(200);
+    const upload = uploadClient.uploadCoin.mock.calls[0]?.[0] as any;
+    expect(upload.coin).toEqual({
+      name: 'Moon Coin',
+      symbol: 'MOON',
+      description: 'To the moon',
+      twitter: 'https://x.com/moon_coin',
+    });
+  });
+
+  it('refuses an X link that is invalid, not canonical or not the one signed', async () => {
+    for (const options of [
+      { twitter: 'https://evil.example/moon' },
+      { twitter: 'https://x.com/moon_coin/status/1' },
+      { twitter: 'moon_coin' },
+      { twitter: 'https://twitter.com/moon_coin' },
+      { twitter: '' },
+    ]) {
+      const { handle, uploadClient } = setup();
+      const res = await call(handle, signedBody(options));
+      expect(res.statusCode).toBe(400);
+      expect(uploadClient.uploadCoin).not.toHaveBeenCalled();
+    }
+    // Signed without the link, sent with it (or the other way round): the signature fails.
+    for (const options of [
+      { twitter: 'https://x.com/moon_coin', signedTwitter: null },
+      { twitter: 'https://x.com/moon_coin', signedTwitter: 'https://x.com/other' },
+      { signedTwitter: 'https://x.com/moon_coin' },
+    ]) {
+      const { handle, uploadClient } = setup();
+      const res = await call(handle, signedBody(options));
+      expect(res.statusCode).toBe(401);
+      expect(uploadClient.uploadCoin).not.toHaveBeenCalled();
+    }
   });
 
   it('never takes the mint from the request', async () => {

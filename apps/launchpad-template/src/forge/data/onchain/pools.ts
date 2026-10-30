@@ -7,6 +7,7 @@ import {
 } from '@forge/core';
 import type { GetGemsTokenListResponse, Pool } from '@/components/Explore/types';
 import { WSOL_MINT } from '../../tx/programs';
+import { canonicalXUrl } from '../../socials';
 import type { MintInfo, TokenMetadata } from './accounts';
 
 /**
@@ -45,10 +46,15 @@ export interface SlotClock {
   atMs: number;
 }
 
-/** Off-chain metadata JSON fields the fallback shows (FORGE writes `{ name, symbol, description, image }`). */
+/**
+ * Off-chain metadata JSON fields the fallback shows (FORGE writes `{ name, symbol, description,
+ * image }`, plus `twitter` for a coin with an X link).
+ */
 export interface OffchainMetadata {
   image?: string;
   description?: string;
+  /** Canonical X link (`https://x.com/<handle>`), checked when the JSON was read. */
+  twitter?: string;
 }
 
 /** Everything one coin entry is built from. */
@@ -126,6 +132,7 @@ export function toPool(coin: OnchainCoin, ctx: PoolContext): Pool {
       name: metadata?.name || shortMint(id),
       symbol: metadata?.symbol || shortMint(id),
       icon: offchain?.image,
+      twitter: canonicalXUrl(offchain?.twitter) ?? undefined,
       decimals: mint.decimals,
       dev: poolState.creator.toBase58(),
       circSupply: supply,

@@ -9,6 +9,9 @@ import { z } from 'zod';
  *   PUT  {ticket.image.uploadUrl} (to R2, write-once)
  *   POST /api/launchpads/{id}/uploads/{uploadId}/complete  { mint } -> UploadReceipt
  *
+ * `coin.twitter` (optional, `X_URL_PATTERN`) is backward compatible: a site without it sends the
+ * same body, signs the same message and gets the same metadata bytes as before.
+ *
  * `{id}` is the launchpad slug (what client sites send) or its uuid. Both POSTs must carry the
  * launchpad's server token in `X-Forge-Relay-Token` (the same per-launchpad token as the RPC
  * relay's server tier, rpc/server-token.ts; the client site holds it as the server-only variable
@@ -60,6 +63,13 @@ const noForbidden = (value: string) => !FORBIDDEN_CHARS.test(value);
 const noForbiddenMultiline = (value: string) =>
   !FORBIDDEN_CHARS.test(value.replace(/[\n\r\t]/g, ' '));
 
+/**
+ * The X link of a coin, canonical form only: `https://x.com/<handle>`, handle 1 to 15 letters,
+ * digits or `_` (the client site normalises what the visitor typed, `src/forge/socials.ts`, and
+ * the wallet signs it). Written to the metadata JSON as `"twitter"`.
+ */
+export const X_URL_PATTERN = /^https:\/\/x\.com\/[A-Za-z0-9_]{1,15}$/;
+
 const Hex64 = z.string().regex(/^[0-9a-f]{64}$/);
 const Base58Address = z.string().regex(/^[1-9A-HJ-NP-Za-km-z]{32,44}$/);
 const U64_MAX = (BigInt(1) << BigInt(64)) - BigInt(1);
@@ -74,6 +84,8 @@ export const UploadRequest = z
         name: z.string().min(1).max(32).refine(noForbidden, 'unsupported characters'),
         symbol: z.string().min(1).max(10).refine(noForbidden, 'unsupported characters'),
         description: z.string().max(500).refine(noForbiddenMultiline, 'unsupported characters'),
+        /** Optional X link, canonical only; client sites leave it out when there is none. */
+        twitter: z.string().regex(X_URL_PATTERN, 'not an https://x.com/<handle> link').optional(),
       })
       .strict(),
     firstBuyLamports: z

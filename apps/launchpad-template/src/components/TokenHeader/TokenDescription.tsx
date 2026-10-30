@@ -6,6 +6,8 @@ import { cn } from '@/lib/utils';
 import { useQuery } from '@tanstack/react-query';
 import { ApeQueries } from '../Explore/queries';
 import { content } from '@/content';
+import { CoinXLink, hasCoinXLink } from '@/forge/CoinXLink';
+import XIcon from '@/icons/XIcon';
 
 type TokenDescriptionProps = {
   className?: string;
@@ -23,7 +25,9 @@ export const TokenDescription: React.FC<TokenDescriptionProps> = ({ className })
   const { data: baseAsset } = useTokenInfo((data) => data.baseAsset);
   const { data, status } = useTokenDescription();
 
-  if (status === 'loading' || !data?.description) {
+  const description = status === 'loading' ? undefined : data?.description;
+  const hasX = hasCoinXLink(baseAsset?.twitter);
+  if (!description && !hasX) {
     return null;
   }
 
@@ -31,7 +35,20 @@ export const TokenDescription: React.FC<TokenDescriptionProps> = ({ className })
     <div className={cn('flex flex-col gap-2 p-2.5', styles.animateIn, className)}>
       <h2 className="text-sm font-semibold">About {baseAsset?.name}</h2>
 
-      <Description description={data.description} />
+      {description && <Description description={description} />}
+
+      <CoinXLink
+        url={baseAsset?.twitter}
+        title={content.strings.coinOnX}
+        className="inline-flex items-center gap-1.5 self-start text-xs font-medium text-neutral-400 hover:text-primary"
+      >
+        {(handle) => (
+          <>
+            <XIcon aria-hidden="true" width={12} height={12} />
+            <span>@{handle}</span>
+          </>
+        )}
+      </CoinXLink>
     </div>
   );
 };
