@@ -52,12 +52,18 @@ export default function LibraryShowcase() {
   // wrapper: the palette is mirrored there too, and removed when the showcase unmounts.
   useEffect(() => {
     const root = document.documentElement.style;
-    const entries = Object.entries(themeStyle) as [string, string][];
+    const chosen = PALETTES[palette] ?? PALETTES[0];
+    const entries: [string, string][] = [
+      ['--primary', chosen.primary],
+      ['--accent', chosen.accent],
+      ['--color-primary', `rgb(${chosen.primary})`],
+      ['--color-accent', `rgb(${chosen.accent})`],
+    ];
     for (const [name, value] of entries) root.setProperty(name, value);
     return () => {
       for (const [name] of entries) root.removeProperty(name);
     };
-  }, [palette]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [palette]);
 
   return (
     <div className="dark min-h-screen bg-background text-foreground" style={themeStyle}>
