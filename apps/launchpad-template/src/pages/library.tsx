@@ -36,7 +36,8 @@ export default function LibraryShowcase() {
   );
   const shown = LIBRARY.filter(
     (entry) =>
-      (family === 'all' || entry.family === family) && (mood === 'all' || entry.moods.includes(mood)),
+      (family === 'all' || entry.family === family) &&
+      (mood === 'all' || entry.moods.includes(mood)),
   );
   const colors = PALETTES[palette] ?? PALETTES[0];
   // `--color-*` are resolved where they are declared (:root), so they are overridden here too.
@@ -97,7 +98,9 @@ export default function LibraryShowcase() {
                 title={p.name}
                 onClick={() => setPalette(i)}
                 className="h-6 w-10 rounded-full border-2 border-transparent aria-pressed:border-[var(--color-text)]"
-                style={{ background: `linear-gradient(90deg, rgb(${p.primary}) 50%, rgb(${p.accent}) 50%)` }}
+                style={{
+                  background: `linear-gradient(90deg, rgb(${p.primary}) 50%, rgb(${p.accent}) 50%)`,
+                }}
               />
             ))}
           </div>

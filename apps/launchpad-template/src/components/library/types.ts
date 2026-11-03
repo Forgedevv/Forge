@@ -21,14 +21,7 @@ export type LibraryWeight = 'light' | 'medium' | 'heavy';
 
 /** Moods used to pick effects that fit a brief. */
 export type LibraryMood =
-  | 'playful'
-  | 'premium'
-  | 'tech'
-  | 'calm'
-  | 'bold'
-  | 'retro'
-  | 'organic'
-  | 'dark';
+  'playful' | 'premium' | 'tech' | 'calm' | 'bold' | 'retro' | 'organic' | 'dark';
 
 export interface LibraryEntry {
   /** Stable id, kebab-case, unique across the library. */

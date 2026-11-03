@@ -58,7 +58,10 @@ export function useThemeColors(): ThemeColors {
   useEffect(() => {
     setColors(readColors());
     const observer = new MutationObserver(() => setColors(readColors()));
-    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'style'] });
+    observer.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ['class', 'style'],
+    });
     return () => observer.disconnect();
   }, []);
   return colors;

@@ -19,7 +19,13 @@ interface EffectFrameProps {
  * only when WebGL works, for WebGL effects) and tells it when it is off screen. Purely decorative:
  * hidden from assistive technology and never catches pointer events unless the effect asks for it.
  */
-export function EffectFrame({ children, fallback, webgl = false, className, style }: EffectFrameProps) {
+export function EffectFrame({
+  children,
+  fallback,
+  webgl = false,
+  className,
+  style,
+}: EffectFrameProps) {
   const ref = useRef<HTMLDivElement>(null);
   const inView = useInView(ref);
   const [ready, setReady] = useState(false);
@@ -27,7 +33,12 @@ export function EffectFrame({ children, fallback, webgl = false, className, styl
     setReady(webgl ? canRunWebGL() : true);
   }, [webgl]);
   return (
-    <div ref={ref} aria-hidden="true" className={cn('relative h-full w-full overflow-hidden', className)} style={style}>
+    <div
+      ref={ref}
+      aria-hidden="true"
+      className={cn('relative h-full w-full overflow-hidden', className)}
+      style={style}
+    >
       {ready ? children({ inView }) : fallback}
     </div>
   );
