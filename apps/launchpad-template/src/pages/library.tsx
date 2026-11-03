@@ -1,5 +1,5 @@
 import Head from 'next/head';
-import { useMemo, useState, type CSSProperties } from 'react';
+import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { LIBRARY } from '@/components/library/registry';
 import {
   FAMILY_LABELS,
@@ -47,6 +47,17 @@ export default function LibraryShowcase() {
     '--color-primary': `rgb(${colors.primary})`,
     '--color-accent': `rgb(${colors.accent})`,
   } as CSSProperties;
+
+  // Canvas and WebGL effects read the colours on the document root (useThemeColors), not on this
+  // wrapper: the palette is mirrored there too, and removed when the showcase unmounts.
+  useEffect(() => {
+    const root = document.documentElement.style;
+    const entries = Object.entries(themeStyle) as [string, string][];
+    for (const [name, value] of entries) root.setProperty(name, value);
+    return () => {
+      for (const [name] of entries) root.removeProperty(name);
+    };
+  }, [palette]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="dark min-h-screen bg-background text-foreground" style={themeStyle}>

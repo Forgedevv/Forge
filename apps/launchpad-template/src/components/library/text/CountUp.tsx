@@ -52,7 +52,12 @@ export function CountUp({
       el.textContent = finalText;
       return;
     }
-    if (!entered) return;
+    if (!entered) {
+      // The server and the browser can ship different number data (Node prints "$0" where Chrome
+      // prints "$0.0"): the browser rewrites the start string with its own format.
+      el.textContent = startText;
+      return;
+    }
     let frame = 0;
     const start = performance.now();
     const origin = current.current;
@@ -66,16 +71,24 @@ export function CountUp({
     };
     frame = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(frame);
-  }, [calm, entered, duration, formatter, value, prefix, suffix, finalText]);
+  }, [calm, entered, duration, formatter, value, prefix, suffix, finalText, startText]);
 
   return (
     <span ref={host} className={cn('fx-count-up inline-grid tabular-nums', className)}>
-      <span className="sr-only">{finalText}</span>
-      {/* Both layers share one grid cell: the invisible final string holds the width. */}
-      <span aria-hidden="true" className="invisible [grid-area:1/1]">
+      {/* suppressHydrationWarning: see the number data note in the effect above. */}
+      <span className="sr-only" suppressHydrationWarning>
         {finalText}
       </span>
-      <span ref={live} aria-hidden="true" className="text-right [grid-area:1/1]">
+      {/* Both layers share one grid cell: the invisible final string holds the width. */}
+      <span aria-hidden="true" className="invisible [grid-area:1/1]" suppressHydrationWarning>
+        {finalText}
+      </span>
+      <span
+        ref={live}
+        aria-hidden="true"
+        className="text-right [grid-area:1/1]"
+        suppressHydrationWarning
+      >
         {startText}
       </span>
     </span>
