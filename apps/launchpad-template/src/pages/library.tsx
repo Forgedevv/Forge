@@ -68,7 +68,7 @@ export default function LibraryShowcase() {
                 type="button"
                 aria-pressed={family === f}
                 onClick={() => setFamily(f)}
-                className="rounded-full border border-[var(--color-border)] px-3 py-1 aria-pressed:bg-[var(--color-primary)] aria-pressed:text-black"
+                className="rounded-full border border-[var(--color-border)] px-3 py-1 aria-pressed:border-[var(--color-primary)] aria-pressed:text-[var(--color-primary)]"
               >
                 {f === 'all' ? 'All' : FAMILY_LABELS[f]}
               </button>

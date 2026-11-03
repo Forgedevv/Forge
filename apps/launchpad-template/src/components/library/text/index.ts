@@ -1,4 +1,177 @@
 import type { LibraryEntry } from '../types';
+import {
+  BlurWordsDemo,
+  CountUpDemo,
+  FlipTextDemo,
+  MarkerHighlightDemo,
+  MaskLinesDemo,
+  OdometerDemo,
+  RotatingWordsDemo,
+  ScrambleTextDemo,
+  ScrollWordsDemo,
+  ShimmerTextDemo,
+  SplitRevealDemo,
+  TypewriterTextDemo,
+} from './demos';
+
+const path = (name: string) => `@/components/library/text/${name}`;
 
 /** Effects of the `text` family, listed in the showcase and in the catalogue the builder reads. */
-export const entries: LibraryEntry[] = [];
+export const entries: LibraryEntry[] = [
+  {
+    id: 'split-reveal',
+    name: 'Split reveal',
+    family: 'text',
+    description:
+      'Hero headline whose letters or words slide up out of masks (or flip up) one after the other when it enters the screen; for the hero title and big section titles.',
+    moods: ['premium', 'bold', 'tech'],
+    weight: 'medium',
+    importPath: path('SplitReveal'),
+    exportName: 'SplitReveal',
+    Demo: SplitRevealDemo,
+    demoHeight: 320,
+  },
+  {
+    id: 'blur-words',
+    name: 'Blur-in words',
+    family: 'text',
+    description:
+      'Words rise and come into focus one by one, like a camera pulling focus; for a hero subtitle, a manifesto line or a section intro.',
+    moods: ['premium', 'calm', 'dark'],
+    weight: 'medium',
+    importPath: path('BlurWords'),
+    exportName: 'BlurWords',
+    Demo: BlurWordsDemo,
+    demoHeight: 300,
+  },
+  {
+    id: 'scroll-words',
+    name: 'Scroll-lit paragraph',
+    family: 'text',
+    description:
+      'A mission paragraph whose words light up from dim and blurred to full colour as the visitor scrolls through it; between two sections.',
+    moods: ['premium', 'calm', 'dark'],
+    weight: 'medium',
+    importPath: path('ScrollWords'),
+    exportName: 'ScrollWords',
+    Demo: ScrollWordsDemo,
+    demoHeight: 360,
+  },
+  {
+    id: 'scramble-text',
+    name: 'Scramble decode',
+    family: 'text',
+    description:
+      'Letters cycle through random glyphs and lock in from left to right, like a terminal decoding; for tech labels, a contract teaser or a "$COIN IS LIVE" headline.',
+    moods: ['tech', 'dark', 'retro'],
+    weight: 'medium',
+    importPath: path('ScrambleText'),
+    exportName: 'ScrambleText',
+    Demo: ScrambleTextDemo,
+    demoHeight: 300,
+  },
+  {
+    id: 'shimmer-text',
+    name: 'Shimmer and gradient text',
+    family: 'text',
+    description:
+      'Pure CSS light inside the letters: a bright band sweeping across muted status text, or the brand gradient flowing through a headline word.',
+    moods: ['premium', 'playful', 'tech'],
+    weight: 'light',
+    importPath: path('ShimmerText'),
+    exportName: 'ShimmerText',
+    Demo: ShimmerTextDemo,
+    demoHeight: 280,
+  },
+  {
+    id: 'flip-text',
+    name: 'Flip label',
+    family: 'text',
+    description:
+      'Button and link labels whose letters roll over like little cubes on hover or focus, revealing a coloured face; pure CSS, for calls to action and navigation.',
+    moods: ['playful', 'bold', 'tech'],
+    weight: 'light',
+    importPath: path('FlipText'),
+    exportName: 'FlipText',
+    Demo: FlipTextDemo,
+    demoHeight: 220,
+  },
+  {
+    id: 'odometer',
+    name: 'Odometer counter',
+    family: 'text',
+    description:
+      'Mechanical digit columns that roll right to left to each new value with a small overshoot; for headline stats and live figures such as coins launched or volume.',
+    moods: ['tech', 'premium', 'retro'],
+    weight: 'light',
+    importPath: path('Odometer'),
+    exportName: 'Odometer',
+    Demo: OdometerDemo,
+    demoHeight: 260,
+  },
+  {
+    id: 'count-up',
+    name: 'Count-up number',
+    family: 'text',
+    description:
+      'A number that counts up fast then settles softly when it enters the screen, in any Intl format ("$12.4M", "48,920+"); for the stats strip of a launchpad.',
+    moods: ['bold', 'premium', 'calm'],
+    weight: 'medium',
+    importPath: path('CountUp'),
+    exportName: 'CountUp',
+    Demo: CountUpDemo,
+    demoHeight: 260,
+  },
+  {
+    id: 'rotating-words',
+    name: 'Rotating words',
+    family: 'text',
+    description:
+      'One slot of a headline that cycles words with a slide-up swap in the brand gradient: "Launch your [meme coin / community / next big idea]".',
+    moods: ['playful', 'bold'],
+    weight: 'light',
+    importPath: path('RotatingWords'),
+    exportName: 'RotatingWords',
+    Demo: RotatingWordsDemo,
+    demoHeight: 240,
+  },
+  {
+    id: 'typewriter-text',
+    name: 'Typewriter',
+    family: 'text',
+    description:
+      'Phrases typed character by character behind a blinking caret, held, erased and replaced; for a terminal-style launch status or a retro, tech-flavoured hero.',
+    moods: ['tech', 'retro', 'dark'],
+    weight: 'light',
+    importPath: path('TypewriterText'),
+    exportName: 'TypewriterText',
+    Demo: TypewriterTextDemo,
+    demoHeight: 260,
+  },
+  {
+    id: 'mask-lines',
+    name: 'Masked lines',
+    family: 'text',
+    description:
+      'A multi-line title whose lines slide up from behind masks or are uncovered like a curtain, one after the other; the editorial way to open a section.',
+    moods: ['premium', 'calm', 'bold'],
+    weight: 'medium',
+    importPath: path('MaskLines'),
+    exportName: 'MaskLines',
+    Demo: MaskLinesDemo,
+    demoHeight: 300,
+  },
+  {
+    id: 'marker-highlight',
+    name: 'Marker highlight',
+    family: 'text',
+    description:
+      'Key words get a highlighter stroke, a self-drawing underline or a hand-drawn circle when they enter the screen; to stress the promise of a section.',
+    moods: ['playful', 'organic', 'calm'],
+    weight: 'light',
+    importPath: path('MarkerHighlight'),
+    exportName: 'MarkerHighlight',
+    Demo: MarkerHighlightDemo,
+    demoHeight: 260,
+  },
+];
