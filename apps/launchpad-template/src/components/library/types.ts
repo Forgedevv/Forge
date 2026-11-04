@@ -32,7 +32,7 @@ export interface LibraryEntry {
   description: string;
   moods: readonly LibraryMood[];
   weight: LibraryWeight;
-  /** Import path for site code, for example `@/components/library/backgrounds/SilkVeil`. */
+  /** Import path for site code, for example `@/components/library/backgrounds/DotGrid`. */
   importPath: string;
   /** Exported component name. */
   exportName: string;

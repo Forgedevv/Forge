@@ -15,7 +15,8 @@ vi.mock('@/components/library/shared/useReducedMotion', () => ({
 
 import { entries } from '@/components/library/backgrounds';
 import { DotGrid } from '@/components/library/backgrounds/DotGrid';
-import { SilkVeil } from '@/components/library/backgrounds/SilkVeil';
+import { fragmentShader } from '@/components/library/backgrounds/lib/glsl';
+import { ShaderBackground } from '@/components/library/backgrounds/lib/ShaderBackground';
 import {
   isDarkColor,
   mixRgb,
@@ -144,7 +145,7 @@ describe('backgrounds catalogue', () => {
   it('has unique kebab-case ids and complete entries', () => {
     const ids = entries.map((e) => e.id);
     expect(new Set(ids).size).toBe(ids.length);
-    expect(entries.length).toBeGreaterThanOrEqual(10);
+    expect(entries.length).toBeGreaterThanOrEqual(5);
     for (const entry of entries) {
       expect(entry.id).toMatch(/^[a-z0-9]+(-[a-z0-9]+)*$/);
       expect(entry.family).toBe('backgrounds');
@@ -225,12 +226,18 @@ describe('backgrounds demos', () => {
   });
 });
 
+/** A minimal shader background, standing in for any WebGL effect built on `ShaderBackground`. */
+const TEST_FRAGMENT = fragmentShader('void main() { gl_FragColor = vec4(1.0); }');
+function TestShader() {
+  return <ShaderBackground fragment={TEST_FRAGMENT} fallback={<p>static look</p>} />;
+}
+
 describe('motion and visibility', () => {
   it('draws a single still frame under reduced motion, with no animation loop', () => {
     h.reduced = true;
     const raf = vi.spyOn(window, 'requestAnimationFrame');
     webgl = fakeWebGL();
-    render(<SilkVeil />);
+    render(<TestShader />);
     expect(webgl.calls.draws).toBeGreaterThan(0);
     ctx2d = fake2d();
     render(<DotGrid />);
@@ -267,7 +274,7 @@ describe('motion and visibility', () => {
   it('follows a theme change in the still frame', async () => {
     h.reduced = true;
     webgl = fakeWebGL();
-    render(<SilkVeil />);
+    render(<TestShader />);
     const before = webgl.calls.draws;
     await act(async () => {
       document.documentElement.style.setProperty('--color-primary', 'rgb(10 200 30)');
