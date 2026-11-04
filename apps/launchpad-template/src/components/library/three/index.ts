@@ -32,19 +32,6 @@ export const entries: LibraryEntry[] = [
     demoHeight: 380,
   },
   {
-    id: 'orb-mascot',
-    name: 'Orb mascot',
-    family: 'three',
-    description:
-      'A friendly glossy orb with glowing eyes that follow the pointer and blink, bobbing with orbiting sparks; a playful hero companion or empty-state character.',
-    moods: ['playful', 'bold', 'premium'],
-    weight: 'heavy',
-    importPath: `${PATH}/OrbMascot`,
-    exportName: 'OrbMascot',
-    Demo: demos.OrbMascotDemo,
-    demoHeight: 380,
-  },
-  {
     id: 'glossy-sculpture',
     name: 'Glossy sculpture',
     family: 'three',

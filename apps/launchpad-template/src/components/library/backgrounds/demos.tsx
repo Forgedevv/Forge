@@ -1,7 +1,5 @@
 import { AsciiMonogram } from './AsciiMonogram';
-import { Aurora } from './Aurora';
 import { ConicGlow } from './ConicGlow';
-import { ContourField } from './ContourField';
 import { DotGrid } from './DotGrid';
 import { FilamentStrands } from './FilamentStrands';
 import { FloatingLines } from './FloatingLines';
@@ -9,8 +7,6 @@ import { GrainMesh } from './GrainMesh';
 import { LaserBeam } from './LaserBeam';
 import { DemoStage } from './lib/DemoStage';
 import { LightRays } from './LightRays';
-import { LiquidBlob } from './LiquidBlob';
-import { NoiseGradient } from './NoiseGradient';
 import { PerspectiveGrid } from './PerspectiveGrid';
 import { SilkVeil } from './SilkVeil';
 import { WovenTorus } from './WovenTorus';
@@ -45,30 +41,6 @@ export function FloatingLinesDemo() {
   return (
     <DemoStage>
       <FloatingLines />
-    </DemoStage>
-  );
-}
-
-export function AuroraDemo() {
-  return (
-    <DemoStage align="bottom">
-      <Aurora height={0.62} />
-    </DemoStage>
-  );
-}
-
-export function LiquidBlobDemo() {
-  return (
-    <DemoStage align="left">
-      <LiquidBlob x={0.72} />
-    </DemoStage>
-  );
-}
-
-export function ContourFieldDemo() {
-  return (
-    <DemoStage align="bottom">
-      <ContourField />
     </DemoStage>
   );
 }
@@ -111,14 +83,6 @@ export function WovenTorusDemo() {
   return (
     <DemoStage align="left">
       <WovenTorus x={0.72} />
-    </DemoStage>
-  );
-}
-
-export function NoiseGradientDemo() {
-  return (
-    <DemoStage>
-      <NoiseGradient />
     </DemoStage>
   );
 }

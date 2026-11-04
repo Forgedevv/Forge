@@ -2,7 +2,6 @@ import { DemoStage } from '../backgrounds/lib/DemoStage';
 import { CoinRain } from './CoinRain';
 import { FloatingCoin } from './FloatingCoin';
 import { GlossySculpture } from './GlossySculpture';
-import { OrbMascot } from './OrbMascot';
 import { ParticleBlob } from './ParticleBlob';
 
 /** Showcase demos of the 3D family: each scene beside a sample launchpad hero. */
@@ -24,16 +23,6 @@ export function ParticleBlobDemo() {
     <DemoStage align="left" title="A coin with a pulse">
       <div style={RIGHT_HALF}>
         <ParticleBlob />
-      </div>
-    </DemoStage>
-  );
-}
-
-export function OrbMascotDemo() {
-  return (
-    <DemoStage align="left" title="Say hi to Orbi">
-      <div style={RIGHT_HALF}>
-        <OrbMascot />
       </div>
     </DemoStage>
   );
