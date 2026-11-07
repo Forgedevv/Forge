@@ -43,6 +43,7 @@ const READY: Record<string, string> = {
 const MAINNET: Record<string, string> = {
   ...READY,
   NODE_ENV: 'production',
+  FORGE_TRUSTED_PROXY: 'cloudflare',
   SOLANA_CLUSTER: 'mainnet-beta',
   NEXT_PUBLIC_SOLANA_CLUSTER: 'mainnet-beta',
   RPC_URL: `https://mainnet.helius-rpc.com/?api-key=${SECRET_MARK}`,
@@ -118,6 +119,17 @@ describe('checkServerReadiness', () => {
       ok: false,
       problems: ['FORGE_BETA_ALLOWLIST is empty while the beta is on'],
     });
+  });
+
+  it('needs the proxy in front of the app named in production', () => {
+    stubAll({ ...MAINNET, FORGE_TRUSTED_PROXY: '' });
+    expect(checkServerReadiness()).toMatchObject({
+      ok: false,
+      code: 'config_invalid',
+      problems: [expect.stringContaining('FORGE_TRUSTED_PROXY is required in production')],
+    });
+    stubAll({ ...MAINNET, FORGE_TRUSTED_PROXY: 'vercel' });
+    expect(checkServerReadiness()).toMatchObject({ ok: true });
   });
 
   it('reports a browser bundle built for another cluster', () => {

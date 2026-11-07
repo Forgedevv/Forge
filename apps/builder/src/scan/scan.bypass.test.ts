@@ -86,7 +86,7 @@ const legit: Record<string, string> = {
   'scroll to top': `export const top = () => window.scrollTo({ top: 0, behavior: 'smooth' });`,
   'reading location': `export const here = () => window.location.href + location.search;`,
   'local state named open and location': `import { useState } from 'react'; export function M({ location }: { location: string }) { const [open, setOpen] = useState(false); return <div onClick={() => setOpen(!open)}>{location}</div>; }`,
-  'next/script with an allowed host': `import Script from 'next/script'; export const A = () => <Script src="https://va.vercel-scripts.com/v1/script.js" strategy="afterInteractive" />;`,
+  'next/script with an allowed host': `import Script from 'next/script'; export const A = () => <Script src="https://plugin.jup.ag/plugin-v1.js" strategy="afterInteractive" />;`,
   'type-only imports': `import type { ReactNode } from 'react'; export type P = { children: ReactNode; onClick?: Function };`,
   'local CSS in a <style> element': `export const C = () => <style>{'.hero { background: url(/images/hero.webp); }'}</style>;`,
   'framer-motion style element': `import { motion } from 'framer-motion'; export const C = () => <motion.div animate={{ opacity: 1 }} />;`,
