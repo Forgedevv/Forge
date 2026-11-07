@@ -8,6 +8,9 @@ import { analyzeCode } from './code.js';
 import { resolveConfig } from './config.js';
 import { added, scan } from './test-helpers.js';
 
+/** Scanning every file of the template takes seconds on a slow CI runner. */
+const SCAN_TEMPLATE_TIMEOUT_MS = 60_000;
+
 /**
  * Regression (wave 5 review, reproduced): a free-zone page could write raw HTML to the response
  * (`res.end('<script>...')`) from `getServerSideProps` or `getInitialProps`, bypassing every JSX
@@ -154,19 +157,23 @@ function codeFiles(dir: string): string[] {
 }
 
 describe('the template free zones are not affected', () => {
-  it('no template page or component uses the server response', () => {
-    const config = resolveConfig({});
-    const files = FREE_ZONES.flatMap((z) => codeFiles(join(TEMPLATE_ROOT, z)))
-      .map((f) => relative(TEMPLATE_ROOT, f).replace(/\\/g, '/'))
-      .filter((p) => !p.startsWith('src/pages/api/'));
-    expect(files.length).toBeGreaterThan(10);
-    const offending: string[] = [];
-    for (const path of files) {
-      const text = readFileSync(join(TEMPLATE_ROOT, path), 'utf8');
-      for (const f of analyzeCode(path, text, config)) {
-        if (f.rule === 'server-response') offending.push(`${path}:${f.line} ${f.reason}`);
+  it(
+    'no template page or component uses the server response',
+    { timeout: SCAN_TEMPLATE_TIMEOUT_MS },
+    () => {
+      const config = resolveConfig({});
+      const files = FREE_ZONES.flatMap((z) => codeFiles(join(TEMPLATE_ROOT, z)))
+        .map((f) => relative(TEMPLATE_ROOT, f).replace(/\\/g, '/'))
+        .filter((p) => !p.startsWith('src/pages/api/'));
+      expect(files.length).toBeGreaterThan(10);
+      const offending: string[] = [];
+      for (const path of files) {
+        const text = readFileSync(join(TEMPLATE_ROOT, path), 'utf8');
+        for (const f of analyzeCode(path, text, config)) {
+          if (f.rule === 'server-response') offending.push(`${path}:${f.line} ${f.reason}`);
+        }
       }
-    }
-    expect(offending).toEqual([]);
-  });
+      expect(offending).toEqual([]);
+    },
+  );
 });
