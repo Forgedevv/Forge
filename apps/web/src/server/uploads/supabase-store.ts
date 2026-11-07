@@ -55,6 +55,8 @@ const TicketRow = z.object({
   coin_name: z.string(),
   coin_symbol: z.string(),
   coin_description: z.string(),
+  /** Migration 0017; absent on a database where it is not applied yet. */
+  coin_twitter: z.string().nullable().optional(),
   first_buy_lamports: z.string(),
   status: z.enum(['issued', 'completed', 'rejected', 'expired']),
   rejection: z.string().nullable(),
@@ -92,6 +94,7 @@ export function parseTicketRow(row: unknown, operation = 'parse ticket'): Ticket
     coinName: r.coin_name,
     coinSymbol: r.coin_symbol,
     coinDescription: r.coin_description,
+    coinTwitter: r.coin_twitter ?? null,
     firstBuyLamports: r.first_buy_lamports,
     status: r.status,
     rejection: r.rejection,
@@ -121,6 +124,8 @@ export function ticketToRow(t: TicketRecord): Record<string, unknown> {
     coin_name: t.coinName,
     coin_symbol: t.coinSymbol,
     coin_description: t.coinDescription,
+    // Sent only when set, so tickets without an X link keep working before migration 0017.
+    ...(t.coinTwitter !== null ? { coin_twitter: t.coinTwitter } : {}),
     first_buy_lamports: t.firstBuyLamports,
     status: t.status,
     rejection: t.rejection,

@@ -1,5 +1,6 @@
 import { MAX_FIRST_BUY_SOL, METADATA_LIMITS } from '@forge/core';
 import { parseSolToLamports } from './amounts';
+import { parseXLink } from '../socials';
 
 /**
  * LOCKED ZONE. Client-side validation of the coin creation form. Pure functions: the same rules
@@ -10,7 +11,8 @@ import { parseSolToLamports } from './amounts';
  * symbol limits are counted in UTF-8 BYTES, exactly like core's `assertLaunchMetadata`, so a name
  * with accents or emoji is refused here with a clear message instead of failing on the server.
  * The description is not written on-chain: it goes into the metadata JSON, whose limit (FORGE
- * upload contract, `upload-client.ts`) counts JavaScript string length.
+ * upload contract, `upload-client.ts`) counts JavaScript string length. The optional X link is
+ * normalised to `https://x.com/<handle>` (`socials.ts`) and also goes into the metadata JSON.
  */
 
 export const NAME_MIN = 3;
@@ -36,6 +38,8 @@ export interface CreateCoinInput {
   image: ImageLike | null;
   /** Decimal SOL string typed by the user. Empty means "no first buy". */
   firstBuySol: string;
+  /** X handle or profile link typed by the user. Empty or absent means "no link". */
+  twitter?: string;
 }
 
 export interface ImageLike {
@@ -44,7 +48,8 @@ export interface ImageLike {
   size: number;
 }
 
-export type CreateCoinField = 'name' | 'symbol' | 'description' | 'image' | 'firstBuySol';
+export type CreateCoinField =
+  'name' | 'symbol' | 'description' | 'twitter' | 'image' | 'firstBuySol';
 export type CreateCoinErrors = Partial<Record<CreateCoinField, string>>;
 
 /** Fields in the order the form shows them: the first invalid one is focused on submit. */
@@ -53,6 +58,7 @@ export const CREATE_COIN_FIELD_ORDER: readonly CreateCoinField[] = [
   'name',
   'symbol',
   'description',
+  'twitter',
   'firstBuySol',
 ];
 
@@ -60,6 +66,8 @@ export interface ValidatedCoin {
   name: string;
   symbol: string;
   description: string;
+  /** `https://x.com/<handle>`, or null/absent for no link. */
+  twitter?: string | null;
   firstBuyLamports: bigint;
 }
 
@@ -72,6 +80,8 @@ export const VALIDATION_TEXT = {
   symbolChars: 'Symbol may only contain letters A to Z and digits.',
   descriptionLong: `Description must be at most ${DESCRIPTION_MAX} characters.`,
   descriptionChars: 'Description contains unsupported characters.',
+  twitterInvalid:
+    'Enter an X handle (letters, digits or _, up to 15) or a profile link like https://x.com/yourcoin.',
   imageMissing: 'A coin image is required.',
   imageType: 'Image must be a PNG, JPEG, WebP or GIF file.',
   imageEmpty: 'The selected image is empty.',
@@ -140,6 +150,11 @@ export function validateCreateCoin(input: CreateCoinInput): ValidationResult {
     errors.description = VALIDATION_TEXT.descriptionChars;
   }
 
+  let twitter: string | null = null;
+  const x = parseXLink(input.twitter ?? '');
+  if (x.ok) twitter = x.url;
+  else errors.twitter = VALIDATION_TEXT.twitterInvalid;
+
   const imageError = validateImageFile(input.image);
   if (imageError) errors.image = imageError;
 
@@ -157,7 +172,7 @@ export function validateCreateCoin(input: CreateCoinInput): ValidationResult {
   }
 
   if (Object.keys(errors).length > 0) return { ok: false, errors };
-  return { ok: true, value: { name, symbol, description, firstBuyLamports } };
+  return { ok: true, value: { name, symbol, description, twitter, firstBuyLamports } };
 }
 
 /** The invalid fields of `errors`, in form order. */

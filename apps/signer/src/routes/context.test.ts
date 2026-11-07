@@ -56,6 +56,17 @@ describe('assertMetadataTemplate (SIGNER_COIN_METADATA_URL at startup)', () => {
     }
   });
 
+  it('refuses an ephemeral quick tunnel host (coin metadata URIs are immutable)', () => {
+    expect(() =>
+      assertMetadataTemplate(
+        'https://shadow-fortune-second-beast.trycloudflare.com/api/coin-meta/{slug}',
+      ),
+    ).toThrow(/stable host, not an ephemeral tunnel/);
+    expect(() =>
+      assertMetadataTemplate('https://app.forgelaunch.dev/api/coin-meta/{slug}'),
+    ).not.toThrow();
+  });
+
   it('keeps the existing refusals', () => {
     for (const bad of [
       '',

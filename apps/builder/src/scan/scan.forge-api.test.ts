@@ -181,6 +181,8 @@ describe('public FORGE components: JSX only, listed props only', () => {
     'children on the creation form': `import CreateCoin from '@/forge/CreateCoin'; export const P = () => <CreateCoin><span>x</span></CreateCoin>;`,
     'an image src on the token icon': `import { TrenchesTokenIconImage } from '@/forge/token-icon'; export const P = ({ u }: { u: string }) => <TrenchesTokenIconImage src={u} />;`,
     'a token on the pool icon': `import { TrenchesPoolTokenIcon } from '@/forge/token-icon/TokenIcon'; export const P = ({ p, t }: any) => <TrenchesPoolTokenIcon pool={p} token={t} />;`,
+    'an href on the coin X link': `import { CoinXLink } from '@/forge/CoinXLink'; export const P = ({ u }: { u: string }) => <CoinXLink url={u} href="https://example.com">X</CoinXLink>;`,
+    'an internal export of the socials module': `import { parseXLink } from '@/forge/socials'; export const x = parseXLink;`,
     'an alias of a component': `import CreateCoin from '@/forge/CreateCoin'; const Form = CreateCoin; export const P = () => <Form launchpadConfig="x" />;`,
     'createElement of a component': `import { createElement } from 'react'; import CreateCoin from '@/forge/CreateCoin'; export const P = () => createElement(CreateCoin, { launchpadConfig: 'x' });`,
     'a component called as a function': `import CreateCoin from '@/forge/CreateCoin'; export const P = () => CreateCoin({ launchpadConfig: 'x' });`,
@@ -228,6 +230,7 @@ describe('public FORGE surface and free-zone imports stay allowed', () => {
     'the token icons (template header and cards)': `import { TrenchesTokenIcon, TrenchesTokenIconImage } from '@/forge/token-icon'; import { TrenchesPoolTokenIcon } from '@/forge/token-icon/TokenIcon'; import { useTrenchesTokenIconContext } from '@/forge/token-icon/Context'; export const P = ({ t, p }: any) => { useTrenchesTokenIconContext; return <div><TrenchesTokenIcon className="rounded-lg" token={t}><TrenchesTokenIconImage className="rounded-lg" /></TrenchesTokenIcon><TrenchesPoolTokenIcon width={54} height={54} pool={p} /></div>; };`,
     'the token icon folder by its index file': `import { TrenchesTokenIcon } from '@/forge/token-icon/index'; export const P = ({ t }: any) => <TrenchesTokenIcon token={t} />;`,
     'the chart': `import { TokenChart } from '@/forge/chart/TokenChart'; export const P = () => <TokenChart opt={{ showVolume: true }} />;`,
+    'the coin X link and social helpers (template coin page and market cards)': `import { CoinXLink, hasCoinXLink } from '@/forge/CoinXLink'; import { safeExternalUrl } from '@/forge/socials'; export const P = ({ t }: any) => <div>{hasCoinXLink(t.twitter) && <span />}<CoinXLink url={t.twitter} title="X" className="x" onClick={() => undefined}>{(h: string) => <span>@{h}</span>}</CoinXLink><a href={safeExternalUrl(t.website) ?? undefined}>w</a></div>;`,
     'formatting helpers': `import { formatUnits, formatBps } from '@/forge/trade/amounts'; import { formatSol } from '@/forge/create/amounts'; import { formatNumber } from '@/forge/chart/formatter'; export const f = [formatUnits, formatBps, formatSol, formatNumber];`,
     'a type-only import of an internal module': `import type { SwapQuote } from '@/forge/trade/core-adapter'; export type Q = SwapQuote;`,
     'a type-only re-export of an internal module': `export type { TradePanelProps } from '@/forge/TradePanel';`,
@@ -330,10 +333,7 @@ function codeFiles(dir: string): string[] {
  * Internal FORGE exports the template's own free-zone files still use. A baseline line never
  * blocks a job (findings are diff-aware); the agent cannot add them anywhere else.
  */
-const TOLERATED = new Set([
-  'src/components/Explore/queries.ts|src/forge/data/client|ApeClient',
-  'src/components/home/LaunchpadCoin.tsx|src/forge/config|onchainConfig',
-]);
+const TOLERATED = new Set(['src/components/Explore/queries.ts|src/forge/data/client|ApeClient']);
 
 describe('the template free zones', () => {
   it('use nothing of src/forge/ beyond the public surface (and the tolerated baseline)', () => {

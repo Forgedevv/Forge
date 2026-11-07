@@ -7,6 +7,7 @@ import {
 } from '@forge/core';
 import type { GetGemsTokenListResponse, Pool } from '@/components/Explore/types';
 import { onchainConfig } from '../../config';
+import { canonicalXUrl } from '../../socials';
 import { canonicalAddress } from '../../tx/programs';
 import {
   candidatePools,
@@ -41,7 +42,7 @@ import { selectListed, toLists, toPool, type OffchainMetadata, type SlotClock } 
  * - one coin: its pool on this launchpad's configs (derived from the mint, `candidatePools`);
  * - for the listed coins only: the mint (decimals, supply) and its Metaplex metadata (name,
  *   symbol, URI) in `getMultipleAccounts` batches, the Pyth SOL/USD price, and the metadata JSON
- *   (image, description) when it lives on this site's storage (`R2_PUBLIC_URL`) or, for the
+ *   (image, description, X link: `twitter`, kept only as `https://x.com/<handle>`) when it lives on this site's storage (`R2_PUBLIC_URL`) or, for the
  *   launchpad's own coin, on FORGE's coin metadata route (`<FORGE origin>/api/coin-meta/<slug>`,
  *   the URI FORGE writes on-chain): no other host is ever fetched, and an image is only kept when
  *   it is on this site's storage.
@@ -180,7 +181,7 @@ async function fetchOffchain(
     if (declared > OFFCHAIN_MAX_BYTES) return null;
     const text = await res.text();
     if (text.length > OFFCHAIN_MAX_BYTES) return null;
-    const json = JSON.parse(text) as { image?: unknown; description?: unknown };
+    const json = JSON.parse(text) as { image?: unknown; description?: unknown; twitter?: unknown };
     const out: OffchainMetadata = {};
     if (typeof json.image === 'string' && /^https:\/\/[^\s]+$/.test(json.image)) {
       try {
@@ -191,6 +192,9 @@ async function fetchOffchain(
       }
     }
     if (typeof json.description === 'string') out.description = json.description.slice(0, 500);
+    // Only the canonical X link is kept: anything else (another site, a script URL) is dropped.
+    const twitter = canonicalXUrl(json.twitter);
+    if (twitter) out.twitter = twitter;
     return out;
   } catch {
     return null;

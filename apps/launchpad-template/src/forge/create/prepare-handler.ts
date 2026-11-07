@@ -32,7 +32,7 @@ import { canonicalAddress } from '../tx/programs';
  * LOCKED ZONE. Server side of `POST /api/upload` (contract: `api.ts`, signed message: `auth.ts`).
  *
  *   mode guard -> method -> coarse per-IP request limit -> configuration (fail closed) -> bounded
- *   JSON body -> coin rules -> image (type allowlist by magic bytes, 2 MB) -> wallet signature over
+ *   JSON body -> coin rules (X link included, canonical only) -> image (type allowlist by magic bytes, 2 MB) -> wallet signature over
  *   the exact request, fresh -> per-IP creation limit -> single-use nonce -> launchpad config read
  *   on-chain -> fresh mint generated here -> image + metadata through the FORGE upload endpoint
  *   (write-once keys, no storage key here) -> launch transaction built through the RPC relay,
@@ -76,6 +76,8 @@ const PrepareBody = z
     tokenName: z.string().max(64),
     tokenSymbol: z.string().max(16),
     description: z.string().max(2000),
+    /** Optional X link, canonical (`https://x.com/<handle>`); absent for none. */
+    twitter: z.string().max(200).optional(),
     tokenLogo: z.string().max(MAX_BODY_BYTES),
     userWallet: z.string().max(64),
     firstBuyLamports: Lamports,
@@ -297,6 +299,7 @@ export function createPrepareHandler(deps: PrepareDeps) {
       name: body.tokenName,
       symbol: body.tokenSymbol,
       description: body.description,
+      twitter: body.twitter,
       image: { name: 'image', type: image.contentType, size: image.bytes.length },
       firstBuySol: '',
     });
@@ -309,12 +312,17 @@ export function createPrepareHandler(deps: PrepareDeps) {
       );
     }
     const coin = checked.value;
+    const twitter = coin.twitter ?? null;
     if (
       coin.name !== body.tokenName ||
       coin.symbol !== body.tokenSymbol ||
-      coin.description !== body.description
+      coin.description !== body.description ||
+      twitter !== (body.twitter ?? null)
     ) {
-      throw new HttpError(400, 'The coin name, symbol or description is not in canonical form.');
+      throw new HttpError(
+        400,
+        'The coin name, symbol, description or X link is not in canonical form.',
+      );
     }
     const firstBuyLamports = checkFirstBuy(body.firstBuyLamports);
 
@@ -334,6 +342,7 @@ export function createPrepareHandler(deps: PrepareDeps) {
       firstBuyLamports: body.firstBuyLamports,
       imageSha256,
       descriptionSha256: sha256HexNode(new TextEncoder().encode(coin.description)),
+      twitter,
       nonce,
       issuedAt,
     });
@@ -367,7 +376,12 @@ export function createPrepareHandler(deps: PrepareDeps) {
           version: UPLOAD_CONTRACT_VERSION,
           mint: mint.publicKey.toBase58(),
           wallet,
-          coin: { name: coin.name, symbol: coin.symbol, description: coin.description },
+          coin: {
+            name: coin.name,
+            symbol: coin.symbol,
+            description: coin.description,
+            ...(twitter ? { twitter } : {}),
+          },
           firstBuyLamports: body.firstBuyLamports,
           image: { contentType: image.contentType, size: image.bytes.length, sha256: imageSha256 },
           auth: { host, nonce, issuedAt, signature: body.auth.signature },

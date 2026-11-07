@@ -1,6 +1,6 @@
 import Link from 'next/link';
 import { content } from '@/content';
-import { onchainConfig } from '@/forge/config';
+import { launchpadCoinMint } from '@/forge/config';
 import { cn } from '@/lib/utils';
 
 /**
@@ -10,7 +10,7 @@ import { cn } from '@/lib/utils';
  */
 export function LaunchpadCoin({ className }: { className?: string }) {
   const copy = content.launchpadCoin;
-  const mint = onchainConfig?.launchpadCoinMint;
+  const mint = launchpadCoinMint;
   const ticker = copy.symbol ? `$${copy.symbol}` : '';
   return (
     <section

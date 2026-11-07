@@ -59,6 +59,7 @@ const TICKET: TicketRecord = {
   coinName: 'Moon Coin',
   coinSymbol: 'MOON',
   coinDescription: '',
+  coinTwitter: null,
   firstBuyLamports: '0',
   status: 'issued',
   rejection: null,
@@ -81,6 +82,23 @@ describe('SupabaseUploadStore', () => {
   it('round-trips a ticket row', () => {
     expect(parseTicketRow(ROW)).toEqual(TICKET);
     expect(() => parseTicketRow({ ...ROW, status: 'weird' })).toThrow(UploadStoreError);
+  });
+
+  it('stores the X link in coin_twitter, and leaves the column out when there is none', () => {
+    // Without a link the row is the same as before migration 0017 (no coin_twitter key).
+    expect(ticketToRow(TICKET)).not.toHaveProperty('coin_twitter');
+    expect(parseTicketRow(ROW).coinTwitter).toBeNull();
+    expect(parseTicketRow({ ...ROW, coin_twitter: null }).coinTwitter).toBeNull();
+    const withX: TicketRecord = { ...TICKET, coinTwitter: 'https://x.com/moon_coin' };
+    expect(ticketToRow(withX)).toMatchObject({ coin_twitter: 'https://x.com/moon_coin' });
+    expect(
+      parseTicketRow({
+        ...ROW,
+        ...ticketToRow(withX),
+        issued_at: ROW.issued_at,
+        expires_at: ROW.expires_at,
+      }),
+    ).toEqual(withX);
   });
 
   it('inserts and maps unique violations by constraint name', async () => {

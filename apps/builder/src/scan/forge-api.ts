@@ -53,7 +53,12 @@ export const FORGE_PUBLIC_API: Readonly<Record<string, Readonly<Record<string, F
       default: CLAIM_CREATOR_FEES,
     },
     // Read-only, UI-facing site config (no on-chain block).
-    'src/forge/config': { siteConfig: value, cluster: value, poolCreationFeeSol: value },
+    'src/forge/config': {
+      siteConfig: value,
+      cluster: value,
+      poolCreationFeeSol: value,
+      launchpadCoinMint: value,
+    },
     // Market data of this launchpad (stream filtered on its pool configs).
     'src/forge/data/DataStreamProvider': {
       DataStreamProvider: component('children'),
@@ -107,6 +112,14 @@ export const FORGE_PUBLIC_API: Readonly<Record<string, Readonly<Record<string, F
     },
     'src/forge/trade/amounts': { formatUnits: value, formatBps: value },
     'src/forge/create/amounts': { formatSol: value },
+    // A coin's X link: renders only a canonical https://x.com/<handle>, nothing for any other
+    // value, so `url` may be anything. Never `href`, `target` or `rel`.
+    'src/forge/CoinXLink': {
+      CoinXLink: component('url', 'title', 'onClick', 'className', 'children'),
+      hasCoinXLink: value,
+    },
+    // A coin's other social links from the data API: https only, else null (pure).
+    'src/forge/socials': { safeExternalUrl: value },
   };
 
 const PUBLIC_BY_ID = new Map(

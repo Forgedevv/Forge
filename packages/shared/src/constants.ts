@@ -33,6 +33,11 @@ export const CLIENT_BOUNDS = {
    * confirmed by devnet test 1; otherwise the minimum becomes 0.001.
    */
   poolCreationFeeSol: { min: 0.001, max: 1, allowZero: true },
+  /**
+   * SOL the client spends on the first buy of the launchpad's coin. The 10 SOL migration
+   * threshold means a first buy above ~10 SOL cannot fit in the curve.
+   */
+  firstBuySol: { min: 0, max: 10 },
   /** Imposed (Meteora migration bots). */
   migrationThresholdSol: 10,
 } as const;

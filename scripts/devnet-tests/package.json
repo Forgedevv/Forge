@@ -25,6 +25,7 @@
     "signer:buyback": "tsx src/signer-buyback.ts"
   },
   "dependencies": {
+    "@forge/core": "workspace:*",
     "@forge/shared": "workspace:*",
     "@meteora-ag/cp-amm-sdk": "1.5.1",
     "@meteora-ag/dynamic-bonding-curve-sdk": "1.5.13",

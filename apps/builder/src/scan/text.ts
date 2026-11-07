@@ -128,8 +128,8 @@ export class AddressCollector {
     }
   }
 
-  encoded(variant: string, source: string, line?: number): void {
-    for (const hit of findEncodedAddresses(source)) {
+  encoded(variant: string, source: string, line?: number, exempt?: ReadonlySet<string>): void {
+    for (const hit of findEncodedAddresses(source, exempt)) {
       if (this.config.addressAllowlist.has(hit.address)) continue;
       this.findings.push({
         rule: 'solana-address-encoded',
@@ -218,14 +218,14 @@ export class AddressCollector {
   }
 
   /** Raw text plus decoded variants (escapes/entities, invisible characters removed). */
-  textVariants(exempt?: ReadonlySet<string>): void {
+  textVariants(exempt?: ReadonlySet<string>, exemptEncoded?: ReadonlySet<string>): void {
     const t = this.text;
     this.run('raw', t, undefined, exempt);
     const decoded = decodeEntities(decodeJsEscapes(t));
     if (decoded !== t) this.run('decoded', decoded, undefined, exempt);
     const visible = stripInvisible(decoded);
     if (visible !== decoded) this.run('visible', visible, undefined, exempt);
-    this.encoded('raw', stripDataImages(t));
+    this.encoded('raw', stripDataImages(t), undefined, exemptEncoded);
   }
 }
 

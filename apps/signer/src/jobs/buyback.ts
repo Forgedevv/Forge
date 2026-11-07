@@ -15,9 +15,10 @@
  *      simulated orders move nothing and count for nothing). The day's budget = min(backlog +
  *      the SOL already on the bot above its reserve, BUYBACK_DAILY_CAP_LAMPORTS, and in live
  *      mode what the bot can fund: that SOL plus the spending limit still available), the first
- *      and the last minus the fee allowance of the orders and the withdrawal's fee, so the
- *      withdrawal never takes more than the backlog out of the vault (with a backlog of 0 the
- *      orders run on the bot's own SOL and nothing is withdrawn). What the cap leaves out stays
+ *      and the last minus the fee allowance of the orders and the withdrawal's fee (and the
+ *      rent of the $FORGE accounts still to create, see "Fees"), so the withdrawal never takes
+ *      more than the backlog out of the vault (with a backlog of 0 the orders run on the bot's
+ *      own SOL and nothing is withdrawn). What the cap leaves out stays
  *      in the backlog and is bought on the following days. A budget the source cannot establish (journal unreadable, a
  *      corrupt entry, BUYBACK_REVENUE_SINCE unset) is 0 for the run, with a high alert, and no
  *      plan is written: the next tick tries again. Without a budget source (direct callers) the
@@ -28,8 +29,9 @@
  *      written to the journal before anything else, so a restart reuses it (never re-rolls).
  *      Slots already in the past when the plan is created are `missed` (no catch-up burst).
  *   3. Funding (live). Once per day the missing SOL (the planned orders plus a fee allowance per
- *      order, minus what the bot already holds above its reserve, plus the withdrawal's own fee;
- *      at most the spending limit and at most the backlog: never a lamport of non-revenue)
+ *      order and the rent of the $FORGE accounts still to create, minus what the bot already
+ *      holds above its reserve, plus the withdrawal's own fee; at most the spending limit and at
+ *      most the backlog: never a lamport of non-revenue)
  *      is withdrawn from the vault to the bot wallet through the `SpendingLimitWithdrawer`
  *      (jobs/squads.ts: the bot's own Squads v4 spending limit, SECURITY.md 7). The request is
  *      journaled BEFORE it is made and never repeated that day.
@@ -54,7 +56,9 @@
  * Fees: each order's fee allowance covers the buy (BUYBACK_MAX_PRIORITY_FEE_LAMPORTS) and its
  * return (the signer priority fee cap at FORGE_RETURN_COMPUTE_UNITS), network fees included; the
  * funding withdrawal adds its own fee (`SpendingLimitWithdrawer.maxFeeLamports`) to the amount it
- * withdraws. The reserve is never what pays them.
+ * withdraws, and, while they do not exist (the first live day), the rent of the bot's $FORGE
+ * account (created by the first buy) and of the vault's (created by the first return), both paid
+ * by the bot. The reserve is never what pays them.
  *
  * Routes (BUYBACK_ROUTE): `jupiter` (default, the only route allowed on mainnet-beta) and
  * `dbc-devnet` (devnet only: Jupiter does not index devnet, so a devnet test buys the stand-in
@@ -72,15 +76,21 @@
  */
 import { randomInt } from 'node:crypto';
 import {
+  ACCOUNT_SIZE,
   ASSOCIATED_TOKEN_PROGRAM_ID,
   AccountLayout,
+  ExtensionType,
   MintLayout,
   NATIVE_MINT,
   TOKEN_2022_PROGRAM_ID,
   TOKEN_PROGRAM_ID,
   createAssociatedTokenAccountIdempotentInstruction,
   createTransferCheckedInstruction,
+  getAccountLen,
+  getAccountTypeOfMintType,
   getAssociatedTokenAddressSync,
+  getExtensionTypes,
+  unpackMint,
 } from '@solana/spl-token';
 import {
   PublicKey,
@@ -903,8 +913,8 @@ export type WithdrawResult =
   | { status: 'unknown'; signature: string };
 
 /**
- * Squads v4 spending limit use (vault -> bot wallet). NOT implemented yet: live mode is refused
- * until one is wired. Contract for the implementation:
+ * Squads v4 spending limit use (vault -> bot wallet), implemented by jobs/squads.ts
+ * (`createSquadsSpendingLimitWithdrawer`); without one, live mode is refused. Contract:
  * - only the spending limit configured for the bot (SOL, destination = the bot wallet) is used;
  *   the bot key is the spending-limit member and the only signer;
  * - `remainingLamports` reads the on-chain spending limit (remaining amount of the period);
@@ -978,6 +988,11 @@ export interface ForgeTokenReader {
     account: PublicKey,
     expected: { mint: PublicKey; owner: PublicKey },
   ): Promise<bigint>;
+  /**
+   * Lamports the creation of `account`, an associated token account of `mint`, costs its payer
+   * (its rent-exempt minimum); 0n when it already exists.
+   */
+  creationRent(account: PublicKey, mint: PublicKey): Promise<bigint>;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1605,7 +1620,7 @@ export function assertForgeReturnTx(tx: Transaction, expected: ForgeReturnExpect
 
 /** Token reads over a web3.js connection (confirmed commitment). */
 export function createRpcForgeTokenReader(
-  connection: Pick<Connection, 'getAccountInfo'>,
+  connection: Pick<Connection, 'getAccountInfo' | 'getMinimumBalanceForRentExemption'>,
 ): ForgeTokenReader {
   return {
     async mintInfo(mint) {
@@ -1629,6 +1644,23 @@ export function createRpcForgeTokenReader(
         throw new JobError('RPC', 'bot $FORGE account has an unexpected mint or owner');
       }
       return t.amount;
+    },
+    async creationRent(account, mint) {
+      if (await connection.getAccountInfo(account, 'confirmed')) return 0n;
+      const info = await connection.getAccountInfo(mint, 'confirmed');
+      if (!info) throw new JobError('CONFIG', 'FORGE_MINT account not found');
+      let size = ACCOUNT_SIZE;
+      if (info.owner.equals(TOKEN_2022_PROGRAM_ID)) {
+        // The associated token program sizes a Token-2022 account for ImmutableOwner and the
+        // account side of the mint's extensions.
+        const extensions = getExtensionTypes(unpackMint(mint, info, TOKEN_2022_PROGRAM_ID).tlvData)
+          .map(getAccountTypeOfMintType)
+          .filter((e) => e !== ExtensionType.Uninitialized);
+        size = getAccountLen([...extensions, ExtensionType.ImmutableOwner]);
+      } else if (!info.owner.equals(TOKEN_PROGRAM_ID)) {
+        throw new JobError('CONFIG', 'FORGE_MINT is not a token mint');
+      }
+      return BigInt(await connection.getMinimumBalanceForRentExemption(size, 'confirmed'));
     },
   };
 }
@@ -1816,6 +1848,26 @@ export function createBuybackJob(deps: BuybackDeps): BuybackJob {
     return fee;
   }
 
+  /**
+   * Rent of the $FORGE accounts the day's orders create while they do not exist (the first live
+   * day): the bot's, created by its first buy, and the vault's, created by its first return. The
+   * bot pays both, so they are withdrawn with the orders like the fees: taken from the reserve,
+   * they would leave the day's last order short (skipped as insufficient_funds).
+   */
+  async function forgeAccountsRentLamports(l: LiveDeps, bot: PublicKey): Promise<bigint> {
+    const { programId } = await l.tokens.mintInfo(l.forgeMint);
+    let rent = 0n;
+    for (const owner of [bot, config.vault]) {
+      const account = getAssociatedTokenAddressSync(l.forgeMint, owner, true, programId);
+      const lamports = await l.tokens.creationRent(account, l.forgeMint);
+      if (typeof lamports !== 'bigint' || lamports < 0n) {
+        throw new JobError('INVALID_AMOUNT', 'token reader returned an invalid rent');
+      }
+      rent += lamports;
+    }
+    return rent;
+  }
+
   // ----- plan ---------------------------------------------------------------------------
 
   type NoBudgetReason = 'budget_unconfigured' | 'budget_unavailable';
@@ -1866,9 +1918,10 @@ export function createBuybackJob(deps: BuybackDeps): BuybackJob {
     let budget = config.dailyCapLamports;
     let botAvailable: bigint | null = null;
     let fundable: bigint | null = null;
-    // The fee allowance of every order plus the withdrawal's own fee (live): `ensureFunding`
-    // withdraws the orders plus those, so a budget that used a whole bound would leave the last
-    // orders unfunded (skipped as insufficient_funds) once that bound binds.
+    // The fee allowance of every order plus the withdrawal's own fee and the rent of the $FORGE
+    // accounts still to create (live): `ensureFunding` withdraws the orders plus those, so a
+    // budget that used a whole bound would leave the last orders unfunded (skipped as
+    // insufficient_funds) once that bound binds.
     let fees = 0n;
     if (live && bot) {
       const spendable = await spendableBalance(live.rpc, bot, retry);
@@ -1880,7 +1933,8 @@ export function createBuybackJob(deps: BuybackDeps): BuybackJob {
       }
       fees =
         BigInt(config.ordersPerDay) * config.orderFeeAllowanceLamports +
-        withdrawalFeeLamports(live);
+        withdrawalFeeLamports(live) +
+        (await forgeAccountsRentLamports(live, bot));
       // What the wallet and the spending limit can put behind the day.
       fundable = botAvailable + allowance > fees ? botAvailable + allowance - fees : 0n;
       if (fundable < budget) budget = fundable;
@@ -2223,10 +2277,12 @@ export function createBuybackJob(deps: BuybackDeps): BuybackJob {
       );
       return next;
     }
-    // The planned orders plus a fee allowance each: the reserve is not what pays the day's fees.
-    const remaining = entry.slots
-      .filter((s) => s.status === 'planned')
-      .reduce((a, s) => a + BigInt(s.lamports) + config.orderFeeAllowanceLamports, 0n);
+    // The planned orders plus a fee allowance each, and the rent of the $FORGE accounts their
+    // first buy and return create: the reserve is not what pays the day's fees.
+    const planned = entry.slots.filter((s) => s.status === 'planned');
+    const remaining =
+      planned.reduce((a, s) => a + BigInt(s.lamports) + config.orderFeeAllowanceLamports, 0n) +
+      (planned.length > 0 ? await forgeAccountsRentLamports(l, bot) : 0n);
     const spendable = await spendableBalance(l.rpc, bot, retry);
     const available =
       spendable > config.feeReserveLamports ? spendable - config.feeReserveLamports : 0n;

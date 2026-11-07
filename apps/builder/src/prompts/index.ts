@@ -1,6 +1,7 @@
 /// <reference types="node" />
 import { readFileSync } from 'node:fs';
 import type { LaunchpadSpec } from '@forge/shared';
+import { designDirection, designDirectionText } from './design-direction.js';
 
 /**
  * Prompts of the site-coding agent. The system prompt lives in `builder.md` (rules: allowed zones,
@@ -53,6 +54,16 @@ export function createTaskPrompt(spec: LaunchpadSpec, opts: TaskPromptOptions = 
   };
   if (opts.imageUrls?.logoUrl) brief.logoUrl = opts.imageUrls.logoUrl;
   if (opts.imageUrls?.coinImageUrl) brief.coinImageUrl = opts.imageUrls.coinImageUrl;
+  const direction = designDirection({
+    slug: spec.slug,
+    text: [
+      spec.name,
+      spec.theme.tagline,
+      spec.theme.designNotes,
+      spec.launchpadCoin.name,
+      spec.launchpadCoin.description,
+    ].join(' '),
+  });
   return [
     'Design and build the website of this new launchpad for the client: the whole site, ready',
     'for its first visitors, following the design brief of your instructions.',
@@ -60,18 +71,23 @@ export function createTaskPrompt(spec: LaunchpadSpec, opts: TaskPromptOptions = 
     '`forge.config.json` already holds the name, the slug, the colors, the dark mode setting and',
     'the tagline from the brief. Then:',
     '',
-    '1. Read the template thoroughly before writing anything.',
+    '1. Read the template thoroughly before writing anything, starting with',
+    '   `src/components/sections/CATALOGUE.md` (the visual library).',
     '2. Pick a concept that fits the brief below: palette, font pairing, layout pattern, hero',
     '   illustration, logo mark and voice. A meme brief and a luxury brief must not share a',
     '   layout.',
-    '3. Build it across the site: theme, copy in `src/content/index.ts` (with the launchpad coin',
-    '   name, symbol and description from the brief), the logo in `src/components/Logo.tsx`,',
+    '3. Compose the home page and the footer from the visual library, starting from the',
+    '   combination below, and build the concept across the site: theme, copy in',
+    '   `src/content/index.ts` (with the launchpad coin name, symbol and description from the',
+    '   brief), the logo in `src/components/Logo.tsx`,',
     '   header, footer, the home page, `create-pool`, the token page, `about` and the styling of',
     '   `/creator-fees`. Write the "about" text in `forge.config.json#content.about` if the brief',
     '   gives enough material.',
     '4. Day one: the launchpad has no coins yet. The home page must look complete and alive with',
     '   an empty market, which stays compact.',
     '5. Run the self-check of your instructions, fix what is missing, then reply with your summary.',
+    '',
+    designDirectionText(direction),
     '',
     clientBlock(brief),
   ].join('\n');

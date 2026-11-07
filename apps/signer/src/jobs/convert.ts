@@ -275,6 +275,13 @@ export function parseConvertConfig(
   if (config.slippageBps > config.maxSlippageBps) {
     throw new Error('CONVERT_SLIPPAGE_BPS must not exceed CONVERT_MAX_SLIPPAGE_BPS');
   }
+  // Dust is a swap that would not pay for itself: one swap costs up to one signature and the
+  // priority fee cap (the sender refuses more), so the threshold must stay above that.
+  if (config.minOutputLamports <= BASE_FEE_LAMPORTS_PER_SIGNATURE + config.maxPriorityFeeLamports) {
+    throw new Error(
+      'CONVERT_MIN_OUTPUT_LAMPORTS must be above CONVERT_MAX_PRIORITY_FEE_LAMPORTS + 5000 (what one swap can cost)',
+    );
+  }
   // The Jupiter API needs a key (docs/METEORA.md "Jupiter"): a live job without one would fail
   // every swap at run time instead of refusing to start.
   const mode = resolveConvertMode({

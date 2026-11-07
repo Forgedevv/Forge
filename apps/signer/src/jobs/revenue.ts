@@ -862,6 +862,13 @@ export interface RevenueDeps {
    * the revenue wallet), mainnet-beta only. Null or absent: no conversion.
    */
   convert?: (() => Promise<ConvertRunSummary>) | null;
+  /**
+   * The most one conversion swap costs the wallet: one signature and the priority fee at
+   * CONVERT_MAX_PRIORITY_FEE_LAMPORTS (the swap sender refuses a swap above it). Every swap the
+   * conversion signed may have paid it, whatever it brought (a failed swap brings nothing): the
+   * outflow check allows it per signed swap. Default 0.
+   */
+  convertMaxFeeLamports?: bigint;
   retry?: RetryOptions;
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
@@ -963,12 +970,14 @@ export function createRevenueJob(deps: RevenueDeps): RevenueJob {
   /**
    * Books a native balance observation: an inflow is platform fee; a drop is the job's own fees
    * (not booked) unless it exceeds the tolerance, then it is alerted. The first observation
-   * books nothing.
+   * books nothing. `swapFeesLamports`: what the conversion swaps signed since the last
+   * observation can have cost.
    */
   async function reconcile(
     state: RevenueStateEntry,
     balance: bigint,
     context: string,
+    swapFeesLamports = 0n,
   ): Promise<RevenueStateEntry> {
     const expected = expectedOf(state);
     const pending = pendingOf(state);
@@ -978,9 +987,12 @@ export function createRevenueJob(deps: RevenueDeps): RevenueJob {
         pending.platform_fee += delta;
       } else if (
         delta < 0n &&
-        // The job's own fees: an unwrap at most between two observations, priority fee included.
+        // The job's own fees: an unwrap at most between two observations, priority fee included,
+        // and the swaps signed since the last one.
         -delta >
-          config.outflowToleranceLamports + maxPriorityFee(unwrapComputeUnits(MAX_UNWRAP_SOURCES))
+          config.outflowToleranceLamports +
+            maxPriorityFee(unwrapComputeUnits(MAX_UNWRAP_SOURCES)) +
+            swapFeesLamports
       ) {
         await alert(
           'high',
@@ -1369,6 +1381,11 @@ export function createRevenueJob(deps: RevenueDeps): RevenueJob {
         log.info({ mints, dryRun: config.dryRun }, 'non-SOL balances not converted on this run');
       } else {
         const summary = await deps.convert();
+        // Every swap it signed may have paid its fee, landed or not, failed or not.
+        const signed = summary.items.filter(
+          (i) => 'signature' in i.outcome && i.outcome.signature !== undefined,
+        );
+        const swapFees = BigInt(signed.length) * (deps.convertMaxFeeLamports ?? 0n);
         const confirmed = summary.items.filter(
           (
             i,
@@ -1383,9 +1400,10 @@ export function createRevenueJob(deps: RevenueDeps): RevenueJob {
             i.outcome.status === 'confirmed' || i.outcome.status === 'unknown',
         );
         if (sent.length === 0) {
-          // Nothing was signed: the balance can only have moved by an inflow or someone else.
+          // Nothing confirmed or pending: the balance moved by an inflow, someone else, or the
+          // fee of a swap that failed on-chain.
           const after = await spendableBalance(rpc, config.revenue, retry);
-          state = await reconcile(state, after, 'after_conversions');
+          state = await reconcile(state, after, 'after_conversions', swapFees);
           balance = after;
         } else {
           // The swaps settle at confirmed: the balance and the token accounts are read there, so
@@ -1461,13 +1479,15 @@ export function createRevenueJob(deps: RevenueDeps): RevenueJob {
               'conversions booked',
             );
           } else {
-            // No gain: the swaps' fees at most (alerted beyond the tolerance), or nothing landed.
+            // No gain: the swaps' fees at most (alerted beyond them and the tolerance), an output
+            // below its swap's fee, or nothing landed.
             let related = state.relatedSignatures;
             for (const item of sent) related = remember(related, item.outcome.signature);
             state = await reconcile(
               { ...state, relatedSignatures: related },
               after,
               'after_conversions',
+              swapFees,
             );
           }
           balance = after;

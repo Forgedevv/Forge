@@ -45,6 +45,7 @@ vi.mock('@/forge/config', async (importOriginal) => {
 });
 
 import { CreateCoin } from '@/forge/CreateCoin';
+import { VALIDATION_TEXT } from '@/forge/create/validation';
 
 interface Harness {
   api: LaunchApi & { prepare: ReturnType<typeof vi.fn>; rebuild?: ReturnType<typeof vi.fn> };
@@ -185,6 +186,48 @@ describe('CreateCoin form', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Review launch' }));
     expect(await screen.findByText(/First buy must be a number/)).toBeInTheDocument();
     expect(h.api.prepare).not.toHaveBeenCalled();
+  });
+
+  it('flags an X link that is not an X profile inline, and never sends it', async () => {
+    const h = harness();
+    renderCreate(h);
+    fillValidForm();
+    const field = screen.getByLabelText('X (Twitter)');
+    fireEvent.change(field, { target: { value: 'https://evil.example/moon' } });
+    fireEvent.blur(field);
+    expect(screen.getByText(VALIDATION_TEXT.twitterInvalid)).toBeInTheDocument();
+    expect(field).toHaveAttribute('aria-invalid', 'true');
+    fireEvent.click(screen.getByRole('button', { name: 'Review launch' }));
+    await waitFor(() => expect(document.activeElement).toBe(field));
+    expect(h.api.prepare).not.toHaveBeenCalled();
+    // Fixed: the error goes away.
+    fireEvent.change(field, { target: { value: '@moon_coin' } });
+    expect(screen.queryByText(VALIDATION_TEXT.twitterInvalid)).not.toBeInTheDocument();
+  });
+
+  it('sends the X link normalised to https://x.com/<handle> and previews the handle', async () => {
+    const h = harness();
+    renderCreate(h);
+    fillValidForm();
+    fireEvent.change(screen.getByLabelText('X (Twitter)'), {
+      target: { value: 'twitter.com/moon_coin' },
+    });
+    const preview = within(
+      document.querySelector('[data-forge="create-coin-preview"]') as HTMLElement,
+    );
+    expect(preview.getByText('@moon_coin on X')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Review launch' }));
+    await screen.findByText('Review your launch');
+    expect(h.api.prepare.mock.calls[0]?.[0]).toMatchObject({ twitter: 'https://x.com/moon_coin' });
+  });
+
+  it('sends no X link when the field is left empty', async () => {
+    const h = harness();
+    renderCreate(h);
+    fillValidForm();
+    fireEvent.click(screen.getByRole('button', { name: 'Review launch' }));
+    await screen.findByText('Review your launch');
+    expect(h.api.prepare.mock.calls[0]?.[0]).not.toHaveProperty('twitter');
   });
 });
 

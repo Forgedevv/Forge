@@ -89,4 +89,39 @@ describe('TokenDescription', () => {
     expect(screen.getByRole('button', { name: content.strings.showLess })).toBeTruthy();
     height.mockRestore();
   });
+
+  it('shows the coin X link next to the description, in a new tab without referrer', () => {
+    h.pool = { baseAsset: { name: 'Moon Nap', twitter: 'https://x.com/moon_nap' } };
+    h.description = 'A long story.';
+    render(<TokenDescription />);
+    const link = screen.getByRole('link', { name: content.strings.coinOnX });
+    expect(link).toHaveAttribute('href', 'https://x.com/moon_nap');
+    expect(link).toHaveAttribute('target', '_blank');
+    expect(link).toHaveAttribute('rel', 'noopener noreferrer');
+    expect(link).toHaveTextContent('@moon_nap');
+  });
+
+  it('shows the about block for an X link alone, and nothing for an invalid one', () => {
+    h.pool = { baseAsset: { name: 'Moon Nap', twitter: 'https://x.com/moon_nap' } };
+    const { unmount } = render(<TokenDescription />);
+    expect(screen.getByRole('heading', { name: 'About Moon Nap' })).toBeTruthy();
+    expect(screen.getByRole('link', { name: content.strings.coinOnX })).toBeTruthy();
+    unmount();
+
+    for (const twitter of [
+      'javascript:alert(1)',
+      'https://evil.example/moon',
+      'https://x.com/a/b',
+    ]) {
+      h.pool = { baseAsset: { name: 'Moon Nap', twitter } };
+      h.description = undefined;
+      const view = render(<TokenDescription />);
+      expect(view.container).toBeEmptyDOMElement();
+      view.unmount();
+      h.description = 'A long story.';
+      const withText = render(<TokenDescription />);
+      expect(screen.queryByRole('link')).toBeNull();
+      withText.unmount();
+    }
+  });
 });

@@ -3,8 +3,14 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
+  ACCOUNT_SIZE,
   AccountLayout,
+  AccountType,
+  ExtensionType,
+  MINT_SIZE,
+  MintLayout,
   NATIVE_MINT,
+  TOKEN_2022_PROGRAM_ID,
   TOKEN_PROGRAM_ID,
   getAssociatedTokenAddressSync,
 } from '@solana/spl-token';
@@ -37,6 +43,7 @@ import {
   createBuybackJob,
   createJupiterBuybackClient,
   createRpcBuybackSwapPreparer,
+  createRpcForgeTokenReader,
   dayJournalKey,
   forgeReturnWritableAccounts,
   planDay,
@@ -1039,6 +1046,77 @@ describe('assertForgeReturnTx', () => {
   });
 });
 
+/** Mint account data; with extensions, in the Token-2022 layout (padding, type, TLV entries). */
+function mintData(extensions: ReadonlyArray<readonly [ExtensionType, number]> = []): Buffer {
+  const base = Buffer.alloc(MINT_SIZE);
+  MintLayout.encode(
+    {
+      mintAuthorityOption: 0,
+      mintAuthority: PublicKey.default,
+      supply: 0n,
+      decimals: 6,
+      isInitialized: true,
+      freezeAuthorityOption: 0,
+      freezeAuthority: PublicKey.default,
+    },
+    base,
+  );
+  if (extensions.length === 0) return base;
+  const entries = extensions.map(([type, length]) => {
+    const entry = Buffer.alloc(4 + length);
+    entry.writeUInt16LE(type, 0);
+    entry.writeUInt16LE(length, 2);
+    return entry;
+  });
+  return Buffer.concat([
+    base,
+    Buffer.alloc(ACCOUNT_SIZE - MINT_SIZE),
+    Buffer.from([AccountType.Mint]),
+    ...entries,
+  ]);
+}
+
+describe('createRpcForgeTokenReader', () => {
+  it('prices a missing associated account by token program and mint extensions, nothing when it exists', async () => {
+    const rentOf = (size: number) => BigInt((size + 128) * 6_960);
+    const accounts = new Map<string, { owner: PublicKey; data: Buffer }>();
+    const reader = createRpcForgeTokenReader({
+      getAccountInfo: async (key: PublicKey) => {
+        const a = accounts.get(key.toBase58());
+        return a ? { ...a, lamports: 1, executable: false } : null;
+      },
+      getMinimumBalanceForRentExemption: async (size: number) => (size + 128) * 6_960,
+    } as unknown as Parameters<typeof createRpcForgeTokenReader>[0]);
+    const owner = randomAddress();
+    const classic = randomAddress();
+    const classicAta = getAssociatedTokenAddressSync(classic, owner, true, TOKEN_PROGRAM_ID);
+    accounts.set(classic.toBase58(), { owner: TOKEN_PROGRAM_ID, data: mintData() });
+    expect(await reader.creationRent(classicAta, classic)).toBe(2_039_280n);
+    accounts.set(classicAta.toBase58(), { owner: TOKEN_PROGRAM_ID, data: Buffer.alloc(165) });
+    expect(await reader.creationRent(classicAta, classic)).toBe(0n);
+    // Token-2022: ImmutableOwner always, plus the account side of the mint's extensions.
+    const t22 = randomAddress();
+    const t22Ata = getAssociatedTokenAddressSync(t22, owner, true, TOKEN_2022_PROGRAM_ID);
+    const cases: Array<[Array<[ExtensionType, number]>, number]> = [
+      [[], 170],
+      [[[ExtensionType.MetadataPointer, 64]], 170],
+      [
+        [
+          [ExtensionType.TransferFeeConfig, 108],
+          [ExtensionType.MetadataPointer, 64],
+        ],
+        182,
+      ],
+    ];
+    for (const [extensions, size] of cases) {
+      accounts.set(t22.toBase58(), { owner: TOKEN_2022_PROGRAM_ID, data: mintData(extensions) });
+      expect(await reader.creationRent(t22Ata, t22)).toBe(rentOf(size));
+    }
+    accounts.set(t22.toBase58(), { owner: randomAddress(), data: mintData() });
+    await expect(reader.creationRent(t22Ata, t22)).rejects.toThrow(/not a token mint/);
+  });
+});
+
 // ---------------------------------------------------------------------------------------
 // Job: simulation
 
@@ -1493,6 +1571,8 @@ describe('buyback job, live flow', () => {
     const tokens: ForgeTokenReader = {
       mintInfo: async () => ({ programId: TOKEN_PROGRAM_ID, decimals: 6 }),
       tokenBalance: async () => forgeBalance,
+      // Both $FORGE accounts exist already (every day after the first live one).
+      creationRent: async () => 0n,
     };
     const defaultPrepare: BuybackSwapPreparer['prepare'] = async ({ expected }) => {
       // Stand-in for a verified and signed Jupiter transaction (raw = 1 signature + payload).
@@ -1668,6 +1748,105 @@ describe('buyback job, live flow', () => {
     expect(withdrawn).toBeLessThanOrEqual(allowance);
     expect(withdrawn + available).toBeGreaterThanOrEqual(
       total + fee * BigInt(planned.length) + withdrawalFee,
+    );
+  });
+
+  it('withdraws the rent of the $FORGE accounts the first buy and return create: no order of the first live day is skipped', async () => {
+    // First live day: neither the bot's nor the vault's $FORGE account exists. The first buy
+    // creates the bot's, the first return the vault's, both paid by the bot.
+    const rent = 2_039_280n;
+    const fee = 210_000n;
+    const withdrawalFee = 205_000n;
+    const h = liveHarness(undefined, { withdrawalFeeLamports: withdrawalFee });
+    const botAta = getAssociatedTokenAddressSync(FORGE, bot, true, TOKEN_PROGRAM_ID).toBase58();
+    const vaultAta = getAssociatedTokenAddressSync(FORGE, VAULT, true, TOKEN_PROGRAM_ID).toBase58();
+    const created = new Set<string>();
+    let forge = 0n;
+    const pay = (lamports: bigint, account: string) => {
+      const creation = created.has(account) ? 0n : rent;
+      created.add(account);
+      h.rpc.balances.set(bot.toBase58(), h.rpc.balances.get(bot.toBase58())! - lamports - creation);
+    };
+    const tokens: ForgeTokenReader = {
+      mintInfo: async () => ({ programId: TOKEN_PROGRAM_ID, decimals: 6 }),
+      tokenBalance: async () => forge,
+      creationRent: async (account) => (created.has(account.toBase58()) ? 0n : rent),
+    };
+    const prepare: BuybackSwapPreparer['prepare'] = async ({ expected }) => {
+      // The buy lands: the SOL sold, its fees, and the bot's account on the first one.
+      pay(expected.inLamports + 10_000n, botAta);
+      forge += expected.minOutAmount;
+      const sig = randomBytes(64);
+      return {
+        status: 'ready',
+        signature: base58Encode(sig),
+        raw: Buffer.concat([Buffer.from([1]), sig, Buffer.from('swap')]),
+        lastValidBlockHeight: h.rpc.height + 150,
+      };
+    };
+    const send = h.rpc.sendRawTransaction.bind(h.rpc);
+    h.rpc.sendRawTransaction = async (raw: Uint8Array) => {
+      if (Buffer.from(raw).subarray(65).toString() !== 'swap') {
+        // The return lands: its fee, and the vault's account on the first one.
+        pay(5_000n, vaultAta);
+        forge = 0n;
+      }
+      return send(raw);
+    };
+    const job = h.make(
+      { orderFeeAllowanceLamports: fee },
+      { tokens, swapPreparer: { prepare: vi.fn(prepare) } },
+    );
+    await job.runOnce();
+    const planned = (await plan(h.journal)).slots.filter((s) => s.status === 'planned');
+    expect(planned.length).toBeGreaterThan(1);
+    const total = planned.reduce((a, s) => a + BigInt(s.lamports), 0n);
+    // The orders, their allowances, the withdrawal's fee and the two rents, minus the 0.01 SOL
+    // already above the reserve.
+    expect(h.withdraw.mock.calls[0]![0].lamports).toBe(
+      total + fee * BigInt(planned.length) + withdrawalFee + 2n * rent - 10_000_000n,
+    );
+    for (const slot of planned) {
+      h.clock.t = slot.at;
+      expect((await job.runOnce()).outcome).toMatchObject({ result: 'swapped', slot: slot.index });
+      expect((await job.runOnce()).outcome).toMatchObject({ result: 'returned' });
+    }
+    expect(created).toEqual(new Set([botAta, vaultAta]));
+    expect((await plan(h.journal)).slots.map((s) => s.status)).toEqual(
+      planned.map(() => 'swapped'),
+    );
+    expect(h.alerter.codes()).toEqual([]);
+    expect(h.rpc.balances.get(bot.toBase58())!).toBeGreaterThanOrEqual(20_000_000n);
+  });
+
+  it('fits the rent of the $FORGE accounts still to create in the day budget, like the fees', async () => {
+    const rent = 2_039_280n;
+    const fee = 150_000n;
+    const withdrawalFee = 205_000n;
+    const allowance = 200_000_000n;
+    const available = 30_000_000n - 20_000_000n;
+    const h = liveHarness(undefined, {
+      remainingLamports: allowance,
+      withdrawalFeeLamports: withdrawalFee,
+    });
+    const tokens: ForgeTokenReader = {
+      mintInfo: async () => ({ programId: TOKEN_PROGRAM_ID, decimals: 6 }),
+      tokenBalance: async () => 0n,
+      creationRent: async () => rent,
+    };
+    await h
+      .make({ orderFeeAllowanceLamports: fee, minOrderLamports: 10_000_000n }, { tokens })
+      .runOnce();
+    const p = await plan(h.journal);
+    expect(BigInt(p.budgetLamports)).toBe(
+      available + allowance - 6n * fee - withdrawalFee - 2n * rent,
+    );
+    const planned = p.slots.filter((s) => s.status === 'planned');
+    const total = planned.reduce((a, s) => a + BigInt(s.lamports), 0n);
+    const withdrawn = h.withdraw.mock.calls[0]![0].lamports;
+    expect(withdrawn).toBeLessThanOrEqual(allowance);
+    expect(withdrawn + available).toBe(
+      total + fee * BigInt(planned.length) + withdrawalFee + 2n * rent,
     );
   });
 

@@ -44,6 +44,7 @@ import {
   type CreateCoinField,
   type ValidatedCoin,
 } from './create/validation';
+import { X_INPUT_MAX, parseXLink } from './socials';
 import { CoinPreview } from './create/ui/CoinPreview';
 import { ImageDropzone } from './create/ui/ImageDropzone';
 import { LaunchSuccess } from './create/ui/LaunchSuccess';
@@ -77,6 +78,7 @@ const FIELD_IDS: Record<CreateCoinField, string> = {
   name: 'coinName',
   symbol: 'coinSymbol',
   description: 'coinDescription',
+  twitter: 'coinTwitter',
   firstBuySol: 'firstBuySol',
 };
 
@@ -85,6 +87,7 @@ const FIELD_LABELS: Record<CreateCoinField, string> = {
   name: TEXT.details.nameLabel,
   symbol: TEXT.details.symbolLabel,
   description: TEXT.details.descriptionLabel,
+  twitter: TEXT.details.twitterLabel,
   firstBuySol: TEXT.firstBuy.title,
 };
 
@@ -181,7 +184,8 @@ function sameCoin(
     image === reviewImage &&
     review.coin.name === coin.name &&
     review.coin.symbol === coin.symbol &&
-    review.coin.description === coin.description
+    review.coin.description === coin.description &&
+    (review.coin.twitter ?? null) === (coin.twitter ?? null)
   );
 }
 
@@ -206,6 +210,7 @@ function CreateCoinForm(props: CreateCoinProps) {
   const [name, setName] = useState('');
   const [symbol, setSymbol] = useState('');
   const [description, setDescription] = useState('');
+  const [twitter, setTwitter] = useState('');
   const [image, setImage] = useState<File | null>(null);
   const [firstBuySol, setFirstBuySol] = useState('');
   const [errors, setErrors] = useState<CreateCoinErrors>({});
@@ -225,7 +230,7 @@ function CreateCoinForm(props: CreateCoinProps) {
   const [result, setResult] = useState<LaunchResult | null>(null);
   const busy = useRef(false);
 
-  const form = { name, symbol, description, image, firstBuySol };
+  const form = { name, symbol, description, twitter, image, firstBuySol };
 
   const revalidate = (next: Partial<typeof form>) => {
     if (!submitted) return;
@@ -262,6 +267,7 @@ function CreateCoinForm(props: CreateCoinProps) {
     setName('');
     setSymbol('');
     setDescription('');
+    setTwitter('');
     setImage(null);
     setFirstBuySol('');
     setErrors({});
@@ -624,6 +630,8 @@ function CreateCoinForm(props: CreateCoinProps) {
   const locked = phase === 'preparing' || phase === 'rebuilding';
   const usage = nameUsage(name);
   const symbolPreview = normalizeSymbol(symbol);
+  const twitterCheck = parseXLink(twitter);
+  const twitterPreview = twitterCheck.ok ? twitterCheck.url : null;
   const invalid = submitted ? invalidFields(errors) : [];
   const firstBuyLamports = parseSolToLamports(firstBuySol.trim() || '0');
   const firstBuyFee = firstBuyLamports ? firstBuyPlatformFee(firstBuyLamports) : BigInt(0);
@@ -760,12 +768,52 @@ function CreateCoinForm(props: CreateCoinProps) {
             aria-describedby={`${FIELD_IDS.description}-count ${FIELD_IDS.description}-error`}
           />
         </Field>
+
+        <Field
+          id={FIELD_IDS.twitter}
+          label={TEXT.details.twitterLabel}
+          error={errors.twitter}
+          hint={TEXT.details.twitterHint}
+          note={TEXT.details.optional}
+          className="mt-4"
+        >
+          <input
+            id={FIELD_IDS.twitter}
+            type="text"
+            inputMode="url"
+            autoComplete="off"
+            autoCapitalize="none"
+            spellCheck={false}
+            className={ui.input}
+            placeholder={TEXT.details.twitterPlaceholder}
+            maxLength={X_INPUT_MAX}
+            value={twitter}
+            disabled={locked}
+            onChange={(e) => {
+              setTwitter(e.target.value);
+              revalidate({ twitter: e.target.value });
+            }}
+            onBlur={() => {
+              // A link that cannot be used is flagged as soon as the field is left.
+              const check = parseXLink(twitter);
+              setErrors((current) => {
+                const next = { ...current };
+                if (check.ok) delete next.twitter;
+                else next.twitter = VALIDATION_TEXT.twitterInvalid;
+                return next;
+              });
+            }}
+            aria-invalid={Boolean(errors.twitter)}
+            aria-describedby={`${FIELD_IDS.twitter}-hint ${FIELD_IDS.twitter}-error`}
+          />
+        </Field>
       </section>
 
       <CoinPreview
         name={name}
         symbol={symbolPreview}
         description={description}
+        twitter={twitterPreview}
         imageUrl={imageUrl}
         className="min-w-0 xl:sticky xl:top-[calc(var(--header-height,4.5rem)+1.5rem)] xl:col-start-2 xl:row-span-2 xl:row-start-1"
       />
@@ -929,6 +977,8 @@ function Field(props: {
   error?: string;
   hint?: string;
   counter?: { text: string; over: boolean; label: string; note?: string };
+  /** Shown where the counter goes, for a field without one (e.g. "optional"). */
+  note?: string;
   className?: string;
   children: React.ReactNode;
 }) {
@@ -943,6 +993,9 @@ function Field(props: {
             </span>
           )}
         </label>
+        {!props.counter && props.note && (
+          <span className="shrink-0 text-xs text-neutral-500">{props.note}</span>
+        )}
         {props.counter && (
           <span
             id={`${props.id}-count`}

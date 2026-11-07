@@ -8,6 +8,7 @@
  *
  * Installed families (import path -> CSS family name):
  * - `@fontsource-variable/inter` -> 'Inter Variable' (neutral grotesk)
+ * - `@fontsource-variable/geist` -> 'Geist Variable' (crisp modern grotesk)
  * - `@fontsource-variable/manrope` -> 'Manrope Variable' (soft geometric)
  * - `@fontsource-variable/space-grotesk` -> 'Space Grotesk Variable' (techy grotesk)
  * - `@fontsource-variable/sora` -> 'Sora Variable' (wide geometric)

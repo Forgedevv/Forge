@@ -26,6 +26,7 @@ export const CLIENT_BOUNDS = {
   // (0.001 SOL = MIN_POOL_CREATION_FEE in the SDK). Whether the SDK accepts 0 is to be confirmed in test 1;
   // otherwise the minimum becomes 0.001.
   poolCreationFeeSol: { min: 0.001, max: 1, allowZero: true },
+  firstBuySol: { min: 0, max: 10 },               // a first buy above ~10 SOL cannot fit in the curve
   migrationThresholdSol: 10,                      // imposed (Meteora bots)
 } as const;
 
@@ -70,7 +71,7 @@ export const LaunchpadSpec = z.object({
     symbol: z.string().regex(/^[A-Z0-9]{2,10}$/),
     description: z.string().max(500),
     imageUrl: z.string().url(),
-    firstBuySol: z.number().min(0).max(10),    // paid by the client (D22)
+    firstBuySol: z.number().min(0).max(10),    // paid by the client (D22), CLIENT_BOUNDS.firstBuySol
   }),
 });
 export type LaunchpadSpec = z.infer<typeof LaunchpadSpec>;
@@ -295,7 +296,7 @@ Crashed job: a job left in an active status with `locked_at` older than `OPS.job
 | `POST /api/jobs/:id/owner-transaction` | `{ signedTransaction }` | `{ signature }` | accepted only if it is the stored transaction byte for byte (checked again against the same launch accounts) with every signature valid; sent on-chain, then `owner_signed` once the transaction is confirmed |
 | `GET /api/launchpads/:id/claim-transaction` | session | `{ transaction }` | claim of the client's partner fees |
 | `POST /api/rpc` | JSON-RPC request | response | Helius relay, method allowlist, per-IP rate limit. `getProgramAccounts` is accepted in two shapes only: DBC pools of one creator (memcmp at offset 104), and DBC pools of one config (memcmp at offset 72, server token only: the template's `/api/coins` fallback). Browser origins (exact, after canonicalisation; `Origin: null` refused): the FORGE site; client sites at `https://<slug>.<CLIENTS_DOMAIN>` or at `https://<site_host>` (the recorded host of that launchpad, default port), both with the launchpad's status rules (draft and live: every method; sleeping: only the creator fee claim's methods; disabled: refused); previews awaiting approval at the exact origin of `jobs.preview_url`. Never a `*.vercel.app` pattern. Client origins are refused when the launchpad directory cannot be loaded (fail closed). Server token (`X-Forge-Relay-Token`): draft and live launchpads only |
-| `POST /api/launchpads/:id/uploads`, `POST /api/launchpads/:id/uploads/:uploadId/complete` (`:id` = slug or uuid) | upload request v1 (`apps/web/src/server/uploads/contract.ts`), server token of that launchpad | upload ticket / receipt | coin image and metadata of a client site's new coin, called by the site's server route only. The launchpad must be `live`; the wallet-signed `auth.host` must be exactly `<slug>.<CLIENTS_DOMAIN>` or the launchpad's recorded `site_host` (403 `HOST_MISMATCH` otherwise, including a host recorded for another launchpad); 503 `NOT_CONFIGURED` only when neither exists |
+| `POST /api/launchpads/:id/uploads`, `POST /api/launchpads/:id/uploads/:uploadId/complete` (`:id` = slug or uuid) | upload request v1 (`apps/web/src/server/uploads/contract.ts`), server token of that launchpad | upload ticket / receipt | coin image and metadata of a client site's new coin, called by the site's server route only. The launchpad must be `live`; the wallet-signed `auth.host` must be exactly `<slug>.<CLIENTS_DOMAIN>` or the launchpad's recorded `site_host` (403 `HOST_MISMATCH` otherwise, including a host recorded for another launchpad); 503 `NOT_CONFIGURED` only when neither exists. Optional `coin.twitter`: the coin's X link, canonical `https://x.com/<handle>` only (400 otherwise), bound to the wallet signature (`X:` line) and written into the metadata JSON as `"twitter"`; absent, the body, signed text and metadata bytes are the same as before (stored in `upload_tickets.coin_twitter`, migration 0017) |
 | `GET /api/coin-meta/:slug` | public | Metaplex metadata JSON | `{ name, symbol, description, image, external_url }` of the launchpad coin, served once the creation job is approved; the on-chain metadata URI points here, so the path never changes. `external_url` = `https://<site_host>` when recorded, else `https://<slug>.<CLIENTS_DOMAIN>` (absent without either) |
 
 Encodings: transactions in base64; signatures in base58; IDs are UUIDs; lamports and raw token amounts as decimal strings in JSON. Request bodies are strict (unknown keys rejected).
@@ -429,16 +430,21 @@ revenue  = revenue forwards finalized at or after BUYBACK_REVENUE_SINCE (section
 spent    = `funding.lamports` of the buyback day entries (`buyback.day-<day>.json`) with
            `funding.at` at or after BUYBACK_REVENUE_SINCE and status requested, confirmed or unknown
 backlog  = max(0, revenue - spent)
-fees     = orders x fee allowance + withdrawal fee
+fees     = orders x fee allowance + withdrawal fee + $FORGE account rents
 budget   = min(backlog + SOL on the bot above its reserve - fees, BUYBACK_DAILY_CAP_LAMPORTS,
                SOL on the bot above its reserve + remaining spending limit - fees)
-withdrawal = planned orders + planned orders x fee allowance - SOL on the bot above its reserve
-             + withdrawal fee, at most the remaining spending limit and at most the backlog
+withdrawal = planned orders + planned orders x fee allowance + $FORGE account rents
+             - SOL on the bot above its reserve + withdrawal fee, at most the remaining spending
+             limit and at most the backlog
              (a backlog of 0 withdraws nothing: the orders run on the bot's own SOL)
 fee allowance  = BUYBACK_ORDER_FEE_ALLOWANCE_LAMPORTS, by default BUYBACK_MAX_PRIORITY_FEE_LAMPORTS
                  (the buy) + the signer priority fee cap of the return (100,000 CU) + 10,000
                  (+ 30 bps of the largest order on the dbc-devnet route)
 withdrawal fee = 5,000 + the signer priority fee cap of the spending-limit use (200,000 CU)
+$FORGE account rents = the rent-exempt minimum of the bot's and of the vault's $FORGE associated
+                 token accounts, each only while it does not exist (the first live day: the
+                 first buy creates the bot's, the first return the vault's, the bot pays both;
+                 2,039,280 lamports each for an SPL Token mint)
 ```
 
 Everything comes from the journals, nothing from a balance (a balance mixes revenue with client payments and the team's own funds). Cashbox sweeps (client payments) are never read. The figures are recorded in the day entry (`revenue`, `botAvailableLamports`, `unplannedLamports`), in the run report (`budget`) and in the `buyback day planned` log line. When the budget cannot be established (`BUYBACK_REVENUE_SINCE` unset, journal directory unreadable, a corrupt entry) the day is not planned for that run and a high alert is sent (docs/OPERATIONS.md "Buyback budget").

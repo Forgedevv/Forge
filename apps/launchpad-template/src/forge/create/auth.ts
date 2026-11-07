@@ -4,8 +4,9 @@
  * (which rebuilds it from the request and verifies the signature), so both always agree.
  *
  * Everything the server stores or builds is bound to the signature: the site, the wallet, the coin
- * name and symbol, the first buy, the exact image and description bytes (SHA-256), a single-use
- * nonce and the time it was issued. A replayed or edited request does not verify.
+ * name and symbol, the first buy, the exact image and description bytes (SHA-256), the X link
+ * when there is one, a single-use nonce and the time it was issued. A replayed or edited request
+ * does not verify. A coin without an X link signs the very same text as before the link existed.
  */
 
 export const LAUNCH_AUTH_VERSION = 1;
@@ -23,6 +24,8 @@ export interface LaunchAuthFields {
   firstBuyLamports: string;
   imageSha256: string;
   descriptionSha256: string;
+  /** Canonical X link (`https://x.com/<handle>`), or null/absent: then no `X:` line is signed. */
+  twitter?: string | null;
   /** 32 lowercase hex characters (16 random bytes). */
   nonce: string;
   /** ISO 8601 UTC timestamp. */
@@ -46,6 +49,7 @@ export function buildLaunchAuthMessage(f: LaunchAuthFields): string {
     `First buy (lamports): ${f.firstBuyLamports}`,
     `Image SHA-256: ${f.imageSha256}`,
     `Description SHA-256: ${f.descriptionSha256}`,
+    ...(f.twitter ? [`X: ${f.twitter}`] : []),
     `Nonce: ${f.nonce}`,
     `Issued at: ${f.issuedAt}`,
   ].join('\n');

@@ -7,6 +7,7 @@ import {
   supportEmail,
   supportMailto,
   telegramUrl,
+  xUrl,
 } from './support';
 import { ErrorNotice } from './components';
 import { FaqScreen } from './documents';
@@ -19,7 +20,8 @@ afterEach(() => {
   vi.unstubAllEnvs();
 });
 
-function contact(telegram?: string, email?: string) {
+function contact(telegram?: string, email?: string, x?: string) {
+  vi.stubEnv('NEXT_PUBLIC_SUPPORT_X_URL', x ?? '');
   vi.stubEnv('NEXT_PUBLIC_SUPPORT_TELEGRAM_URL', telegram ?? '');
   vi.stubEnv('NEXT_PUBLIC_SUPPORT_EMAIL', email ?? '');
 }
@@ -44,6 +46,32 @@ describe('support contact configuration', () => {
     }
   });
 
+  it('accepts only https X profile links, normalised to x.com', () => {
+    expect(xUrl('https://x.com/forge_support')).toBe('https://x.com/forge_support');
+    expect(xUrl(' https://twitter.com/Forge ')).toBe('https://x.com/Forge');
+    expect(xUrl('https://www.x.com/forge/')).toBe('https://x.com/forge');
+    expect(xUrl('https://www.twitter.com/forge?s=21')).toBe('https://x.com/forge');
+    for (const bad of [
+      undefined,
+      '',
+      'http://x.com/forge',
+      'https://x.com/',
+      'https://x.com/forge/status/1',
+      'https://x.com/forge-support',
+      'https://x.com/a_handle_that_is_too_long',
+      'https://x.com.evil.example/forge',
+      'https://evil.example/x.com/forge',
+      'https://user:pass@x.com/forge',
+      'https://x.com:8443/forge',
+      'https://t.me/forge',
+      'javascript:alert(1)',
+      '@forge',
+      'forge',
+    ]) {
+      expect(xUrl(bad)).toBeNull();
+    }
+  });
+
   it('accepts only plain email addresses', () => {
     expect(supportEmail('support@forge.example')).toBe('support@forge.example');
     expect(supportEmail(' help+web@mail.forge.example ')).toBe('help+web@mail.forge.example');
@@ -62,9 +90,15 @@ describe('support contact configuration', () => {
     }
   });
 
-  it('reads both public variables, an invalid one counting as unset', () => {
-    contact('https://t.me/forge_support', 'not-an-email');
-    expect(readSupportContact()).toEqual({ telegram: 'https://t.me/forge_support', email: null });
+  it('reads the public variables, an invalid one counting as unset', () => {
+    contact('https://t.me/forge_support', 'not-an-email', 'https://twitter.com/forge');
+    expect(readSupportContact()).toEqual({
+      x: 'https://x.com/forge',
+      telegram: 'https://t.me/forge_support',
+      email: null,
+    });
+    contact(undefined, undefined, 'https://x.com/forge/status/1');
+    expect(readSupportContact()).toEqual({ x: null, telegram: null, email: null });
   });
 
   it('puts the reference and the context in the email', () => {
@@ -93,6 +127,30 @@ describe('Contact us block', () => {
     );
     expect(within(block).getByText(JOB)).toBeInTheDocument();
     expect(within(block).queryByRole('link', { name: /Telegram/ })).not.toBeInTheDocument();
+    expect(within(block).queryByRole('link', { name: new RegExp(copy.x) })).not.toBeInTheDocument();
+  });
+
+  it('shows the X channel alone when only it is set', () => {
+    contact(undefined, undefined, 'https://x.com/forge_support');
+    render(<SupportBlock reference={JOB} />);
+    const link = screen.getByRole('link', { name: new RegExp(copy.x) });
+    expect(link).toHaveAttribute('href', 'https://x.com/forge_support');
+    expect(link).toHaveAttribute('target', '_blank');
+    expect(link).toHaveAttribute('rel', 'noopener noreferrer');
+    expect(screen.queryByRole('link', { name: /Telegram/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: copy.help })).not.toBeInTheDocument();
+    expect(screen.getByText(copy.body)).toBeInTheDocument();
+  });
+
+  it('lists X first when several channels are set', () => {
+    contact('https://t.me/forge_support', 'support@forge.example', 'https://x.com/forge_support');
+    render(<SupportBlock reference={JOB} />);
+    const links = within(screen.getByRole('region', { name: copy.title })).getAllByRole('link');
+    expect(links.map((link) => link.getAttribute('href'))).toEqual([
+      'https://x.com/forge_support',
+      'https://t.me/forge_support',
+      expect.stringMatching(/^mailto:support@forge\.example\?/),
+    ]);
   });
 
   it('shows the Telegram channel alone when only it is set', () => {
@@ -120,6 +178,15 @@ describe('Contact us block', () => {
     contact();
     const { container } = render(<SupportLinks fallback={false} />);
     expect(container).toBeEmptyDOMElement();
+  });
+
+  it('notice links put X first', () => {
+    contact('https://t.me/forge_support', undefined, 'https://twitter.com/forge_support');
+    render(<SupportLinks />);
+    const links = screen.getAllByRole('link');
+    expect(links[0]).toHaveAttribute('href', 'https://x.com/forge_support');
+    expect(links[0]).toHaveTextContent(copy.xShort);
+    expect(links[1]).toHaveAttribute('href', 'https://t.me/forge_support');
   });
 });
 

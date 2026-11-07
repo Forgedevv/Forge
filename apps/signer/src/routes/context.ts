@@ -503,8 +503,12 @@ const LONGEST_PLACEHOLDER_VALUE = {
 export const MAX_METADATA_URI_BYTES =
   LAUNCH_METADATA_BUDGET_BYTES - METADATA_LIMITS.name - METADATA_LIMITS.symbol;
 
+/** Tunnel hosts that get a new random name at every start (Cloudflare quick tunnels). */
+const EPHEMERAL_HOST_SUFFIXES = ['.trycloudflare.com'] as const;
+
 /**
- * Startup check of SIGNER_COIN_METADATA_URL: exactly one `{slug}` or `{launchpadId}`, https, and
+ * Startup check of SIGNER_COIN_METADATA_URL: exactly one `{slug}` or `{launchpadId}`, https, a
+ * stable host (no quick tunnel), and
  * with the longest value of that placeholder a canonical URL of at most `MAX_METADATA_URI_BYTES`.
  * Every spec the shared schema accepts (name <= 32 bytes, symbol <= 10) then fits the launch
  * transaction: a too long template would only fail at /v1/launch-coin/prepare, after the
@@ -525,6 +529,13 @@ export function assertMetadataTemplate(template: string): void {
     throw new Error('SIGNER_COIN_METADATA_URL must be an absolute URL');
   }
   if (url.protocol !== 'https:') throw new Error('SIGNER_COIN_METADATA_URL must use https');
+  // The URI is written into each coin's metadata, which is immutable: a host that changes at every
+  // start leaves every coin launched under it with a dead URI.
+  if (EPHEMERAL_HOST_SUFFIXES.some((suffix) => url.hostname.endsWith(suffix))) {
+    throw new Error(
+      `SIGNER_COIN_METADATA_URL must use a stable host, not an ephemeral tunnel (${url.hostname}): coin metadata URIs are immutable`,
+    );
+  }
 
   const longest = template.replace(PLACEHOLDER_RE, (_m, name: 'slug' | 'launchpadId') => {
     return LONGEST_PLACEHOLDER_VALUE[name];

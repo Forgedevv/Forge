@@ -251,6 +251,31 @@ describe('createUploadClient', () => {
     );
     expect(fetch).not.toHaveBeenCalled();
   });
+
+  it('sends a canonical X link with the coin texts, and nothing else as one', async () => {
+    const fetch = vi
+      .fn<UploadFetch>()
+      .mockResolvedValueOnce(reply(200, ticket()))
+      .mockResolvedValueOnce(reply(200))
+      .mockResolvedValueOnce(reply(200, receipt()));
+    const withX = { ...request, coin: { ...request.coin, twitter: 'https://x.com/moon_coin' } };
+    await client(fetch).uploadCoin(withX, PNG);
+    expect(JSON.parse(fetch.mock.calls[0]?.[1].body as string).coin.twitter).toBe(
+      'https://x.com/moon_coin',
+    );
+
+    const never = vi.fn<UploadFetch>();
+    for (const twitter of [
+      'https://twitter.com/moon_coin',
+      'moon_coin',
+      'https://evil.example/x',
+    ]) {
+      await expect(
+        client(never).uploadCoin({ ...request, coin: { ...request.coin, twitter } }, PNG),
+      ).rejects.toThrow();
+    }
+    expect(never).not.toHaveBeenCalled();
+  });
 });
 
 describe('resolveForgeApiBase', () => {

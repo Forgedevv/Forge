@@ -56,6 +56,35 @@ describe('Solana addresses (diff-aware)', () => {
     );
   });
 
+  it('allows import paths of plain words that happen to decode to 32 bytes', () => {
+    // `/components/sections/values/ValuesSpotlight` is 43 base64 characters: exactly 32 bytes.
+    const source = [
+      `import { ValuesSpotlight } from '@/components/sections/values/ValuesSpotlight';`,
+      `import { HoverPreviewList } from '@/components/library/motion/HoverPreviewList';`,
+      `export const A = [ValuesSpotlight, HoverPreviewList];`,
+    ].join('\n');
+    expect(scanComponent(source)).not.toContain('solana-address-encoded');
+  });
+
+  it('exempts word paths only as import or export specifiers', () => {
+    // The same 43-character path as data (a constant, a decoded buffer) is still a 32-byte key.
+    const path = '/components/sections/values/ValuesSpotlight';
+    expect(scanComponent(`export const K = '${path}';`)).toContain('solana-address-encoded');
+    expect(scanComponent(`export const K = Buffer.from('${path}', 'base64');`)).toContain(
+      'solana-address-encoded',
+    );
+    expect(scanComponent(`export { ValuesSpotlight } from '@${path}';`)).not.toContain(
+      'solana-address-encoded',
+    );
+  });
+
+  it('still blocks a 32-byte token with slashes whose segments are not plain words', () => {
+    const b64 = Buffer.from(ADDR_BYTES).toString('base64').replace(/=+$/, '');
+    const slashed = `${b64.slice(0, 10)}/${b64.slice(11)}`;
+    expect(slashed).toHaveLength(43);
+    expect(scanComponent(`export const K = '${slashed}';`)).toContain('solana-address-encoded');
+  });
+
   it('ignores an address already present in the baseline file', () => {
     const before = `export const MINT = '${ADDR}';\nexport const A = 1;\n`;
     const after = `export const A = 2;\nexport const MINT = '${ADDR}';\n`;
@@ -364,6 +393,24 @@ describe('HTML sinks and javascript: URLs', () => {
     expect(rulesOf(scan([added('src/content/x.md', '[Claim](javascript:alert(1))')]))).toContain(
       'javascript-url',
     );
+  });
+
+  it('blocks a static link to another site, on <a> and next/link', () => {
+    expect(
+      scanComponent(`export const C = () => <a href="https://evil.example/claim">Claim</a>;`),
+    ).toContain('navigation-external');
+    expect(
+      scanComponent(
+        `import Link from 'next/link';
+export const C = () => <Link href="https://evil.example/claim">Claim</Link>;`,
+      ),
+    ).toContain('navigation-external');
+    expect(scanComponent(`export const C = () => <a href="//evil.example">x</a>;`)).toContain(
+      'navigation-external',
+    );
+    expect(
+      scanComponent(`export const C = () => <a href="mailto:team@example.com">Mail</a>;`),
+    ).toEqual([]);
   });
 
   it('allows external social links', () => {

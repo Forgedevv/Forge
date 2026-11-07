@@ -66,6 +66,11 @@ const EXCLUDED_PATHS = new Set([
   'src/forge/trade/core-adapter.mock.ts',
   'src/forge/claims/mock-core.ts',
   'src/forge/create/test-fixtures.ts',
+  // Showcases of the visual library and its sections, and the example sites, for FORGE only:
+  // client sites have no /library, /sections or /examples page.
+  'src/pages/library.tsx',
+  'src/pages/sections.tsx',
+  'src/pages/examples.tsx',
 ]);
 const EXCLUDED_PATTERNS = [/\.tsbuildinfo$/, /\.(test|spec)\.[cm]?[jt]sx?$/];
 const KEPT_ENV_FILE = '.env.example';

@@ -643,6 +643,30 @@ describeDb('upload_tickets (0006)', () => {
     });
   });
 
+  it('keeps only a canonical X link, or none (0017)', async (ctx) => {
+    if (!present) ctx.skip();
+    const r = await admin.query(
+      `select 1 from information_schema.columns where table_name = 'upload_tickets' and column_name = 'coin_twitter'`,
+    );
+    // Skipped (not failed) on a database where migration 0017 is not applied yet.
+    if (r.rowCount === 0) ctx.skip();
+    await inTx(async (c) => {
+      await insert(c, ticket());
+      await insert(c, ticket({ coin_twitter: null }));
+      await insert(c, ticket({ coin_twitter: 'https://x.com/moon_coin' }));
+      for (const bad of [
+        'https://twitter.com/moon_coin',
+        'https://x.com/moon_coin/status/1',
+        'https://x.com/a_handle_that_is_too_long',
+        'http://x.com/moon_coin',
+        'https://xxcom/moon_coin',
+        'javascript:alert(1)',
+      ]) {
+        await rejects(c, ticket({ coin_twitter: bad }), /upload_tickets_coin_twitter_check/);
+      }
+    });
+  });
+
   it('has the sweep index on unswept tickets', async (ctx) => {
     if (!present) ctx.skip();
     const r = await admin.query(

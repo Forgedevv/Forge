@@ -38,6 +38,7 @@ import {
   jupiterClaimsConfigFromEnv,
 } from '../jobs/jupiter-claims.js';
 import {
+  BASE_FEE_LAMPORTS_PER_SIGNATURE,
   createFileLedger,
   createJupiterClient,
   createRpcBalanceSource,
@@ -491,10 +492,14 @@ export const revenueModule: SignerJobModule = {
       return { runOnce: async () => ({ status: 'off' }), delayMs: () => intervalMs };
     }
     let convert: (() => ReturnType<typeof runConvertOnce>) | null = null;
+    let convertMaxFeeLamports = 0n;
     let jupiterSwapApi: ConvertConfig['swapApi'] | null = null;
     if (ctx.cluster === 'mainnet-beta') {
       const convertConfig = parseConvertConfig(ctx.env, { cluster: ctx.cluster });
       jupiterSwapApi = convertConfig.swapApi;
+      // One signature and the priority fee cap the swap sender below enforces.
+      convertMaxFeeLamports =
+        BASE_FEE_LAMPORTS_PER_SIGNATURE + convertConfig.maxPriorityFeeLamports;
       const owner = revenue.publicKey.toBase58();
       const deps: ConvertDeps = {
         jupiter: createConvertJupiterClient(ctx, convertConfig),
@@ -535,6 +540,7 @@ export const revenueModule: SignerJobModule = {
       config,
       cluster: ctx.cluster,
       convert,
+      convertMaxFeeLamports,
       onBeforeSend: ctx.onBeforeSend,
       priorityFees: ctx.priorityFees,
     });

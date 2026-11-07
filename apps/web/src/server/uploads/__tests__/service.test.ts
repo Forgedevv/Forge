@@ -10,7 +10,7 @@ import {
   type UploadTicket,
 } from '../contract';
 import { SlidingWindowLimiter } from '../rate-limit';
-import { createUploadService, toUploadHttpError } from '../service';
+import { createUploadService, requestFingerprint, toUploadHttpError } from '../service';
 import type { TicketRecord } from '../store';
 import {
   BUCKET,
@@ -198,6 +198,22 @@ describe('issue a ticket', () => {
         const error = await issueError(h.service.issue('moonpad', signedRequest({ signOverride })));
         expect(error.status).toBe(401);
         expect(error.code).toBe('BAD_SIGNATURE');
+      }
+      expect(h.store.tickets.size).toBe(0);
+    });
+
+    it('binds the X link to the signature: added, removed or changed, it does not verify', async () => {
+      const h = harness();
+      for (const request of [
+        signedRequest({ signOverride: { twitter: 'https://x.com/moon_coin' } }),
+        signedRequest({ twitter: 'https://x.com/moon_coin', signOverride: { twitter: null } }),
+        signedRequest({
+          twitter: 'https://x.com/moon_coin',
+          signOverride: { twitter: 'https://x.com/rug_coin' },
+        }),
+      ]) {
+        const error = await issueError(h.service.issue('moonpad', request));
+        expect([error.status, error.code]).toEqual([401, 'BAD_SIGNATURE']);
       }
       expect(h.store.tickets.size).toBe(0);
     });
@@ -487,6 +503,7 @@ describe('issue a ticket', () => {
         coinName: 'x',
         coinSymbol: 'X',
         coinDescription: '',
+        coinTwitter: null,
         firstBuyLamports: '0',
         status: 'issued',
         rejection: null,
@@ -524,6 +541,12 @@ describe('issue a ticket', () => {
       { ...request, coin: { ...request.coin, name: 'Bad‮Name' } },
       { ...request, firstBuyLamports: '18446744073709551616' },
       { ...request, auth: { ...request.auth, nonce: 'XYZ' } },
+      { ...request, coin: { ...request.coin, twitter: 'https://twitter.com/moon_coin' } },
+      { ...request, coin: { ...request.coin, twitter: 'https://x.com/moon_coin/status/1' } },
+      { ...request, coin: { ...request.coin, twitter: 'https://evil.example/moon_coin' } },
+      { ...request, coin: { ...request.coin, twitter: 'moon_coin' } },
+      { ...request, coin: { ...request.coin, twitter: null } },
+      { ...request, coin: { ...request.coin, twitter: '' } },
     ]) {
       const error = await issueError(h.service.issue('moonpad', body));
       expect([error.status, error.code]).toEqual([400, 'BAD_REQUEST']);
@@ -531,8 +554,8 @@ describe('issue a ticket', () => {
   });
 });
 
-async function issueAndPut(h: Harness, image = pngBytes()) {
-  const request = signedRequest({ image });
+async function issueAndPut(h: Harness, image = pngBytes(), twitter?: string) {
+  const request = signedRequest({ image, twitter });
   const ticket = await h.service.issue('moonpad', request);
   expect(await putImage(h, ticket, image)).toBe(200);
   return { request, ticket };
@@ -607,6 +630,35 @@ describe('complete', () => {
     expect(sha256Hex(image.bytes)).toBe(request.image.sha256);
     expect(image.contentType).toBe('image/png');
     expect(h.r2.objects.has(`pending/moonpad/${request.mint}.png`)).toBe(false);
+  });
+
+  it('writes a signed X link into the metadata JSON as "twitter", after the image', async () => {
+    const h = harness();
+    const { request, ticket } = await issueAndPut(h, pngBytes(), 'https://x.com/moon_coin');
+    expect(h.store.tickets.get(ticket.uploadId)?.coinTwitter).toBe('https://x.com/moon_coin');
+    await h.service.complete('moonpad', ticket.uploadId, { mint: request.mint });
+    const json = Buffer.from(
+      h.r2.objects.get(`launchpads/moonpad/metadata/${request.mint}.json`)!.bytes,
+    ).toString('utf8');
+    expect(JSON.parse(json)).toEqual({
+      name: 'Moon Coin',
+      symbol: 'MOON',
+      description: 'The moon coin.',
+      image: ticket.image.publicUrl,
+      twitter: 'https://x.com/moon_coin',
+    });
+    expect(json.indexOf('"image"')).toBeLessThan(json.indexOf('"twitter"'));
+  });
+
+  it('writes no "twitter" key for a coin without an X link', async () => {
+    const h = harness();
+    const { request, ticket } = await issueAndPut(h);
+    expect(h.store.tickets.get(ticket.uploadId)?.coinTwitter).toBeNull();
+    await h.service.complete('moonpad', ticket.uploadId, { mint: request.mint });
+    const json = Buffer.from(
+      h.r2.objects.get(`launchpads/moonpad/metadata/${request.mint}.json`)!.bytes,
+    ).toString('utf8');
+    expect(json).not.toContain('twitter');
   });
 
   it('never exposes staged bytes at the public key before verification', async () => {
@@ -877,5 +929,33 @@ describe('complete', () => {
     expect([mapped.status, mapped.code]).toEqual([502, 'STORAGE_UNAVAILABLE']);
     // Nothing was rejected or deleted because storage was down.
     expect(h.store.tickets.get(other.ticket.uploadId)!.status).toBe('issued');
+  });
+});
+
+describe('X link backward compatibility', () => {
+  it('hashes a request without an X link exactly as before the link existed', () => {
+    const legacy = (r: ReturnType<typeof signedRequest>) =>
+      sha256Hex(
+        JSON.stringify([
+          r.version,
+          r.mint,
+          r.wallet,
+          r.coin.name,
+          r.coin.symbol,
+          r.coin.description,
+          r.firstBuyLamports,
+          r.image.contentType,
+          r.image.size,
+          r.image.sha256,
+          r.auth.host,
+          r.auth.nonce,
+          r.auth.issuedAt,
+          r.auth.signature,
+        ]),
+      );
+    const plain = signedRequest();
+    expect(requestFingerprint(plain)).toBe(legacy(plain));
+    const withX = signedRequest({ twitter: 'https://x.com/moon_coin' });
+    expect(requestFingerprint(withX)).not.toBe(legacy(withX));
   });
 });
