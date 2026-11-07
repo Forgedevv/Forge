@@ -21,6 +21,11 @@ export function HeroParticleField(props: HeroCopy) {
       <div aria-hidden="true" className="absolute inset-0 -z-10 opacity-90">
         <ParticleBlob />
       </div>
+      {/* Light mode only: a calm eye of the page colour keeps the copy readable over the sphere. */}
+      <div
+        aria-hidden="true"
+        className="absolute left-1/2 top-1/2 -z-10 aspect-[3/2] w-[min(100vw,52rem)] -translate-x-1/2 -translate-y-1/2 bg-[radial-gradient(closest-side,color-mix(in_srgb,var(--color-bg)_65%,transparent)_45%,transparent)] dark:hidden"
+      />
       <div
         aria-hidden="true"
         className="absolute inset-x-0 bottom-0 -z-10 h-1/3 bg-gradient-to-t from-[var(--color-bg)] to-transparent"

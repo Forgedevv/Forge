@@ -22,6 +22,11 @@ export function ClosingFilaments(props: ClosingSectionProps) {
       <div aria-hidden="true" className="absolute inset-0 -z-10">
         <FilamentStrands followPointer />
       </div>
+      {/* A calm eye of the page colour behind the copy, so the strands never cross the text. */}
+      <div
+        aria-hidden="true"
+        className="absolute left-1/2 top-1/2 -z-10 aspect-[3/2] w-[min(100vw,48rem)] -translate-x-1/2 -translate-y-1/2 bg-[radial-gradient(closest-side,color-mix(in_srgb,var(--color-bg)_80%,transparent)_50%,transparent)]"
+      />
       <h2
         id={id}
         className={cn(HEADING_FONT, 'max-w-[16ch] text-[clamp(2.4rem,6vw,5rem)] leading-[0.95]')}
