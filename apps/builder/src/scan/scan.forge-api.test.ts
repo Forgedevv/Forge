@@ -10,6 +10,9 @@ import { FORGE_PUBLIC_API, forgeModuleId, importTarget, resolveLocalImport } fro
 import { added, modified, renamed, rulesOf, scan } from './test-helpers.js';
 import type { Violation } from './types.js';
 
+/** Scanning every file of the template takes seconds on a slow CI runner. */
+const SCAN_TEMPLATE_TIMEOUT_MS = 60_000;
+
 /**
  * Regression (audit, reproduced with scanDiff returning ok: true): relative and `@/` imports were
  * never checked, so free-zone code could import FORGE's internal modules, e.g. replace the swap
@@ -336,25 +339,29 @@ function codeFiles(dir: string): string[] {
 const TOLERATED = new Set(['src/components/Explore/queries.ts|src/forge/data/client|ApeClient']);
 
 describe('the template free zones', () => {
-  it('use nothing of src/forge/ beyond the public surface (and the tolerated baseline)', () => {
-    const config = resolveConfig({});
-    const files = FREE_ZONES.flatMap((z) => codeFiles(join(TEMPLATE_ROOT, z)))
-      .map((f) => relative(TEMPLATE_ROOT, f).replace(/\\/g, '/'))
-      .filter((p) => !/^src\/pages\/(?:api\/|_app\.|_document\.|creator-fees\.)/.test(p))
-      .filter((p) => !p.startsWith('src/components/modes/'));
-    expect(files.length).toBeGreaterThan(10);
-    const offending: string[] = [];
-    for (const path of files) {
-      const text = readFileSync(join(TEMPLATE_ROOT, path), 'utf8');
-      for (const f of analyzeCode(path, text, config)) {
-        // Local imports only (the header's wallet adapter import is a package rule).
-        if (!/^forbidden-import\|(?:forge-|import\|local\|)/.test(f.key)) continue;
-        const m = /^forbidden-import\|forge-import\|([^|]+)\|([^|]+)$/.exec(f.key);
-        if (!m || !TOLERATED.has(`${path}|${m[1]}|${m[2]}`)) {
-          offending.push(`${path}:${f.line} ${f.reason}`);
+  it(
+    'use nothing of src/forge/ beyond the public surface (and the tolerated baseline)',
+    { timeout: SCAN_TEMPLATE_TIMEOUT_MS },
+    () => {
+      const config = resolveConfig({});
+      const files = FREE_ZONES.flatMap((z) => codeFiles(join(TEMPLATE_ROOT, z)))
+        .map((f) => relative(TEMPLATE_ROOT, f).replace(/\\/g, '/'))
+        .filter((p) => !/^src\/pages\/(?:api\/|_app\.|_document\.|creator-fees\.)/.test(p))
+        .filter((p) => !p.startsWith('src/components/modes/'));
+      expect(files.length).toBeGreaterThan(10);
+      const offending: string[] = [];
+      for (const path of files) {
+        const text = readFileSync(join(TEMPLATE_ROOT, path), 'utf8');
+        for (const f of analyzeCode(path, text, config)) {
+          // Local imports only (the header's wallet adapter import is a package rule).
+          if (!/^forbidden-import\|(?:forge-|import\|local\|)/.test(f.key)) continue;
+          const m = /^forbidden-import\|forge-import\|([^|]+)\|([^|]+)$/.exec(f.key);
+          if (!m || !TOLERATED.has(`${path}|${m[1]}|${m[2]}`)) {
+            offending.push(`${path}:${f.line} ${f.reason}`);
+          }
         }
       }
-    }
-    expect(offending).toEqual([]);
-  });
+      expect(offending).toEqual([]);
+    },
+  );
 });

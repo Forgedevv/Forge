@@ -13,6 +13,9 @@ import { added, modified, rulesOf, scan } from './test-helpers.js';
 
 const TEMPLATE = fileURLToPath(new URL('../../../launchpad-template/', import.meta.url));
 
+/** Scanning every file of the template takes seconds on a slow CI runner. */
+const SCAN_TEMPLATE_TIMEOUT_MS = 60_000;
+
 function sourceFiles(dir: string): string[] {
   const out: string[] = [];
   for (const name of readdirSync(dir)) {
@@ -39,6 +42,7 @@ import { FaqCards } from '@/components/sections/faq/FaqCards';
 import { ClosingMarquee } from '@/components/sections/closing/ClosingMarquee';
 import { DotGrid } from '@/components/library/backgrounds/DotGrid';
 import { ScrollWords } from '@/components/library/text/ScrollWords';
+
 
 export default function Index() {
   return (
@@ -84,29 +88,33 @@ export default SiteFooter;
     expect(rulesOf(result)).toEqual([]);
   });
 
-  it('allows every section copied into the home folder and edited', () => {
-    const dir = join(TEMPLATE, 'src/components/sections');
-    // `shared.tsx` and the registry are imported by the copies, never copied: shared holds the
-    // links checked at runtime (`SafeLink`), whose targets the scan cannot follow.
-    const files = sourceFiles(dir).filter(
-      (file) => !file.endsWith('registry.ts') && !file.endsWith('shared.tsx'),
-    );
-    expect(files.length).toBeGreaterThan(25);
-    const changed = files.map((file) => {
-      const name = relative(dir, file).replace(/\\/g, '/');
-      const source = readFileSync(file, 'utf8')
-        .replaceAll("from '../shared'", "from '@/components/sections/shared'")
-        .replace(/from '\.\/([A-Za-z]+)'/g, (_, mod: string) => {
-          const folder = name.split('/')[0];
-          return `from '@/components/sections/${folder}/${mod}'`;
-        });
-      return added(`src/components/home/copied/${name}`, source);
-    });
-    const result = scan(changed);
-    expect(
-      result.ok ? [] : result.violations.map((v) => `${v.file}: ${v.rule} ${v.reason}`),
-    ).toEqual([]);
-  });
+  it(
+    'allows every section copied into the home folder and edited',
+    { timeout: SCAN_TEMPLATE_TIMEOUT_MS },
+    () => {
+      const dir = join(TEMPLATE, 'src/components/sections');
+      // `shared.tsx` and the registry are imported by the copies, never copied: shared holds the
+      // links checked at runtime (`SafeLink`), whose targets the scan cannot follow.
+      const files = sourceFiles(dir).filter(
+        (file) => !file.endsWith('registry.ts') && !file.endsWith('shared.tsx'),
+      );
+      expect(files.length).toBeGreaterThan(25);
+      const changed = files.map((file) => {
+        const name = relative(dir, file).replace(/\\/g, '/');
+        const source = readFileSync(file, 'utf8')
+          .replaceAll("from '../shared'", "from '@/components/sections/shared'")
+          .replace(/from '\.\/([A-Za-z]+)'/g, (_, mod: string) => {
+            const folder = name.split('/')[0];
+            return `from '@/components/sections/${folder}/${mod}'`;
+          });
+        return added(`src/components/home/copied/${name}`, source);
+      });
+      const result = scan(changed);
+      expect(
+        result.ok ? [] : result.violations.map((v) => `${v.file}: ${v.rule} ${v.reason}`),
+      ).toEqual([]);
+    },
+  );
 
   it('still refuses what the scan refuses anywhere, inside a section', () => {
     const source = `import { HeroHalo } from '@/components/sections/hero/HeroHalo';
