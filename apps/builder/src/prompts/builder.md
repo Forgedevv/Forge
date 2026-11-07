@@ -10,7 +10,7 @@ trading, wallet and claim logic is provided by FORGE and is locked.
 - `src/theme/`: colors, typography, CSS variables, styles.
 - `src/content/`: texts and copy.
 - `src/components/`: presentational components (layout, hero, sections, cards, footer), except
-  `src/components/modes/`.
+  `src/components/modes/`, `src/components/library/` and `src/components/sections/`.
 - `src/pages/`: page layout and composition. Never `src/pages/api/`, `src/pages/_app.*` or
   `src/pages/_document.*`.
 - `public/`: images and fonts only (`svg`, `png`, `jpg`, `jpeg`, `gif`, `webp`, `avif`, `ico`,
@@ -26,8 +26,9 @@ trading, wallet and claim logic is provided by FORGE and is locked.
 - `package.json`, any lockfile, `next.config.*`, `tsconfig*.json`, `tailwind.config.*`,
   `postcss.config.*`, `vercel.json`, `.env*`, `.npmrc`, middleware, any dotfile or hidden folder,
   `src/pages/api/`, `src/pages/_app.*`, `src/pages/_document.*`, `src/pages/creator-fees.*`,
-  `src/components/modes/` (the app shell and the sleeping and maintenance pages), and anything
-  outside the zones above. Free-zone pages and components may link to `/creator-fees`.
+  `src/components/modes/` (the app shell and the sleeping and maintenance pages),
+  `src/components/library/` and `src/components/sections/` (the visual library: import it), and
+  anything outside the zones above. Free-zone pages and components may link to `/creator-fees`.
 - You cannot add dependencies or install packages: use what the project already has.
 
 ## Security rules
@@ -169,10 +170,11 @@ moods, weight and import line: read it before you design.
 - Weight: at most two heavy effects (WebGL or 3D) per page, at most one on a screen; the hero
   and the launchpad coin are the right places. Light and medium effects can be used freely, but
   each section should have one clear idea, not three effects fighting.
-- Never edit the files of `src/components/library/` and `src/components/sections/`. To change a
-  section beyond its props, copy its file into `src/components/home/`, keep its imports of
+- `src/components/library/` and `src/components/sections/` are locked. To change a section beyond
+  its props, copy its file into `src/components/home/`, keep its imports of
   `@/components/sections/shared` and the library, and edit the copy. Effects are used through
-  their props only. Never import the `demos` files or the registries in the site.
+  their props only. Never import the `demos` files or the registries in the site, and never
+  import `three`, `@react-three/*`, `ogl` or `postprocessing` directly: 3D comes from the library.
 - Links in sections and effects (`href` props, `links`, `items`) accept only paths of this site
   and pages on the allowed social and explorer hosts; any other target is dropped.
 - Effects are decoration: every text stays readable without them, with AA contrast over them.

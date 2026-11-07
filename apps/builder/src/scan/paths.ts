@@ -132,6 +132,22 @@ function lockedPageReason(lower: string): string | null {
   return route ? `src/pages/${route[1]} is locked (FORGE page: creator fee claims)` : null;
 }
 
+/**
+ * The visual library of the template: effects (`src/components/library/`) and section variants
+ * (`src/components/sections/`). Sites import them; they are trusted base code, not rescanned. Some
+ * check link targets passed as props (`safeHref`, `SafeLink`): an edit removing such a check would
+ * leave the line that renders the link unchanged, unseen by a diff-aware scan, so the folders are
+ * locked. The agent copies a section into its own files to change it.
+ */
+function lockedLibraryReason(lower: string): string | null {
+  for (const dir of ['src/components/library', 'src/components/sections']) {
+    if (lower === dir || lower.startsWith(`${dir}/`)) {
+      return `${dir}/ is locked (visual library: import it, or copy a section to change it)`;
+    }
+  }
+  return null;
+}
+
 /** Classifies a normalized path. */
 export function classifyPath(path: string): ZoneClass {
   const lower = path.toLowerCase();
@@ -170,6 +186,8 @@ export function classifyPath(path: string): ZoneClass {
   if (shell !== null) return { zone: 'blocked', rule: 'app-shell-locked', reason: shell };
   const page = lockedPageReason(lower);
   if (page !== null) return { zone: 'blocked', rule: 'forge-page-locked', reason: page };
+  const library = lockedLibraryReason(lower);
+  if (library !== null) return { zone: 'blocked', rule: 'visual-library-locked', reason: library };
 
   const inSrcZone = SRC_ZONES.some((z) => path.startsWith(z));
   const inPublic = path.startsWith('public/');

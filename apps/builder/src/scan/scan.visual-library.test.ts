@@ -119,3 +119,37 @@ export function Hero() {
     expect(rulesOf(scan([added('src/components/home/Hero.tsx', source)]))).not.toEqual([]);
   });
 });
+
+describe('visual library boundaries', () => {
+  it('refuses direct imports of the 3D engines, whose loaders fetch any URL', () => {
+    for (const source of [
+      `import { TextureLoader } from 'three';\nexport const t = new TextureLoader();`,
+      `import { FileLoader } from 'three';\nexport const f = FileLoader;`,
+      `import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';\nexport const g = GLTFLoader;`,
+      `import { useTexture } from '@react-three/drei';\nexport const u = useTexture;`,
+      `import { Canvas } from '@react-three/fiber';\nexport const c = Canvas;`,
+      `import { Texture } from 'ogl';\nexport const t = Texture;`,
+      `import { EffectComposer } from 'postprocessing';\nexport const e = EffectComposer;`,
+    ]) {
+      expect(rulesOf(scan([added('src/components/home/Scene.tsx', source)])), source).toContain(
+        'forbidden-import',
+      );
+    }
+  });
+
+  it('locks the library and section folders', () => {
+    const lib = 'src/components/library/shared/safeHref.ts';
+    const changed = modified(
+      lib,
+      templateFile(lib),
+      templateFile(lib).replace("'x.com',", "'evil.example',"),
+    );
+    expect(rulesOf(scan([changed]))).toContain('visual-library-locked');
+    expect(
+      rulesOf(scan([added('src/components/sections/hero/HeroNew.tsx', 'export const A = 1;\n')])),
+    ).toContain('visual-library-locked');
+    expect(
+      rulesOf(scan([added('src/components/Library/x.tsx', 'export const A = 1;\n')])),
+    ).toContain('visual-library-locked');
+  });
+});

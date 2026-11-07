@@ -144,12 +144,13 @@ export interface EncodedHit {
 const PATH_WORD_RE = /^(?:[A-Za-z][a-z]+(?:[A-Z][a-z]+)*|[a-z]+(?:-[a-z]+)+)$/;
 
 /**
- * A path made only of plain words, such as `/components/sections/values/ValuesSpotlight` (an import
- * specifier: `/` belongs to the base64 alphabet, so a 43-character path decodes to 32 bytes). Like a
- * camelCase identifier, it cannot carry a chosen key: the base64 text of an address is fixed by the
- * address, and random bytes essentially never read as word segments split at slashes.
+ * A path made only of plain words, such as `/components/sections/values/ValuesSpotlight`. `/`
+ * belongs to the base64 alphabet, so a 43-character import specifier decodes to 32 bytes. The
+ * scan exempts such paths only where they are module specifiers of import and export
+ * declarations (`moduleSpecifierTokens`): there they are never runtime data, and an attacker who
+ * ground a key whose base64 reads as words still could not display or send it.
  */
-function isWordPath(token: string): boolean {
+export function isWordPath(token: string): boolean {
   if (!token.includes('/')) return false;
   const segments = token.split('/').filter((segment) => segment.length > 0);
   return segments.length >= 2 && segments.every((segment) => PATH_WORD_RE.test(segment));
@@ -160,15 +161,15 @@ function isWordPath(token: string): boolean {
  * exactly 32 or 64 bytes (raw public / secret key), or to text containing a
  * base58 address.
  */
-export function findEncodedAddresses(text: string): EncodedHit[] {
+export function findEncodedAddresses(text: string, exempt?: ReadonlySet<string>): EncodedHit[] {
   const hits: EncodedHit[] = [];
   for (const m of text.matchAll(/(?<![A-Za-z0-9+/_-])[A-Za-z0-9+/_-]{24,}={0,2}/g)) {
     const token = m[0];
     const index = m.index ?? 0;
     // Plain words and camelCase identifiers are not encoded data.
     if (CAMEL_WORDS_RE.test(token)) continue;
-    // Module and URL paths of plain words (import specifiers) are not encoded data either.
-    if (isWordPath(token)) continue;
+    // Module specifiers made of plain words (`moduleSpecifierTokens`), never runtime data.
+    if (exempt?.has(token)) continue;
     // One character repeated (a `/* ------ */` comment separator) decodes to a fixed byte pattern
     // that nobody can choose, so it cannot carry an address.
     if (/^(.)\1+=*$/.test(token)) continue;
@@ -202,4 +203,22 @@ export function bytesToAddress(values: readonly number[]): string | null {
   if (values.length !== 32 && values.length !== 64) return null;
   if (!values.every((v) => Number.isInteger(v) && v >= 0 && v <= 255)) return null;
   return base58Encode(Uint8Array.from(values));
+}
+
+/** Base64-alphabet tokens of `findEncodedAddresses` in a text. */
+function encodedTokens(text: string): string[] {
+  return [...text.matchAll(/(?<![A-Za-z0-9+/_-])[A-Za-z0-9+/_-]{24,}={0,2}/g)].map((m) => m[0]);
+}
+
+/**
+ * Tokens of module specifiers that are plain-word paths (`@/components/sections/hero/HeroHalo`),
+ * exempted from the encoded-key search of the whole file text. Specifiers of any other shape keep
+ * every check.
+ */
+export function moduleSpecifierTokens(specifiers: readonly string[]): Set<string> {
+  const out = new Set<string>();
+  for (const spec of specifiers) {
+    for (const token of encodedTokens(spec)) if (isWordPath(token)) out.add(token);
+  }
+  return out;
 }

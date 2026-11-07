@@ -11,7 +11,7 @@ import { builtinModules } from 'node:module';
 
 import ts from 'typescript';
 
-import { isCamelWords, looksRandomBase58 } from './base58.js';
+import { isCamelWords, looksRandomBase58, moduleSpecifierTokens } from './base58.js';
 import type { ResolvedConfig } from './config.js';
 import {
   Folder,
@@ -278,6 +278,13 @@ const BLOCKED_PACKAGES = new Set([
   'socket.io-client',
   'request',
   'needle',
+  // 3D and WebGL engines: their loaders (TextureLoader, FileLoader, useTexture, Environment...)
+  // fetch any URL, unseen by the network checks. Sites use them only through the visual library
+  // wrappers of the template (src/components/library/), which load nothing remote.
+  'three',
+  'three-stdlib',
+  'ogl',
+  'postprocessing',
 ]);
 /**
  * Internal modules, server rendering, and `react-dom/client` (a second React root mounted from a
@@ -294,6 +301,7 @@ const BLOCKED_SCOPES = [
   '@wallet-standard/',
   '@noble/',
   '@forge/',
+  '@react-three/',
 ];
 const BUILTINS = new Set(builtinModules.map((m: string) => m.replace(/^node:/, '')));
 
@@ -1660,12 +1668,27 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
     }
   };
 
+  /** The module name of an import or export declaration (`from '...'`): never runtime data. */
+  const isDeclarationSpecifier = (node: ts.Node): boolean => {
+    const parent = node.parent;
+    return (
+      parent !== undefined &&
+      (ts.isImportDeclaration(parent) || ts.isExportDeclaration(parent)) &&
+      parent.moduleSpecifier === node
+    );
+  };
+
   const stringValue = (text: string, node: ts.Node, variant: string): void => {
     nameAsString(text, node);
     if (isScriptUrl(text)) add('javascript-url', node, 'javascript: URL');
     const line = lineOf(node);
     addresses.run(variant, text, line);
-    addresses.encoded(variant, text, line);
+    addresses.encoded(
+      variant,
+      text,
+      line,
+      isDeclarationSpecifier(node) ? moduleSpecifierTokens([text]) : undefined,
+    );
     if (looksRandomBase58(text.trim())) addresses.fragments(variant, text.trim(), line);
     // Stylesheet text in code (<style>, styled-jsx, CSS-in-JS): same URL rules as .css files.
     if (/@import|url\s*\(/i.test(text) && (text.includes('{') || /@import/i.test(text))) {
@@ -1940,7 +1963,9 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
         break;
       case 'a':
       case 'area':
-        dynamicOnlyCheck(attrs.get('href'), tag, 'href', 'navigation', 'navigation-external');
+        // Static targets too: a literal link to any site would let a page send visitors to a
+        // drainer ("claim your airdrop"); links stay on the site or the navigation hosts.
+        checkAttr('href', 'navigation', 'navigation-external');
         if (attrs.has('ping'))
           urlListCheck(
             `<${tag} ping>`,
@@ -2327,7 +2352,14 @@ export function analyzeCode(path: string, text: string, config: ResolvedConfig):
     ts.forEachChild(n, collectIds);
   };
   collectIds(sf);
-  addresses.textVariants(identifiers);
+  const specifiers = sf.statements.flatMap((st) =>
+    (ts.isImportDeclaration(st) || ts.isExportDeclaration(st)) &&
+    st.moduleSpecifier !== undefined &&
+    ts.isStringLiteral(st.moduleSpecifier)
+      ? [st.moduleSpecifier.text]
+      : [],
+  );
+  addresses.textVariants(identifiers, moduleSpecifierTokens(specifiers));
 
   return [
     ...findings,

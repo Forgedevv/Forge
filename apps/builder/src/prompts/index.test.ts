@@ -78,7 +78,7 @@ describe('builder system prompt', () => {
       'src/components/sections/CATALOGUE.md',
       'src/components/SiteFooter.tsx',
       'at most two heavy effects',
-      'Never edit the files of `src/components/library/`',
+      '`src/components/library/` and `src/components/sections/` are locked',
       'allowed social and explorer hosts',
     ]) {
       expect(library).toContain(topic);
