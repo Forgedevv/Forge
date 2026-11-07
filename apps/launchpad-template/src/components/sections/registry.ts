@@ -15,14 +15,22 @@ import { FooterColumns } from './footer/FooterColumns';
 import { FooterMarquee } from './footer/FooterMarquee';
 import { FooterMinimal } from './footer/FooterMinimal';
 import { FooterWordmark } from './footer/FooterWordmark';
+import { HeroBento } from './hero/HeroBento';
+import { HeroCoinRain } from './hero/HeroCoinRain';
+import { HeroCoinStage } from './hero/HeroCoinStage';
 import { HeroDotField } from './hero/HeroDotField';
+import { HeroEditorial } from './hero/HeroEditorial';
 import { HeroHalo } from './hero/HeroHalo';
+import { HeroLaunchLog } from './hero/HeroLaunchLog';
+import { HeroMagazineCover } from './hero/HeroMagazineCover';
+import { HeroOutlineSplit } from './hero/HeroOutlineSplit';
 import { HeroParticleField } from './hero/HeroParticleField';
 import { HeroPosterType } from './hero/HeroPosterType';
 import { HeroRetroGrid } from './hero/HeroRetroGrid';
 import { HeroSculpture } from './hero/HeroSculpture';
 import { HeroSplitCoin } from './hero/HeroSplitCoin';
 import { HeroTerminal } from './hero/HeroTerminal';
+import { HeroWovenRing } from './hero/HeroWovenRing';
 import { StepsRings } from './steps/StepsRings';
 import { StepsScrollStory } from './steps/StepsScrollStory';
 import { StepsStack } from './steps/StepsStack';
@@ -155,7 +163,7 @@ export const SECTIONS: readonly SectionEntry[] = [
     name: 'Retro horizon',
     slot: 'hero',
     description:
-      'A neon floor scrolling towards a striped sun, the name flipping up letter by letter with a glow.',
+      'The name flipping up letter by letter above a striped sun setting on a neon floor, tagline and actions on a solid panel below the horizon.',
     moods: ['retro', 'playful', 'bold'],
     weight: 'light',
     effects: ['perspective-grid', 'split-reveal'],
@@ -197,13 +205,125 @@ export const SECTIONS: readonly SectionEntry[] = [
     name: 'Halo',
     slot: 'hero',
     description:
-      'A rotating halo of the brand colours behind a centred name in the flowing brand gradient, with a magnetic button.',
+      'A small rotating ring of the brand colours behind a centred name in the flowing brand gradient, with a magnetic button.',
     moods: ['premium', 'bold', 'dark'],
     weight: 'light',
     effects: ['conic-glow', 'shimmer-text', 'magnetic-button'],
     importPath: `${P}/hero/HeroHalo`,
     exportName: 'HeroHalo',
     Component: HeroHalo,
+  },
+  {
+    id: 'hero-coin-stage',
+    name: 'Coin centre stage',
+    slot: 'hero',
+    description:
+      'A giant 3D coin stamped with the monogram turning inside a slow ring of the name in small capitals, the name in huge type below it.',
+    moods: ['playful', 'bold', 'premium'],
+    weight: 'heavy',
+    effects: ['floating-coin', 'split-reveal'],
+    importPath: `${P}/hero/HeroCoinStage`,
+    exportName: 'HeroCoinStage',
+    options: 'monogram',
+    Component: HeroCoinStage,
+  },
+  {
+    id: 'hero-bento',
+    name: 'Bento cards',
+    slot: 'hero',
+    description:
+      'A bento of tilting cards: the name in the big one, the tagline, a ring filling beside the steps of a coin, and a call-to-action card in the brand colour.',
+    moods: ['tech', 'playful', 'premium'],
+    weight: 'medium',
+    effects: ['tilt-card', 'progress-ring'],
+    importPath: `${P}/hero/HeroBento`,
+    exportName: 'HeroBento',
+    options: 'steps, monogram',
+    Component: HeroBento,
+  },
+  {
+    id: 'hero-outline-split',
+    name: 'Outline split',
+    slot: 'hero',
+    description:
+      'Split screen: the name in huge outlined capitals rising line by line on the left, the selling points drifting up a column on the right like a departure board.',
+    moods: ['bold', 'retro', 'dark'],
+    weight: 'medium',
+    effects: ['mask-lines'],
+    importPath: `${P}/hero/HeroOutlineSplit`,
+    exportName: 'HeroOutlineSplit',
+    options: 'points, speed',
+    Component: HeroOutlineSplit,
+  },
+  {
+    id: 'hero-editorial',
+    name: 'Editorial',
+    slot: 'hero',
+    description:
+      'A calm editorial page with thin rules, the name set large rising line by line, the tagline coming into focus and a short index in the margin; no background effect.',
+    moods: ['calm', 'organic', 'premium'],
+    weight: 'medium',
+    effects: ['mask-lines', 'blur-words'],
+    importPath: `${P}/hero/HeroEditorial`,
+    exportName: 'HeroEditorial',
+    options: 'points',
+    Component: HeroEditorial,
+  },
+  {
+    id: 'hero-woven-ring',
+    name: 'Woven ring',
+    slot: 'hero',
+    description:
+      'A ring woven from glowing threads turning behind a centred name over a deep vignette, small instrument labels in the corners.',
+    moods: ['dark', 'organic', 'calm'],
+    weight: 'medium',
+    effects: ['woven-torus', 'split-reveal'],
+    importPath: `${P}/hero/HeroWovenRing`,
+    exportName: 'HeroWovenRing',
+    options: 'monogram',
+    Component: HeroWovenRing,
+  },
+  {
+    id: 'hero-coin-rain',
+    name: 'Coin rain poster',
+    slot: 'hero',
+    description:
+      '3D coins tumbling down the whole hero behind a framed launch-day poster where the name drops in letter by letter.',
+    moods: ['playful', 'bold'],
+    weight: 'heavy',
+    effects: ['coin-rain', 'split-reveal'],
+    importPath: `${P}/hero/HeroCoinRain`,
+    exportName: 'HeroCoinRain',
+    options: 'count, monogram',
+    Component: HeroCoinRain,
+  },
+  {
+    id: 'hero-launch-log',
+    name: 'Launch log',
+    slot: 'hero',
+    description:
+      'A centred name above a wide terminal window that types a launch command, prints the steps as a checklist and fills a ring when the coin is live.',
+    moods: ['tech', 'dark', 'retro'],
+    weight: 'medium',
+    effects: ['typewriter-text', 'section-reveal', 'progress-ring'],
+    importPath: `${P}/hero/HeroLaunchLog`,
+    exportName: 'HeroLaunchLog',
+    options: 'lines, monogram',
+    Component: HeroLaunchLog,
+  },
+  {
+    id: 'hero-magazine-cover',
+    name: 'Magazine cover',
+    slot: 'hero',
+    description:
+      'A magazine cover: issue-number masthead, the name as the giant cover title, the tagline as the cover story with a highlighter stroke, numbered cover lines and a barcode.',
+    moods: ['premium', 'bold', 'organic'],
+    weight: 'medium',
+    effects: ['mask-lines', 'marker-highlight'],
+    importPath: `${P}/hero/HeroMagazineCover`,
+    exportName: 'HeroMagazineCover',
+    options: 'issue, coverLines',
+    Component: HeroMagazineCover,
   },
   {
     id: 'values-spotlight',

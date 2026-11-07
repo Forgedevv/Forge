@@ -15,6 +15,7 @@ vi.mock('@/components/library/shared/useReducedMotion', () => ({
 
 import { content } from '@/content';
 import { LIBRARY } from '@/components/library/registry';
+import type { LibraryMood } from '@/components/library/types';
 import { SECTIONS, SECTION_SLOTS, SLOT_DEFAULTS } from '@/components/sections/registry';
 import { HeroPosterType } from '@/components/sections/hero/HeroPosterType';
 import { HeroSplitCoin } from '@/components/sections/hero/HeroSplitCoin';
@@ -103,6 +104,45 @@ describe('section rendering', () => {
         expect(container.textContent?.length, entry.id).toBeGreaterThan(0);
         unmount();
       }
+    }
+  });
+
+  it('gives every hero one h1 that names it, or a section label, and the tagline', () => {
+    for (const reduced of [true, false]) {
+      h.reduced = reduced;
+      for (const entry of SECTIONS.filter((e) => e.slot === 'hero')) {
+        const { container, unmount } = render(<entry.Component />);
+        const headings = container.querySelectorAll('h1');
+        expect(headings.length, entry.id).toBe(1);
+        expect(headings[0]?.textContent, entry.id).toContain(content.name);
+        const section = container.querySelector('section');
+        const labelledBy = section?.getAttribute('aria-labelledby');
+        if (labelledBy) {
+          expect(container.querySelector(`[id="${labelledBy}"]`)?.tagName, entry.id).toBe('H1');
+        } else {
+          expect(section?.getAttribute('aria-label'), entry.id).toBe(content.name);
+        }
+        expect(container.textContent, entry.id).toContain(content.tagline);
+        unmount();
+      }
+    }
+  });
+
+  it('offers heroes in every mood, so the mood rotation always has a choice', () => {
+    const heroes = SECTIONS.filter((e) => e.slot === 'hero');
+    expect(heroes.length).toBeGreaterThanOrEqual(16);
+    const moods: LibraryMood[] = [
+      'playful',
+      'premium',
+      'tech',
+      'calm',
+      'bold',
+      'retro',
+      'organic',
+      'dark',
+    ];
+    for (const mood of moods) {
+      expect(heroes.filter((e) => e.moods.includes(mood)).length, mood).toBeGreaterThanOrEqual(3);
     }
   });
 

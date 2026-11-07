@@ -30,7 +30,7 @@ Replaces `src/components/home/HomeHero.tsx`.
 - `hero-terminal` **Terminal**: The monogram drawn in live ASCII glyphs that ripple around the pointer, lines typing themselves under the name.
   `import { HeroTerminal } from '@/components/sections/hero/HeroTerminal';`
   Moods: tech, retro, dark. Weight: medium. Options: phrases, monogram.
-- `hero-retro-grid` **Retro horizon**: A neon floor scrolling towards a striped sun, the name flipping up letter by letter with a glow.
+- `hero-retro-grid` **Retro horizon**: The name flipping up letter by letter above a striped sun setting on a neon floor, tagline and actions on a solid panel below the horizon.
   `import { HeroRetroGrid } from '@/components/sections/hero/HeroRetroGrid';`
   Moods: retro, playful, bold. Weight: light. Options: sun.
 - `hero-sculpture` **Glossy sculpture**: A glossy 3D knot, ring or gem turning in studio light beside a name uncovered like a curtain.
@@ -39,9 +39,33 @@ Replaces `src/components/home/HomeHero.tsx`.
 - `hero-dot-field` **Dot field**: A calm field of dots lighting up around the pointer, a big name and a line rotating through the selling points.
   `import { HeroDotField } from '@/components/sections/hero/HeroDotField';`
   Moods: tech, calm, premium. Weight: medium. Options: words.
-- `hero-halo` **Halo**: A rotating halo of the brand colours behind a centred name in the flowing brand gradient, with a magnetic button.
+- `hero-halo` **Halo**: A small rotating ring of the brand colours behind a centred name in the flowing brand gradient, with a magnetic button.
   `import { HeroHalo } from '@/components/sections/hero/HeroHalo';`
   Moods: premium, bold, dark. Weight: light.
+- `hero-coin-stage` **Coin centre stage**: A giant 3D coin stamped with the monogram turning inside a slow ring of the name in small capitals, the name in huge type below it.
+  `import { HeroCoinStage } from '@/components/sections/hero/HeroCoinStage';`
+  Moods: playful, bold, premium. Weight: heavy. Options: monogram.
+- `hero-bento` **Bento cards**: A bento of tilting cards: the name in the big one, the tagline, a ring filling beside the steps of a coin, and a call-to-action card in the brand colour.
+  `import { HeroBento } from '@/components/sections/hero/HeroBento';`
+  Moods: tech, playful, premium. Weight: medium. Options: steps, monogram.
+- `hero-outline-split` **Outline split**: Split screen: the name in huge outlined capitals rising line by line on the left, the selling points drifting up a column on the right like a departure board.
+  `import { HeroOutlineSplit } from '@/components/sections/hero/HeroOutlineSplit';`
+  Moods: bold, retro, dark. Weight: medium. Options: points, speed.
+- `hero-editorial` **Editorial**: A calm editorial page with thin rules, the name set large rising line by line, the tagline coming into focus and a short index in the margin; no background effect.
+  `import { HeroEditorial } from '@/components/sections/hero/HeroEditorial';`
+  Moods: calm, organic, premium. Weight: medium. Options: points.
+- `hero-woven-ring` **Woven ring**: A ring woven from glowing threads turning behind a centred name over a deep vignette, small instrument labels in the corners.
+  `import { HeroWovenRing } from '@/components/sections/hero/HeroWovenRing';`
+  Moods: dark, organic, calm. Weight: medium. Options: monogram.
+- `hero-coin-rain` **Coin rain poster**: 3D coins tumbling down the whole hero behind a framed launch-day poster where the name drops in letter by letter.
+  `import { HeroCoinRain } from '@/components/sections/hero/HeroCoinRain';`
+  Moods: playful, bold. Weight: heavy. Options: count, monogram.
+- `hero-launch-log` **Launch log**: A centred name above a wide terminal window that types a launch command, prints the steps as a checklist and fills a ring when the coin is live.
+  `import { HeroLaunchLog } from '@/components/sections/hero/HeroLaunchLog';`
+  Moods: tech, dark, retro. Weight: medium. Options: lines, monogram.
+- `hero-magazine-cover` **Magazine cover**: A magazine cover: issue-number masthead, the name as the giant cover title, the tagline as the cover story with a highlighter stroke, numbered cover lines and a barcode.
+  `import { HeroMagazineCover } from '@/components/sections/hero/HeroMagazineCover';`
+  Moods: premium, bold, organic. Weight: medium. Options: issue, coverLines.
 
 ### Selling points (under the hero)
 
