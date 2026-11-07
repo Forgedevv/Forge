@@ -333,10 +333,7 @@ function codeFiles(dir: string): string[] {
  * Internal FORGE exports the template's own free-zone files still use. A baseline line never
  * blocks a job (findings are diff-aware); the agent cannot add them anywhere else.
  */
-const TOLERATED = new Set([
-  'src/components/Explore/queries.ts|src/forge/data/client|ApeClient',
-  'src/components/home/LaunchpadCoin.tsx|src/forge/config|onchainConfig',
-]);
+const TOLERATED = new Set(['src/components/Explore/queries.ts|src/forge/data/client|ApeClient']);
 
 describe('the template free zones', () => {
   it('use nothing of src/forge/ beyond the public surface (and the tolerated baseline)', () => {

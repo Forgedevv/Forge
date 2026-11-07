@@ -147,7 +147,7 @@ export const C = () => <div>{S.map((s) => <a key={s.label} href={s.href}>{s.labe
     for (const text of [prompt, fontsFile]) {
       for (const m of text.matchAll(/@fontsource(?:-variable)?\/[a-z0-9-]+/g)) named.add(m[0]);
     }
-    expect(named.size).toBe(17);
+    expect(named.size).toBe(18);
     for (const pkg of named) expect(template.dependencies[pkg], pkg).toMatch(/^\d+\.\d+\.\d+$/);
     for (const set of ['lucide', 'tabler', 'simple-icons'])
       expect(template.dependencies[`@iconify-json/${set}`], set).toMatch(/^\d+\.\d+\.\d+$/);

@@ -26,6 +26,12 @@ export const siteConfig: SiteConfig = toSiteConfig(forgeConfig);
 export const onchainConfig = forgeConfig.onchain;
 
 /**
+ * Mint of the launchpad's own coin (`onchain.launchpadCoinMint`), or null before the on-chain
+ * setup. Public: the free zone links to the coin page with it (`/token/<mint>`).
+ */
+export const launchpadCoinMint: string | null = onchainConfig?.launchpadCoinMint ?? null;
+
+/**
  * Coin creation fee charged by this launchpad (`onchain.poolCreationFeeSol`, validated by the
  * shared schema: 0 or between 0.001 and 1 SOL). `undefined` when the builder did not write it:
  * coin creation then refuses to run, since the fee in a prepared transaction could not be checked.

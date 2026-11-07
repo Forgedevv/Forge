@@ -1,7 +1,7 @@
 import Link from 'next/link';
 import { useId, type ReactNode } from 'react';
 import { content } from '@/content';
-import { onchainConfig } from '@/forge/config';
+import { launchpadCoinMint } from '@/forge/config';
 import { isExternalHref, safeHref } from '@/components/library/shared/safeHref';
 import { cn } from '@/lib/utils';
 
@@ -162,8 +162,7 @@ export function GhostAction({ href, children, className }: ActionProps) {
 
 /** Link of the launchpad coin page once FORGE wrote the coin in `forge.config.json`, else null. */
 export function launchpadCoinHref(): string | null {
-  const mint = onchainConfig?.launchpadCoinMint;
-  return mint ? `/token/${encodeURIComponent(mint)}` : null;
+  return launchpadCoinMint ? `/token/${encodeURIComponent(launchpadCoinMint)}` : null;
 }
 
 /** First letters of a name or ticker, for monograms (coins, rings, ASCII art). */

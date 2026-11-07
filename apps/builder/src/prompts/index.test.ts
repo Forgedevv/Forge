@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { specFixture } from '../pipeline/test-fakes.js';
+import { designDirection } from './design-direction.js';
 import { builderSystemPrompt, createTaskPrompt, modifyTaskPrompt } from './index.js';
 
 const system = builderSystemPrompt();
@@ -71,6 +72,22 @@ describe('builder system prompt', () => {
     }
   });
 
+  it('teaches the visual library and its limits', () => {
+    const library = system.slice(section('Visual library: ready-made sections and effects'));
+    for (const topic of [
+      'src/components/sections/CATALOGUE.md',
+      'src/components/SiteFooter.tsx',
+      'at most two heavy effects',
+      'Never edit the files of `src/components/library/`',
+      'allowed social and explorer hosts',
+    ]) {
+      expect(library).toContain(topic);
+    }
+    expect(section('Visual library: ready-made sections and effects')).toBeLessThan(
+      section('Client input'),
+    );
+  });
+
   it('ends with a self-check before the summary', () => {
     const work = system.slice(section('How to work'));
     expect(work).toMatch(/Before answering, check:/);
@@ -94,6 +111,20 @@ describe('createTaskPrompt', () => {
     expect(instructions).toContain('self-check');
     expect(instructions).not.toContain(spec.name);
     expect(prompt.trimEnd().endsWith('</client_request>')).toBe(true);
+    // The suggested sections come before the brief, as instructions, one id per slot.
+    expect(instructions).toContain('src/components/sections/CATALOGUE.md');
+    for (const pick of designDirection({
+      slug: spec.slug,
+      text: [
+        spec.name,
+        spec.theme.tagline,
+        spec.theme.designNotes,
+        spec.launchpadCoin.name,
+        spec.launchpadCoin.description,
+      ].join(' '),
+    }).picks) {
+      expect(instructions).toContain(`- ${pick.slot}: \`${pick.id}\``);
+    }
     const block = JSON.parse(
       prompt.slice(start + '<client_request>'.length, prompt.lastIndexOf('</')),
     );

@@ -18,6 +18,9 @@ vi.mock('@/forge/config', () => ({
   get onchainConfig() {
     return h.mint ? { launchpadCoinMint: h.mint } : undefined;
   },
+  get launchpadCoinMint() {
+    return h.mint ?? null;
+  },
 }));
 
 import { content } from '@/content';

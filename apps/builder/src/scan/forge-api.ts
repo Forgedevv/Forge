@@ -53,7 +53,12 @@ export const FORGE_PUBLIC_API: Readonly<Record<string, Readonly<Record<string, F
       default: CLAIM_CREATOR_FEES,
     },
     // Read-only, UI-facing site config (no on-chain block).
-    'src/forge/config': { siteConfig: value, cluster: value, poolCreationFeeSol: value },
+    'src/forge/config': {
+      siteConfig: value,
+      cluster: value,
+      poolCreationFeeSol: value,
+      launchpadCoinMint: value,
+    },
     // Market data of this launchpad (stream filtered on its pool configs).
     'src/forge/data/DataStreamProvider': {
       DataStreamProvider: component('children'),
