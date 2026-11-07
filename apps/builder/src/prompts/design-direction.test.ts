@@ -41,6 +41,17 @@ describe('briefMoods', () => {
     expect(briefMoods('Retro arcade, 80s neon, pixel art')).toEqual(['retro']);
   });
 
+  it('ignores mood words right after a negation', () => {
+    expect(briefMoods('Elegant and calm, nothing loud.')).toEqual(['premium', 'calm']);
+    expect(briefMoods('No neon, not retro at all, a luxury gold vault')).toEqual(['premium']);
+    // The negation reaches three words only.
+    expect(briefMoods('no presale for this launchpad, loud and bold')).toEqual(['bold']);
+  });
+
+  it('does not read a mood in generic words', () => {
+    expect(briefMoods('Keep the trading pages clean and simple.')).toEqual([]);
+  });
+
   it('matches whole words only', () => {
     expect(briefMoods('catalogue spacecraft goldfish')).toEqual([]);
     expect(briefMoods('')).toEqual([]);
