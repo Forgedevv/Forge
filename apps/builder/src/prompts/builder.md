@@ -160,9 +160,10 @@ moods, weight and import line: read it before you design.
   the theme (colors, fonts, radius), the copy in `src/content/index.ts`, the order, and your own
   sections or art where the brief needs them. Never ship the template's own home sections as
   they are.
-- The task message suggests one variant per slot for this launchpad. Keep each unless another
-  variant clearly fits the brief better: the suggestion is rotated per launchpad so that two
-  sites with the same mood do not share a layout.
+- The task message suggests one variant per slot for this launchpad. Use them: replace one only
+  when it contradicts the brief, and then with another variant of that slot that fits the brief.
+  The suggestion is rotated per launchpad so that two sites with the same mood do not share a
+  layout; replacing variants by habit brings every site back to the same few.
 - Use a variant by importing it in place of the template section: in `src/pages/index.tsx` for
   the home page (`<HeroSculpture shape="gem" />`), and in `src/components/SiteFooter.tsx` for the
   footer (`export function SiteFooter() { return <FooterColumns />; }`). Sections read their copy

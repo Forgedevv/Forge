@@ -111,8 +111,6 @@ export const MOOD_WORDS: Readonly<Record<string, readonly string[]>> = {
     'chill',
     'minimal',
     'minimalist',
-    'clean',
-    'simple',
   ],
   bold: [
     'bold',
@@ -179,11 +177,26 @@ export const MOOD_WORDS: Readonly<Record<string, readonly string[]>> = {
   ],
 };
 
-/** Moods read in a brief, most mentioned first (ties in catalogue order). */
+/** Words that turn the next mood words around: "nothing loud", "no neon", "not too playful". */
+const NEGATIONS = new Set(['no', 'not', 'nothing', 'without', 'never', 'avoid', 'none', 'nor']);
+
+/** How many words after a negation it still applies to ("nothing too loud"). */
+const NEGATION_REACH = 3;
+
+/**
+ * Moods read in a brief, most mentioned first (ties in catalogue order). A mood word shortly after
+ * a negation is not counted: "nothing loud" is not a bold brief.
+ */
 export function briefMoods(text: string): string[] {
   const words = text.toLowerCase().match(/[a-z0-9]+(?:-[a-z0-9]+)*/g) ?? [];
   const counts = new Map<string, number>();
-  for (const word of words) {
+  let negatedUntil = -1;
+  for (const [index, word] of words.entries()) {
+    if (NEGATIONS.has(word)) {
+      negatedUntil = index + NEGATION_REACH;
+      continue;
+    }
+    if (index <= negatedUntil) continue;
     for (const [mood, list] of Object.entries(MOOD_WORDS)) {
       if (list.includes(word)) counts.set(mood, (counts.get(mood) ?? 0) + 1);
     }
@@ -262,7 +275,8 @@ export function designDirectionText(direction: DesignDirection): string {
     'Starting combination from the visual library (`src/components/sections/CATALOGUE.md`), rotated',
     `per launchpad so that two sites do not share a layout, ${reading}:`,
     ...direction.picks.map((p) => `- ${p.slot}: \`${p.id}\``),
-    'Keep a variant unless another one clearly fits the brief better, then make each section this',
-    "brand's own: theme, fonts, copy, order and your own art where the brief needs it.",
+    'Use these variants. Replace one only when it contradicts the brief, and then with another',
+    'variant of the same slot that fits the brief, never with the template section. Make each one',
+    "this brand's own: theme, fonts, copy, order and your own art where the brief needs it.",
   ].join('\n');
 }

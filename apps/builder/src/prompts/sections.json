@@ -74,6 +74,12 @@
       "weight": "light"
     },
     {
+      "id": "values-terminal",
+      "slot": "values",
+      "moods": ["tech", "dark", "retro"],
+      "weight": "medium"
+    },
+    {
       "id": "steps-stack",
       "slot": "steps",
       "moods": ["bold", "premium", "tech", "playful"],
@@ -95,6 +101,12 @@
       "id": "steps-scroll-story",
       "slot": "steps",
       "moods": ["calm", "premium", "organic"],
+      "weight": "medium"
+    },
+    {
+      "id": "steps-deck",
+      "slot": "steps",
+      "moods": ["playful", "bold", "premium"],
       "weight": "medium"
     },
     {

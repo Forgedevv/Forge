@@ -59,6 +59,9 @@ Replaces `src/components/home/ValueStrip.tsx`.
 - `values-editorial` **Editorial list**: Thin rules, big numbers and a highlighter stroke drawn behind each title as it enters.
   `import { ValuesEditorial } from '@/components/sections/values/ValuesEditorial';`
   Moods: calm, premium, organic. Weight: light. Options: eyebrow, title (optional heading).
+- `values-terminal` **Terminal log**: Selling points printed in a terminal window, each title decoding like a signal as it scrolls in.
+  `import { ValuesTerminal } from '@/components/sections/values/ValuesTerminal';`
+  Moods: tech, dark, retro. Weight: medium. Options: eyebrow, title (optional heading).
 
 ### How it works
 
@@ -76,6 +79,9 @@ Replaces `src/components/home/HowItWorks.tsx`.
 - `steps-scroll-story` **Scroll story**: Each step as a large sentence whose words light up one by one as the reader scrolls.
   `import { StepsScrollStory } from '@/components/sections/steps/StepsScrollStory';`
   Moods: calm, premium, organic. Weight: medium.
+- `steps-deck` **Card deck**: Steps as a fanned deck of cards with giant numbers; a click or the arrow keys bring one to the front.
+  `import { StepsDeck } from '@/components/sections/steps/StepsDeck';`
+  Moods: playful, bold, premium. Weight: medium.
 
 ### The launchpad coin
 

@@ -26,10 +26,12 @@ import { HeroTerminal } from './hero/HeroTerminal';
 import { StepsRings } from './steps/StepsRings';
 import { StepsScrollStory } from './steps/StepsScrollStory';
 import { StepsStack } from './steps/StepsStack';
+import { StepsDeck } from './steps/StepsDeck';
 import { StepsTimeline } from './steps/StepsTimeline';
 import { ValuesEditorial } from './values/ValuesEditorial';
 import { ValuesMarquee } from './values/ValuesMarquee';
 import { ValuesSpotlight } from './values/ValuesSpotlight';
+import { ValuesTerminal } from './values/ValuesTerminal';
 import { ValuesTilt } from './values/ValuesTilt';
 
 /**
@@ -257,6 +259,20 @@ export const SECTIONS: readonly SectionEntry[] = [
     Component: ValuesEditorial,
   },
   {
+    id: 'values-terminal',
+    name: 'Terminal log',
+    slot: 'values',
+    description:
+      'Selling points printed in a terminal window, each title decoding like a signal as it scrolls in.',
+    moods: ['tech', 'dark', 'retro'],
+    weight: 'medium',
+    effects: ['scramble-text', 'section-reveal'],
+    importPath: `${P}/values/ValuesTerminal`,
+    exportName: 'ValuesTerminal',
+    options: 'eyebrow, title (optional heading)',
+    Component: ValuesTerminal,
+  },
+  {
     id: 'steps-stack',
     name: 'Stacking cards',
     slot: 'steps',
@@ -306,6 +322,19 @@ export const SECTIONS: readonly SectionEntry[] = [
     importPath: `${P}/steps/StepsScrollStory`,
     exportName: 'StepsScrollStory',
     Component: StepsScrollStory,
+  },
+  {
+    id: 'steps-deck',
+    name: 'Card deck',
+    slot: 'steps',
+    description:
+      'Steps as a fanned deck of cards with giant numbers; a click or the arrow keys bring one to the front.',
+    moods: ['playful', 'bold', 'premium'],
+    weight: 'medium',
+    effects: ['card-deck'],
+    importPath: `${P}/steps/StepsDeck`,
+    exportName: 'StepsDeck',
+    Component: StepsDeck,
   },
   {
     id: 'coin-spotlight',
