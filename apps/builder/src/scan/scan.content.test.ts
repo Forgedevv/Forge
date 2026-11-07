@@ -56,6 +56,23 @@ describe('Solana addresses (diff-aware)', () => {
     );
   });
 
+  it('allows import paths of plain words that happen to decode to 32 bytes', () => {
+    // `/components/sections/values/ValuesSpotlight` is 43 base64 characters: exactly 32 bytes.
+    const source = [
+      `import { ValuesSpotlight } from '@/components/sections/values/ValuesSpotlight';`,
+      `import { HoverPreviewList } from '@/components/library/motion/HoverPreviewList';`,
+      `export const A = [ValuesSpotlight, HoverPreviewList];`,
+    ].join('\n');
+    expect(scanComponent(source)).not.toContain('solana-address-encoded');
+  });
+
+  it('still blocks a 32-byte token with slashes whose segments are not plain words', () => {
+    const b64 = Buffer.from(ADDR_BYTES).toString('base64').replace(/=+$/, '');
+    const slashed = `${b64.slice(0, 10)}/${b64.slice(11)}`;
+    expect(slashed).toHaveLength(43);
+    expect(scanComponent(`export const K = '${slashed}';`)).toContain('solana-address-encoded');
+  });
+
   it('ignores an address already present in the baseline file', () => {
     const before = `export const MINT = '${ADDR}';\nexport const A = 1;\n`;
     const after = `export const A = 2;\nexport const MINT = '${ADDR}';\n`;

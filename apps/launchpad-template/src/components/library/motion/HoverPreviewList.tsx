@@ -8,6 +8,7 @@ import {
 } from 'motion/react';
 import { useRef, useState, type PointerEvent, type ReactNode } from 'react';
 import { cn } from '@/lib/utils';
+import { isExternalHref, safeHref } from '../shared/safeHref';
 import { EASE_OUT, useCalm } from './internal';
 
 export interface HoverPreviewItem {
@@ -19,7 +20,10 @@ export interface HoverPreviewItem {
   lead?: ReactNode;
   /** Right-hand detail (market cap, change, date). */
   trail?: ReactNode;
-  /** Link target. Without it the row is a button calling `onSelect`. */
+  /**
+   * Link target: a path of this site or an allowed social or explorer page (`safeHref`). Without
+   * it, or with another target, the row is a button calling `onSelect`.
+   */
   href?: string;
   /** Card that floats next to the pointer while the row is hovered or focused. */
   preview?: ReactNode;
@@ -128,10 +132,17 @@ export function HoverPreviewList({
             onFocus: (e: { currentTarget: HTMLElement }) => onRowFocus(e.currentTarget, i),
             onBlur: () => setActive(null),
           };
+          // Only paths of this site and allowed social or explorer pages (`safeHref`).
+          const href = safeHref(item.href);
           return (
             <li key={item.id}>
-              {item.href ? (
-                <a href={item.href} className={rowClass} {...handlers}>
+              {href ? (
+                <a
+                  href={href}
+                  rel={isExternalHref(href) ? 'noopener noreferrer' : undefined}
+                  className={rowClass}
+                  {...handlers}
+                >
                   {content}
                 </a>
               ) : (

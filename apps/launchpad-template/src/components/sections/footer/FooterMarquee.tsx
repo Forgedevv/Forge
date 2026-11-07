@@ -1,7 +1,7 @@
 import { DragMarquee } from '@/components/library/motion/DragMarquee';
 import { cn } from '@/lib/utils';
-import { HEADING_FONT } from '../shared';
-import { FooterNav, footerCopy, type FooterProps } from './FooterWordmark';
+import { FooterNav, HEADING_FONT } from '../shared';
+import { footerCopy, type FooterProps } from './FooterWordmark';
 
 /**
  * Footer opened by a slow ticker of the site name in outlined giant type, links and the legal note

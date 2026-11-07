@@ -1,11 +1,15 @@
 import { motion, useMotionValue, useSpring } from 'motion/react';
 import { useRef, type MouseEventHandler, type PointerEvent, type ReactNode } from 'react';
 import { cn } from '@/lib/utils';
+import { isExternalHref, safeHref } from '../shared/safeHref';
 import { useCalm } from './internal';
 
 export interface MagneticButtonProps {
   children: ReactNode;
-  /** Renders a link when set, a button otherwise. */
+  /**
+   * Renders a link when set to a path of this site or an allowed social or explorer page
+   * (`safeHref`), a button otherwise.
+   */
   href?: string;
   onClick?: MouseEventHandler<HTMLElement>;
   /** How far the button follows the pointer, as a share of the pointer offset. Default 0.35. */
@@ -26,7 +30,7 @@ export interface MagneticButtonProps {
  */
 export function MagneticButton({
   children,
-  href,
+  href: rawHref,
   onClick,
   strength = 0.35,
   variant = 'primary',
@@ -34,6 +38,8 @@ export function MagneticButton({
   type = 'button',
   className,
 }: MagneticButtonProps) {
+  // Only paths of this site and allowed social or explorer pages; otherwise a plain button.
+  const href = safeHref(rawHref);
   const ref = useRef<HTMLElement>(null);
   const calm = useCalm();
   const x = useMotionValue(0);
@@ -99,6 +105,7 @@ export function MagneticButton({
         <motion.a
           ref={ref as never}
           href={href}
+          rel={isExternalHref(href) ? 'noopener noreferrer' : undefined}
           onClick={onClick}
           className={classes}
           style={{ x: sx, y: sy }}

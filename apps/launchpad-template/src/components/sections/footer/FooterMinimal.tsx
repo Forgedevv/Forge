@@ -1,7 +1,8 @@
 import Link from 'next/link';
 import { Logo } from '@/components/Logo';
 import { cn } from '@/lib/utils';
-import { FooterNav, footerCopy, type FooterProps } from './FooterWordmark';
+import { FooterNav } from '../shared';
+import { footerCopy, type FooterProps } from './FooterWordmark';
 
 /**
  * Footer on a single centred line: logo, links, then the legal note in small print. Minimal and

@@ -1,8 +1,8 @@
 import Link from 'next/link';
 import { Logo } from '@/components/Logo';
 import { cn } from '@/lib/utils';
-import { HEADING_FONT, MUTED } from '../shared';
-import { FooterNav, footerCopy, type FooterProps } from './FooterWordmark';
+import { FooterNav, HEADING_FONT, MUTED } from '../shared';
+import { footerCopy, type FooterProps } from './FooterWordmark';
 
 /**
  * Classic footer in three columns: logo, name and tagline; the site links stacked; the legal note.

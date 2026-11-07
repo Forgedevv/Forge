@@ -1,10 +1,12 @@
 import { AnimatePresence, motion } from 'motion/react';
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from 'react';
 import { cn } from '@/lib/utils';
+import { isExternalHref, safeHref } from '../shared/safeHref';
 import { EASE_CURTAIN, EASE_EXPO, useCalm } from './internal';
 
 export interface StaggeredMenuLink {
   label: string;
+  /** A path of this site or an allowed social or explorer page (`safeHref`); others are left out. */
   href: string;
 }
 
@@ -25,6 +27,14 @@ export interface StaggeredMenuProps {
   className?: string;
 }
 
+/** The links with a target this site may use (`safeHref`); the others are left out. */
+function safeLinks<T extends { href: string }>(links: readonly T[]): T[] {
+  return links.flatMap((link) => {
+    const href = safeHref(link.href);
+    return href ? [{ ...link, href }] : [];
+  });
+}
+
 /**
  * A full-height menu that opens in layers: two bands of the brand colours sweep across, then the
  * panel lands and its big numbered links rise one after the other. The button morphs into a cross.
@@ -33,13 +43,16 @@ export interface StaggeredMenuProps {
  * reduced motion.
  */
 export function StaggeredMenu({
-  items,
-  socials = [],
+  items: rawItems,
+  socials: rawSocials = [],
   label = 'Menu',
   contained = false,
   side = 'right',
   className,
 }: StaggeredMenuProps) {
+  // Only paths of this site and allowed social or explorer pages.
+  const items = safeLinks(rawItems);
+  const socials = safeLinks(rawSocials);
   const calm = useCalm();
   const [open, setOpen] = useState(false);
   const panelId = useId();
@@ -212,6 +225,7 @@ export function StaggeredMenu({
                     <li key={s.href}>
                       <a
                         href={s.href}
+                        rel={isExternalHref(s.href) ? 'noopener noreferrer' : undefined}
                         className="text-[var(--color-text-muted)] hover:text-[var(--color-accent)]"
                       >
                         {s.label}

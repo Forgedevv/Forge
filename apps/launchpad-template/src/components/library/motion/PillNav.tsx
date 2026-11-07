@@ -1,10 +1,12 @@
 import { LayoutGroup, motion } from 'motion/react';
 import { useId, useState, type MouseEvent } from 'react';
 import { cn } from '@/lib/utils';
+import { safeHref } from '../shared/safeHref';
 import { useCalm } from './internal';
 
 export interface PillNavLink {
   label: string;
+  /** A path of this site or an allowed social or explorer page (`safeHref`); others are left out. */
   href: string;
 }
 
@@ -19,6 +21,14 @@ export interface PillNavProps {
   className?: string;
 }
 
+/** The links with a target this site may use (`safeHref`); the others are left out. */
+function safeLinks<T extends { href: string }>(links: readonly T[]): T[] {
+  return links.flatMap((link) => {
+    const href = safeHref(link.href);
+    return href ? [{ ...link, href }] : [];
+  });
+}
+
 /**
  * A floating pill-shaped navigation bar: a solid pill marks the current page and glides to the
  * clicked link, while a softer pill follows the pointer from link to link. The compact header for a
@@ -26,12 +36,14 @@ export interface PillNavProps {
  * jump instead of gliding for reduced motion.
  */
 export function PillNav({
-  items,
+  items: rawItems,
   activeHref,
   label = 'Main',
   onNavigate,
   className,
 }: PillNavProps) {
+  // Only paths of this site and allowed social or explorer pages.
+  const items = safeLinks(rawItems);
   const calm = useCalm();
   const group = useId();
   const [clicked, setClicked] = useState(items[0]?.href);

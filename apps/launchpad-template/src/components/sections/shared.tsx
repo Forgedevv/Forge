@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { useId, type ReactNode } from 'react';
 import { content } from '@/content';
 import { onchainConfig } from '@/forge/config';
+import { isExternalHref, safeHref } from '@/components/library/shared/safeHref';
 import { cn } from '@/lib/utils';
 
 /**
@@ -110,10 +111,29 @@ interface ActionProps {
   className?: string;
 }
 
+/**
+ * A link of the sections. Its target comes from props, which the builder's scan cannot follow: it
+ * must be a path of this site or an allowed social or explorer page (`safeHref`), else the
+ * children render as plain text.
+ */
+export function SafeLink({ href, children, className }: ActionProps) {
+  const target = safeHref(href);
+  if (!target) return <span className={className}>{children}</span>;
+  return (
+    <Link
+      href={target}
+      rel={isExternalHref(target) ? 'noopener noreferrer' : undefined}
+      className={className}
+    >
+      {children}
+    </Link>
+  );
+}
+
 /** Filled call to action in the brand colour, with the contrast text colour of the theme. */
 export function PrimaryAction({ href, children, className }: ActionProps) {
   return (
-    <Link
+    <SafeLink
       href={href}
       className={cn(
         'inline-flex min-h-11 items-center gap-3 rounded-[var(--radius)] bg-primary px-5 py-3 text-sm font-medium text-primary-950 transition duration-200 hover:-translate-y-0.5 hover:brightness-110 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-primary)]',
@@ -121,14 +141,14 @@ export function PrimaryAction({ href, children, className }: ActionProps) {
       )}
     >
       {children}
-    </Link>
+    </SafeLink>
   );
 }
 
 /** Outlined secondary action. */
 export function GhostAction({ href, children, className }: ActionProps) {
   return (
-    <Link
+    <SafeLink
       href={href}
       className={cn(
         'inline-flex min-h-11 items-center gap-3 rounded-[var(--radius)] border border-[var(--color-border)] px-5 py-3 text-sm text-[var(--color-text)] transition duration-200 hover:border-[var(--color-primary)] hover:text-[var(--color-primary)]',
@@ -136,7 +156,7 @@ export function GhostAction({ href, children, className }: ActionProps) {
       )}
     >
       {children}
-    </Link>
+    </SafeLink>
   );
 }
 
@@ -205,8 +225,36 @@ export type ValueItem = { icon?: string; title: string; body: string };
 export type StepItem = { title: string; body: string };
 export type FaqItem = { question: string; answer: string };
 
+export type SiteLink = { href: string; label: string };
+
+/** The site links as a row (or wrapped lines on phones), each checked by `SafeLink`. */
+export function FooterNav({
+  links,
+  className,
+}: {
+  links: readonly SiteLink[];
+  className?: string;
+}) {
+  return (
+    <nav aria-label={content.strings.footerNavLabel} className={className}>
+      <ul className="flex flex-wrap gap-x-6 gap-y-2 text-sm">
+        {links.map((link) => (
+          <li key={`${link.href}|${link.label}`}>
+            <SafeLink
+              href={link.href}
+              className="text-[var(--color-text-muted)] transition hover:text-[var(--color-text)]"
+            >
+              {link.label}
+            </SafeLink>
+          </li>
+        ))}
+      </ul>
+    </nav>
+  );
+}
+
 /** Links of the site, shared by the footer variants. */
-export function footerLinks() {
+export function footerLinks(): SiteLink[] {
   return [
     { href: '/#markets', label: content.strings.explore },
     { href: '/create-pool', label: content.strings.createCoin },

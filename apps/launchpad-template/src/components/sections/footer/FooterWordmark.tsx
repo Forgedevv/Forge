@@ -1,8 +1,7 @@
-import Link from 'next/link';
 import { content } from '@/content';
 import { MaskLines } from '@/components/library/text/MaskLines';
 import { cn } from '@/lib/utils';
-import { HEADING_FONT, MUTED, footerLinks } from '../shared';
+import { FooterNav, HEADING_FONT, MUTED, footerLinks, type SiteLink } from '../shared';
 
 export interface FooterProps {
   name?: string;
@@ -10,7 +9,7 @@ export interface FooterProps {
   note?: string;
   disclaimer?: string;
   /** Site links. Default: market, create, about and creator fees. */
-  links?: readonly { href: string; label: string }[];
+  links?: readonly SiteLink[];
   className?: string;
 }
 
@@ -23,32 +22,6 @@ export function footerCopy(props: FooterProps) {
     disclaimer: props.disclaimer ?? content.footer.disclaimer,
     links: props.links ?? footerLinks(),
   };
-}
-
-/** The site links as a row (or wrapped lines on phones). */
-export function FooterNav({
-  links,
-  className,
-}: {
-  links: readonly { href: string; label: string }[];
-  className?: string;
-}) {
-  return (
-    <nav aria-label={content.strings.footerNavLabel} className={className}>
-      <ul className="flex flex-wrap gap-x-6 gap-y-2 text-sm">
-        {links.map((link) => (
-          <li key={link.href}>
-            <Link
-              href={link.href}
-              className="text-[var(--color-text-muted)] transition hover:text-[var(--color-text)]"
-            >
-              {link.label}
-            </Link>
-          </li>
-        ))}
-      </ul>
-    </nav>
-  );
 }
 
 /**

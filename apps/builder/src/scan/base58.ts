@@ -140,6 +140,21 @@ export interface EncodedHit {
   encoding: 'base64' | 'hex';
 }
 
+/** A segment of a module or URL path: one camelCase / PascalCase word, or lowercase kebab-case words. */
+const PATH_WORD_RE = /^(?:[A-Za-z][a-z]+(?:[A-Z][a-z]+)*|[a-z]+(?:-[a-z]+)+)$/;
+
+/**
+ * A path made only of plain words, such as `/components/sections/values/ValuesSpotlight` (an import
+ * specifier: `/` belongs to the base64 alphabet, so a 43-character path decodes to 32 bytes). Like a
+ * camelCase identifier, it cannot carry a chosen key: the base64 text of an address is fixed by the
+ * address, and random bytes essentially never read as word segments split at slashes.
+ */
+function isWordPath(token: string): boolean {
+  if (!token.includes('/')) return false;
+  const segments = token.split('/').filter((segment) => segment.length > 0);
+  return segments.length >= 2 && segments.every((segment) => PATH_WORD_RE.test(segment));
+}
+
 /**
  * Looks for addresses hidden in base64 or hex tokens: a token decoding to
  * exactly 32 or 64 bytes (raw public / secret key), or to text containing a
@@ -152,6 +167,8 @@ export function findEncodedAddresses(text: string): EncodedHit[] {
     const index = m.index ?? 0;
     // Plain words and camelCase identifiers are not encoded data.
     if (CAMEL_WORDS_RE.test(token)) continue;
+    // Module and URL paths of plain words (import specifiers) are not encoded data either.
+    if (isWordPath(token)) continue;
     // One character repeated (a `/* ------ */` comment separator) decodes to a fixed byte pattern
     // that nobody can choose, so it cannot carry an address.
     if (/^(.)\1+=*$/.test(token)) continue;
