@@ -26,6 +26,7 @@ import {
 } from '@/components/library/backgrounds/lib/color';
 import { ShaderSurface } from '@/components/library/backgrounds/lib/ShaderSurface';
 import { FALLBACK_THEME_COLORS } from '@/components/library/shared';
+import { forgetWebGLProbe } from '@/components/library/shared/webgl';
 
 const SRC = join(process.cwd(), 'src');
 const FAMILY_DIR = join(SRC, 'components/library/backgrounds');
@@ -116,6 +117,7 @@ let webgl: ReturnType<typeof fakeWebGL> | null = null;
 let ctx2d: ReturnType<typeof fake2d> | null = null;
 
 beforeEach(() => {
+  forgetWebGLProbe();
   h.reduced = false;
   webgl = null;
   ctx2d = null;

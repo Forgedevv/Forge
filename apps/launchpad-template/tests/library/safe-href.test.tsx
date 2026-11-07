@@ -105,3 +105,21 @@ describe('components with links', () => {
     expect(html).toContain('Airdrop');
   });
 });
+
+describe('targets that turn into another site once normalised', () => {
+  it('refuses paths whose dot segments leave a protocol-relative link', () => {
+    for (const target of [
+      '/.//evil.example/claim',
+      '/a/..//evil.example',
+      '/%2e//evil.example',
+      './/evil.example',
+      'https://site.invalid//evil.example',
+    ]) {
+      expect(safeHref(target), target).toBeUndefined();
+    }
+    const html = renderToString(
+      <MagneticButton href="/.//evil.example/claim">Claim</MagneticButton>,
+    );
+    expect(html).not.toContain('evil.example');
+  });
+});

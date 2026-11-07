@@ -88,6 +88,9 @@ export function SmoothScroll({
           lerp,
           autoRaf: true,
           anchors: { offset: anchorOffset },
+          // Scroll boxes inside the page (the Jupiter token list, dialogs, tables) keep their own
+          // wheel scrolling instead of moving the page.
+          allowNestedScroll: true,
           ...(contained && wrapper.current && content.current
             ? { wrapper: wrapper.current, content: content.current, eventsTarget: wrapper.current }
             : {}),

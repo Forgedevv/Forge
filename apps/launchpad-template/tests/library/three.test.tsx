@@ -14,6 +14,7 @@ vi.mock('@/components/library/shared/useReducedMotion', () => ({
 
 import { entries } from '@/components/library/three';
 import { SceneFrame } from '@/components/library/three/lib/SceneFrame';
+import { forgetWebGLProbe } from '@/components/library/shared/webgl';
 
 const SRC = join(process.cwd(), 'src');
 const FAMILY_DIR = join(SRC, 'components/library/three');
@@ -21,6 +22,7 @@ const FAMILY_DIR = join(SRC, 'components/library/three');
 let webglAvailable = false;
 
 beforeEach(() => {
+  forgetWebGLProbe();
   h.reduced = false;
   webglAvailable = false;
   vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(function (kind: string) {

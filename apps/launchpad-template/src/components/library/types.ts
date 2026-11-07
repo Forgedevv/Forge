@@ -15,7 +15,7 @@ export const FAMILY_LABELS: Record<LibraryFamily, string> = {
  * Cost of an effect on the page:
  * - `light`: CSS or SVG only, no extra library;
  * - `medium`: motion, lenis or a small canvas;
- * - `heavy`: WebGL (ogl, three): loaded after the page, only on screens that can run it.
+ * - `heavy`: WebGL or three.js: loaded after the page, only on screens that can run it.
  */
 export type LibraryWeight = 'light' | 'medium' | 'heavy';
 

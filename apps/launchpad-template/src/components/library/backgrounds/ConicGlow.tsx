@@ -1,6 +1,7 @@
 import type { CSSProperties } from 'react';
 import { EffectLayer } from './lib/CanvasLayer';
 import type { BackgroundProps } from './lib/ShaderBackground';
+import { cssLength } from '../shared/cssValue';
 
 export interface ConicGlowProps extends Omit<BackgroundProps, 'colors'> {
   /** Diameter of the halo, as a CSS length. */
@@ -110,15 +111,18 @@ function Halo({
  * ring and a calm centre for the content. Pure CSS; frames a headline, a countdown, a mint button
  * or a token logo, in hero or closing call-to-action sections.
  */
+const DEFAULT_SIZE = 'min(80vmin, 34rem)';
+
 export function ConicGlow({
-  size = 'min(80vmin, 34rem)',
+  size: rawSize,
   duration = 16,
   x = 0.5,
   y = 0.5,
   className,
   style,
 }: ConicGlowProps) {
-  const props = { size, duration, x, y };
+  // Written into CSS: only a length expression is kept (`cssLength`).
+  const props = { size: cssLength(rawSize, DEFAULT_SIZE), duration, x, y };
   return (
     <EffectLayer className={className} style={style} fallback={<Halo running={false} {...props} />}>
       {({ inView }) => <Halo running={inView} {...props} />}

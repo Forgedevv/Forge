@@ -44,9 +44,12 @@ export function safeHref(target: unknown): string | undefined {
   if (url.origin === BASE) {
     // An anchor on the current page stays one (`#faq`, not `/#faq`).
     if (value.startsWith('#')) return url.hash || undefined;
-    // A path of this site (`//host` and `/\host` resolve to another origin and never reach here),
-    // returned normalised, without the placeholder origin: the link cannot leave the site.
-    return `${url.pathname}${url.search}${url.hash}`;
+    // A path of this site, returned normalised without the placeholder origin. Dot segments can
+    // leave a path starting with `//` (`/.//host` gives `//host`, another site): resolve the result
+    // again and keep it only if it still stays on the site.
+    const path = `${url.pathname}${url.search}${url.hash}`;
+    if (path.startsWith('//') || path.includes('\\')) return undefined;
+    return new URL(path, BASE).origin === BASE ? path : undefined;
   }
   if (url.protocol !== 'https:' || url.username || url.password || url.port) return undefined;
   if (!LINK_HOSTS.includes(url.hostname)) return undefined;

@@ -3,6 +3,7 @@ import { EffectLayer, FillCanvas } from './lib/CanvasLayer';
 import { mixRgb, rgbCss, useEffectColors, type EffectColors } from './lib/color';
 import type { BackgroundProps } from './lib/ShaderBackground';
 import { useCanvasScene, useLatest } from './lib/useCanvasScene';
+import { cssFontFamily } from '../shared/cssValue';
 
 export interface AsciiMonogramProps extends BackgroundProps {
   /** One to three characters drawn as the shape, for example the coin's ticker initial. */
@@ -206,12 +207,14 @@ function AsciiCanvas({
 export function AsciiMonogram({
   text = '$',
   cellSize = 12,
-  fontFamily,
+  fontFamily: rawFontFamily,
   followPointer = true,
   colors,
   className,
   style,
 }: AsciiMonogramProps) {
+  // Written into CSS and the canvas font: only a font-family list is kept (`cssFontFamily`).
+  const fontFamily = cssFontFamily(rawFontFamily);
   return (
     <EffectLayer
       className={className}
