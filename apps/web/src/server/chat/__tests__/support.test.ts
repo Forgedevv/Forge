@@ -3,6 +3,7 @@ import { Connection, Keypair, PublicKey } from '@solana/web3.js';
 import { describe, expect, it, vi } from 'vitest';
 import { createGatingCheck, GatingError, type BalanceReader } from '../gating';
 import { buildModelMessages } from '../history';
+import { trustedProxy } from '../client-ip';
 import { clientIp, MemoryRateLimiter } from '../rate-limit';
 import { loadChatConfig, ChatConfigError, costUsd } from '../config';
 import { WALLET } from './helpers';
@@ -41,6 +42,28 @@ describe('MemoryRateLimiter', () => {
 
 describe('clientIp', () => {
   const req = (h: Record<string, string>) => new Request('https://x.test', { headers: h });
+
+  it('behind Cloudflare, reads cf-connecting-ip only and ignores the spoofable headers', () => {
+    const spoofed = req({
+      'x-vercel-forwarded-for': '6.6.6.6',
+      'x-real-ip': '7.7.7.7',
+      'x-forwarded-for': '8.8.8.8',
+    });
+    expect(clientIp(spoofed, 'cloudflare')).toBe('unknown');
+    const real = req({ 'cf-connecting-ip': '203.0.113.7', 'x-vercel-forwarded-for': '6.6.6.6' });
+    expect(clientIp(real, 'cloudflare')).toBe('203.0.113.7');
+    expect(clientIp(req({ 'cf-connecting-ip': '2001:db8:1:2:3:4:5:6' }), 'cloudflare')).toBe(
+      '2001:db8:1:2::/64',
+    );
+    expect(clientIp(req({ 'cf-connecting-ip': 'evil' }), 'cloudflare')).toBe('unknown');
+  });
+
+  it('reads the trusted proxy from FORGE_TRUSTED_PROXY and fails closed on unknown values', () => {
+    expect(trustedProxy({})).toBe('vercel');
+    expect(trustedProxy({ FORGE_TRUSTED_PROXY: 'vercel' })).toBe('vercel');
+    expect(trustedProxy({ FORGE_TRUSTED_PROXY: ' Cloudflare ' })).toBe('cloudflare');
+    expect(trustedProxy({ FORGE_TRUSTED_PROXY: 'cloudfare' })).toBe('cloudflare');
+  });
 
   it('prefers x-vercel-forwarded-for, then x-real-ip, then the LAST x-forwarded-for entry', () => {
     expect(

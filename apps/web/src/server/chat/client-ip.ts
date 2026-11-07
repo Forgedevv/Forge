@@ -4,7 +4,14 @@ import { isIP } from 'node:net';
  * Client IP for rate-limit keys (chat, spec confirmation, payment, gating, upload and RPC relay
  * routes). Never used for anything but a counter key.
  *
- * Trust model: the app runs behind one trusted proxy (Vercel). In order of preference:
+ * Trust model: the app runs behind one trusted proxy, named by `FORGE_TRUSTED_PROXY`:
+ *
+ * `cloudflare` (the app behind a Cloudflare tunnel, listening on 127.0.0.1 only): `cf-connecting-ip`
+ * only. Cloudflare's edge sets it to the address it received the connection from and drops any
+ * value sent by the client; every other header (`x-vercel-forwarded-for`, `x-real-ip`,
+ * `x-forwarded-for`) reaches the app as the client wrote it, so none of them is read.
+ *
+ * `vercel` (unset, the default): in order of preference:
  *  1. `x-vercel-forwarded-for`: set by the Vercel edge to the address it received the connection
  *     from; a value sent by the client is overwritten.
  *  2. `x-real-ip`: also set by the platform proxy.
@@ -77,8 +84,22 @@ function clean(value: string | undefined | null): string | null {
   return value ? ipBucket(value) : null;
 }
 
-export function clientIp(request: Request): string {
+export type TrustedProxy = 'vercel' | 'cloudflare';
+
+/**
+ * The proxy in front of the app (`FORGE_TRUSTED_PROXY`). Unset or `vercel`: Vercel. Any other value
+ * reads as `cloudflare`, so a typo fails closed: behind Vercel, `cf-connecting-ip` is absent and
+ * every client shares the "unknown" bucket (strict limits), instead of trusting spoofable headers
+ * behind Cloudflare.
+ */
+export function trustedProxy(env: Record<string, string | undefined> = process.env): TrustedProxy {
+  const value = env.FORGE_TRUSTED_PROXY?.trim().toLowerCase();
+  return !value || value === 'vercel' ? 'vercel' : 'cloudflare';
+}
+
+export function clientIp(request: Request, proxy: TrustedProxy = trustedProxy()): string {
   const h = request.headers;
+  if (proxy === 'cloudflare') return clean(h.get('cf-connecting-ip')) ?? 'unknown';
   const platform =
     clean(h.get('x-vercel-forwarded-for')?.split(',')[0]) ?? clean(h.get('x-real-ip'));
   if (platform) return platform;
