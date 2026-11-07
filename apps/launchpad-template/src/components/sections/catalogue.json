@@ -90,6 +90,85 @@
       "weight": "light"
     },
     {
+      "id": "hero-coin-stage",
+      "slot": "hero",
+      "moods": [
+        "playful",
+        "bold",
+        "premium"
+      ],
+      "weight": "heavy"
+    },
+    {
+      "id": "hero-bento",
+      "slot": "hero",
+      "moods": [
+        "tech",
+        "playful",
+        "premium"
+      ],
+      "weight": "medium"
+    },
+    {
+      "id": "hero-outline-split",
+      "slot": "hero",
+      "moods": [
+        "bold",
+        "retro",
+        "dark"
+      ],
+      "weight": "medium"
+    },
+    {
+      "id": "hero-editorial",
+      "slot": "hero",
+      "moods": [
+        "calm",
+        "organic",
+        "premium"
+      ],
+      "weight": "medium"
+    },
+    {
+      "id": "hero-woven-ring",
+      "slot": "hero",
+      "moods": [
+        "dark",
+        "organic",
+        "calm"
+      ],
+      "weight": "medium"
+    },
+    {
+      "id": "hero-coin-rain",
+      "slot": "hero",
+      "moods": [
+        "playful",
+        "bold"
+      ],
+      "weight": "heavy"
+    },
+    {
+      "id": "hero-launch-log",
+      "slot": "hero",
+      "moods": [
+        "tech",
+        "dark",
+        "retro"
+      ],
+      "weight": "medium"
+    },
+    {
+      "id": "hero-magazine-cover",
+      "slot": "hero",
+      "moods": [
+        "premium",
+        "bold",
+        "organic"
+      ],
+      "weight": "medium"
+    },
+    {
       "id": "values-spotlight",
       "slot": "values",
       "moods": [

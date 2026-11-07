@@ -1,202 +1,415 @@
 {
-  "slots": ["hero", "values", "steps", "coin", "faq", "closing", "footer"],
+  "slots": [
+    "hero",
+    "values",
+    "steps",
+    "coin",
+    "faq",
+    "closing",
+    "footer"
+  ],
   "sections": [
     {
       "id": "hero-split-coin",
       "slot": "hero",
-      "moods": ["playful", "premium", "bold"],
+      "moods": [
+        "playful",
+        "premium",
+        "bold"
+      ],
       "weight": "heavy"
     },
     {
       "id": "hero-particle-field",
       "slot": "hero",
-      "moods": ["tech", "premium", "dark"],
+      "moods": [
+        "tech",
+        "premium",
+        "dark"
+      ],
       "weight": "heavy"
     },
     {
       "id": "hero-poster-type",
       "slot": "hero",
-      "moods": ["bold", "playful", "retro"],
+      "moods": [
+        "bold",
+        "playful",
+        "retro"
+      ],
       "weight": "medium"
     },
     {
       "id": "hero-terminal",
       "slot": "hero",
-      "moods": ["tech", "retro", "dark"],
+      "moods": [
+        "tech",
+        "retro",
+        "dark"
+      ],
       "weight": "medium"
     },
     {
       "id": "hero-retro-grid",
       "slot": "hero",
-      "moods": ["retro", "playful", "bold"],
+      "moods": [
+        "retro",
+        "playful",
+        "bold"
+      ],
       "weight": "light"
     },
     {
       "id": "hero-sculpture",
       "slot": "hero",
-      "moods": ["premium", "calm", "organic"],
+      "moods": [
+        "premium",
+        "calm",
+        "organic"
+      ],
       "weight": "heavy"
     },
     {
       "id": "hero-dot-field",
       "slot": "hero",
-      "moods": ["tech", "calm", "premium"],
+      "moods": [
+        "tech",
+        "calm",
+        "premium"
+      ],
       "weight": "medium"
     },
     {
       "id": "hero-halo",
       "slot": "hero",
-      "moods": ["premium", "bold", "dark"],
+      "moods": [
+        "premium",
+        "bold",
+        "dark"
+      ],
       "weight": "light"
+    },
+    {
+      "id": "hero-coin-stage",
+      "slot": "hero",
+      "moods": [
+        "playful",
+        "bold",
+        "premium"
+      ],
+      "weight": "heavy"
+    },
+    {
+      "id": "hero-bento",
+      "slot": "hero",
+      "moods": [
+        "tech",
+        "playful",
+        "premium"
+      ],
+      "weight": "medium"
+    },
+    {
+      "id": "hero-outline-split",
+      "slot": "hero",
+      "moods": [
+        "bold",
+        "retro",
+        "dark"
+      ],
+      "weight": "medium"
+    },
+    {
+      "id": "hero-editorial",
+      "slot": "hero",
+      "moods": [
+        "calm",
+        "organic",
+        "premium"
+      ],
+      "weight": "medium"
+    },
+    {
+      "id": "hero-woven-ring",
+      "slot": "hero",
+      "moods": [
+        "dark",
+        "organic",
+        "calm"
+      ],
+      "weight": "medium"
+    },
+    {
+      "id": "hero-coin-rain",
+      "slot": "hero",
+      "moods": [
+        "playful",
+        "bold"
+      ],
+      "weight": "heavy"
+    },
+    {
+      "id": "hero-launch-log",
+      "slot": "hero",
+      "moods": [
+        "tech",
+        "dark",
+        "retro"
+      ],
+      "weight": "medium"
+    },
+    {
+      "id": "hero-magazine-cover",
+      "slot": "hero",
+      "moods": [
+        "premium",
+        "bold",
+        "organic"
+      ],
+      "weight": "medium"
     },
     {
       "id": "values-spotlight",
       "slot": "values",
-      "moods": ["tech", "premium", "dark"],
+      "moods": [
+        "tech",
+        "premium",
+        "dark"
+      ],
       "weight": "medium"
     },
     {
       "id": "values-tilt",
       "slot": "values",
-      "moods": ["playful", "bold", "premium"],
+      "moods": [
+        "playful",
+        "bold",
+        "premium"
+      ],
       "weight": "medium"
     },
     {
       "id": "values-marquee",
       "slot": "values",
-      "moods": ["bold", "playful", "retro"],
+      "moods": [
+        "bold",
+        "playful",
+        "retro"
+      ],
       "weight": "medium"
     },
     {
       "id": "values-editorial",
       "slot": "values",
-      "moods": ["calm", "premium", "organic"],
+      "moods": [
+        "calm",
+        "premium",
+        "organic"
+      ],
       "weight": "light"
     },
     {
       "id": "values-terminal",
       "slot": "values",
-      "moods": ["tech", "dark", "retro"],
+      "moods": [
+        "tech",
+        "dark",
+        "retro"
+      ],
       "weight": "medium"
     },
     {
       "id": "steps-stack",
       "slot": "steps",
-      "moods": ["bold", "premium", "tech", "playful"],
+      "moods": [
+        "bold",
+        "premium",
+        "tech",
+        "playful"
+      ],
       "weight": "medium"
     },
     {
       "id": "steps-timeline",
       "slot": "steps",
-      "moods": ["calm", "premium", "tech"],
+      "moods": [
+        "calm",
+        "premium",
+        "tech"
+      ],
       "weight": "medium"
     },
     {
       "id": "steps-rings",
       "slot": "steps",
-      "moods": ["tech", "playful"],
+      "moods": [
+        "tech",
+        "playful"
+      ],
       "weight": "medium"
     },
     {
       "id": "steps-scroll-story",
       "slot": "steps",
-      "moods": ["calm", "premium", "organic"],
+      "moods": [
+        "calm",
+        "premium",
+        "organic"
+      ],
       "weight": "medium"
     },
     {
       "id": "steps-deck",
       "slot": "steps",
-      "moods": ["playful", "bold", "premium"],
+      "moods": [
+        "playful",
+        "bold",
+        "premium"
+      ],
       "weight": "medium"
     },
     {
       "id": "coin-spotlight",
       "slot": "coin",
-      "moods": ["playful", "premium", "bold"],
+      "moods": [
+        "playful",
+        "premium",
+        "bold"
+      ],
       "weight": "heavy"
     },
     {
       "id": "coin-rain-banner",
       "slot": "coin",
-      "moods": ["playful", "bold"],
+      "moods": [
+        "playful",
+        "bold"
+      ],
       "weight": "heavy"
     },
     {
       "id": "coin-torus",
       "slot": "coin",
-      "moods": ["tech", "premium", "dark"],
+      "moods": [
+        "tech",
+        "premium",
+        "dark"
+      ],
       "weight": "medium"
     },
     {
       "id": "coin-ticker",
       "slot": "coin",
-      "moods": ["bold", "retro"],
+      "moods": [
+        "bold",
+        "retro"
+      ],
       "weight": "light"
     },
     {
       "id": "faq-accordion",
       "slot": "faq",
-      "moods": ["calm", "premium", "tech", "playful"],
+      "moods": [
+        "calm",
+        "premium",
+        "tech",
+        "playful"
+      ],
       "weight": "medium"
     },
     {
       "id": "faq-split",
       "slot": "faq",
-      "moods": ["premium", "tech", "calm"],
+      "moods": [
+        "premium",
+        "tech",
+        "calm"
+      ],
       "weight": "medium"
     },
     {
       "id": "faq-cards",
       "slot": "faq",
-      "moods": ["playful", "bold"],
+      "moods": [
+        "playful",
+        "bold"
+      ],
       "weight": "medium"
     },
     {
       "id": "closing-grid",
       "slot": "closing",
-      "moods": ["retro", "tech"],
+      "moods": [
+        "retro",
+        "tech"
+      ],
       "weight": "light"
     },
     {
       "id": "closing-filaments",
       "slot": "closing",
-      "moods": ["premium", "organic", "dark"],
+      "moods": [
+        "premium",
+        "organic",
+        "dark"
+      ],
       "weight": "medium"
     },
     {
       "id": "closing-magnetic",
       "slot": "closing",
-      "moods": ["bold", "premium"],
+      "moods": [
+        "bold",
+        "premium"
+      ],
       "weight": "light"
     },
     {
       "id": "closing-marquee",
       "slot": "closing",
-      "moods": ["bold", "playful", "retro"],
+      "moods": [
+        "bold",
+        "playful",
+        "retro"
+      ],
       "weight": "medium"
     },
     {
       "id": "footer-wordmark",
       "slot": "footer",
-      "moods": ["bold", "premium"],
+      "moods": [
+        "bold",
+        "premium"
+      ],
       "weight": "light"
     },
     {
       "id": "footer-columns",
       "slot": "footer",
-      "moods": ["calm", "tech", "premium"],
+      "moods": [
+        "calm",
+        "tech",
+        "premium"
+      ],
       "weight": "light"
     },
     {
       "id": "footer-marquee",
       "slot": "footer",
-      "moods": ["playful", "retro", "bold"],
+      "moods": [
+        "playful",
+        "retro",
+        "bold"
+      ],
       "weight": "medium"
     },
     {
       "id": "footer-minimal",
       "slot": "footer",
-      "moods": ["calm", "premium"],
+      "moods": [
+        "calm",
+        "premium"
+      ],
       "weight": "light"
     }
   ]

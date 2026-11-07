@@ -56,6 +56,11 @@ export function ClosingGrid(props: ClosingSectionProps) {
         <div aria-hidden="true" className="absolute inset-0 -z-10">
           <PerspectiveGrid horizon={0.45} />
         </div>
+        {/* A shade of the page colour behind the copy: the floor lines never cross the text. */}
+        <div
+          aria-hidden="true"
+          className="absolute inset-x-0 top-0 -z-10 h-3/4 bg-[radial-gradient(ellipse_60%_70%_at_50%_30%,var(--color-bg)_45%,transparent)]"
+        />
         <h2
           id={id}
           className={cn(
