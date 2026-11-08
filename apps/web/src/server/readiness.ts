@@ -103,6 +103,13 @@ export function checkServerReadiness(
   check('flags', () => readFlagsEnv(env));
   const beta = parseBetaPolicy(env);
   if (beta.mode === 'closed') problems.push(beta.problem);
+  // Every per-IP limit keys on the address the proxy sets (chat/client-ip.ts): in production the
+  // proxy must be named, never guessed (behind the Cloudflare tunnel the Vercel headers are spoofable).
+  if (env.NODE_ENV === 'production' && !env.FORGE_TRUSTED_PROXY?.trim()) {
+    problems.push(
+      'FORGE_TRUSTED_PROXY is required in production (cloudflare behind the tunnel, vercel behind Vercel)',
+    );
+  }
 
   const unique = [...new Set(problems)];
   if (unique.length > 0) return { ok: false, code: 'config_invalid', problems: unique };

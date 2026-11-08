@@ -16,7 +16,7 @@ Every protection below is **mandatory** in the MVP. Agents that touch one of the
   - no external `<script src=`, no `fetch`/`import` to a domain outside the allowlist;
   - no use of `approve`, `setAuthority`, `createApproveInstruction`, `signAllTransactions` outside `src/forge/`;
   - no `eval`, `new Function`, `dangerouslySetInnerHTML` with dynamic content.
-- Strict Content-Security-Policy in the template (Jupiter domains, Helius via relay, R2, Vercel).
+- Strict Content-Security-Policy in the template (Jupiter domains, Helius via relay, R2).
 - Preview approved by the client before any production release.
 
 ## 2. Anthropic API key exposed

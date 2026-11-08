@@ -9,10 +9,6 @@ export const DEFAULT_ALLOWED_HOSTS: readonly string[] = [
   // Jupiter (plugin, data API, trench stream, swap APIs)
   'jup.ag',
   '*.jup.ag',
-  // Vercel first-party scripts (analytics, speed insights, toolbar)
-  'va.vercel-scripts.com',
-  'vitals.vercel-insights.com',
-  'vercel.live',
 ];
 
 /** Default navigation-only hosts (social links, explorers). Not usable for fetch or scripts. */
