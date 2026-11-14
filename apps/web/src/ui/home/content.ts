@@ -167,10 +167,10 @@ export const homeContent = {
     ],
   },
   connection: {
-    eyebrow: 'YOUR NEXT WORLD',
-    title: 'The workshop is warming up.',
+    eyebrow: 'COMING SOON',
+    title: 'Coming soon.',
     description:
-      'Wallet connection and launchpad creation are not available in this preview yet. Explore how FORGE works while we prepare for launch.',
+      'FORGE opens soon. Wallet connection and launchpad creation are not available yet. Explore how FORGE works while we prepare for launch.',
     action: 'Explore how it works',
   },
   termsPage: {

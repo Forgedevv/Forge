@@ -3,6 +3,7 @@ import type { ReactNode } from 'react';
 import { Space_Grotesk, Unbounded } from 'next/font/google';
 import './globals.css';
 import { homeContent } from '@/ui/home/content';
+import { prelaunchForRequest } from '@/server/prelaunch/request';
 import { WorkspaceProvider } from '@/ui/workspace/provider';
 
 const sans = Space_Grotesk({
@@ -33,11 +34,13 @@ export const metadata: Metadata = {
   },
 };
 
-export default function RootLayout({ children }: { children: ReactNode }) {
+// Every page renders per request: the pre-launch mode is read from the environment and a cookie.
+export default async function RootLayout({ children }: { children: ReactNode }) {
+  const prelaunch = await prelaunchForRequest();
   return (
     <html lang="en" className={`dark ${sans.variable} ${display.variable}`}>
       <body>
-        <WorkspaceProvider>{children}</WorkspaceProvider>
+        <WorkspaceProvider prelaunch={prelaunch}>{children}</WorkspaceProvider>
       </body>
     </html>
   );
