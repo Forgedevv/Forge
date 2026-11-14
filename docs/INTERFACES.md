@@ -343,6 +343,7 @@ The signer never takes an address or an amount from the request: it re-reads eve
 | `SUPABASE_DB_URL`, `SUPABASE_DB_CA_FILE` (optional) | migrations and DB tests only | | | |
 | `SESSION_SECRET` | ✓ | | | |
 | `FORGE_BETA_MODE`, `FORGE_BETA_ALLOWLIST` | ✓ | | | |
+| `FORGE_PRELAUNCH`, `FORGE_PRELAUNCH_PREVIEW_KEY` (optional) | ✓ | | | |
 | `FORGE_INTERNAL_CRON_SECRET` | ✓ (upload sweep) | | | |
 | `ANTHROPIC_API_KEY` | ✓ (design chat) | | ✓ (model gateway only) | |
 | `FORGE_MINT` (optional), `FORGE_GATING_AMOUNT` | ✓ | | | ✓ (buyback) |
