@@ -310,7 +310,8 @@ export function ForgeHome({ flags: suppliedFlags }: { flags?: Flags }) {
   };
   const openConnection = () => {
     skipIntro();
-    if (workspace.available) {
+    // Before launch every connection or creation button opens the "Coming soon" panel.
+    if (workspace.available && !workspace.prelaunch) {
       if (session) workspace.navigate('/new');
       else workspace.openLogin();
       return;
@@ -343,7 +344,7 @@ export function ForgeHome({ flags: suppliedFlags }: { flags?: Flags }) {
           />
         </a>
         <div className="forge-header-actions">
-          {session && (
+          {session && !workspace.prelaunch && (
             <details className="forge-account">
               <summary>
                 <span aria-hidden="true">◒</span> {workspace.client.shortAddress(session.wallet)}

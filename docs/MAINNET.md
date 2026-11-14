@@ -55,6 +55,8 @@ Set in the Vercel project (Production). Read at start-up by `instrumentation.ts`
 | `SESSION_SECRET` | yes | at least 32 random bytes (`openssl rand -base64 48`) | none | health 503; rotating it signs everybody out | S |
 | `FORGE_BETA_MODE` | cond | `on` (closed beta, wallet allowlist) or `off` (public). | `on` in production, `off` otherwise | `on` with no valid allowlist: nobody can sign in and health answers 503 (`beta/config.ts`); any other value: closed | |
 | `FORGE_BETA_ALLOWLIST` | cond | comma-separated base58 wallets, required while the beta is on (max 10,000); re-read on every request | none | one invalid entry or an empty list closes sign-in for everybody | |
+| `FORGE_PRELAUNCH` | no | `on` before the launch: every wallet connection and creation button shows "Coming soon", the workshop pages too (`prelaunch/config.ts`); `off` at launch | `off` | any other value counts as `on` | |
+| `FORGE_PRELAUNCH_PREVIEW_KEY` | no | at least 32 characters; `/api/preview?key=<key>` gives the team the full site while `FORGE_PRELAUNCH=on` | none | shorter or unset: no preview, `/api/preview` answers 404 | S |
 | `NEXT_PUBLIC_USE_MOCKS` | no | unset or `0`. `.env.example` has the line commented out: never enable it in production | unset | no effect in a production build, but the dev pages and mocks assume it is off | |
 
 ### 2.3 Payments, price guard, $FORGE gate

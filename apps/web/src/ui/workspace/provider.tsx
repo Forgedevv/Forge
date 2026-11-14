@@ -72,6 +72,8 @@ type Context = {
   client: ForgeWebClient;
   available: boolean;
   demo: boolean;
+  /** Pre-launch: wallet connection and creation show "Coming soon" (src/server/prelaunch). */
+  prelaunch: boolean;
   theme: 'dark' | 'light';
   toggleTheme(): void;
   openLogin(): void;
@@ -84,6 +86,7 @@ const WorkspaceContext = createContext<Context>({
   client: withClientExtensions(unavailableClient),
   available: false,
   demo: false,
+  prelaunch: false,
   theme: 'dark',
   toggleTheme() {},
   openLogin() {},
@@ -95,32 +98,40 @@ const WorkspaceContext = createContext<Context>({
 export const useWorkspace = () => useContext(WorkspaceContext);
 export const useWebClient = () => useWorkspace().client;
 
+const PrelaunchContext = createContext(false);
+
 export function WorkspaceProvider({
   children,
   controller: supplied,
+  prelaunch = false,
 }: {
   children: ReactNode;
   controller?: MockController;
+  prelaunch?: boolean;
 }) {
   const [controller] = useState(() =>
     process.env.NODE_ENV !== 'production'
       ? (supplied ?? (process.env.NEXT_PUBLIC_USE_MOCKS === '1' ? createMockController() : null))
       : null,
   );
-  return controller ? (
-    <WorkspaceStateProvider client={controller.client} controller={controller}>
-      {children}
-    </WorkspaceStateProvider>
-  ) : (
-    <Suspense
-      fallback={
-        <div className="fw fw-client-loading" role="status">
-          {common.loading}
-        </div>
-      }
-    >
-      <LiveWorkspaceProvider>{children}</LiveWorkspaceProvider>
-    </Suspense>
+  return (
+    <PrelaunchContext.Provider value={prelaunch}>
+      {controller ? (
+        <WorkspaceStateProvider client={controller.client} controller={controller}>
+          {children}
+        </WorkspaceStateProvider>
+      ) : (
+        <Suspense
+          fallback={
+            <div className="fw fw-client-loading" role="status">
+              {common.loading}
+            </div>
+          }
+        >
+          <LiveWorkspaceProvider>{children}</LiveWorkspaceProvider>
+        </Suspense>
+      )}
+    </PrelaunchContext.Provider>
   );
 }
 
@@ -157,6 +168,7 @@ export function WorkspaceStateProvider({
 }) {
   const client = useMemo(() => withClientExtensions(input), [input]);
   const router = useRouter();
+  const prelaunch = useContext(PrelaunchContext);
   const [login, setLogin] = useState(false);
   const [message, setMessage] = useState('');
   // Dark on the server and the first render (no hydration mismatch), then the saved choice.
@@ -180,13 +192,15 @@ export function WorkspaceStateProvider({
         client,
         available: true,
         demo: Boolean(controller),
+        prelaunch,
         theme,
         toggleTheme: () => {
           const next = theme === 'dark' ? 'light' : 'dark';
           saveTheme(next);
           setTheme(next);
         },
-        openLogin: () => setLogin(true),
+        // Every "Connect wallet" goes through here: before launch it only says "Coming soon".
+        openLogin: () => (prelaunch ? setMessage(common.comingSoonToast) : setLogin(true)),
         closeLogin: () => setLogin(false),
         toast: setMessage,
         recover: () => controller?.recover(),

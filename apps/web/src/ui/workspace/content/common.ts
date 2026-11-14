@@ -21,6 +21,11 @@ export const common = {
   back: 'Back to dashboard',
   loading: 'Getting things ready',
   error: 'We could not load this view.',
+  comingSoon: 'Coming soon.',
+  comingSoonBody:
+    'FORGE opens soon. Wallet connection and launchpad creation are not available yet. Explore how it works on the homepage in the meantime.',
+  comingSoonBadge: 'Coming soon',
+  comingSoonToast: 'Coming soon. FORGE is not open yet.',
   unavailable: 'The workshop is not connected yet.',
   unavailableBody:
     'Wallet connection and launchpad operations will be available when the service is connected. You can still explore the homepage.',

@@ -28,7 +28,17 @@ export function WorkspaceFrame({
         <WorkspaceHeader />
         <main className="fw-main" key={retry}>
           {workspace.demo && <p className="fw-demo-banner">{common.demo}</p>}
-          {!workspace.available && requireSession ? (
+          {/* Before launch the workshop pages say "Coming soon"; the FAQ and terms stay readable. */}
+          {workspace.prelaunch && requireSession ? (
+            <MuseHero
+              action="welcome"
+              muses={[]}
+              title={common.comingSoon}
+              body={common.comingSoonBody}
+            >
+              <ActionLink href="/">{common.home}</ActionLink>
+            </MuseHero>
+          ) : !workspace.available && requireSession ? (
             <MuseHero
               action="welcome"
               muses={[]}
@@ -157,7 +167,7 @@ export function WorkspaceHeader() {
   const api = useWebClient();
   const { session, disconnect } = api.useSession();
   const { signupsPaused } = api.useFlags();
-  const { openLogin, toggleTheme, theme } = useWorkspace();
+  const { openLogin, toggleTheme, theme, prelaunch } = useWorkspace();
   return (
     <header className="fw-header">
       <Link href="/" className="fw-brand" aria-label={common.home}>
@@ -165,8 +175,8 @@ export function WorkspaceHeader() {
         <span className="fw-brand-note">/ {common.workshop}</span>
       </Link>
       <nav aria-label={common.navigation}>
-        <Link href="/dashboard">{common.dashboard}</Link>
-        {!signupsPaused && (
+        {!prelaunch && <Link href="/dashboard">{common.dashboard}</Link>}
+        {!signupsPaused && !prelaunch && (
           <Link href="/new" className="fw-create-link">
             {common.create}
             <span aria-hidden="true">→</span>
@@ -181,7 +191,9 @@ export function WorkspaceHeader() {
         >
           {theme === 'dark' ? '☼' : '◐'}
         </button>
-        {session ? (
+        {prelaunch ? (
+          <span className="fw-soon-badge">{common.comingSoonBadge}</span>
+        ) : session ? (
           <AccountMenu label={api.shortAddress(session.wallet)} onDisconnect={disconnect} />
         ) : (
           <Button variant="secondary" onClick={openLogin}>
